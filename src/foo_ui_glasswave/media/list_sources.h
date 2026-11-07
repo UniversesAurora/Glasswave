@@ -70,6 +70,8 @@ public:
     virtual void Toggle(size_t row) = 0;
     virtual void SelectRange(size_t a, size_t b, bool keepOthers) = 0;
     virtual void SelectAll() = 0;
+    // Exactly these rows selected, all others not (rubber-band selection).
+    virtual void SetSelection(const std::vector<size_t>& rows) = 0;
     virtual size_t Focus() const = 0;
     virtual void SetFocus(size_t row) = 0;
 
@@ -100,6 +102,7 @@ public:
     void Toggle(size_t row) override;
     void SelectRange(size_t a, size_t b, bool keepOthers) override;
     void SelectAll() override;
+    void SetSelection(const std::vector<size_t>& rows) override;
     size_t Focus() const override;
     void SetFocus(size_t row) override;
     void Activate(size_t row) override;
@@ -148,6 +151,7 @@ public:
     void Toggle(size_t row) override;
     void SelectRange(size_t a, size_t b, bool keepOthers) override;
     void SelectAll() override;
+    void SetSelection(const std::vector<size_t>& rows) override;
     size_t Focus() const override { return m_focus; }
     void SetFocus(size_t row) override { m_focus = row; }
     void Activate(size_t row) override;
@@ -203,6 +207,7 @@ public:
     void Toggle(size_t row) override;
     void SelectRange(size_t a, size_t b, bool keepOthers) override;
     void SelectAll() override;
+    void SetSelection(const std::vector<size_t>& rows) override;
     size_t Focus() const override { return m_focus; }
     void SetFocus(size_t row) override { m_focus = row; }
     void Activate(size_t row) override;

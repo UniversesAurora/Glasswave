@@ -38,7 +38,7 @@ public:
     void CancelDrag();
     void OnDoubleClick(POINT pt);
     void OnRButtonUp(HWND owner, POINT pt);
-    void OnWheel(int delta);
+    void OnWheel(int delta, bool horizontal);  // Shift+wheel / tilt wheel scroll sideways
     bool OnKeyDown(UINT vk, bool ctrl, bool shift);
 
     // A link in the album column was clicked: group index and line (0 album, 1 artist, 2 genre).
@@ -47,7 +47,7 @@ public:
 private:
     enum class Mode { Plain, Grouped, Tiles };
     enum class Part { None, HeaderCell, HeaderEdge, Row, AlbumColumn, Link, Empty, Track, Thumb };
-    enum class Drag { None, Thumb, Resize, PendingMove, Move };
+    enum class Drag { None, Thumb, Resize, PendingMove, Move, Marquee };
     struct Line {
         enum Kind : uint8_t { GroupHeader, Item, Filler } kind = Item;
         size_t row = SIZE_MAX;  // Item
@@ -69,7 +69,15 @@ private:
     void SaveColumnLayout() const;
     void ShowHeaderMenu(HWND owner, POINT pt, size_t displayCol);
     void SortBy(size_t srcColumn);
+    // Columns have their own widths (none stretches to the window); x is in content DIP,
+    // from the list's left edge before horizontal scrolling.
     std::vector<Col> Columns(float total) const;
+    float ContentWidth() const;  // right end of the last column (DIP)
+    float ScrollX() const { return m_mode == Mode::Tiles ? 0.0f : m_scrollX; }
+    void ScrollXTo(float x);
+    // A point in content coordinates: x with the horizontal scroll, y from the first line.
+    D2D1_POINT_2F ContentPoint(POINT pt) const;
+    void UpdateMarquee();
     bool AlbumColumn() const { return m_mode == Mode::Grouped && m_groupArt; }
     float ArtSize() const;
     float AlbumTextLeft(float albumLeft) const;
@@ -130,6 +138,9 @@ private:
     size_t m_dragCol = 0;   // display index
     int m_dragStartX = 0, m_dragX = 0;
     float m_dragStartW = 0;
+    float m_scrollX = 0;  // DIP, horizontal scroll of the detail layouts
+    D2D1_POINT_2F m_marqueeFrom{}, m_marqueeTo{};  // content coordinates
+    std::vector<size_t> m_marqueeBase;              // selection kept with Ctrl
     int m_artToken = 0;
 };
 

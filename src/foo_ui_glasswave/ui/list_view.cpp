@@ -20,6 +20,7 @@ constexpr float kScrollWidth = 14.0f;
 constexpr float kGutter = 18.0f;  // playing marker column
 constexpr float kCellPad = 6.0f;
 constexpr float kMinColumn = 24.0f;
+constexpr float kFlexWidth = 260.0f;  // default width of a source's "flexible" (title) column
 constexpr float kEdgeGrip = 4.0f;     // header edge hit width on each side (DIP)
 constexpr float kMoveThreshold = 6.0f;
 constexpr size_t kGroupMinLines = 4;  // the album column needs four lines (cover + 4 text lines)
@@ -194,30 +195,48 @@ size_t ListView::MaxTop() const {
     return n > v ? n - v : 0;
 }
 
-std::vector<ListView::Col> ListView::Columns(float total) const {
+std::vector<ListView::Col> ListView::Columns(float /*total*/) const {
     std::vector<Col> out;
     if (!m_source) return out;
     const auto& cols = m_source->Columns();
+    // Every column keeps its own width, the "flexible" one included (it only gets a wider
+    // default), so the last column ends where the user put it, not at the window edge.
     auto widthOf = [&](size_t i) {
-        return i < m_widths.size() && m_widths[i] > 0 ? m_widths[i] : (cols[i].flex ? -1.0f : cols[i].width);
+        return i < m_widths.size() && m_widths[i] > 0 ? m_widths[i] : (cols[i].flex ? kFlexWidth : cols[i].width);
     };
     auto shown = [&](size_t i) { return !(i < m_hidden.size() ? m_hidden[i] != 0 : cols[i].hidden); };
     // With the album column the playing-marker gutter sits after it, before the tracks.
     const bool album = AlbumColumn();
-    float fixed = kGutter;
-    for (size_t i = 0; i < cols.size(); ++i)
-        if (shown(i) && widthOf(i) > 0) fixed += widthOf(i);
-    const float flex = std::max(120.0f, total - fixed);
     float x = album ? 0.0f : kGutter;
     for (size_t d = 0; d < cols.size(); ++d) {
         const size_t src = d < m_order.size() ? m_order[d] : d;
         if (!shown(src)) continue;
-        const float w = widthOf(src) > 0 ? widthOf(src) : flex;
+        const float w = widthOf(src);
         out.push_back({src, x, w});
         x += w;
         if (album && out.size() == 1) x += kGutter;
     }
     return out;
+}
+
+float ListView::ContentWidth() const {
+    const auto cols = Columns(0);
+    return cols.empty() ? 0.0f : cols.back().x + cols.back().w;
+}
+
+void ListView::ScrollXTo(float x) {
+    const float max = std::max(0.0f, ContentWidth() + 4 - RowsWidth());
+    x = std::clamp(std::round(x * m_scale) / m_scale, 0.0f, max);
+    if (x == m_scrollX) return;
+    m_scrollX = x;
+    PaintHeader();
+    PaintRows();
+}
+
+D2D1_POINT_2F ListView::ContentPoint(POINT pt) const {
+    const RECT rr = RowsRect();
+    return {(pt.x - rr.left) / m_scale + ScrollX(),
+            (pt.y - rr.top) / m_scale + static_cast<float>(m_top) * (LineHeightPx() / m_scale)};
 }
 
 // ---- Data -----------------------------------------------------------------------------------
@@ -296,7 +315,10 @@ void ListView::SetSource(media::ListSource* source, bool resetScroll) {
     m_hotGroup = SIZE_MAX;
     m_hotLinkGroup = SIZE_MAX;
     m_anchor = source ? source->Focus() : SIZE_MAX;
-    if (resetScroll) m_top = 0;
+    if (resetScroll) {
+        m_top = 0;
+        m_scrollX = 0;
+    }
     BuildLines();
     PaintHeader();
     Refresh();
@@ -326,6 +348,7 @@ void ListView::SetFocused(bool focused) {
 void ListView::Refresh() {
     BuildLines();  // rows, groups or the view style may have changed
     m_top = std::min(m_top, MaxTop());
+    m_scrollX = std::clamp(m_scrollX, 0.0f, std::max(0.0f, ContentWidth() + 4 - RowsWidth()));
     if (m_source && m_hot != SIZE_MAX && m_hot >= m_source->Count()) m_hot = SIZE_MAX;
     m_hotGroup = SIZE_MAX;
     m_hotLinkGroup = SIZE_MAX;
@@ -374,7 +397,11 @@ void ListView::PaintHeader() {
         if (!m_source) return;
         const auto& srcCols = m_source->Columns();
         const auto cols = Columns(RowsWidth());
-        const float dragX = (m_dragX - m_bounds.left) / s;
+        // Cells in content coordinates, shifted by the horizontal scroll.
+        D2D1_MATRIX_3X2_F base;
+        dc->GetTransform(&base);
+        dc->SetTransform(D2D1::Matrix3x2F::Translation(-ScrollX(), 0) * base);
+        const float dragX = (m_dragX - m_bounds.left) / s + ScrollX();
         // One header cell (background, title, sort chevron) with its left edge at `x`.
         auto drawCell = [&](const Col& c, float x, int state) {
             if (art) cell(x, x + c.w, state);
@@ -427,6 +454,7 @@ void ListView::PaintHeader() {
             drawCell(c, x, 0);
             dc->PopLayer();
         }
+        dc->SetTransform(base);
     });
     PlaceVisual(m_header, 0, 0, static_cast<float>(w), static_cast<float>(h));
 }
@@ -453,6 +481,9 @@ void ListView::PaintRows() {
             Text(dc, m_source->EmptyText(), {20, 20, size.width - 20, 60}, kGreyInk, DWRITE_TEXT_ALIGNMENT_CENTER);
             return;
         }
+        D2D1_MATRIX_3X2_F base;
+        dc->GetTransform(&base);
+        dc->SetTransform(D2D1::Matrix3x2F::Translation(-ScrollX(), 0) * base);
         switch (m_mode) {
         case Mode::Grouped: PaintGrouped(dc, size); break;
         case Mode::Tiles: PaintTiles(dc); break;
@@ -469,6 +500,20 @@ void ListView::PaintRows() {
                 dc->FillRectangle({x - line, 0, x, size.height}, blue.get());
                 dc->FillRectangle({x - 2 * line, 0, x - line, size.height}, white.get());
             }
+        }
+        dc->SetTransform(base);
+        if (m_drag == Drag::Marquee) {
+            // Win7 rubber band: #3399FF border over a translucent fill.
+            const float lineH = LineHeightPx() / s, top = static_cast<float>(m_top) * lineH;
+            const float px = 1.0f / s;
+            auto snap = [&](float v) { return std::round(v * s) / s; };
+            const D2D1_RECT_F r{snap(std::min(m_marqueeFrom.x, m_marqueeTo.x) - ScrollX()),
+                                snap(std::min(m_marqueeFrom.y, m_marqueeTo.y) - top),
+                                snap(std::max(m_marqueeFrom.x, m_marqueeTo.x) - ScrollX()),
+                                snap(std::max(m_marqueeFrom.y, m_marqueeTo.y) - top)};
+            dc->FillRectangle(r, Brush(dc, 0x3399FF, 0.25f).get());
+            dc->DrawRectangle({r.left + px / 2, r.top + px / 2, r.right - px / 2, r.bottom - px / 2},
+                              Brush(dc, 0x3399FF).get(), px);
         }
     });
 }
@@ -500,15 +545,16 @@ void ListView::PaintPlain(ID2D1DeviceContext* dc, D2D1_SIZE_F size) {
     const size_t focus = m_source->Focus();
     const size_t visible = VisibleLines() + 1;
     const float rowH = RowHeightPx() / m_scale;  // whole device pixels, matches hit testing
+    const float right = ContentWidth();  // rows end with the last column
     for (size_t i = 0; i < visible && m_top + i < n; ++i) {
         const size_t row = m_top + i;
         const float y = i * rowH;
         const bool sel = m_source->IsSelected(row), hot = row == m_hot;
         const wp::RowState st = sel ? (hot ? wp::RowState::SelectedHot : wp::RowState::Selected)
                                     : (hot ? wp::RowState::Hot : wp::RowState::Normal);
-        wp::RowPlate(dc, {2, y + 1, size.width - 2, y + rowH}, st, m_focused);
+        wp::RowPlate(dc, {2, y + 1, right - 2, y + rowH}, st, m_focused);
         if (m_focused && row == focus && !sel)
-            dc->DrawRoundedRectangle({{2.5f, y + 1.5f, size.width - 2.5f, y + rowH - 0.5f}, 2, 2},
+            dc->DrawRoundedRectangle({{2.5f, y + 1.5f, right - 2.5f, y + rowH - 0.5f}, 2, 2},
                                      Brush(dc, 0x7DA2CE, 0.6f).get(), 1.0f);
         PaintCells(dc, row, y, rowH, cols);
     }
@@ -522,6 +568,10 @@ void ListView::PaintGrouped(ID2D1DeviceContext* dc, D2D1_SIZE_F size) {
     const size_t focus = m_source->Focus();
     const size_t visible = VisibleLines() + 1;
     const float rowH = RowHeightPx() / m_scale;
+    const float right = ContentWidth();              // rows end with the last column
+    const float viewRight = ScrollX() + size.width;  // group rules run to the view's edge
+    // WMP 12: the group title starts a little inside the album column (7 px at 150 %).
+    const float titleX = art ? albumL + 8 : kGutter + 2;
 
     std::vector<size_t> shownGroups;
     for (size_t i = 0; i < visible && m_top + i < m_lines.size(); ++i) {
@@ -531,15 +581,15 @@ void ListView::PaintGrouped(ID2D1DeviceContext* dc, D2D1_SIZE_F size) {
         if (line.kind == Line::GroupHeader) {
             // Album artist in blue, followed by a hairline to the right edge.
             const auto& g = groups[line.group];
-            auto layout = MakeText(g.header, 12.0f, DWRITE_FONT_WEIGHT_NORMAL, size.width - kGutter - 20, rowH);
-            dc->DrawTextLayout({kGutter + 2, y + 1}, layout.get(), Brush(dc, kGroupInk).get());
+            auto layout = MakeText(g.header, 12.0f, DWRITE_FONT_WEIGHT_NORMAL, std::max(40.0f, viewRight - titleX - 20), rowH);
+            dc->DrawTextLayout({titleX, y + 1}, layout.get(), Brush(dc, kGroupInk).get());
             DWRITE_TEXT_METRICS tm{};
             layout->GetMetrics(&tm);
-            const float lx = kGutter + 2 + tm.widthIncludingTrailingWhitespace + 6;
+            const float lx = titleX + tm.widthIncludingTrailingWhitespace + 6;
             const float line1 = std::floor(m_scale) / m_scale;
             const float ly = std::round((y + rowH / 2 + 1) * m_scale) / m_scale;
-            if (lx < size.width - 6)
-                dc->FillRectangle({lx, ly, size.width - 6, ly + line1}, Brush(dc, kGroupRule).get());
+            if (lx < viewRight - 6)
+                dc->FillRectangle({lx, ly, viewRight - 6, ly + line1}, Brush(dc, kGroupRule).get());
             continue;
         }
         if (line.kind != Line::Item) continue;
@@ -547,9 +597,9 @@ void ListView::PaintGrouped(ID2D1DeviceContext* dc, D2D1_SIZE_F size) {
         const bool sel = m_source->IsSelected(row), hot = row == m_hot;
         const wp::RowState st = sel ? (hot ? wp::RowState::SelectedHot : wp::RowState::Selected)
                                     : (hot ? wp::RowState::Hot : wp::RowState::Normal);
-        wp::RowPlate(dc, {albumR, y + 1, size.width - 2, y + rowH}, st, m_focused);
+        wp::RowPlate(dc, {albumR, y + 1, right - 2, y + rowH}, st, m_focused);
         if (m_focused && row == focus && !sel)
-            dc->DrawRoundedRectangle({{albumR + 0.5f, y + 1.5f, size.width - 2.5f, y + rowH - 0.5f}, 2, 2},
+            dc->DrawRoundedRectangle({{albumR + 0.5f, y + 1.5f, right - 2.5f, y + rowH - 0.5f}, 2, 2},
                                      Brush(dc, 0x7DA2CE, 0.6f).get(), 1.0f);
         PaintCells(dc, row, y, rowH, cols);
     }
@@ -560,7 +610,9 @@ void ListView::PaintGrouped(ID2D1DeviceContext* dc, D2D1_SIZE_F size) {
     for (size_t gi : shownGroups) {
         const auto& g = groups[gi];
         const float top = (static_cast<float>(m_groupLine[gi]) + 1 - static_cast<float>(m_top)) * rowH;
-        const size_t lines = std::max(g.count, kGroupMinLines);
+        // Only the cover and its four lines belong to the album cell; below them (long
+        // albums) the column is empty space, e.g. to start a rubber band from.
+        const size_t lines = kGroupMinLines;
         bool allSelected = g.count > 0;
         for (size_t k = 0; k < g.count && allSelected; ++k) allSelected = m_source->IsSelected(g.first + k);
         if (allSelected || gi == m_hotGroup) {
@@ -682,7 +734,7 @@ void ListView::PaintScrollBar() {
 ListView::Hit ListView::HitAt(POINT pt) const {
     Hit hit;
     if (!PtInRect(&m_bounds, pt)) return hit;
-    const float x = (pt.x - m_bounds.left) / m_scale;
+    const float x = (pt.x - m_bounds.left) / m_scale + ScrollX();  // content x
     if (pt.y < m_bounds.top + HeaderHeightPx()) {
         hit.part = Part::HeaderCell;
         hit.col = SIZE_MAX;
@@ -725,10 +777,13 @@ ListView::Hit ListView::HitAt(POINT pt) const {
     case Mode::Grouped: {
         if (line >= m_lines.size()) return hit;
         const Line& l = m_lines[line];
+        float rowLeft = 0;
         if (AlbumColumn()) {
             const auto cols = Columns(RowsWidth());
             const float albumL = cols[0].x, albumR = cols[0].x + cols[0].w;
+            rowLeft = albumR;
             if (l.kind != Line::GroupHeader && x >= albumL && x < albumR) {
+                if (l.sub >= kGroupMinLines) return hit;  // below the cover and its lines: empty
                 hit.part = Part::AlbumColumn;
                 hit.group = l.group;
                 const auto& g = (*m_source->Groups())[l.group];
@@ -742,13 +797,13 @@ ListView::Hit ListView::HitAt(POINT pt) const {
                 return hit;
             }
         }
-        if (l.kind != Line::Item) return hit;
+        if (l.kind != Line::Item || x < rowLeft || x >= ContentWidth()) return hit;
         hit.part = Part::Row;
         hit.row = l.row;
         return hit;
     }
     default:
-        if (line < m_source->Count()) {
+        if (line < m_source->Count() && x < ContentWidth()) {  // rows end with the last column
             hit.part = Part::Row;
             hit.row = line;
         }
@@ -797,6 +852,17 @@ void ListView::OnMouseMove(POINT pt) {
         m_dragX = pt.x;
         PaintHeader();
         return;
+    case Drag::Marquee: {
+        // Scroll when dragged past the top or bottom (one line per mouse move, no timer).
+        const RECT rr = RowsRect();
+        if (pt.y < rr.top && m_top > 0) ScrollTo(m_top - 1);
+        else if (pt.y >= rr.bottom) ScrollTo(m_top + 1);
+        pt.y = std::clamp<LONG>(pt.y, rr.top, rr.bottom - 1);
+        m_marqueeTo = ContentPoint(pt);
+        UpdateMarquee();
+        PaintRows();
+        return;
+    }
     default:
         break;
     }
@@ -889,6 +955,19 @@ void ListView::OnLButtonDown(POINT pt, bool ctrl, bool shift) {
     case Part::Link:
         if (onLink) onLink(hit.group, hit.line);
         break;
+    case Part::Empty: {
+        // Empty space: start a rubber band. Without Ctrl the click clears the selection.
+        if (!m_source || m_source->Count() == 0) break;
+        m_drag = Drag::Marquee;
+        m_marqueeFrom = m_marqueeTo = ContentPoint(pt);
+        m_marqueeBase.clear();
+        if (ctrl)
+            for (size_t r = 0, n = m_source->Count(); r < n; ++r)
+                if (m_source->IsSelected(r)) m_marqueeBase.push_back(r);
+        m_source->SetSelection(m_marqueeBase);
+        PaintRows();
+        break;
+    }
     case Part::AlbumColumn: {  // WMP: clicking the album cell selects the whole album
         const auto& g = (*m_source->Groups())[hit.group];
         if (g.count == 0) break;
@@ -908,6 +987,7 @@ void ListView::OnLButtonUp(POINT pt) {
     m_drag = Drag::None;
     switch (drag) {
     case Drag::Thumb: PaintScrollBar(); break;
+    case Drag::Marquee: PaintRows(); break;
     case Drag::Resize: SaveColumnLayout(); break;
     case Drag::PendingMove: {  // a click on a header sorts by that column
         const auto cols = Columns(RowsWidth());
@@ -917,7 +997,7 @@ void ListView::OnLButtonUp(POINT pt) {
     }
     case Drag::Move: {
         const auto cols = Columns(RowsWidth());
-        const float x = (pt.x - m_bounds.left) / m_scale;
+        const float x = (pt.x - m_bounds.left) / m_scale + ScrollX();
         size_t target = cols.size();
         for (size_t d = 0; d < cols.size(); ++d)
             if (x < cols[d].x + cols[d].w / 2) {
@@ -1043,7 +1123,54 @@ void ListView::ShowHeaderMenu(HWND owner, POINT pt, size_t displayCol) {
     }
 }
 
-void ListView::OnWheel(int delta) {
+void ListView::UpdateMarquee() {
+    if (!m_source) return;
+    const float x0 = std::min(m_marqueeFrom.x, m_marqueeTo.x), x1 = std::max(m_marqueeFrom.x, m_marqueeTo.x);
+    const float y0 = std::min(m_marqueeFrom.y, m_marqueeTo.y), y1 = std::max(m_marqueeFrom.y, m_marqueeTo.y);
+    const float lineH = LineHeightPx() / m_scale;
+    // Lines the band touches vertically, then whatever of each line it touches horizontally.
+    const size_t first = static_cast<size_t>(std::max(0.0f, y0 / lineH));
+    const size_t last = static_cast<size_t>(std::max(0.0f, y1 / lineH));
+    std::vector<size_t> rows = m_marqueeBase;
+    const float right = ContentWidth();
+    switch (m_mode) {
+    case Mode::Tiles: {
+        const size_t cols = TileColumns();
+        const float tw = TileSize().width;
+        for (size_t line = first; line <= last; ++line)
+            for (size_t c = 0; c < cols; ++c) {
+                const float tx0 = kTilePad + c * tw, tx1 = tx0 + tw;
+                const size_t idx = line * cols + c;
+                if (idx < m_source->Count() && x1 >= tx0 && x0 < tx1) rows.push_back(idx);
+            }
+        break;
+    }
+    case Mode::Grouped: {
+        float left = 0;
+        if (AlbumColumn()) {
+            const auto cols = Columns(0);
+            left = cols[0].x + cols[0].w;
+        }
+        if (x1 < left || x0 >= right) break;
+        for (size_t line = first; line <= last && line < m_lines.size(); ++line)
+            if (m_lines[line].kind == Line::Item) rows.push_back(m_lines[line].row);
+        break;
+    }
+    default:
+        if (x1 < 0 || x0 >= right) break;
+        for (size_t r = first; r <= last && r < m_source->Count(); ++r) rows.push_back(r);
+        break;
+    }
+    std::sort(rows.begin(), rows.end());
+    rows.erase(std::unique(rows.begin(), rows.end()), rows.end());
+    m_source->SetSelection(rows);
+}
+
+void ListView::OnWheel(int delta, bool horizontal) {
+    if (horizontal) {  // Shift+wheel or a tilt wheel: sideways, no scrollbar shown
+        if (m_mode != Mode::Tiles) ScrollXTo(m_scrollX - delta / static_cast<float>(WHEEL_DELTA) * 48.0f);
+        return;
+    }
     const int step = m_mode == Mode::Tiles ? 1 : 3;
     const int lines = step * (-delta / WHEEL_DELTA);
     if (lines < 0)

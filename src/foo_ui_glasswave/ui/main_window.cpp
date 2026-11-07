@@ -1771,7 +1771,7 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
         ScreenToClient(hwnd, &pt);
         const int delta = GET_WHEEL_DELTA_WPARAM(wp);
         if (m_list->HitTest(pt)) {
-            m_list->OnWheel(delta);
+            m_list->OnWheel(delta, (GET_KEYSTATE_WPARAM(wp) & MK_SHIFT) != 0);
             m_list->OnMouseMove(pt);
             return 0;
         }
@@ -1783,6 +1783,15 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
             auto pc = playback_control::get();
             if (delta > 0) pc->volume_up(); else pc->volume_down();
             return 0;
+        }
+        break;
+    }
+    case WM_MOUSEHWHEEL: {  // tilt wheel / touchpad sideways: the list scrolls horizontally
+        POINT pt{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
+        ScreenToClient(hwnd, &pt);
+        if (m_list->HitTest(pt)) {
+            m_list->OnWheel(-GET_WHEEL_DELTA_WPARAM(wp), true);
+            return TRUE;
         }
         break;
     }

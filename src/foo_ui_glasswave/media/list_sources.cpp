@@ -212,6 +212,15 @@ void PlaylistSource::SelectRange(size_t a, size_t b, bool keepOthers) {
     pm->playlist_set_selection(m_playlist, affected, state);
 }
 
+void PlaylistSource::SetSelection(const std::vector<size_t>& rows) {
+    auto pm = playlist_manager::get();
+    const t_size n = pm->playlist_get_item_count(m_playlist);
+    pfc::bit_array_bittable state(n);
+    for (size_t r : rows)
+        if (r < m_rows.size()) state.set(m_rows[r], true);
+    pm->playlist_set_selection(m_playlist, pfc::bit_array_true(), state);
+}
+
 void PlaylistSource::SelectAll() {
     auto pm = playlist_manager::get();
     const t_size n = pm->playlist_get_item_count(m_playlist);
@@ -405,6 +414,12 @@ void TrackSource::SelectAll() {
     for (size_t r : m_rows) m_selected[r] = 1;
 }
 
+void TrackSource::SetSelection(const std::vector<size_t>& rows) {
+    std::fill(m_selected.begin(), m_selected.end(), uint8_t{0});
+    for (size_t r : rows)
+        if (r < m_rows.size()) m_selected[m_rows[r]] = 1;
+}
+
 void TrackSource::Activate(size_t row) {
     metadb_handle_list items;
     for (size_t r : m_rows) items.add_item(m_model.Tracks()[m_all[r]].handle);
@@ -552,6 +567,12 @@ void GroupSource::SelectRange(size_t a, size_t b, bool keepOthers) {
 
 void GroupSource::SelectAll() {
     for (size_t r : m_rows) m_selected[r] = 1;
+}
+
+void GroupSource::SetSelection(const std::vector<size_t>& rows) {
+    std::fill(m_selected.begin(), m_selected.end(), uint8_t{0});
+    for (size_t r : rows)
+        if (r < m_rows.size()) m_selected[m_rows[r]] = 1;
 }
 
 void GroupSource::Activate(size_t row) {
