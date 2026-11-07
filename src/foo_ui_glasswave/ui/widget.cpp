@@ -20,6 +20,11 @@ Widget::Widget(int id, Painter painter, Options options)
         m_halo.Opacity(0.0f);
         children.InsertAtTop(m_halo);
     }
+    if (m_options.glow) {
+        m_glow = comp.CreateSpriteVisual();
+        m_glow.Opacity(0.0f);
+        children.InsertAtTop(m_glow);
+    }
     m_normal = comp.CreateSpriteVisual();
     children.InsertAtTop(m_normal);
     if (m_options.inactiveLayer) {
@@ -57,6 +62,15 @@ void Widget::Repaint() {
     if (m_inactiveLayer) layers.emplace_back(m_inactiveLayer, Layer::Inactive);
     for (auto& [visual, layer] : layers)
         host.Repaint(visual, w, h, m_scale, [&](ID2D1DeviceContext* dc) { m_painter(dc, dip, layer); });
+    if (m_glow) {
+        const auto& o = m_options.glowOutset;
+        const int l = static_cast<int>(std::lround(o.left * m_scale)), t = static_cast<int>(std::lround(o.top * m_scale));
+        const int gw = w + l + static_cast<int>(std::lround(o.right * m_scale));
+        const int gh = h + t + static_cast<int>(std::lround(o.bottom * m_scale));
+        host.Repaint(m_glow, gw, gh, m_scale,
+                     [&](ID2D1DeviceContext* dc) { m_options.glow(dc, D2D1::SizeF(gw / m_scale, gh / m_scale)); });
+        m_glow.Offset(float3{static_cast<float>(-l), static_cast<float>(-t), 0});
+    }
     if (m_halo) {
         const int hs = static_cast<int>(std::lround(std::max(w, h) * m_options.haloFactor));
         host.Repaint(m_halo, hs, hs, m_scale, [&](ID2D1DeviceContext* dc) { m_options.halo(dc, hs / m_scale); });
@@ -78,6 +92,7 @@ void Widget::SetHover(bool hover) {
     m_hover = hover;
     auto& host = gfx::CompositionHost::Get();
     host.AnimateOpacity(m_hoverLayer, hover ? 1.0f : 0.0f, hover ? m::kHoverInMs : m::kHoverOutMs);
+    if (m_glow) host.AnimateOpacity(m_glow, hover ? 1.0f : 0.0f, hover ? m::kHoverInMs : m::kHoverOutMs);
     if (m_halo) {
         // WMC-style breathing halo: loops only while hovered, fades out after; idle = no frames
         if (!m_options.haloPulse)

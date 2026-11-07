@@ -179,9 +179,7 @@ metadb_handle_list PlaylistSource::SelectedItems() const {
 
 TrackSource::TrackSource(const LibraryModel& model, std::vector<size_t> tracks, std::wstring emptyText)
     : m_model(model), m_all(std::move(tracks)), m_emptyText(std::move(emptyText)) {
-    // WMP 12 music details view: album column, then the track columns.
-    m_columns = {{L"Album", 200},          {L"#", 34, false, true},         {L"Title", 0, true},
-                 {L"Length", 56, false, true}, {L"Contributing artist", 190}, {L"Genre", 110}};
+    SetViewStyle(ViewStyle::Tiles);
     // Album by album in "All music" order; tracks keep their library order inside an album.
     std::stable_sort(m_all.begin(), m_all.end(), [&](size_t a, size_t b) {
         return m_model.AlbumRank(m_model.Tracks()[a].albumIndex) < m_model.AlbumRank(m_model.Tracks()[b].albumIndex);
@@ -190,15 +188,36 @@ TrackSource::TrackSource(const LibraryModel& model, std::vector<size_t> tracks, 
     SetFilter({});
 }
 
+namespace {
+enum Field { kAlbumColumn, kNumber, kTitle, kLength, kArtist, kAlbum, kGenre, kYear };
+}
+
+void TrackSource::SetViewStyle(ViewStyle style) {
+    m_style = style == ViewStyle::Icons ? ViewStyle::Tiles : style;
+    // WMP 12 music views: "Expanded tile" has the album column (cover and album details),
+    // "Details" lists everything in columns under the album headers.
+    if (m_style == ViewStyle::Tiles) {
+        m_columns = {{L"Album", 200},          {L"#", 34, false, true},         {L"Title", 0, true},
+                     {L"Length", 56, false, true}, {L"Contributing artist", 190}, {L"Genre", 110}};
+        m_fields = {kAlbumColumn, kNumber, kTitle, kLength, kArtist, kGenre};
+    } else {
+        m_columns = {{L"#", 34, false, true}, {L"Title", 0, true},  {L"Length", 56, false, true},
+                     {L"Contributing artist", 170}, {L"Album", 170}, {L"Genre", 110}, {L"Release year", 80}};
+        m_fields = {kNumber, kTitle, kLength, kArtist, kAlbum, kGenre, kYear};
+    }
+}
+
 std::wstring TrackSource::Cell(size_t row, size_t column) const {
     const Track& t = m_model.Tracks()[m_all[m_rows[row]]];
-    switch (column) {
-    case 0: return {};  // drawn by the list as the album column
-    case 1: return t.number;
-    case 2: return t.title;
-    case 3: return t.length;
-    case 4: return t.artist;
-    default: return t.genre;
+    switch (column < m_fields.size() ? m_fields[column] : -1) {
+    case kNumber: return t.number;
+    case kTitle: return t.title;
+    case kLength: return t.length;
+    case kArtist: return t.artist;
+    case kAlbum: return t.album;
+    case kGenre: return t.genre;
+    case kYear: return t.year;
+    default: return {};  // the album column is drawn by the list
     }
 }
 
@@ -263,6 +282,8 @@ void TrackSource::SetFilter(std::wstring_view filterLower) {
         const Group* album = t.albumIndex < albums.size() ? &albums[t.albumIndex] : nullptr;
         g.header = album ? album->secondary : t.albumArtist;
         g.lines = {t.album, album ? album->secondary : t.albumArtist, t.genre, album ? album->year : t.year};
+        g.linkKeys = {album ? album->key : std::wstring(), t.hasAlbumArtist ? t.albumArtist : std::wstring(),
+                      t.genre, {}};
         m_groups.push_back(std::move(g));
     }
 }
@@ -273,14 +294,17 @@ GroupSource::GroupSource(const LibraryModel& model, GroupKind kind, DrillDown on
     : m_model(model), m_kind(kind), m_onOpen(std::move(onOpen)) {
     switch (kind) {
     case GroupKind::Album:
-        m_columns = {{L"Album", 160}, {L"Album artist", 160}, {L"Genre", 100}, {L"Release year", 90},
-                     {L"Count", 70}, {L"", 0, true}};
+        m_columns = {{L"Album", 0, true}, {L"Album artist", 180}, {L"Genre", 110}, {L"Release year", 90},
+                     {L"Count", 60, false, true}, {L"Length", 70, false, true}};
+        m_style = ViewStyle::Icons;
         break;
     case GroupKind::Artist:
-        m_columns = {{L"Album artist", 160}, {L"Count", 80}, {L"Length", 80}, {L"", 0, true}};
+        m_columns = {{L"Album artist", 0, true}, {L"Count", 60, false, true}, {L"Length", 70, false, true}};
+        m_style = ViewStyle::Tiles;  // WMP 12 opens artists as expanded tiles
         break;
     default:
-        m_columns = {{L"Genre", 160}, {L"Count", 80}, {L"", 0, true}};
+        m_columns = {{L"Genre", 0, true}, {L"Count", 60, false, true}, {L"Length", 70, false, true}};
+        m_style = ViewStyle::Tiles;
         break;
     }
     m_selected.assign(m_model.Groups(kind).size(), 0);
@@ -290,11 +314,13 @@ GroupSource::GroupSource(const LibraryModel& model, GroupKind kind, DrillDown on
 std::wstring GroupSource::Cell(size_t row, size_t column) const {
     const Group& g = At(row);
     if (column == 0) return g.name;
-    if (m_kind == GroupKind::Album) {
-        if (column == 1) return g.secondary;
-        if (column == 2) return g.year;
-    }
-    return std::to_wstring(g.tracks.size());
+    const size_t tail = m_columns.size() - column;  // Count and Length are the last two columns
+    if (tail == 2) return std::to_wstring(g.tracks.size());
+    if (tail == 1) return ui::FormatTime(g.seconds);
+    // Album: artist, genre, year
+    if (column == 1) return g.secondary;
+    if (column == 2) return g.tracks.empty() ? std::wstring() : m_model.Tracks()[g.tracks.front()].genre;
+    return g.year;
 }
 
 TileInfo GroupSource::Tile(size_t row) const {
@@ -304,12 +330,13 @@ TileInfo GroupSource::Tile(size_t row) const {
     const auto songs = g.tracks.size();
     const std::wstring count = std::to_wstring(songs) + (songs == 1 ? L" song" : L" songs");
     const long minutes = std::lround(g.seconds / 60.0);
-    switch (m_kind) {
-    case GroupKind::Album: info.lines = {g.name, g.secondary, {}}; break;
-    case GroupKind::Artist:
-        info.lines = {g.name, count, std::to_wstring(minutes) + (minutes == 1 ? L" minute" : L" minutes")};
-        break;
-    default: info.lines = {g.name, count, {}}; break;
+    const std::wstring length = std::to_wstring(minutes) + (minutes == 1 ? L" minute" : L" minutes");
+    if (m_style == ViewStyle::Icons) {  // cover above: two lines
+        info.lines = {g.name, m_kind == GroupKind::Album ? g.secondary : count, {}};
+    } else if (m_kind == GroupKind::Album) {  // cover beside: three lines
+        info.lines = {g.name, g.secondary, g.year};
+    } else {
+        info.lines = {g.name, count, length};
     }
     return info;
 }

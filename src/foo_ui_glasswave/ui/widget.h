@@ -20,6 +20,10 @@ public:
         float haloFactor = 0.0f;     // > 0: add a halo layer of size * haloFactor
         bool haloPulse = true;       // breathe while hovered (WMC); false: plain fade (WMP)
         HaloPainter halo;
+        // Rectangular hover glow below the control, extending `glowOutset` (DIP: left, top,
+        // right, bottom) beyond it; painted with the glow's full size.
+        std::function<void(ID2D1DeviceContext*, D2D1_SIZE_F)> glow;
+        D2D1_RECT_F glowOutset{};
     };
 
     Widget(int id, Painter painter, Options options);
@@ -50,6 +54,7 @@ private:
 
     winrt::Windows::UI::Composition::ContainerVisual m_root{nullptr};
     winrt::Windows::UI::Composition::SpriteVisual m_halo{nullptr};
+    winrt::Windows::UI::Composition::SpriteVisual m_glow{nullptr};
     winrt::Windows::UI::Composition::SpriteVisual m_normal{nullptr};
     winrt::Windows::UI::Composition::SpriteVisual m_inactiveLayer{nullptr};
     winrt::Windows::UI::Composition::SpriteVisual m_hoverLayer{nullptr};

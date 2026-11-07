@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "ui/main_window.h"
+#include "aero/aero_atlas.h"
 #include "aero/aero_metrics.h"
 #include "aero/aero_painter.h"
 #include "gfx/composition_host.h"
@@ -33,13 +34,24 @@ constexpr float kNavPaneWidth = 190.0f;
 enum WidgetId {
     kCapMin = 1, kCapMax, kCapClose,
     kBack, kForward, kOrganize, kAddFiles, kAddFolder, kNewPlaylist,
-    kSeek, kShuffle, kRepeat, kStop, kPrev, kNext, kPlay, kMute, kVolume,
+    kSeek, kShuffle, kRepeat, kStop, kPrev, kNext, kPlay, kMute, kVolume, kViewOptions,
 };
 bool IsCaptionWidget(int id) { return id >= kCapMin && id <= kCapClose; }
 
 // {0C9E7B42-1F3A-4D5E-8B6C-7A2F9E1D4C83}
 cfg_var_modern::cfg_struct_t<WINDOWPLACEMENT> cfg_placement(
     {0x0c9e7b42, 0x1f3a, 0x4d5e, {0x8b, 0x6c, 0x7a, 0x2f, 0x9e, 0x1d, 0x4c, 0x83}});
+
+// WMP view option chosen per library view (media::ViewStyle values).
+// {6A1F3C58-2B7E-4D90-8C15-3E9A7B2D4F61} .. {6A1F3C5B-...}
+cfg_var_modern::cfg_int cfg_viewSongs({0x6a1f3c58, 0x2b7e, 0x4d90, {0x8c, 0x15, 0x3e, 0x9a, 0x7b, 0x2d, 0x4f, 0x61}},
+                                      static_cast<int>(media::ViewStyle::Tiles));
+cfg_var_modern::cfg_int cfg_viewAlbums({0x6a1f3c59, 0x2b7e, 0x4d90, {0x8c, 0x15, 0x3e, 0x9a, 0x7b, 0x2d, 0x4f, 0x61}},
+                                       static_cast<int>(media::ViewStyle::Icons));
+cfg_var_modern::cfg_int cfg_viewArtists({0x6a1f3c5a, 0x2b7e, 0x4d90, {0x8c, 0x15, 0x3e, 0x9a, 0x7b, 0x2d, 0x4f, 0x61}},
+                                        static_cast<int>(media::ViewStyle::Tiles));
+cfg_var_modern::cfg_int cfg_viewGenres({0x6a1f3c5b, 0x2b7e, 0x4d90, {0x8c, 0x15, 0x3e, 0x9a, 0x7b, 0x2d, 0x4f, 0x61}},
+                                       static_cast<int>(media::ViewStyle::Tiles));
 
 D2D1_COLOR_F Hex(uint32_t rgb, float a = 1.0f) {
     return D2D1::ColorF(((rgb >> 16) & 0xFF) / 255.0f, ((rgb >> 8) & 0xFF) / 255.0f, (rgb & 0xFF) / 255.0f, a);
@@ -300,7 +312,7 @@ void MainWindow::InitComposition() {
     m_clipGeometry = comp.CreateRoundedRectangleGeometry();
     m_root.Clip(comp.CreateGeometricClip(m_clipGeometry));
 
-    m_glass = std::make_unique<aero::GlassMaterial>(aero::kWin7Sky);
+    m_glass = std::make_unique<aero::GlassMaterial>(aero::kWin7Sky, aero::atlas::Available());
     auto children = m_root.Children();
     children.InsertAtTop(m_glass->Root());
 
@@ -317,11 +329,13 @@ void MainWindow::InitComposition() {
     for (const auto& v : {m_capsule, m_cluster, m_divider, m_clientGlow, m_title, m_nowPlaying, m_breadcrumb})
         children.InsertAtTop(v);
     m_win7Art = wt::Available();
+    m_aeroArt = aero::atlas::Available();
     m_divider.IsVisible(!m_win7Art);  // part of the original capsule bitmap
     m_cluster.IsVisible(m_win7Art);
 
     m_nav = std::make_unique<NavPane>(m_contentLayer);
     m_list = std::make_unique<ListView>(m_contentLayer);
+    m_list->onLink = [this](size_t group, size_t line) { OnAlbumLink(group, line); };
     m_search = std::make_unique<SearchBox>(m_contentLayer);
     m_search->onChange = [this](const std::wstring& text) {
         m_filter = media::Lower(text);
@@ -341,19 +355,30 @@ void MainWindow::CreateWidgets() {
     };
 
     // Caption button cluster
-    Widget::Options caption;
-    caption.inactiveLayer = true;
-    add(kCapMin, [](auto* dc, D2D1_SIZE_F s, Layer l) {
-        paint::CaptionButton(dc, s, paint::CaptionGlyph::Minimize, l, true, false);
-    }, caption)->onClick = [this] { ShowWindow(m_hwnd, SW_MINIMIZE); };
-    add(kCapMax, [this](auto* dc, D2D1_SIZE_F s, Layer l) {
-        paint::CaptionButton(dc, s,
-                             IsWindowMaximized() ? paint::CaptionGlyph::Restore : paint::CaptionGlyph::Maximize, l,
-                             false, false);
-    }, caption)->onClick = [this] { ShowWindow(m_hwnd, IsWindowMaximized() ? SW_RESTORE : SW_MAXIMIZE); };
-    add(kCapClose, [](auto* dc, D2D1_SIZE_F s, Layer l) {
-        paint::CaptionButton(dc, s, paint::CaptionGlyph::Close, l, false, true);
-    }, caption)->onClick = [this] { PostMessageW(m_hwnd, WM_SYSCOMMAND, SC_CLOSE, 0); };
+    // Caption button cluster: Win7's own DWM images when aero.msstyles is present.
+    const bool dwmArt = m_aeroArt;
+    auto captionOptions = [&](bool close) {
+        Widget::Options o;
+        o.inactiveLayer = true;
+        if (dwmArt) {
+            o.glow = [close](ID2D1DeviceContext* dc, D2D1_SIZE_F s) { aero::atlas::CaptionGlow(dc, s, close); };
+            o.glowOutset = aero::atlas::GlowOutset(close);
+        }
+        return o;
+    };
+    add(kCapMin, [dwmArt](auto* dc, D2D1_SIZE_F s, Layer l) {
+        if (dwmArt) aero::atlas::CaptionButton(dc, s, aero::atlas::Button::Minimize, paint::CaptionGlyph::Minimize, l);
+        else paint::CaptionButton(dc, s, paint::CaptionGlyph::Minimize, l, true, false);
+    }, captionOptions(false))->onClick = [this] { ShowWindow(m_hwnd, SW_MINIMIZE); };
+    add(kCapMax, [this, dwmArt](auto* dc, D2D1_SIZE_F s, Layer l) {
+        const auto glyph = IsWindowMaximized() ? paint::CaptionGlyph::Restore : paint::CaptionGlyph::Maximize;
+        if (dwmArt) aero::atlas::CaptionButton(dc, s, aero::atlas::Button::Maximize, glyph, l);
+        else paint::CaptionButton(dc, s, glyph, l, false, false);
+    }, captionOptions(false))->onClick = [this] { ShowWindow(m_hwnd, IsWindowMaximized() ? SW_RESTORE : SW_MAXIMIZE); };
+    add(kCapClose, [dwmArt](auto* dc, D2D1_SIZE_F s, Layer l) {
+        if (dwmArt) aero::atlas::CaptionButton(dc, s, aero::atlas::Button::Close, paint::CaptionGlyph::Close, l);
+        else paint::CaptionButton(dc, s, paint::CaptionGlyph::Close, l, false, true);
+    }, captionOptions(true))->onClick = [this] { PostMessageW(m_hwnd, WM_SYSCOMMAND, SC_CLOSE, 0); };
 
     // Navigation bar
     Widget::Options round;
@@ -375,6 +400,10 @@ void MainWindow::CreateWidgets() {
         ->onClick = [] { standard_commands::main_add_files(); };
     add(kAddFolder, [](auto* dc, D2D1_SIZE_F s, Layer l) { wp::CommandButton(dc, s, l, L"Add folder", false); }, {})
         ->onClick = [] { standard_commands::main_add_directory(); };
+    add(kViewOptions, [this](auto* dc, D2D1_SIZE_F s, Layer l) {
+        wp::CommandButton(dc, s, l, L"", false);
+        wp::ViewOptionsGlyph(dc, s, m_source ? m_source->GetViewStyle() : media::ViewStyle::Details);
+    }, {})->onClick = [this] { ShowViewMenu(); };
     add(kNewPlaylist, [](auto* dc, D2D1_SIZE_F s, Layer l) { wp::CommandButton(dc, s, l, L"Create playlist", false); }, {})
         ->onClick = [this] {
               auto pm = playlist_manager::get();
@@ -523,6 +552,11 @@ void MainWindow::UpdateLayout() {
     L.addFolder = button(76);
     L.newPlaylist = button(100);
     L.search = {L.client.right - PxI(8) - PxI(230), cbcy - PxI(11), L.client.right - PxI(8), cbcy + PxI(11)};
+    // View options (WMP: icon / expanded tile / details) left of the search box, library only.
+    if (m_source && ViewStyles() > 1)
+        L.viewOptions = {L.search.left - PxI(8) - PxI(38), cbcy - PxI(11), L.search.left - PxI(8), cbcy + PxI(11)};
+    else
+        L.viewOptions = {};
 
     // Content: navigation pane + list
     L.navPane = {L.content.left, L.content.top, L.content.left + PxI(kNavPaneWidth), L.content.bottom};
@@ -611,6 +645,7 @@ void MainWindow::UpdateLayout() {
         case kAddFiles: r = &L.addFiles; break;
         case kAddFolder: r = &L.addFolder; break;
         case kNewPlaylist: r = &L.newPlaylist; break;
+        case kViewOptions: r = &L.viewOptions; break;
         case kSeek: r = &L.seek; break;
         case kShuffle: r = &L.shuffle; break;
         case kRepeat: r = &L.repeat; break;
@@ -628,6 +663,7 @@ void MainWindow::UpdateLayout() {
 
 void MainWindow::RepaintScaleDependent() {
     const float s = m_scale;
+    m_glass->SetScale(s);
     const int line = LinePx();
 
     const int frameSrc = PxI(32);
@@ -843,6 +879,8 @@ void MainWindow::Navigate(const View& requested, bool push) {
             m_search->onChange = std::move(keep);
         }
     }
+    if (auto* style = ViewStyleSetting(static_cast<int>(view.kind)); style && source->SupportsViewStyle(static_cast<media::ViewStyle>(style->get())))
+        source->SetViewStyle(static_cast<media::ViewStyle>(style->get()));
     if (!m_filter.empty()) source->SetFilter(m_filter);
     m_source = std::move(source);
     m_list->SetSource(m_source.get(), !sameView);
@@ -858,9 +896,65 @@ void MainWindow::Navigate(const View& requested, bool push) {
         m_history.push_back(view);
         m_historyPos = 0;
     }
-    for (int id : {kBack, kForward})
+    for (int id : {kBack, kForward, kViewOptions})
         if (auto* w = WidgetById(id)) w->Invalidate();
-    RepaintBreadcrumb();
+    RepaintBreadcrumb();  // also re-applies the layout (view options button)
+}
+
+cfg_var_modern::cfg_int* MainWindow::ViewStyleSetting(int kind) const {
+    switch (static_cast<View::Kind>(kind)) {
+    case View::Kind::AllMusic:
+    case View::Kind::Group: return &cfg_viewSongs;
+    case View::Kind::Albums: return &cfg_viewAlbums;
+    case View::Kind::Artists: return &cfg_viewArtists;
+    case View::Kind::Genres: return &cfg_viewGenres;
+    default: return nullptr;
+    }
+}
+
+int MainWindow::ViewStyles() const {
+    int n = 0;
+    for (auto s : {media::ViewStyle::Icons, media::ViewStyle::Tiles, media::ViewStyle::Details})
+        if (m_source && m_source->SupportsViewStyle(s)) ++n;
+    return n;
+}
+
+void MainWindow::ShowViewMenu() {
+    if (!m_source) return;
+    HMENU menu = CreatePopupMenu();
+    const std::pair<media::ViewStyle, const wchar_t*> items[] = {
+        {media::ViewStyle::Icons, L"&Icon"}, {media::ViewStyle::Tiles, L"&Expanded tile"},
+        {media::ViewStyle::Details, L"&Details"}};
+    for (const auto& [style, label] : items) {
+        UINT flags = MF_STRING;
+        if (!m_source->SupportsViewStyle(style)) flags |= MF_GRAYED;
+        AppendMenuW(menu, flags, static_cast<UINT_PTR>(style) + 1, label);
+    }
+    const UINT current = static_cast<UINT>(m_source->GetViewStyle()) + 1;
+    CheckMenuRadioItem(menu, 1, 3, current, MF_BYCOMMAND);
+    POINT pt{m_layout.viewOptions.left, m_layout.viewOptions.bottom};
+    ClientToScreen(m_hwnd, &pt);
+    const UINT cmd = TrackPopupMenuEx(menu, TPM_RETURNCMD | TPM_NONOTIFY | TPM_LEFTALIGN | TPM_TOPALIGN, pt.x, pt.y,
+                                      m_hwnd, nullptr);
+    DestroyMenu(menu);
+    if (cmd == 0 || cmd == current) return;
+    const auto style = static_cast<media::ViewStyle>(cmd - 1);
+    m_source->SetViewStyle(style);
+    if (auto* setting = ViewStyleSetting(static_cast<int>(m_view.kind))) setting->set(static_cast<int>(style));
+    m_list->SetSource(m_source.get(), true);
+    if (auto* w = WidgetById(kViewOptions)) w->Invalidate();
+}
+
+void MainWindow::OnAlbumLink(size_t group, size_t line) {
+    const auto* groups = m_source ? m_source->Groups() : nullptr;
+    if (!groups || group >= groups->size() || line > 2) return;
+    const auto& g = (*groups)[group];
+    View v;
+    v.kind = View::Kind::Group;
+    v.group = line == 0 ? media::GroupKind::Album : line == 1 ? media::GroupKind::Artist : media::GroupKind::Genre;
+    v.key = g.linkKeys[line];
+    v.name = g.lines[line];
+    if (!v.key.empty()) Navigate(v, true);
 }
 
 void MainWindow::GoBack() {
@@ -1243,6 +1337,11 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
                 SetCursor(LoadCursorW(nullptr, IDC_IBEAM));
                 return TRUE;
             }
+            if (m_list && m_list->HitTest(pt))
+                if (LPCWSTR cursor = m_list->CursorAt(pt)) {  // column edges, album links
+                    SetCursor(LoadCursorW(nullptr, cursor));
+                    return TRUE;
+                }
         }
         break;
 
@@ -1464,7 +1563,7 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
                 m_pressed->SetPressed(false);
                 m_pressed = nullptr;
             }
-            if (m_capture == Capture::List) m_list->OnLButtonUp({});
+            if (m_capture == Capture::List) m_list->CancelDrag();
             m_capture = Capture::None;
             m_seeking = false;
         }

@@ -41,7 +41,7 @@ private:
         RECT caption{}, client{}, clientEdge{}, navBar{}, cmdBar{}, content{}, transport{};
         RECT capMin{}, capMax{}, capClose{}, icon{}, title{};
         RECT back{}, forward{}, breadcrumb{};
-        RECT organize{}, addFiles{}, addFolder{}, newPlaylist{}, search{};
+        RECT organize{}, addFiles{}, addFolder{}, newPlaylist{}, search{}, viewOptions{};
         RECT navPane{}, list{};
         RECT seek{}, capsule{}, divider{}, shuffle{}, repeat{}, stop{}, prev{}, next{}, play{}, mute{}, volume{};
         RECT nowPlaying{};
@@ -74,6 +74,10 @@ private:
     void GoForward();
     void ShowOrganizeMenu();
     void ShowPlaylistMenu(size_t playlist, POINT screen);
+    void ShowViewMenu();
+    void OnAlbumLink(size_t group, size_t line);
+    cfg_var_modern::cfg_int* ViewStyleSetting(int viewKind) const;
+    int ViewStyles() const;  // view options the current source offers
     void OnNavItem(const NavPane::Item& item);
     void AddDroppedFiles(IDataObject* data);
     void SetSearchFocus(bool focused);
@@ -119,7 +123,8 @@ private:
     winrt::Windows::UI::Composition::SpriteVisual m_transportBand{nullptr};
     winrt::Windows::UI::Composition::SpriteVisual m_capsule{nullptr};
     winrt::Windows::UI::Composition::SpriteVisual m_cluster{nullptr};  // WMP 12 transport cluster bitmap
-    bool m_win7Art = false;  // original Win7 / WMP 12 artwork available (ADR 0007)
+    bool m_win7Art = false;  // original WMP 12 artwork available (ADR 0007)
+    bool m_aeroArt = false;  // Win7 DWM atlas from aero.msstyles available
     winrt::Windows::UI::Composition::SpriteVisual m_divider{nullptr};
     winrt::Windows::UI::Composition::SpriteVisual m_clientGlow{nullptr};
     winrt::Windows::UI::Composition::SpriteVisual m_title{nullptr};

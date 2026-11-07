@@ -12,7 +12,9 @@ namespace glasswave::aero {
 
 class GlassMaterial {
 public:
-    explicit GlassMaterial(const Colorization& colorization);
+    // dwmArt: use Win7's own reflection texture and top-left glare (aero_atlas.h).
+    GlassMaterial(const Colorization& colorization, bool dwmArt);
+    void SetScale(float scale);  // DPI change: repaint the glare
 
     const winrt::Windows::UI::Composition::ContainerVisual& Root() const { return m_root; }
 
@@ -34,11 +36,14 @@ private:
     Colorization m_colorization;
     bool m_active = true;
     bool m_transparency = true;
+    bool m_dwmArt = false;
+    float m_scale = 1.0f;
     RECT m_reflectionMonitor{};
 
     winrt::Windows::UI::Composition::ContainerVisual m_root{nullptr};
     winrt::Windows::UI::Composition::SpriteVisual m_glass{nullptr};
     winrt::Windows::UI::Composition::SpriteVisual m_reflection{nullptr};
+    winrt::Windows::UI::Composition::SpriteVisual m_glare{nullptr}, m_glareInactive{nullptr};
     winrt::Windows::UI::Composition::CompositionBrush m_activeBrush{nullptr};
     winrt::Windows::UI::Composition::CompositionBrush m_inactiveBrush{nullptr};
     winrt::Windows::UI::Composition::CompositionBrush m_basicActive{nullptr};

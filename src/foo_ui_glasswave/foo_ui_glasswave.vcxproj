@@ -99,6 +99,7 @@
     <ClCompile Include="wmp\wmp_transport.cpp" />
     <ClCompile Include="win7\win7_resources.cpp" />
     <ClCompile Include="ui\art_cache.cpp" />
+    <ClCompile Include="aero\aero_atlas.cpp" />
     <ClCompile Include="media\library_model.cpp" />
     <ClCompile Include="media\list_sources.cpp" />
     <ClCompile Include="media\source_identity.cpp" />
@@ -124,6 +125,7 @@
     <ClInclude Include="wmp\wmp_transport.h" />
     <ClInclude Include="win7\win7_resources.h" />
     <ClInclude Include="ui\art_cache.h" />
+    <ClInclude Include="aero\aero_atlas.h" />
     <ClInclude Include="media\library_model.h" />
     <ClInclude Include="media\list_sources.h" />
     <ClInclude Include="media\source_identity.h" />

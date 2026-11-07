@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "aero/glass_material.h"
+#include "aero/aero_atlas.h"
 #include "aero/aero_painter.h"
 #include "gfx/color_matrix_effect.h"
 #include "gfx/composition_host.h"
@@ -34,7 +35,8 @@ bool SystemTransparencyEnabled() {
 
 }  // namespace
 
-GlassMaterial::GlassMaterial(const Colorization& colorization) : m_colorization(colorization) {
+GlassMaterial::GlassMaterial(const Colorization& colorization, bool dwmArt)
+    : m_colorization(colorization), m_dwmArt(dwmArt) {
     auto& host = gfx::CompositionHost::Get();
     const auto& comp = host.Compositor();
     m_root = comp.CreateContainerVisual();
@@ -46,6 +48,15 @@ GlassMaterial::GlassMaterial(const Colorization& colorization) : m_colorization(
 
     m_reflection = comp.CreateSpriteVisual();
     m_root.Children().InsertAtTop(m_reflection);
+    if (m_dwmArt) {
+        // Win7 lights the top-left corner of every glass frame.
+        m_glare = comp.CreateSpriteVisual();
+        m_glareInactive = comp.CreateSpriteVisual();
+        m_glareInactive.Opacity(0.0f);
+        m_root.Children().InsertAtTop(m_glare);
+        m_root.Children().InsertAtTop(m_glareInactive);
+        SetScale(1.0f);
+    }
 
     m_transparency = SystemTransparencyEnabled();
     RebuildBrushes();
@@ -76,8 +87,25 @@ void GlassMaterial::ApplyBrush() {
         m_glass.Brush(m_active ? m_basicActive : m_basicInactive);
 
     const auto& c = m_active ? m_colorization : MakeInactive(m_colorization);
+    if (m_dwmArt) {
+        // Theme opacities of the streak texture: 90 % active, 75 % inactive; the glare 75 %.
+        m_reflection.Opacity((m_active ? 0.90f : 0.75f) * (m_transparency ? 1.0f : 0.6f));
+        m_glare.Opacity(m_active ? 0.75f : 0.0f);
+        m_glareInactive.Opacity(m_active ? 0.0f : 0.75f);
+        return;
+    }
     // Streaks are painted for intensity 0.5.
     m_reflection.Opacity(std::clamp(c.reflectionIntensity / 0.5f, 0.0f, 1.0f) * (m_transparency ? 1.0f : 0.6f));
+}
+
+void GlassMaterial::SetScale(float scale) {
+    m_scale = scale;
+    if (!m_dwmArt) return;
+    auto& host = gfx::CompositionHost::Get();
+    const int w = static_cast<int>(std::lround(atlas::kGlareSize.width * scale));
+    const int h = static_cast<int>(std::lround(atlas::kGlareSize.height * scale));
+    host.Repaint(m_glare, w, h, scale, [](ID2D1DeviceContext* dc) { atlas::Glare(dc, true); });
+    host.Repaint(m_glareInactive, w, h, scale, [](ID2D1DeviceContext* dc) { atlas::Glare(dc, false); });
 }
 
 void GlassMaterial::SetActive(bool active) {
@@ -115,10 +143,14 @@ void GlassMaterial::UpdateReflectionAnchor(HWND hwnd, const RECT& windowRect) {
         m_reflectionMonitor = mon;
         // The streaks are soft: paint at 1/4 resolution and stretch to save video memory.
         auto& host = gfx::CompositionHost::Get();
-        const int sw = std::max(w / 4, 64), sh = std::max(h / 4, 64);
+        // Win7's texture is 802x604 and soft: keep it at that size and stretch it over the
+        // monitor like DWM does. The procedural streaks are painted at 1/4 resolution.
+        const int sw = m_dwmArt ? 802 : std::max(w / 4, 64), sh = m_dwmArt ? 604 : std::max(h / 4, 64);
         auto surface = host.CreateSurface(sw, sh);
         host.Draw(surface, 1.0f, [&](ID2D1DeviceContext* dc) {
-            paint::Reflection(dc, D2D1::SizeF(static_cast<float>(sw), static_cast<float>(sh)));
+            const auto size = D2D1::SizeF(static_cast<float>(sw), static_cast<float>(sh));
+            if (m_dwmArt) atlas::Streaks(dc, size);
+            else paint::Reflection(dc, size);
         });
         auto brush = host.Compositor().CreateSurfaceBrush(surface);
         brush.Stretch(wuc::CompositionStretch::Fill);

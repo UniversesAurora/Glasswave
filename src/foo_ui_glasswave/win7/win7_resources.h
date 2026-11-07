@@ -13,7 +13,8 @@
 
 namespace glasswave::win7 {
 
-enum class Module { Wmploc, Aero, Ehres, Count };
+// AeroAtlas is the DWM image atlas inside aero.msstyles (STREAM resource 971).
+enum class Module { Wmploc, Aero, AeroAtlas, Ehres, Count };
 
 class Resources {
 public:
@@ -44,6 +45,7 @@ private:
     Resources();
     HMODULE Handle(Module module) const { return m_modules[static_cast<size_t>(module)]; }
     IWICBitmapSource* Decode(Module module, const std::wstring& name);
+    winrt::com_ptr<IWICBitmapSource> LoadHd(Module module, const std::wstring& name, IWICBitmapSource* base);
 
     std::wstring m_folder;
     std::array<HMODULE, static_cast<size_t>(Module::Count)> m_modules{};
@@ -56,6 +58,11 @@ bool Draw(ID2D1DeviceContext* dc, Module module, int id, D2D1_POINT_2F at, float
 // Draw the `src` part (bitmap pixels) of a resource at `at` (DIP).
 bool DrawPart(ID2D1DeviceContext* dc, Module module, int id, D2D1_RECT_F src, D2D1_POINT_2F at,
               float opacity = 1.0f);
+// Draw `src` (bitmap pixels) of a resource as a nine-grid into `dst` (DIP). `margins` are
+// the fixed borders in bitmap pixels (left, top, right, bottom), drawn 1 pixel = 1 DIP.
+// Pieces that land on whole device pixels are copied without filtering.
+bool DrawNineGrid(ID2D1DeviceContext* dc, Module module, int id, D2D1_RECT_F src, D2D1_RECT_F margins,
+                  D2D1_RECT_F dst, float opacity = 1.0f);
 // Draw a whole resource scaled into `dst` (DIP).
 bool DrawStretched(ID2D1DeviceContext* dc, Module module, const std::wstring& name, D2D1_RECT_F dst,
                    float opacity = 1.0f);

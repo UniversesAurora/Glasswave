@@ -274,4 +274,48 @@ void PlayingMarker(ID2D1DeviceContext* dc, D2D1_POINT_2F c, bool paused) {
     }
 }
 
+void ViewOptionsGlyph(ID2D1DeviceContext* dc, D2D1_SIZE_F size, media::ViewStyle style) {
+    winrt::com_ptr<ID2D1SolidColorBrush> ink, light;
+    dc->CreateSolidColorBrush(D2D1::ColorF(0x4D6185), ink.put());
+    dc->CreateSolidColorBrush(D2D1::ColorF(0x8FA3C0), light.put());
+    float dpi = 96, dummy = 96;
+    dc->GetDpi(&dpi, &dummy);
+    const float px = 96.0f / dpi;  // one device pixel
+    auto snap = [&](float v) { return std::round(v / px) * px; };
+    const float x0 = snap(7), y0 = snap(size.height / 2 - 6);
+    switch (style) {
+    case media::ViewStyle::Icons:  // 2 x 2 tiles
+        for (int r = 0; r < 2; ++r)
+            for (int c = 0; c < 2; ++c)
+                dc->FillRectangle({x0 + c * 7.0f, y0 + r * 7.0f, x0 + c * 7.0f + 5, y0 + r * 7.0f + 5}, ink.get());
+        break;
+    case media::ViewStyle::Tiles:  // tile with text lines beside it
+        for (int r = 0; r < 2; ++r) {
+            dc->FillRectangle({x0, y0 + r * 7.0f, x0 + 5, y0 + r * 7.0f + 5}, ink.get());
+            dc->FillRectangle({x0 + 7, y0 + r * 7.0f + 1, x0 + 13, y0 + r * 7.0f + 2}, light.get());
+            dc->FillRectangle({x0 + 7, y0 + r * 7.0f + 3, x0 + 11, y0 + r * 7.0f + 4}, light.get());
+        }
+        break;
+    default:  // details: rows
+        for (int r = 0; r < 4; ++r) {
+            dc->FillRectangle({x0, y0 + r * 3.0f, x0 + 2, y0 + r * 3.0f + 2}, ink.get());
+            dc->FillRectangle({x0 + 4, y0 + r * 3.0f, x0 + 13, y0 + r * 3.0f + 2}, light.get());
+        }
+        break;
+    }
+    // Drop-down arrow
+    winrt::com_ptr<ID2D1Factory> factory;
+    dc->GetFactory(factory.put());
+    winrt::com_ptr<ID2D1PathGeometry> tri;
+    winrt::com_ptr<ID2D1GeometrySink> sink;
+    factory->CreatePathGeometry(tri.put());
+    tri->Open(sink.put());
+    const float ax = size.width - 13, ay = size.height / 2 - 1.5f;
+    sink->BeginFigure({ax, ay}, D2D1_FIGURE_BEGIN_FILLED);
+    sink->AddLine({ax + 7, ay});
+    sink->AddLine({ax + 3.5f, ay + 4});
+    sink->EndFigure(D2D1_FIGURE_END_CLOSED);
+    sink->Close();
+    dc->FillGeometry(tri.get(), ink.get());
+}
 }  // namespace glasswave::wmp::paint

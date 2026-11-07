@@ -1,5 +1,6 @@
 #pragma once
 #include "aero/aero_painter.h"
+#include "media/list_sources.h"
 
 // Direct2D painters for the WMP 12 client chrome (lists, navigation pane, command bar,
 // search box, seek bar). Win7 Explorer / WMP 12 styling; values provisional until the
@@ -23,6 +24,9 @@ void ScrollBar(ID2D1DeviceContext* dc, D2D1_SIZE_F size, float thumbTop, float t
 
 // Toolbar text button ("Organize", "Create playlist") with optional drop-down arrow.
 void CommandButton(ID2D1DeviceContext* dc, D2D1_SIZE_F size, Layer layer, std::wstring_view text, bool dropDown);
+
+// View options button content: an icon for the current view style and a drop-down arrow.
+void ViewOptionsGlyph(ID2D1DeviceContext* dc, D2D1_SIZE_F size, media::ViewStyle style);
 
 // Explorer-style round back/forward button.
 void NavArrow(ID2D1DeviceContext* dc, D2D1_SIZE_F size, Layer layer, bool back, bool enabled);

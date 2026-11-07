@@ -45,6 +45,7 @@
 #include <functional>
 #include <map>
 #include <set>
+#include <sstream>
 #include <memory>
 #include <mutex>
 #include <optional>

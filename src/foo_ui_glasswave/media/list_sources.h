@@ -19,7 +19,13 @@ struct RowGroup {
     metadb_handle_ptr art;        // track whose front cover represents the group
     std::wstring header;
     std::array<std::wstring, 4> lines;
+    // Album column lines that open a view, like WMP's hyperlinks: keys of the album (0),
+    // album artist (1) and genre (2) groups in LibraryModel; empty = plain text.
+    std::array<std::wstring, 4> linkKeys;
 };
+
+// WMP 12 view options: Icon, Expanded tile, Details.
+enum class ViewStyle { Icons, Tiles, Details };
 
 // WMP 12 icon views: albums (cover above two lines) or artists (cover beside three lines).
 enum class TileStyle { None, Album, Artist };
@@ -42,6 +48,13 @@ public:
     virtual const std::vector<RowGroup>* Groups() const { return nullptr; }
     virtual TileStyle Tiles() const { return TileStyle::None; }
     virtual TileInfo Tile(size_t /*row*/) const { return {}; }
+    // Draw the album column (cover + lines) beside grouped rows, or only header lines.
+    virtual bool GroupArt() const { return Groups() != nullptr; }
+
+    // View options offered by the view button.
+    virtual bool SupportsViewStyle(ViewStyle) const { return false; }
+    virtual ViewStyle GetViewStyle() const { return ViewStyle::Details; }
+    virtual void SetViewStyle(ViewStyle) {}
 
     // Selection / focus
     virtual bool IsSelected(size_t row) const = 0;
@@ -106,6 +119,10 @@ public:
     std::wstring EmptyText() const override { return m_emptyText; }
     bool IsPlaying(size_t row) const override;
     const std::vector<RowGroup>* Groups() const override { return &m_groups; }
+    bool GroupArt() const override { return m_style == ViewStyle::Tiles; }
+    bool SupportsViewStyle(ViewStyle s) const override { return s != ViewStyle::Icons; }
+    ViewStyle GetViewStyle() const override { return m_style; }
+    void SetViewStyle(ViewStyle style) override;
     bool IsSelected(size_t row) const override { return m_selected[m_rows[row]] != 0; }
     void SelectOnly(size_t row) override;
     void Toggle(size_t row) override;
@@ -126,7 +143,9 @@ private:
     size_t m_focus = SIZE_MAX;
     std::wstring m_emptyText;
     std::vector<Column> m_columns;
+    std::vector<int> m_fields;  // what each column shows
     std::vector<RowGroup> m_groups;
+    ViewStyle m_style = ViewStyle::Tiles;
 };
 
 // Artists, albums or genres. Activating a row drills into its tracks.
@@ -139,7 +158,14 @@ public:
     size_t Count() const override { return m_rows.size(); }
     std::wstring Cell(size_t row, size_t column) const override;
     std::wstring EmptyText() const override;
-    TileStyle Tiles() const override { return m_kind == GroupKind::Artist ? TileStyle::Artist : TileStyle::Album; }
+    TileStyle Tiles() const override {
+        return m_style == ViewStyle::Icons ? TileStyle::Album
+               : m_style == ViewStyle::Tiles ? TileStyle::Artist
+                                             : TileStyle::None;
+    }
+    bool SupportsViewStyle(ViewStyle) const override { return true; }
+    ViewStyle GetViewStyle() const override { return m_style; }
+    void SetViewStyle(ViewStyle style) override { m_style = style; }
     TileInfo Tile(size_t row) const override;
     bool IsSelected(size_t row) const override { return m_selected[m_rows[row]] != 0; }
     void SelectOnly(size_t row) override;
@@ -163,6 +189,7 @@ private:
     std::vector<uint8_t> m_selected;
     size_t m_focus = SIZE_MAX;
     std::vector<Column> m_columns;
+    ViewStyle m_style = ViewStyle::Icons;
 };
 
 // Replace the "Now Playing" playlist with `items` and start playback at `start`

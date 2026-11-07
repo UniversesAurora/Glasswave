@@ -46,13 +46,22 @@ Updated: 2026-11-07
 - Owner's Win7 VM runs at 150 %; WMP 12 draws its bitmaps 1:1 there. The dev machine is 4K
   at 200 %.
 
+- Caption buttons (with hover glow), the top-left glare and the reflection streaks now come
+  from the Win7 DWM atlas in aero.msstyles (STREAM 971); uDWM.dll turned out to hold no
+  images. Caption glyphs use the 192-DPI set at 200 %.
+- Library: album, artist and genre lines in the album column are links; a view options button
+  (Icon / Expanded tile / Details) next to the search box, remembered per view; list columns
+  can be resized and reordered by dragging the header, remembered per column set.
+- Artwork can be overridden by locally made 2x PNGs in `<profile>\glasswave\hd\<module>\`
+  (`<id>@2x.png`); none exist yet.
+
 ## Next
 
-1. Owner tests: transport hover / press, album grouping, tiles, drag the window (reflection).
-2. Caption buttons and frame from the owner's Win7 uDWM.dll (requested), then the remaining
-   visual tuning from the Win7 captures (list header, selection, nav pane icons, bars).
-3. Column sorting / resizing, rating column (STARS_PNG), artist tiles with stacked covers.
-4. Playlist editing: drag to reorder, drag from library to playlists, rename inline.
+1. Owner tests: caption buttons, links, view options, column drag, reflection while dragging.
+2. Sharper WMP bitmaps at 200 %: decide with the owner (AI upscale into hd\, or vector redraw).
+3. Frame edges from the DWM atlas; remaining tuning from the Win7 captures.
+4. Column sorting, rating column (STARS_PNG), stacked covers for artists, year view.
+5. Playlist editing: drag to reorder, drag from library to playlists, rename inline.
 
 ## Known issues
 

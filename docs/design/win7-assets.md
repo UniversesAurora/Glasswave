@@ -56,11 +56,33 @@ In the 150 % capture the back/forward orbs sit 8 px from the client edge and 4 p
 WMP 12 draws these bitmaps 1:1 at every DPI; Glasswave draws one bitmap pixel per DIP
 (WMP's 96-DPI proportions) and resamples with high-quality cubic filtering.
 
-## Not in these files
+## DWM atlas (aero.msstyles, STREAM 971) — in use
 
-Windows 7 draws the caption buttons (minimize / maximize / close), the frame and the glass
-reflection texture from `%windir%\System32\uDWM.dll`, not from `aero.msstyles`. Those
-need the owner's Win7 `uDWM.dll`.
+Win7's uDWM.dll (6.1.7600, 328 KB) holds no images. The caption buttons, their hover glow,
+the frame parts, the top-left glare and the reflection texture live in one 1357x780 atlas,
+resource `STREAM` 971 of aero.msstyles. Each part's rectangle is the `TMT_ATLASRECT`
+(8002) property of class DWMWINDOW in the theme's `VARIANT/NORMAL` data; records are
+32-byte headers (name, type, class, part, state, flag, reserved, size) followed by the
+value padded to 8 bytes. Code: `aero/aero_atlas.*`.
+
+| Part | Atlas rect | States | Sizing (l, r, t, b) | Content (l, r, t, b) | Use |
+| --- | --- | --- | --- | --- | --- |
+| 5 / 6 | 83,88-114,176 / 83,264-114,352 | 4 | 12,12,6,8 | 3,1,2,4 | minimize, active / inactive |
+| 3 / 4 | 83,352-114,440 / 83,176-114,264 | 4 | 12,12,6,8 | 2,3,2,4 | maximize, active / inactive |
+| 7 / 8 | 83,568-134,656 / 134,0-185,88 | 4 | 20,20,6,8 | 1,2,2,4 | close, active / inactive |
+| 9 / 10 | 83,656-134,744 / 83,480-133,568 | 4 | 20,20,6,8 | 2,1,2,4 | close alone (both corners) |
+| 16 | 83,440-132,480 | 1 | 9,9,8,7 | | min / max hover glow |
+| 11 | 261,0-327,40 | 1 | 9,8,8,7 | | close hover glow |
+| 12-15 | | 4 | | | close glyph at 96 / 120 / 144 / 192 DPI |
+| 17-20 | | 4 | | | help glyph |
+| 21-24 / 25-28 / 29-32 | | 4 | | | maximize / minimize / restore glyphs |
+| 48-51 | | 4 | | | small (tool window) close glyph |
+| 34 | 327,0-555,350 | 2 | | | top-left glare, active / inactive (opacity 75) |
+| 40 | 555,0-1357,604 | 1 | | | reflection streaks (opacity 90 active, 75 inactive) |
+| 39, 54, 56, 58, 62, 66, 70, 1, 2, 36... | | | | | frame edges and corners (not used yet) |
+
+Button states are stacked top to bottom: normal, hot, pressed, disabled. The glyph set is
+chosen by DPI (192 at 200 %), so caption glyphs are drawn 1:1 on the dev machine.
 
 To do: list header and selection art, scrollbars and Explorer parts in `aero.msstyles`, the
 Media Center focus / menu art in `ehres.dll`.

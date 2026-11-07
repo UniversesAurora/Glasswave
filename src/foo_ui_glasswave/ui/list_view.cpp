@@ -19,6 +19,9 @@ constexpr float kHeaderHeight = 25.0f;
 constexpr float kScrollWidth = 14.0f;
 constexpr float kGutter = 18.0f;  // playing marker column
 constexpr float kCellPad = 6.0f;
+constexpr float kMinColumn = 24.0f;
+constexpr float kEdgeGrip = 4.0f;     // header edge hit width on each side (DIP)
+constexpr float kMoveThreshold = 6.0f;
 constexpr size_t kGroupMinLines = 4;  // the album column needs four lines (cover + 4 text lines)
 constexpr float kTilePad = 8.0f;
 constexpr D2D1_SIZE_F kAlbumTile{132, 160};
@@ -27,7 +30,50 @@ constexpr D2D1_SIZE_F kArtistTile{240, 108};
 constexpr float kArtistTileArt = 88;
 
 constexpr uint32_t kInk = 0x1E1E1E, kSecondaryInk = 0x4A4A4A, kGreyInk = 0x7A7A7A, kPlayingInk = 0x1E5BA8;
-constexpr uint32_t kGroupInk = 0x2E64B4, kGroupRule = 0xC9D7E8;
+constexpr uint32_t kGroupInk = 0x2E64B4, kGroupRule = 0xC9D7E8, kLinkInk = 0x0066CC;
+
+// {5E8B2C47-9A1D-4F63-B0E2-6C4A7D9F1B38}: column order and widths per column set
+cfg_var_modern::cfg_string cfg_columns({0x5e8b2c47, 0x9a1d, 0x4f63, {0xb0, 0xe2, 0x6c, 0x4a, 0x7d, 0x9f, 0x1b, 0x38}},
+                                       "");
+
+struct SavedLayout {
+    std::vector<size_t> order;
+    std::vector<float> widths;
+};
+
+std::map<std::wstring, SavedLayout>& Store() {
+    static std::map<std::wstring, SavedLayout> store;
+    static bool loaded = false;
+    if (!loaded) {
+        loaded = true;
+        // One line per column set: key \t order (comma separated) \t widths (comma separated)
+        std::wstringstream in(Wide(cfg_columns.get().c_str()));
+        std::wstring line;
+        while (std::getline(in, line)) {
+            const size_t a = line.find(L'\t'), b = line.find(L'\t', a + 1);
+            if (a == std::wstring::npos || b == std::wstring::npos) continue;
+            SavedLayout s;
+            std::wstringstream o(line.substr(a + 1, b - a - 1)), w(line.substr(b + 1));
+            for (std::wstring v; std::getline(o, v, L',');) s.order.push_back(static_cast<size_t>(_wtoi(v.c_str())));
+            for (std::wstring v; std::getline(w, v, L',');) s.widths.push_back(static_cast<float>(_wtof(v.c_str())));
+            store[line.substr(0, a)] = std::move(s);
+        }
+    }
+    return store;
+}
+
+void Persist() {
+    std::wstring out;
+    for (const auto& [key, s] : Store()) {
+        out += key + L'\t';
+        for (size_t i = 0; i < s.order.size(); ++i) out += (i ? L"," : L"") + std::to_wstring(s.order[i]);
+        out += L'\t';
+        for (size_t i = 0; i < s.widths.size(); ++i)
+            out += (i ? L"," : L"") + std::to_wstring(static_cast<int>(std::lround(s.widths[i])));
+        out += L'\n';
+    }
+    cfg_columns.set(Utf8(out).c_str());
+}
 
 D2D1_COLOR_F Hex(uint32_t rgb, float a = 1.0f) {
     return D2D1::ColorF(((rgb >> 16) & 0xFF) / 255.0f, ((rgb >> 8) & 0xFF) / 255.0f, (rgb & 0xFF) / 255.0f, a);
@@ -46,10 +92,18 @@ void PlaceVisual(const wuc::Visual& v, float x, float y, float w, float h) {
 
 void Text(ID2D1DeviceContext* dc, const std::wstring& text, D2D1_RECT_F box, uint32_t ink,
           DWRITE_TEXT_ALIGNMENT align = DWRITE_TEXT_ALIGNMENT_LEADING,
-          DWRITE_FONT_WEIGHT weight = DWRITE_FONT_WEIGHT_NORMAL) {
+          DWRITE_FONT_WEIGHT weight = DWRITE_FONT_WEIGHT_NORMAL, bool underline = false) {
     if (text.empty() || box.right - box.left < 4) return;
     auto layout = MakeText(text, 12.0f, weight, box.right - box.left, box.bottom - box.top, align);
+    if (underline) layout->SetUnderline(TRUE, {0, static_cast<UINT32>(text.size())});
     dc->DrawTextLayout({box.left, box.top}, layout.get(), Brush(dc, ink).get());
+}
+
+float TextWidth(const std::wstring& text, float maxW) {
+    auto layout = MakeText(text, 12.0f, DWRITE_FONT_WEIGHT_NORMAL, maxW, kRowHeight);
+    DWRITE_TEXT_METRICS m{};
+    layout->GetMetrics(&m);
+    return std::min(m.width, maxW);
 }
 }  // namespace
 
@@ -88,14 +142,21 @@ D2D1_SIZE_F ListView::TileSize() const {
 }
 
 size_t ListView::TileColumns() const {
-    const RECT r = RowsRect();
-    const float w = (r.right - r.left) / m_scale - 2 * kTilePad;
+    const float w = RowsWidth() - 2 * kTilePad;
     return static_cast<size_t>(std::max(1.0f, std::floor(w / TileSize().width)));
 }
 
 RECT ListView::RowsRect() const {
     return {m_bounds.left, m_bounds.top + HeaderHeightPx(), m_bounds.right - ScrollWidthPx(), m_bounds.bottom};
 }
+
+float ListView::RowsWidth() const {
+    const RECT r = RowsRect();
+    return std::max<LONG>(r.right - r.left, 0) / m_scale;
+}
+
+float ListView::ArtSize() const { return kGroupMinLines * (RowHeightPx() / m_scale) - 8; }
+float ListView::AlbumTextLeft(float albumLeft) const { return albumLeft + 3 + ArtSize() + 8; }
 
 size_t ListView::LineCount() const {
     const size_t n = m_source ? m_source->Count() : 0;
@@ -127,47 +188,90 @@ size_t ListView::MaxTop() const {
     return n > v ? n - v : 0;
 }
 
-std::vector<float> ListView::ColumnWidths(float total) const {
-    std::vector<float> widths;
-    if (!m_source) return widths;
+std::vector<ListView::Col> ListView::Columns(float total) const {
+    std::vector<Col> out;
+    if (!m_source) return out;
     const auto& cols = m_source->Columns();
+    auto widthOf = [&](size_t i) {
+        return i < m_widths.size() && m_widths[i] > 0 ? m_widths[i] : (cols[i].flex ? -1.0f : cols[i].width);
+    };
     float fixed = kGutter;
-    for (const auto& c : cols)
-        if (!c.flex) fixed += c.width;
+    for (size_t i = 0; i < cols.size(); ++i)
+        if (widthOf(i) > 0) fixed += widthOf(i);
     const float flex = std::max(120.0f, total - fixed);
-    for (const auto& c : cols) widths.push_back(c.flex ? flex : c.width);
-    return widths;
+    float x = kGutter;
+    for (size_t d = 0; d < cols.size(); ++d) {
+        const size_t src = d < m_order.size() ? m_order[d] : d;
+        const float w = widthOf(src) > 0 ? widthOf(src) : flex;
+        out.push_back({src, x, w});
+        x += w;
+    }
+    return out;
 }
 
 // ---- Data -----------------------------------------------------------------------------------
+
+void ListView::LoadColumnLayout() {
+    const auto& cols = m_source->Columns();
+    std::wstring key;
+    for (const auto& c : cols) key += c.title + L'|';
+    if (AlbumColumn()) key += L"#art";
+    if (key == m_columnKey && m_order.size() == cols.size()) return;
+    m_columnKey = key;
+    m_order.resize(cols.size());
+    for (size_t i = 0; i < cols.size(); ++i) m_order[i] = i;
+    m_widths.assign(cols.size(), -1.0f);
+    auto it = Store().find(key);
+    if (it == Store().end()) return;
+    const SavedLayout& s = it->second;
+    std::vector<size_t> sorted = s.order;
+    std::sort(sorted.begin(), sorted.end());
+    bool valid = sorted.size() == cols.size();
+    for (size_t i = 0; valid && i < sorted.size(); ++i) valid = sorted[i] == i;
+    if (valid) m_order = s.order;
+    if (s.widths.size() == cols.size()) m_widths = s.widths;
+}
+
+void ListView::SaveColumnLayout() const {
+    if (m_columnKey.empty()) return;
+    Store()[m_columnKey] = {m_order, m_widths};
+    Persist();
+}
 
 void ListView::BuildLines() {
     m_lines.clear();
     m_rowLine.clear();
     m_groupLine.clear();
     m_mode = Mode::Plain;
+    m_groupArt = false;
     if (!m_source) return;
     if (m_source->Tiles() != media::TileStyle::None) {
         m_mode = Mode::Tiles;
-        return;
-    }
-    const auto* groups = m_source->Groups();
-    if (!groups || groups->empty()) return;
-    m_mode = Mode::Grouped;
-    m_rowLine.assign(m_source->Count(), 0);
-    for (size_t gi = 0; gi < groups->size(); ++gi) {
-        const auto& g = (*groups)[gi];
-        m_groupLine.push_back(m_lines.size());
-        m_lines.push_back({Line::GroupHeader, SIZE_MAX, gi, 0});
-        const size_t lines = std::max(g.count, kGroupMinLines);
-        for (size_t k = 0; k < lines; ++k) {
-            if (k < g.count) {
-                m_rowLine[g.first + k] = m_lines.size();
-                m_lines.push_back({Line::Item, g.first + k, gi, k});
-            } else {
-                m_lines.push_back({Line::Filler, SIZE_MAX, gi, k});
+    } else if (const auto* groups = m_source->Groups(); groups && !groups->empty()) {
+        m_mode = Mode::Grouped;
+        m_groupArt = m_source->GroupArt();
+        m_rowLine.assign(m_source->Count(), 0);
+        for (size_t gi = 0; gi < groups->size(); ++gi) {
+            const auto& g = (*groups)[gi];
+            m_groupLine.push_back(m_lines.size());
+            m_lines.push_back({Line::GroupHeader, SIZE_MAX, gi, 0});
+            // With the album column a group is at least as tall as its cover.
+            const size_t lines = m_groupArt ? std::max(g.count, kGroupMinLines) : g.count;
+            for (size_t k = 0; k < lines; ++k) {
+                if (k < g.count) {
+                    m_rowLine[g.first + k] = m_lines.size();
+                    m_lines.push_back({Line::Item, g.first + k, gi, k});
+                } else {
+                    m_lines.push_back({Line::Filler, SIZE_MAX, gi, k});
+                }
             }
         }
+    }
+    LoadColumnLayout();
+    // The album column stays first.
+    if (AlbumColumn() && !m_order.empty() && m_order[0] != 0) {
+        m_order.erase(std::find(m_order.begin(), m_order.end(), size_t{0}));
+        m_order.insert(m_order.begin(), 0);
     }
 }
 
@@ -175,6 +279,7 @@ void ListView::SetSource(media::ListSource* source, bool resetScroll) {
     m_source = source;
     m_hot = SIZE_MAX;
     m_hotGroup = SIZE_MAX;
+    m_hotLinkGroup = SIZE_MAX;
     m_anchor = source ? source->Focus() : SIZE_MAX;
     if (resetScroll) m_top = 0;
     BuildLines();
@@ -204,10 +309,12 @@ void ListView::SetFocused(bool focused) {
 }
 
 void ListView::Refresh() {
-    BuildLines();  // rows or groups may have changed (filter, playlist edits)
+    BuildLines();  // rows, groups or the view style may have changed
     m_top = std::min(m_top, MaxTop());
     if (m_source && m_hot != SIZE_MAX && m_hot >= m_source->Count()) m_hot = SIZE_MAX;
     m_hotGroup = SIZE_MAX;
+    m_hotLinkGroup = SIZE_MAX;
+    PaintHeader();
     PaintRows();
     PaintScrollBar();
 }
@@ -242,14 +349,26 @@ void ListView::PaintHeader() {
         const D2D1_SIZE_F size{w / s, h / s};
         wp::HeaderBackground(dc, size);
         if (!m_source) return;
-        const auto widths = ColumnWidths(size.width - kScrollWidth);
-        float x = kGutter;
-        const auto& cols = m_source->Columns();
-        for (size_t i = 0; i < cols.size(); ++i) {
-            Text(dc, cols[i].title, {x + kCellPad, 0, x + widths[i] - kCellPad, size.height}, 0x4C607A,
-                 cols[i].rightAlign ? DWRITE_TEXT_ALIGNMENT_TRAILING : DWRITE_TEXT_ALIGNMENT_LEADING);
-            x += widths[i];
-            if (!cols[i].flex || !cols[i].title.empty()) wp::HeaderSeparator(dc, x, size.height);
+        const auto& srcCols = m_source->Columns();
+        const auto cols = Columns(RowsWidth());
+        const float dragX = (m_dragX - m_bounds.left) / s;
+        for (size_t d = 0; d < cols.size(); ++d) {
+            const Col& c = cols[d];
+            if (m_drag == Drag::Move && d == m_dragCol)
+                wp::RowPlate(dc, {c.x, 1, c.x + c.w, size.height - 1}, wp::RowState::Hot, true);
+            const auto& col = srcCols[c.src];
+            Text(dc, col.title, {c.x + kCellPad, 0, c.x + c.w - kCellPad, size.height}, 0x4C607A,
+                 col.rightAlign ? DWRITE_TEXT_ALIGNMENT_TRAILING : DWRITE_TEXT_ALIGNMENT_LEADING);
+            wp::HeaderSeparator(dc, c.x + c.w, size.height);
+        }
+        if (m_drag == Drag::Move) {  // insertion mark where the column would land
+            float mark = cols.empty() ? kGutter : cols.back().x + cols.back().w;
+            for (const Col& c : cols)
+                if (dragX < c.x + c.w / 2) {
+                    mark = c.x;
+                    break;
+                }
+            dc->FillRectangle({mark - 1, 1, mark + 1, size.height - 1}, Brush(dc, 0x3C7FB1).get());
         }
     });
     PlaceVisual(m_header, 0, 0, static_cast<float>(w), static_cast<float>(h));
@@ -279,37 +398,35 @@ void ListView::PaintRows() {
         }
         switch (m_mode) {
         case Mode::Grouped: PaintGrouped(dc, size); break;
-        case Mode::Tiles: PaintTiles(dc, size); break;
+        case Mode::Tiles: PaintTiles(dc); break;
         default: PaintPlain(dc, size); break;
         }
     });
 }
 
-void ListView::PaintCells(ID2D1DeviceContext* dc, size_t row, float y, float rowH, const std::vector<float>& widths,
-                          size_t firstColumn) {
+void ListView::PaintCells(ID2D1DeviceContext* dc, size_t row, float y, float rowH, const std::vector<Col>& cols) {
     const bool isPlaying = m_source->IsPlaying(row);
-    const auto& cols = m_source->Columns();
-    float x = kGutter;
-    for (size_t c = 0; c < firstColumn && c < widths.size(); ++c) x += widths[c];
+    const auto& srcCols = m_source->Columns();
+    const bool skipAlbum = AlbumColumn();
     if (isPlaying) {
-        const bool paused = playback_control::get()->is_paused();
-        // In the gutter, or at the left of the "#" column when the album column comes first.
-        wp::PlayingMarker(dc, {firstColumn ? x + 5 : kGutter / 2 + 1, y + rowH / 2 + 0.5f}, paused);
+        // In the gutter, or at the left of the first track column after the album column.
+        const float x = skipAlbum && cols.size() > 1 ? cols[1].x + 5 : kGutter / 2 + 1;
+        wp::PlayingMarker(dc, {x, y + rowH / 2 + 0.5f}, playback_control::get()->is_paused());
     }
-    for (size_t c = firstColumn; c < cols.size(); ++c) {
-        const std::wstring text = m_source->Cell(row, c);
-        const bool primary = cols[c].flex;
-        Text(dc, text, {x + kCellPad, y + 0.5f, x + widths[c] - kCellPad, y + 0.5f + rowH},
+    for (const Col& c : cols) {
+        if (skipAlbum && c.src == 0) continue;
+        const auto& col = srcCols[c.src];
+        const bool primary = col.flex;
+        Text(dc, m_source->Cell(row, c.src), {c.x + kCellPad, y + 0.5f, c.x + c.w - kCellPad, y + 0.5f + rowH},
              isPlaying ? kPlayingInk : (primary ? kInk : kSecondaryInk),
-             cols[c].rightAlign ? DWRITE_TEXT_ALIGNMENT_TRAILING : DWRITE_TEXT_ALIGNMENT_LEADING,
+             col.rightAlign ? DWRITE_TEXT_ALIGNMENT_TRAILING : DWRITE_TEXT_ALIGNMENT_LEADING,
              isPlaying && primary ? DWRITE_FONT_WEIGHT_SEMI_BOLD : DWRITE_FONT_WEIGHT_NORMAL);
-        x += widths[c];
     }
 }
 
 void ListView::PaintPlain(ID2D1DeviceContext* dc, D2D1_SIZE_F size) {
     const size_t n = m_source->Count();
-    const auto widths = ColumnWidths(size.width);
+    const auto cols = Columns(size.width);
     const size_t focus = m_source->Focus();
     const size_t visible = VisibleLines() + 1;
     const float rowH = RowHeightPx() / m_scale;  // whole device pixels, matches hit testing
@@ -323,14 +440,15 @@ void ListView::PaintPlain(ID2D1DeviceContext* dc, D2D1_SIZE_F size) {
         if (m_focused && row == focus && !sel)
             dc->DrawRoundedRectangle({{2.5f, y + 1.5f, size.width - 2.5f, y + rowH - 0.5f}, 2, 2},
                                      Brush(dc, 0x7DA2CE, 0.6f).get(), 1.0f);
-        PaintCells(dc, row, y, rowH, widths, 0);
+        PaintCells(dc, row, y, rowH, cols);
     }
 }
 
 void ListView::PaintGrouped(ID2D1DeviceContext* dc, D2D1_SIZE_F size) {
     const auto& groups = *m_source->Groups();
-    const auto widths = ColumnWidths(size.width);
-    const float albumL = kGutter, albumR = kGutter + (widths.empty() ? 0 : widths[0]);
+    const auto cols = Columns(size.width);
+    const bool art = AlbumColumn() && !cols.empty();
+    const float albumL = art ? cols[0].x : kGutter, albumR = art ? cols[0].x + cols[0].w : 2;
     const size_t focus = m_source->Focus();
     const size_t visible = VisibleLines() + 1;
     const float rowH = RowHeightPx() / m_scale;
@@ -343,12 +461,12 @@ void ListView::PaintGrouped(ID2D1DeviceContext* dc, D2D1_SIZE_F size) {
         if (line.kind == Line::GroupHeader) {
             // Album artist in blue, followed by a hairline to the right edge.
             const auto& g = groups[line.group];
-            auto layout = MakeText(g.header, 12.0f, DWRITE_FONT_WEIGHT_NORMAL, size.width - albumL - 20, rowH);
-            dc->DrawTextLayout({albumL + 2, y + 1}, layout.get(), Brush(dc, kGroupInk).get());
+            auto layout = MakeText(g.header, 12.0f, DWRITE_FONT_WEIGHT_NORMAL, size.width - kGutter - 20, rowH);
+            dc->DrawTextLayout({kGutter + 2, y + 1}, layout.get(), Brush(dc, kGroupInk).get());
             DWRITE_TEXT_METRICS tm{};
             layout->GetMetrics(&tm);
-            const float lx = albumL + 2 + tm.widthIncludingTrailingWhitespace + 6;
-            const float line1 = 1.0f / m_scale * std::floor(m_scale);
+            const float lx = kGutter + 2 + tm.widthIncludingTrailingWhitespace + 6;
+            const float line1 = std::floor(m_scale) / m_scale;
             const float ly = std::round((y + rowH / 2 + 1) * m_scale) / m_scale;
             if (lx < size.width - 6)
                 dc->FillRectangle({lx, ly, size.width - 6, ly + line1}, Brush(dc, kGroupRule).get());
@@ -363,11 +481,12 @@ void ListView::PaintGrouped(ID2D1DeviceContext* dc, D2D1_SIZE_F size) {
         if (m_focused && row == focus && !sel)
             dc->DrawRoundedRectangle({{albumR + 0.5f, y + 1.5f, size.width - 2.5f, y + rowH - 0.5f}, 2, 2},
                                      Brush(dc, 0x7DA2CE, 0.6f).get(), 1.0f);
-        PaintCells(dc, row, y, rowH, widths, 1);
+        PaintCells(dc, row, y, rowH, cols);
     }
+    if (!art) return;
 
     // Album column: cover plus album / artist / genre / year beside it, once per group.
-    const float art = kGroupMinLines * rowH - 8;
+    const float artSize = ArtSize();
     for (size_t gi : shownGroups) {
         const auto& g = groups[gi];
         const float top = (static_cast<float>(m_groupLine[gi]) + 1 - static_cast<float>(m_top)) * rowH;
@@ -379,19 +498,22 @@ void ListView::PaintGrouped(ID2D1DeviceContext* dc, D2D1_SIZE_F size) {
                                                 : wp::RowState::Hot;
             wp::RowPlate(dc, {albumL, top + 1, albumR - 2, top + lines * rowH}, st, m_focused);
         }
-        DrawArt(dc, g.art, {albumL + 3, top + 4, albumL + 3 + art, top + 4 + art});
-        const float tx = albumL + 3 + art + 8;
-        for (size_t k = 0; k < g.lines.size(); ++k)
+        DrawArt(dc, g.art, {albumL + 3, top + 4, albumL + 3 + artSize, top + 4 + artSize});
+        const float tx = AlbumTextLeft(albumL);
+        for (size_t k = 0; k < g.lines.size(); ++k) {
+            const bool hotLink = gi == m_hotLinkGroup && k == m_hotLinkLine;
             Text(dc, g.lines[k], {tx, top + k * rowH + 0.5f, albumR - 4, top + (k + 1) * rowH + 0.5f},
-                 k == 0 ? kInk : kSecondaryInk);
+                 hotLink ? kLinkInk : (k == 0 ? kInk : kSecondaryInk), DWRITE_TEXT_ALIGNMENT_LEADING,
+                 DWRITE_FONT_WEIGHT_NORMAL, hotLink);
+        }
     }
 }
 
-void ListView::PaintTiles(ID2D1DeviceContext* dc, D2D1_SIZE_F /*size*/) {
+void ListView::PaintTiles(ID2D1DeviceContext* dc) {
     const size_t n = m_source->Count();
     const size_t cols = TileColumns();
     const D2D1_SIZE_F ts = TileSize();
-    const bool artist = m_source->Tiles() == media::TileStyle::Artist;
+    const bool beside = m_source->Tiles() == media::TileStyle::Artist;
     const size_t focus = m_source->Focus();
     const float lineH = LineHeightPx() / m_scale;
     const size_t visible = VisibleLines() + 1;
@@ -412,7 +534,7 @@ void ListView::PaintTiles(ID2D1DeviceContext* dc, D2D1_SIZE_F /*size*/) {
                                          Brush(dc, 0x7DA2CE, 0.6f).get(), 1.0f);
             }
             const media::TileInfo info = m_source->Tile(idx);
-            if (artist) {
+            if (beside) {
                 const float a = kArtistTileArt, ay = y + (ts.height - a) / 2;
                 DrawArt(dc, info.art, {x + 10, ay, x + 10 + a, ay + a});
                 const float tx = x + 10 + a + 12;
@@ -479,7 +601,7 @@ void ListView::PaintScrollBar() {
     const bool has = ThumbGeometry(&top, &height);
     const float s = m_scale;
     host.Repaint(m_scroll, w, h, s, [&](ID2D1DeviceContext* dc) {
-        wp::ScrollBar(dc, {w / s, h / s}, top / s, has ? height / s : 0, m_thumbHot || m_dragThumb);
+        wp::ScrollBar(dc, {w / s, h / s}, top / s, has ? height / s : 0, m_thumbHot || m_drag == Drag::Thumb);
     });
     PlaceVisual(m_scroll, static_cast<float>(rr.right - m_bounds.left), static_cast<float>(HeaderHeightPx()),
                 static_cast<float>(w), static_cast<float>(h));
@@ -487,55 +609,95 @@ void ListView::PaintScrollBar() {
 
 // ---- Input ----------------------------------------------------------------------------------
 
-ListView::Part ListView::PartAt(POINT pt, size_t* row, size_t* group) const {
-    if (!PtInRect(&m_bounds, pt)) return Part::None;
-    if (pt.y < m_bounds.top + HeaderHeightPx()) return Part::Header;
+ListView::Hit ListView::HitAt(POINT pt) const {
+    Hit hit;
+    if (!PtInRect(&m_bounds, pt)) return hit;
+    const float x = (pt.x - m_bounds.left) / m_scale;
+    if (pt.y < m_bounds.top + HeaderHeightPx()) {
+        hit.part = Part::HeaderCell;
+        hit.col = SIZE_MAX;
+        if (!m_source) return hit;
+        const auto cols = Columns(RowsWidth());
+        for (size_t d = 0; d < cols.size(); ++d)
+            if (std::abs(x - (cols[d].x + cols[d].w)) <= kEdgeGrip) {
+                hit.part = Part::HeaderEdge;
+                hit.col = d;
+                return hit;
+            }
+        for (size_t d = 0; d < cols.size(); ++d)
+            if (x >= cols[d].x && x < cols[d].x + cols[d].w) hit.col = d;
+        return hit;
+    }
     const RECT rr = RowsRect();
     if (pt.x >= rr.right) {
         float top = 0, height = 0;
+        hit.part = Part::Track;
         if (ThumbGeometry(&top, &height)) {
             const float y = static_cast<float>(pt.y - rr.top);
-            if (y >= top && y < top + height) return Part::Thumb;
+            if (y >= top && y < top + height) hit.part = Part::Thumb;
         }
-        return Part::Track;
+        return hit;
     }
-    if (!m_source) return Part::Empty;
+    hit.part = Part::Empty;
+    if (!m_source) return hit;
     const size_t line = m_top + static_cast<size_t>((pt.y - rr.top) / std::max(LineHeightPx(), 1));
-    const float x = (pt.x - rr.left) / m_scale;
     switch (m_mode) {
     case Mode::Tiles: {
         const size_t cols = TileColumns();
-        if (x < kTilePad) return Part::Empty;
+        if (x < kTilePad) return hit;
         const size_t col = static_cast<size_t>((x - kTilePad) / TileSize().width);
         const size_t idx = line * cols + col;
-        if (col >= cols || idx >= m_source->Count()) return Part::Empty;
-        if (row) *row = idx;
-        return Part::Row;
+        if (col >= cols || idx >= m_source->Count()) return hit;
+        hit.part = Part::Row;
+        hit.row = idx;
+        return hit;
     }
     case Mode::Grouped: {
-        if (line >= m_lines.size()) return Part::Empty;
+        if (line >= m_lines.size()) return hit;
         const Line& l = m_lines[line];
-        const auto widths = ColumnWidths((rr.right - rr.left) / m_scale);
-        const float albumR = kGutter + (widths.empty() ? 0 : widths[0]);
-        if (l.kind != Line::GroupHeader && x >= kGutter && x < albumR) {
-            if (group) *group = l.group;
-            return Part::AlbumColumn;
+        if (AlbumColumn()) {
+            const auto cols = Columns(RowsWidth());
+            const float albumL = cols[0].x, albumR = cols[0].x + cols[0].w;
+            if (l.kind != Line::GroupHeader && x >= albumL && x < albumR) {
+                hit.part = Part::AlbumColumn;
+                hit.group = l.group;
+                const auto& g = (*m_source->Groups())[l.group];
+                const size_t k = l.sub;
+                const float tx = AlbumTextLeft(albumL);
+                if (k < g.lines.size() && !g.linkKeys[k].empty() && !g.lines[k].empty() && x >= tx &&
+                    x <= tx + TextWidth(g.lines[k], albumR - 4 - tx)) {
+                    hit.part = Part::Link;
+                    hit.line = k;
+                }
+                return hit;
+            }
         }
-        if (l.kind != Line::Item) return Part::Empty;
-        if (row) *row = l.row;
-        return Part::Row;
+        if (l.kind != Line::Item) return hit;
+        hit.part = Part::Row;
+        hit.row = l.row;
+        return hit;
     }
     default:
         if (line < m_source->Count()) {
-            if (row) *row = line;
-            return Part::Row;
+            hit.part = Part::Row;
+            hit.row = line;
         }
-        return Part::Empty;
+        return hit;
+    }
+}
+
+LPCWSTR ListView::CursorAt(POINT pt) const {
+    if (m_drag == Drag::Resize) return IDC_SIZEWE;
+    switch (HitAt(pt).part) {
+    case Part::HeaderEdge: return IDC_SIZEWE;
+    case Part::Link: return IDC_HAND;
+    default: return nullptr;
     }
 }
 
 void ListView::OnMouseMove(POINT pt) {
-    if (m_dragThumb) {
+    switch (m_drag) {
+    case Drag::Thumb: {
         const RECT rr = RowsRect();
         float top = 0, height = 0;
         if (ThumbGeometry(&top, &height)) {
@@ -546,14 +708,39 @@ void ListView::OnMouseMove(POINT pt) {
         }
         return;
     }
-    size_t row = SIZE_MAX, group = SIZE_MAX;
-    const Part part = PartAt(pt, &row, &group);
-    const size_t hot = part == Part::Row ? row : SIZE_MAX;
-    const size_t hotGroup = part == Part::AlbumColumn ? group : SIZE_MAX;
-    const bool thumbHot = part == Part::Thumb;
-    if (hot != m_hot || hotGroup != m_hotGroup) {
+    case Drag::Resize: {
+        const auto cols = Columns(RowsWidth());
+        if (m_dragCol < cols.size()) {
+            const size_t src = cols[m_dragCol].src;
+            if (m_widths.size() <= src) m_widths.resize(src + 1, -1.0f);
+            m_widths[src] = std::max(kMinColumn, m_dragStartW + (pt.x - m_dragStartX) / m_scale);
+            PaintHeader();
+            PaintRows();
+        }
+        return;
+    }
+    case Drag::PendingMove:
+        if (std::abs(pt.x - m_dragStartX) < kMoveThreshold * m_scale) return;
+        m_drag = Drag::Move;
+        [[fallthrough]];
+    case Drag::Move:
+        m_dragX = pt.x;
+        PaintHeader();
+        return;
+    default:
+        break;
+    }
+    const Hit hit = HitAt(pt);
+    const size_t hot = hit.part == Part::Row ? hit.row : SIZE_MAX;
+    const size_t hotGroup = hit.part == Part::AlbumColumn || hit.part == Part::Link ? hit.group : SIZE_MAX;
+    const size_t linkGroup = hit.part == Part::Link ? hit.group : SIZE_MAX;
+    const size_t linkLine = hit.part == Part::Link ? hit.line : 0;
+    const bool thumbHot = hit.part == Part::Thumb;
+    if (hot != m_hot || hotGroup != m_hotGroup || linkGroup != m_hotLinkGroup || linkLine != m_hotLinkLine) {
         m_hot = hot;
         m_hotGroup = hotGroup;
+        m_hotLinkGroup = linkGroup;
+        m_hotLinkLine = linkLine;
         PaintRows();
     }
     if (thumbHot != m_thumbHot) {
@@ -563,10 +750,11 @@ void ListView::OnMouseMove(POINT pt) {
 }
 
 void ListView::OnMouseLeave() {
-    if (m_dragThumb) return;
-    if (m_hot != SIZE_MAX || m_hotGroup != SIZE_MAX) {
+    if (m_drag != Drag::None) return;
+    if (m_hot != SIZE_MAX || m_hotGroup != SIZE_MAX || m_hotLinkGroup != SIZE_MAX) {
         m_hot = SIZE_MAX;
         m_hotGroup = SIZE_MAX;
+        m_hotLinkGroup = SIZE_MAX;
         PaintRows();
     }
     if (m_thumbHot) {
@@ -576,12 +764,12 @@ void ListView::OnMouseLeave() {
 }
 
 void ListView::OnLButtonDown(POINT pt, bool ctrl, bool shift) {
-    size_t row = SIZE_MAX, group = SIZE_MAX;
-    switch (PartAt(pt, &row, &group)) {
+    const Hit hit = HitAt(pt);
+    switch (hit.part) {
     case Part::Thumb: {
         float top = 0, height = 0;
         ThumbGeometry(&top, &height);
-        m_dragThumb = true;
+        m_drag = Drag::Thumb;
         m_dragOffset = static_cast<int>(pt.y - RowsRect().top - top);
         PaintScrollBar();
         break;
@@ -597,11 +785,30 @@ void ListView::OnLButtonDown(POINT pt, bool ctrl, bool shift) {
         }
         break;
     }
+    case Part::HeaderEdge: {
+        const auto cols = Columns(RowsWidth());
+        m_drag = Drag::Resize;
+        m_dragCol = hit.col;
+        m_dragStartX = pt.x;
+        m_dragStartW = cols[hit.col].w;
+        break;
+    }
+    case Part::HeaderCell:
+        // The album column stays in front; any other column can be dragged elsewhere.
+        if (hit.col != SIZE_MAX && !(AlbumColumn() && hit.col == 0)) {
+            m_drag = Drag::PendingMove;
+            m_dragCol = hit.col;
+            m_dragStartX = m_dragX = pt.x;
+        }
+        break;
     case Part::Row:
-        MoveFocus(row, ctrl, shift);
+        MoveFocus(hit.row, ctrl, shift);
+        break;
+    case Part::Link:
+        if (onLink) onLink(hit.group, hit.line);
         break;
     case Part::AlbumColumn: {  // WMP: clicking the album cell selects the whole album
-        const auto& g = (*m_source->Groups())[group];
+        const auto& g = (*m_source->Groups())[hit.group];
         if (g.count == 0) break;
         m_source->SelectRange(g.first, g.first + g.count - 1, ctrl);
         m_source->SetFocus(g.first);
@@ -614,43 +821,75 @@ void ListView::OnLButtonDown(POINT pt, bool ctrl, bool shift) {
     }
 }
 
-void ListView::OnLButtonUp(POINT) {
-    if (m_dragThumb) {
-        m_dragThumb = false;
-        PaintScrollBar();
+void ListView::OnLButtonUp(POINT pt) {
+    const Drag drag = m_drag;
+    m_drag = Drag::None;
+    switch (drag) {
+    case Drag::Thumb: PaintScrollBar(); break;
+    case Drag::Resize: SaveColumnLayout(); break;
+    case Drag::Move: {
+        const auto cols = Columns(RowsWidth());
+        const float x = (pt.x - m_bounds.left) / m_scale;
+        size_t target = cols.size();
+        for (size_t d = 0; d < cols.size(); ++d)
+            if (x < cols[d].x + cols[d].w / 2) {
+                target = d;
+                break;
+            }
+        if (AlbumColumn()) target = std::max<size_t>(target, 1);
+        if (m_dragCol < m_order.size() && target != m_dragCol && target != m_dragCol + 1) {
+            const size_t src = m_order[m_dragCol];
+            m_order.erase(m_order.begin() + static_cast<ptrdiff_t>(m_dragCol));
+            if (target > m_dragCol) --target;
+            m_order.insert(m_order.begin() + static_cast<ptrdiff_t>(std::min(target, m_order.size())), src);
+            SaveColumnLayout();
+        }
+        PaintHeader();
+        PaintRows();
+        break;
+    }
+    default: break;
     }
 }
 
+void ListView::CancelDrag() {
+    if (m_drag == Drag::None) return;
+    m_drag = Drag::None;
+    PaintHeader();
+    PaintRows();
+    PaintScrollBar();
+}
+
 void ListView::OnDoubleClick(POINT pt) {
-    size_t row = SIZE_MAX, group = SIZE_MAX;
-    const Part part = PartAt(pt, &row, &group);
-    if (part == Part::AlbumColumn && m_source) {
-        const auto& g = (*m_source->Groups())[group];
+    const Hit hit = HitAt(pt);
+    if (hit.part == Part::AlbumColumn && m_source) {
+        const auto& g = (*m_source->Groups())[hit.group];
         if (g.count) m_source->Activate(g.first);
         PaintRows();
-    } else if (part == Part::Row && m_source) {
-        m_source->Activate(row);
+    } else if (hit.part == Part::Row && m_source) {
+        m_source->Activate(hit.row);
         PaintRows();
     }
 }
 
 void ListView::OnRButtonUp(HWND owner, POINT pt) {
     if (!m_source) return;
-    size_t row = SIZE_MAX, group = SIZE_MAX;
-    const Part part = PartAt(pt, &row, &group);
-    if (part == Part::Row && !m_source->IsSelected(row)) {
-        m_source->SelectOnly(row);
-        m_source->SetFocus(row);
-        m_anchor = row;
+    const Hit hit = HitAt(pt);
+    if (hit.part == Part::Row && !m_source->IsSelected(hit.row)) {
+        m_source->SelectOnly(hit.row);
+        m_source->SetFocus(hit.row);
+        m_anchor = hit.row;
         PaintRows();
-    } else if (part == Part::AlbumColumn) {
-        const auto& g = (*m_source->Groups())[group];
+    } else if (hit.part == Part::AlbumColumn || hit.part == Part::Link) {
+        const auto& g = (*m_source->Groups())[hit.group];
         if (g.count) {
             m_source->SelectRange(g.first, g.first + g.count - 1, false);
             m_source->SetFocus(g.first);
             m_anchor = g.first;
             PaintRows();
         }
+    } else if (hit.part == Part::HeaderCell || hit.part == Part::HeaderEdge) {
+        return;
     }
     POINT screen = pt;
     ClientToScreen(owner, &screen);

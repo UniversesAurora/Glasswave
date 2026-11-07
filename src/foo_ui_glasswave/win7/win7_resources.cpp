@@ -18,6 +18,7 @@ struct ModuleInfo {
 const ModuleInfo kModules[] = {
     {L"wmploc.dll", MAKEINTRESOURCEW(257)},
     {L"aero.msstyles", L"IMAGE"},
+    {L"aero.msstyles", L"STREAM"},
     {L"ehres.dll", MAKEINTRESOURCEW(10)},
 };
 static_assert(std::size(kModules) == static_cast<size_t>(Module::Count));
@@ -102,14 +103,46 @@ D2D1_SIZE_U Resources::Size(Module module, const std::wstring& name) {
     return {w, h};
 }
 
+winrt::com_ptr<IWICBitmapSource> Resources::LoadHd(Module module, const std::wstring& name, IWICBitmapSource* base) {
+    static const wchar_t* const kDirs[] = {L"wmploc", L"aero", L"atlas", L"ehres"};
+    static_assert(std::size(kDirs) == static_cast<size_t>(Module::Count));
+    std::wstring file = name[0] == L'#' ? name.substr(1) : name;
+    const std::wstring path = m_folder + L"hd\\" + kDirs[static_cast<size_t>(module)] + L"\\" + file + L"@2x.png";
+    if (GetFileAttributesW(path.c_str()) == INVALID_FILE_ATTRIBUTES) return nullptr;
+    auto* wic = gfx::CompositionHost::Get().Wic();
+    winrt::com_ptr<IWICBitmapDecoder> decoder;
+    winrt::com_ptr<IWICBitmapFrameDecode> frame;
+    winrt::com_ptr<IWICFormatConverter> converter;
+    if (FAILED(wic->CreateDecoderFromFilename(path.c_str(), nullptr, GENERIC_READ, WICDecodeMetadataCacheOnDemand,
+                                              decoder.put())) ||
+        FAILED(decoder->GetFrame(0, frame.put())) || FAILED(wic->CreateFormatConverter(converter.put())) ||
+        FAILED(converter->Initialize(frame.get(), GUID_WICPixelFormat32bppPBGRA, WICBitmapDitherTypeNone, nullptr, 0,
+                                     WICBitmapPaletteTypeMedianCut)))
+        return nullptr;
+    UINT w = 0, h = 0, bw = 0, bh = 0;
+    converter->GetSize(&w, &h);
+    base->GetSize(&bw, &bh);
+    if (w != 2 * bw || h != 2 * bh) return nullptr;  // must be exactly twice the original
+    return converter;
+}
+
 ID2D1Bitmap* Resources::Bitmap(ID2D1DeviceContext* dc, Module module, const std::wstring& name) {
     const auto key = std::make_pair(static_cast<int>(module), name);
     // Every drawing surface comes from the one D2D device, so device bitmaps can be shared.
     if (auto it = m_device.find(key); it != m_device.end()) return it->second.get();
     IWICBitmapSource* src = Decode(module, name);
     if (!src) return nullptr;
+    // An optional high-resolution replacement, hd\<module>\<name>@2x.png in the artwork
+    // folder (made locally from the user's own files, never shipped), is used at 192 DPI so
+    // every coordinate stays in original bitmap pixels.
+    float dpi = 96.0f;
+    winrt::com_ptr<IWICBitmapSource> hd = LoadHd(module, name, src);
+    if (hd) {
+        src = hd.get();
+        dpi = 192.0f;
+    }
     const auto props = D2D1::BitmapProperties(
-        D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED), 96.0f, 96.0f);
+        D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED), dpi, dpi);
     winrt::com_ptr<ID2D1Bitmap> bmp;
     if (FAILED(dc->CreateBitmapFromWicBitmap(src, &props, bmp.put()))) return nullptr;
     m_device[key] = bmp;
@@ -121,6 +154,41 @@ bool DrawPart(ID2D1DeviceContext* dc, Module module, int id, D2D1_RECT_F src, D2
     if (!bmp) return false;
     const D2D1_RECT_F dst{at.x, at.y, at.x + (src.right - src.left), at.y + (src.bottom - src.top)};
     dc->DrawBitmap(bmp, &dst, opacity, D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC, &src, nullptr);
+    return true;
+}
+
+namespace {
+// Nearest-neighbour when a piece maps whole bitmap pixels onto whole device pixels
+// (crisp, e.g. 1:1 or 2:1 at 200 %), high-quality cubic otherwise.
+D2D1_INTERPOLATION_MODE ModeFor(ID2D1DeviceContext* dc, const D2D1_RECT_F& src, const D2D1_RECT_F& dst) {
+    float dpiX = 96, dpiY = 96;
+    dc->GetDpi(&dpiX, &dpiY);
+    const float sx = (dst.right - dst.left) * dpiX / 96.0f / std::max(src.right - src.left, 1e-3f);
+    const float sy = (dst.bottom - dst.top) * dpiY / 96.0f / std::max(src.bottom - src.top, 1e-3f);
+    auto whole = [](float v) { return v >= 1.0f && std::abs(v - std::round(v)) < 1e-3f; };
+    return whole(sx) && whole(sy) ? D2D1_INTERPOLATION_MODE_NEAREST_NEIGHBOR
+                                  : D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC;
+}
+}  // namespace
+
+bool DrawNineGrid(ID2D1DeviceContext* dc, Module module, int id, D2D1_RECT_F src, D2D1_RECT_F m, D2D1_RECT_F dst,
+                  float opacity) {
+    ID2D1Bitmap* bmp = Resources::Get().Bitmap(dc, module, id);
+    if (!bmp) return false;
+    // Fixed borders shrink proportionally when the target is smaller than they are.
+    const float kx = std::min(1.0f, (dst.right - dst.left) / std::max(m.left + m.right, 1e-3f));
+    const float ky = std::min(1.0f, (dst.bottom - dst.top) / std::max(m.top + m.bottom, 1e-3f));
+    const float sx[4] = {src.left, src.left + m.left, src.right - m.right, src.right};
+    const float sy[4] = {src.top, src.top + m.top, src.bottom - m.bottom, src.bottom};
+    const float dx[4] = {dst.left, dst.left + m.left * kx, dst.right - m.right * kx, dst.right};
+    const float dy[4] = {dst.top, dst.top + m.top * ky, dst.bottom - m.bottom * ky, dst.bottom};
+    for (int r = 0; r < 3; ++r)
+        for (int c = 0; c < 3; ++c) {
+            const D2D1_RECT_F s{sx[c], sy[r], sx[c + 1], sy[r + 1]}, d{dx[c], dy[r], dx[c + 1], dy[r + 1]};
+            if (s.right - s.left <= 0 || s.bottom - s.top <= 0 || d.right - d.left <= 0 || d.bottom - d.top <= 0)
+                continue;
+            dc->DrawBitmap(bmp, &d, opacity, ModeFor(dc, s, d), &s, nullptr);
+        }
     return true;
 }
 
