@@ -36,9 +36,13 @@ constexpr D2D1_RECT_F kMinGlyph[4] = {{0, 596, 14, 652}, {15, 310, 32, 378}, {36
 constexpr D2D1_RECT_F kRestoreGlyph[4] = {{0, 540, 14, 596}, {15, 446, 32, 514}, {36, 510, 57, 590}, {58, 511, 83, 599}};
 constexpr float kGlyphScale[4] = {1.0f, 1.25f, 1.5f, 2.0f};
 
+// The atlas packer surrounds every image with a one-pixel gutter (its edge pixels
+// repeated) against filtering bleed; the image proper is one pixel inside.
+D2D1_RECT_F Inner(const D2D1_RECT_F& r) { return {r.left + 1, r.top + 1, r.right - 1, r.bottom - 1}; }
+
 D2D1_RECT_F State(const D2D1_RECT_F& r, int states, int state) {
     const float h = (r.bottom - r.top) / states;
-    return {r.left, r.top + h * state, r.right, r.top + h * (state + 1)};
+    return Inner({r.left, r.top + h * state, r.right, r.top + h * (state + 1)});
 }
 
 float Scale(ID2D1DeviceContext* dc) {
@@ -68,26 +72,36 @@ void CaptionButton(ID2D1DeviceContext* dc, D2D1_SIZE_F size, Button button, pain
     win7::DrawNineGrid(dc, Module::AeroAtlas, kAtlas, State(part.rect, part.states, state), part.sizing,
                        D2D1::RectF(0, 0, size.width, size.height));
 
-    // Glyph: the set made for the nearest DPI at or below ours, centered in the content area.
+    // Glyph. Up to 150 % the set made for the DPI is drawn 1:1. Win7's 192-DPI set is
+    // drawn relatively smaller than the others, so above 150 % it is scaled to the size the
+    // 96 / 120 / 144 sets have (the proportions of the owner's Win7 at 150 %).
     const float s = Scale(dc);
-    int set = s >= 2.0f ? 3 : s >= 1.5f ? 2 : s >= 1.25f ? 1 : 0;
+    const int set = s > 1.5f ? 3 : s >= 1.5f ? 2 : s >= 1.25f ? 1 : 0;
     const D2D1_RECT_F* glyphs = glyph == paint::CaptionGlyph::Close      ? kCloseGlyph
                                 : glyph == paint::CaptionGlyph::Maximize ? kMaxGlyph
                                 : glyph == paint::CaptionGlyph::Restore  ? kRestoreGlyph
                                                                          : kMinGlyph;
     // Inactive windows show the dimmed glyph, as Win7 does.
-    const D2D1_RECT_F src = State(glyphs[set], 4, inactive ? 3 : state);
-    const float k = 1.0f / kGlyphScale[set];  // DIP per glyph pixel
+    const int glyphState = inactive ? 3 : state;
+    const D2D1_RECT_F src = State(glyphs[set], 4, glyphState);
+    float k = 1.0f / kGlyphScale[set];  // DIP per glyph pixel
+    if (set == 3) {
+        const D2D1_RECT_F ref = State(glyphs[2], 4, glyphState);
+        k = (ref.bottom - ref.top) / 1.5f / (src.bottom - src.top);
+    }
     const float w = (src.right - src.left) * k, h = (src.bottom - src.top) * k;
+    // Content margins are bitmap pixels, like the borders: one device pixel each.
     const D2D1_RECT_F& cm = part.content;
-    const float cx = (cm.left + size.width - cm.right) / 2, cy = (cm.top + size.height - cm.bottom) / 2;
+    const float px = 1.0f / s;
+    const float cx = (cm.left * px + size.width - cm.right * px) / 2, cy = (cm.top * px + size.height - cm.bottom * px) / 2;
     const float x = Snap(cx - w / 2, s), y = Snap(cy - h / 2, s);
     win7::DrawNineGrid(dc, Module::AeroAtlas, kAtlas, src, {}, D2D1::RectF(x, y, x + w, y + h));
 }
 
 void CaptionGlow(ID2D1DeviceContext* dc, D2D1_SIZE_F size, bool close) {
     const Part& part = close ? kCloseGlow : kGlow;
-    win7::DrawNineGrid(dc, Module::AeroAtlas, kAtlas, part.rect, part.sizing, D2D1::RectF(0, 0, size.width, size.height));
+    win7::DrawNineGrid(dc, Module::AeroAtlas, kAtlas, Inner(part.rect), part.sizing,
+                       D2D1::RectF(0, 0, size.width, size.height));
 }
 
 void Glare(ID2D1DeviceContext* dc, bool active, D2D1_SIZE_F size) {
@@ -96,7 +110,7 @@ void Glare(ID2D1DeviceContext* dc, bool active, D2D1_SIZE_F size) {
 }
 
 void Streaks(ID2D1DeviceContext* dc, D2D1_SIZE_F size) {
-    win7::DrawNineGrid(dc, Module::AeroAtlas, kAtlas, kStreaks, {}, D2D1::RectF(0, 0, size.width, size.height));
+    win7::DrawNineGrid(dc, Module::AeroAtlas, kAtlas, Inner(kStreaks), {}, D2D1::RectF(0, 0, size.width, size.height));
 }
 
 }  // namespace glasswave::aero::atlas

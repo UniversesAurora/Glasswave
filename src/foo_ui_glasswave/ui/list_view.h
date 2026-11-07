@@ -67,6 +67,8 @@ private:
     void BuildLines();
     void LoadColumnLayout();
     void SaveColumnLayout() const;
+    void ShowHeaderMenu(HWND owner, POINT pt, size_t displayCol);
+    void SortBy(size_t srcColumn);
     std::vector<Col> Columns(float total) const;
     bool AlbumColumn() const { return m_mode == Mode::Grouped && m_groupArt; }
     float ArtSize() const;
@@ -111,6 +113,7 @@ private:
     std::wstring m_columnKey;
     std::vector<size_t> m_order;
     std::vector<float> m_widths;
+    std::vector<uint8_t> m_hidden;  // per source column
 
     RECT m_bounds{};
     float m_scale = 1.0f;
@@ -119,6 +122,7 @@ private:
     size_t m_hot = SIZE_MAX;
     size_t m_hotGroup = SIZE_MAX;
     size_t m_hotLinkGroup = SIZE_MAX, m_hotLinkLine = 0;
+    size_t m_hotHeader = SIZE_MAX;  // display index of the hovered header cell
     size_t m_anchor = SIZE_MAX;
     bool m_thumbHot = false;
     Drag m_drag = Drag::None;

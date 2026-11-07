@@ -150,8 +150,8 @@ ID2D1Bitmap* Resources::Bitmap(ID2D1DeviceContext* dc, Module module, const std:
     return bmp.get();
 }
 
-ID2D1Bitmap* Resources::Piece(ID2D1DeviceContext* dc, Module module, int id, const D2D1_RECT_U& src) {
-    const std::wstring key = std::to_wstring(static_cast<int>(module)) + L":" + std::to_wstring(id) + L":" +
+ID2D1Bitmap* Resources::Piece(ID2D1DeviceContext* dc, Module module, const std::wstring& id, const D2D1_RECT_U& src) {
+    const std::wstring key = std::to_wstring(static_cast<int>(module)) + L":" + id + L":" +
                              std::to_wstring(src.left) + L"," + std::to_wstring(src.top) + L"," +
                              std::to_wstring(src.right) + L"," + std::to_wstring(src.bottom);
     if (auto it = m_pieces.find(key); it != m_pieces.end()) return it->second.get();
@@ -198,8 +198,8 @@ D2D1_INTERPOLATION_MODE ModeFor(ID2D1DeviceContext* dc, const D2D1_RECT_F& src, 
 }
 }  // namespace
 
-bool DrawNineGrid(ID2D1DeviceContext* dc, Module module, int id, D2D1_RECT_F src, D2D1_RECT_F m, D2D1_RECT_F dst,
-                  float opacity) {
+bool DrawNineGrid(ID2D1DeviceContext* dc, Module module, const std::wstring& id, D2D1_RECT_F src, D2D1_RECT_F m,
+                  D2D1_RECT_F dst, float opacity) {
     if (!Resources::Get().Bitmap(dc, module, id)) return false;
     float dpiX = 96, dpiY = 96;
     dc->GetDpi(&dpiX, &dpiY);

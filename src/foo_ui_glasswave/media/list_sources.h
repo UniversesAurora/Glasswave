@@ -10,6 +10,8 @@ struct Column {
     float width = 100;  // DIP; ignored for the flexible column
     bool flex = false;
     bool rightAlign = false;
+    bool hidden = false;  // offered under "Choose columns" but off by default
+    const char* format = nullptr;  // titleformat for columns read straight from the track
 };
 
 // WMP 12 details view grouped by album: a header line, then the tracks next to an
@@ -50,6 +52,12 @@ public:
     virtual TileInfo Tile(size_t /*row*/) const { return {}; }
     // Draw the album column (cover + lines) beside grouped rows, or only header lines.
     virtual bool GroupArt() const { return Groups() != nullptr; }
+
+    // Sorting by a column (header click / "Sort by"). SortColumn() is SIZE_MAX when unsorted.
+    virtual bool CanSort(size_t /*column*/) const { return false; }
+    virtual void Sort(size_t /*column*/, bool /*descending*/) {}
+    virtual size_t SortColumn() const { return SIZE_MAX; }
+    virtual bool SortDescending() const { return false; }
 
     // View options offered by the view button.
     virtual bool SupportsViewStyle(ViewStyle) const { return false; }
@@ -99,9 +107,16 @@ public:
     bool DeleteSelected() override;
     metadb_handle_list SelectedItems() const override;
     void SetFilter(std::wstring_view filterLower) override;
+    // Sorting reorders the foobar2000 playlist itself (undoable), as WMP 12 does.
+    bool CanSort(size_t column) const override { return column > 0 && column < m_columns.size(); }
+    void Sort(size_t column, bool descending) override;
+    size_t SortColumn() const override { return m_sortColumn; }
+    bool SortDescending() const override { return m_sortDescending; }
 
 private:
     size_t m_playlist;
+    size_t m_sortColumn = SIZE_MAX;
+    bool m_sortDescending = false;
     std::wstring m_filter;
     std::vector<size_t> m_rows;  // playlist item index per visible row
     std::vector<Column> m_columns;
@@ -123,6 +138,10 @@ public:
     bool SupportsViewStyle(ViewStyle s) const override { return s != ViewStyle::Icons; }
     ViewStyle GetViewStyle() const override { return m_style; }
     void SetViewStyle(ViewStyle style) override;
+    bool CanSort(size_t column) const override;
+    void Sort(size_t column, bool descending) override;
+    size_t SortColumn() const override { return m_sortColumn; }
+    bool SortDescending() const override { return m_sortDescending; }
     bool IsSelected(size_t row) const override { return m_selected[m_rows[row]] != 0; }
     void SelectOnly(size_t row) override;
     void Toggle(size_t row) override;
@@ -144,8 +163,15 @@ private:
     std::wstring m_emptyText;
     std::vector<Column> m_columns;
     std::vector<int> m_fields;  // what each column shows
+    std::vector<titleformat_object::ptr> m_scripts;  // per column with a format
     std::vector<RowGroup> m_groups;
     ViewStyle m_style = ViewStyle::Tiles;
+    size_t m_sortColumn = SIZE_MAX;
+    bool m_sortDescending = false;
+    std::vector<size_t> m_libraryOrder;  // m_all as built, for sorting back
+    std::wstring m_filter;
+
+    void ApplySort();
 };
 
 // Artists, albums or genres. Activating a row drills into its tracks.
@@ -166,6 +192,10 @@ public:
     bool SupportsViewStyle(ViewStyle) const override { return true; }
     ViewStyle GetViewStyle() const override { return m_style; }
     void SetViewStyle(ViewStyle style) override { m_style = style; }
+    bool CanSort(size_t column) const override { return column < m_columns.size(); }
+    void Sort(size_t column, bool descending) override;
+    size_t SortColumn() const override { return m_sortColumn; }
+    bool SortDescending() const override { return m_sortDescending; }
     TileInfo Tile(size_t row) const override;
     bool IsSelected(size_t row) const override { return m_selected[m_rows[row]] != 0; }
     void SelectOnly(size_t row) override;
@@ -190,6 +220,8 @@ private:
     size_t m_focus = SIZE_MAX;
     std::vector<Column> m_columns;
     ViewStyle m_style = ViewStyle::Icons;
+    size_t m_sortColumn = SIZE_MAX;
+    bool m_sortDescending = false;
 };
 
 // Replace the "Now Playing" playlist with `items` and start playback at `start`

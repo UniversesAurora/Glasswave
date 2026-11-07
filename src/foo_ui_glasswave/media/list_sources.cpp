@@ -13,6 +13,29 @@ titleformat_object::ptr Compile(const char* pattern) {
     return s;
 }
 
+// Linguistic, case-insensitive, numbers by value ("2" < "10"): -1, 0, 1.
+int CompareText(const std::wstring& a, const std::wstring& b) {
+    return CompareStringEx(LOCALE_NAME_USER_DEFAULT, LINGUISTIC_IGNORECASE | SORT_DIGITSASNUMBERS, a.c_str(),
+                           static_cast<int>(a.size()), b.c_str(), static_cast<int>(b.size()), nullptr, nullptr, 0) -
+           2;
+}
+
+// Columns WMP 12 offers under "Choose columns" beyond the default ones (hidden by default).
+std::vector<Column> ExtraColumns() {
+    return {
+        {L"Album artist", 150, false, false, true, "[%album artist%]"},
+        {L"Composer", 150, false, false, true, "[%composer%]"},
+        {L"Rating", 60, false, false, true, "[%rating%]"},
+        {L"Play count", 70, false, true, true, "[%play_count%]"},
+        {L"Bit rate", 70, false, true, true, "[%bitrate% kbps]"},
+        {L"Type", 60, false, false, true, "[%codec%]"},
+        {L"Size", 70, false, true, true, "[%filesize_natural%]"},
+        {L"Date added", 120, false, false, true, "[%added%]"},
+        {L"File name", 200, false, false, true, "%filename_ext%"},
+        {L"Folder", 260, false, false, true, "$directory_path(%path%)"},
+    };
+}
+
 template <class IsSel, class SetSel>
 void RangeSelect(size_t count, size_t a, size_t b, bool keepOthers, IsSel, SetSel set) {
     if (a > b) std::swap(a, b);
@@ -41,9 +64,15 @@ void PlayItems(const metadb_handle_list& items, size_t start) {
 
 PlaylistSource::PlaylistSource(size_t playlist) : m_playlist(playlist) {
     m_columns = {{L"#", 34, false, true}, {L"Title", 0, true}, {L"Contributing artist", 170},
-                 {L"Album", 170},         {L"Length", 56, false, true}};
+                 {L"Album", 170},         {L"Length", 56, false, true},
+                 {L"Genre", 110, false, false, true, "[%genre%]"},
+                 {L"Release year", 80, false, false, true, "[$year(%date%)]"}};
     m_scripts = {nullptr, Compile("$if2(%title%,%filename%)"), Compile("[%artist%]"), Compile("[%album%]"),
-                 Compile("[%length%]")};
+                 Compile("[%length%]"), Compile("[%genre%]"), Compile("[$year(%date%)]")};
+    for (auto& extra : ExtraColumns()) {
+        m_scripts.push_back(Compile(extra.format));
+        m_columns.push_back(std::move(extra));
+    }
     Rebuild();
 }
 
@@ -90,6 +119,36 @@ std::wstring PlaylistSource::Cell(size_t row, size_t column) const {
     playlist_manager::get()->playlist_item_format_title(m_playlist, item, nullptr, out, m_scripts[column], nullptr,
                                                         playback_control::display_level_all);
     return ui::Wide(out);
+}
+
+void PlaylistSource::Sort(size_t column, bool descending) {
+    if (!CanSort(column)) return;
+    auto pm = playlist_manager::get();
+    const t_size n = pm->playlist_get_item_count(m_playlist);
+    std::vector<std::wstring> keys(n);
+    pfc::string8 buf;
+    // Sort lengths by duration, everything else by its text.
+    titleformat_object::ptr script = column == 4 ? Compile("%length_seconds_fp%") : m_scripts[column];
+    for (t_size i = 0; i < n; ++i) {
+        pm->playlist_item_format_title(m_playlist, i, nullptr, buf, script, nullptr, playback_control::display_level_none);
+        keys[i] = ui::Wide(buf);
+        if (column == 4) {  // zero-pad so the text compare orders numbers
+            const double v = _wtof(keys[i].c_str());
+            wchar_t pad[32];
+            swprintf_s(pad, L"%012.3f", v);
+            keys[i] = pad;
+        }
+    }
+    std::vector<t_size> order(n);
+    for (t_size i = 0; i < n; ++i) order[i] = i;
+    std::stable_sort(order.begin(), order.end(), [&](t_size a, t_size b) {
+        const int c = CompareText(keys[a], keys[b]);
+        return descending ? c > 0 : c < 0;
+    });
+    m_sortColumn = column;
+    m_sortDescending = descending;
+    pm->playlist_undo_backup(m_playlist);
+    pm->playlist_reorder_items(m_playlist, order.data(), n);
 }
 
 std::wstring PlaylistSource::EmptyText() const {
@@ -184,12 +243,13 @@ TrackSource::TrackSource(const LibraryModel& model, std::vector<size_t> tracks, 
     std::stable_sort(m_all.begin(), m_all.end(), [&](size_t a, size_t b) {
         return m_model.AlbumRank(m_model.Tracks()[a].albumIndex) < m_model.AlbumRank(m_model.Tracks()[b].albumIndex);
     });
+    m_libraryOrder = m_all;
     m_selected.assign(m_all.size(), 0);
     SetFilter({});
 }
 
 namespace {
-enum Field { kAlbumColumn, kNumber, kTitle, kLength, kArtist, kAlbum, kGenre, kYear };
+enum Field { kAlbumColumn, kNumber, kTitle, kLength, kArtist, kAlbum, kGenre, kYear, kFormat };
 }
 
 void TrackSource::SetViewStyle(ViewStyle style) {
@@ -197,14 +257,88 @@ void TrackSource::SetViewStyle(ViewStyle style) {
     // WMP 12 music views: "Expanded tile" has the album column (cover and album details),
     // "Details" lists everything in columns under the album headers.
     if (m_style == ViewStyle::Tiles) {
-        m_columns = {{L"Album", 200},          {L"#", 34, false, true},         {L"Title", 0, true},
-                     {L"Length", 56, false, true}, {L"Contributing artist", 190}, {L"Genre", 110}};
-        m_fields = {kAlbumColumn, kNumber, kTitle, kLength, kArtist, kGenre};
+        m_columns = {{L"Album", 200},
+                     {L"#", 34, false, true},
+                     {L"Title", 0, true},
+                     {L"Length", 56, false, true},
+                     {L"Contributing artist", 190},
+                     {L"Genre", 110},
+                     {L"Release year", 80, false, false, true}};
+        m_fields = {kAlbumColumn, kNumber, kTitle, kLength, kArtist, kGenre, kYear};
     } else {
         m_columns = {{L"#", 34, false, true}, {L"Title", 0, true},  {L"Length", 56, false, true},
                      {L"Contributing artist", 170}, {L"Album", 170}, {L"Genre", 110}, {L"Release year", 80}};
         m_fields = {kNumber, kTitle, kLength, kArtist, kAlbum, kGenre, kYear};
     }
+    m_scripts.assign(m_columns.size(), nullptr);
+    for (auto& extra : ExtraColumns()) {
+        m_scripts.push_back(Compile(extra.format));
+        m_fields.push_back(kFormat);
+        m_columns.push_back(std::move(extra));
+    }
+    m_sortColumn = SIZE_MAX;  // columns changed: back to the library order
+    if (!m_libraryOrder.empty()) ApplySort();
+}
+
+bool TrackSource::CanSort(size_t column) const { return column < m_fields.size(); }
+
+void TrackSource::Sort(size_t column, bool descending) {
+    m_sortColumn = CanSort(column) ? column : SIZE_MAX;
+    m_sortDescending = descending;
+    ApplySort();
+}
+
+void TrackSource::ApplySort() {
+    m_all = m_libraryOrder;
+    const auto& tracks = m_model.Tracks();
+    const auto& albums = m_model.Groups(GroupKind::Album);
+    if (m_sortColumn != SIZE_MAX) {
+        const int field = m_fields[m_sortColumn];
+        const bool byAlbum = field == kAlbumColumn || field == kAlbum;
+        auto albumName = [&](size_t t) {
+            const size_t a = tracks[t].albumIndex;
+            return a < albums.size() ? albums[a].name : tracks[t].album;
+        };
+        // Track columns sort inside each album; the album columns order the albums.
+        std::vector<std::wstring> keys(tracks.size());
+        if (!byAlbum) {
+            pfc::string8 buf;
+            for (size_t t : m_all) {
+                const Track& tr = tracks[t];
+                switch (field) {
+                case kNumber: keys[t] = tr.number; break;
+                case kTitle: keys[t] = tr.title; break;
+                case kLength: {
+                    wchar_t pad[32];
+                    swprintf_s(pad, L"%012.3f", tr.seconds);
+                    keys[t] = pad;
+                    break;
+                }
+                case kArtist: keys[t] = tr.artist; break;
+                case kGenre: keys[t] = tr.genre; break;
+                case kYear: keys[t] = tr.year; break;
+                default:
+                    tr.handle->format_title(nullptr, buf, m_scripts[m_sortColumn], nullptr);
+                    keys[t] = ui::Wide(buf);
+                    break;
+                }
+            }
+        }
+        const bool desc = m_sortDescending;
+        std::stable_sort(m_all.begin(), m_all.end(), [&](size_t a, size_t b) {
+            if (byAlbum) {
+                const int c = CompareText(albumName(a), albumName(b));
+                if (c) return desc ? c > 0 : c < 0;
+                return tracks[a].albumIndex < tracks[b].albumIndex;  // same title: keep albums apart
+            }
+            const size_t ra = m_model.AlbumRank(tracks[a].albumIndex), rb = m_model.AlbumRank(tracks[b].albumIndex);
+            if (ra != rb) return ra < rb;
+            const int c = CompareText(keys[a], keys[b]);
+            return desc ? c > 0 : c < 0;
+        });
+    }
+    m_selected.assign(m_all.size(), 0);
+    SetFilter(m_filter);
 }
 
 std::wstring TrackSource::Cell(size_t row, size_t column) const {
@@ -217,6 +351,12 @@ std::wstring TrackSource::Cell(size_t row, size_t column) const {
     case kAlbum: return t.album;
     case kGenre: return t.genre;
     case kYear: return t.year;
+    case kFormat: {
+        pfc::string8 out;
+        if (column < m_scripts.size() && m_scripts[column].is_valid())
+            t.handle->format_title(nullptr, out, m_scripts[column], nullptr);
+        return ui::Wide(out);
+    }
     default: return {};  // the album column is drawn by the list
     }
 }
@@ -262,6 +402,7 @@ metadb_handle_list TrackSource::SelectedItems() const {
 }
 
 void TrackSource::SetFilter(std::wstring_view filterLower) {
+    m_filter = filterLower;
     m_rows.clear();
     for (size_t i = 0; i < m_all.size(); ++i)
         if (filterLower.empty() || MatchesFilter(m_model.Tracks()[m_all[i]].search, filterLower)) m_rows.push_back(i);
@@ -321,6 +462,29 @@ std::wstring GroupSource::Cell(size_t row, size_t column) const {
     if (column == 1) return g.secondary;
     if (column == 2) return g.tracks.empty() ? std::wstring() : m_model.Tracks()[g.tracks.front()].genre;
     return g.year;
+}
+
+void GroupSource::Sort(size_t column, bool descending) {
+    if (!CanSort(column)) return;
+    m_sortColumn = column;
+    m_sortDescending = descending;
+    const auto& groups = m_model.Groups(m_kind);
+    const size_t tail = m_columns.size() - column;  // Count and Length are the last two columns
+    std::vector<std::wstring> keys(groups.size());
+    for (size_t r = 0; r < m_rows.size(); ++r) {
+        const Group& g = groups[m_rows[r]];
+        wchar_t pad[32];
+        if (tail <= 2) {
+            swprintf_s(pad, L"%012.3f", tail == 2 ? static_cast<double>(g.tracks.size()) : g.seconds);
+            keys[m_rows[r]] = pad;
+        } else {
+            keys[m_rows[r]] = Cell(r, column);
+        }
+    }
+    std::stable_sort(m_rows.begin(), m_rows.end(), [&](size_t a, size_t b) {
+        const int c = CompareText(keys[a], keys[b]);
+        return descending ? c > 0 : c < 0;
+    });
 }
 
 TileInfo GroupSource::Tile(size_t row) const {
@@ -388,6 +552,7 @@ void GroupSource::SetFilter(std::wstring_view filterLower) {
     for (size_t i = 0; i < groups.size(); ++i)
         if (filterLower.empty() || MatchesFilter(groups[i].search, filterLower)) m_rows.push_back(i);
     m_focus = SIZE_MAX;
+    if (m_sortColumn != SIZE_MAX) Sort(m_sortColumn, m_sortDescending);
 }
 
 }  // namespace glasswave::media

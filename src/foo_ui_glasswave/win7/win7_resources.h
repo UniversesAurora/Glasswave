@@ -36,7 +36,7 @@ public:
     }
     // A copy of one rectangle of a resource as its own bitmap, so filtering never reaches
     // the neighbouring pixels of an atlas (cached).
-    ID2D1Bitmap* Piece(ID2D1DeviceContext* dc, Module module, int id, const D2D1_RECT_U& src);
+    ID2D1Bitmap* Piece(ID2D1DeviceContext* dc, Module module, const std::wstring& name, const D2D1_RECT_U& src);
 
     const std::wstring& Folder() const { return m_folder; }
 
@@ -67,8 +67,12 @@ bool DrawPart(ID2D1DeviceContext* dc, Module module, int id, D2D1_RECT_F src, D2
 // borders are drawn one bitmap pixel per device pixel at every DPI (hairlines stay
 // hairlines); only the middle stretches. Pieces landing on whole device pixels are copied
 // without filtering.
-bool DrawNineGrid(ID2D1DeviceContext* dc, Module module, int id, D2D1_RECT_F src, D2D1_RECT_F margins,
-                  D2D1_RECT_F dst, float opacity = 1.0f);
+bool DrawNineGrid(ID2D1DeviceContext* dc, Module module, const std::wstring& name, D2D1_RECT_F src,
+                  D2D1_RECT_F margins, D2D1_RECT_F dst, float opacity = 1.0f);
+inline bool DrawNineGrid(ID2D1DeviceContext* dc, Module module, int id, D2D1_RECT_F src, D2D1_RECT_F margins,
+                         D2D1_RECT_F dst, float opacity = 1.0f) {
+    return DrawNineGrid(dc, module, L"#" + std::to_wstring(id), src, margins, dst, opacity);
+}
 // Draw a whole resource scaled into `dst` (DIP).
 bool DrawStretched(ID2D1DeviceContext* dc, Module module, const std::wstring& name, D2D1_RECT_F dst,
                    float opacity = 1.0f);

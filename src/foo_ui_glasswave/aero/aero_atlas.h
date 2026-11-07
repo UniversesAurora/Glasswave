@@ -24,7 +24,7 @@ D2D1_RECT_F GlowOutset(bool close);  // left, top, right, bottom in device pixel
 
 // Top-left glare of the glass frame: 228x175 bitmap pixels, drawn 1:1 in device pixels as
 // DWM does; `size` is that in DIP.
-inline constexpr D2D1_SIZE_U kGlarePixels{228, 175};
+inline constexpr D2D1_SIZE_U kGlarePixels{226, 173};  // 228x175 less the atlas gutter
 void Glare(ID2D1DeviceContext* dc, bool active, D2D1_SIZE_F size);
 // Reflection streak texture stretched over `size` (the monitor).
 void Streaks(ID2D1DeviceContext* dc, D2D1_SIZE_F size);

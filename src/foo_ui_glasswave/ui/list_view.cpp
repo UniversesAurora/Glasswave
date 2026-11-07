@@ -39,6 +39,7 @@ cfg_var_modern::cfg_string cfg_columns({0x5e8b2c47, 0x9a1d, 0x4f63, {0xb0, 0xe2,
 struct SavedLayout {
     std::vector<size_t> order;
     std::vector<float> widths;
+    std::vector<uint8_t> hidden;
 };
 
 std::map<std::wstring, SavedLayout>& Store() {
@@ -52,10 +53,13 @@ std::map<std::wstring, SavedLayout>& Store() {
         while (std::getline(in, line)) {
             const size_t a = line.find(L'\t'), b = line.find(L'\t', a + 1);
             if (a == std::wstring::npos || b == std::wstring::npos) continue;
+            const size_t c = line.find(L'\t', b + 1);  // hidden flags (optional)
             SavedLayout s;
-            std::wstringstream o(line.substr(a + 1, b - a - 1)), w(line.substr(b + 1));
+            std::wstringstream o(line.substr(a + 1, b - a - 1)), w(line.substr(b + 1, c == std::wstring::npos ? std::wstring::npos : c - b - 1));
             for (std::wstring v; std::getline(o, v, L',');) s.order.push_back(static_cast<size_t>(_wtoi(v.c_str())));
             for (std::wstring v; std::getline(w, v, L',');) s.widths.push_back(static_cast<float>(_wtof(v.c_str())));
+            if (c != std::wstring::npos)
+                for (wchar_t ch : line.substr(c + 1)) s.hidden.push_back(ch == L'1' ? 1 : 0);
             store[line.substr(0, a)] = std::move(s);
         }
     }
@@ -70,6 +74,8 @@ void Persist() {
         out += L'\t';
         for (size_t i = 0; i < s.widths.size(); ++i)
             out += (i ? L"," : L"") + std::to_wstring(static_cast<int>(std::lround(s.widths[i])));
+        out += L'\t';
+        for (uint8_t h : s.hidden) out += h ? L'1' : L'0';
         out += L'\n';
     }
     cfg_columns.set(Utf8(out).c_str());
@@ -195,13 +201,15 @@ std::vector<ListView::Col> ListView::Columns(float total) const {
     auto widthOf = [&](size_t i) {
         return i < m_widths.size() && m_widths[i] > 0 ? m_widths[i] : (cols[i].flex ? -1.0f : cols[i].width);
     };
+    auto shown = [&](size_t i) { return !(i < m_hidden.size() ? m_hidden[i] != 0 : cols[i].hidden); };
     float fixed = kGutter;
     for (size_t i = 0; i < cols.size(); ++i)
-        if (widthOf(i) > 0) fixed += widthOf(i);
+        if (shown(i) && widthOf(i) > 0) fixed += widthOf(i);
     const float flex = std::max(120.0f, total - fixed);
     float x = kGutter;
     for (size_t d = 0; d < cols.size(); ++d) {
         const size_t src = d < m_order.size() ? m_order[d] : d;
+        if (!shown(src)) continue;
         const float w = widthOf(src) > 0 ? widthOf(src) : flex;
         out.push_back({src, x, w});
         x += w;
@@ -221,6 +229,8 @@ void ListView::LoadColumnLayout() {
     m_order.resize(cols.size());
     for (size_t i = 0; i < cols.size(); ++i) m_order[i] = i;
     m_widths.assign(cols.size(), -1.0f);
+    m_hidden.resize(cols.size());
+    for (size_t i = 0; i < cols.size(); ++i) m_hidden[i] = cols[i].hidden ? 1 : 0;
     auto it = Store().find(key);
     if (it == Store().end()) return;
     const SavedLayout& s = it->second;
@@ -230,11 +240,12 @@ void ListView::LoadColumnLayout() {
     for (size_t i = 0; valid && i < sorted.size(); ++i) valid = sorted[i] == i;
     if (valid) m_order = s.order;
     if (s.widths.size() == cols.size()) m_widths = s.widths;
+    if (s.hidden.size() == cols.size()) m_hidden = s.hidden;
 }
 
 void ListView::SaveColumnLayout() const {
     if (m_columnKey.empty()) return;
-    Store()[m_columnKey] = {m_order, m_widths};
+    Store()[m_columnKey] = {m_order, m_widths, m_hidden};
     Persist();
 }
 
@@ -268,11 +279,12 @@ void ListView::BuildLines() {
         }
     }
     LoadColumnLayout();
-    // The album column stays first.
+    // The album column stays first and visible.
     if (AlbumColumn() && !m_order.empty() && m_order[0] != 0) {
         m_order.erase(std::find(m_order.begin(), m_order.end(), size_t{0}));
         m_order.insert(m_order.begin(), 0);
     }
+    if (AlbumColumn() && !m_hidden.empty()) m_hidden[0] = 0;
 }
 
 void ListView::SetSource(media::ListSource* source, bool resetScroll) {
@@ -347,19 +359,45 @@ void ListView::PaintHeader() {
     const float s = m_scale;
     host.Repaint(m_header, w, h, s, [&](ID2D1DeviceContext* dc) {
         const D2D1_SIZE_F size{w / s, h / s};
-        wp::HeaderBackground(dc, size);
+        // WMP 12 header cells (wmploc LISTVIEWHEADER: normal / hot / pressed, 23 px each);
+        // drawn per cell, so the cell edges form the separators.
+        static const std::wstring kHeader = L"LISTVIEWHEADER_PNG";
+        const bool art = win7::Resources::Get().Has(win7::Module::Wmploc, kHeader);
+        auto cell = [&](float x0, float x1, int state) {
+            return win7::DrawNineGrid(dc, win7::Module::Wmploc, kHeader, {0, 23.0f * state, 6, 23.0f * state + 23},
+                                      {1, 1, 1, 1}, {x0, 0, x1, size.height});
+        };
+        if (!art || !cell(0, size.width, 0)) wp::HeaderBackground(dc, size);
         if (!m_source) return;
         const auto& srcCols = m_source->Columns();
         const auto cols = Columns(RowsWidth());
         const float dragX = (m_dragX - m_bounds.left) / s;
         for (size_t d = 0; d < cols.size(); ++d) {
             const Col& c = cols[d];
-            if (m_drag == Drag::Move && d == m_dragCol)
-                wp::RowPlate(dc, {c.x, 1, c.x + c.w, size.height - 1}, wp::RowState::Hot, true);
+            const bool pressed = (m_drag == Drag::PendingMove || m_drag == Drag::Move) && d == m_dragCol;
+            const int state = pressed ? 2 : (d == m_hotHeader && m_drag == Drag::None) ? 1 : 0;
+            if (art) cell(c.x, c.x + c.w, state);
+            else if (state) wp::RowPlate(dc, {c.x, 1, c.x + c.w, size.height - 1}, wp::RowState::Hot, true);
             const auto& col = srcCols[c.src];
             Text(dc, col.title, {c.x + kCellPad, 0, c.x + c.w - kCellPad, size.height}, 0x4C607A,
                  col.rightAlign ? DWRITE_TEXT_ALIGNMENT_TRAILING : DWRITE_TEXT_ALIGNMENT_LEADING);
-            wp::HeaderSeparator(dc, c.x + c.w, size.height);
+            if (!art) wp::HeaderSeparator(dc, c.x + c.w, size.height);
+            if (c.src == m_source->SortColumn()) {  // sort chevron at the top center, as in Win7
+                winrt::com_ptr<ID2D1Factory> factory;
+                dc->GetFactory(factory.put());
+                winrt::com_ptr<ID2D1PathGeometry> tri;
+                winrt::com_ptr<ID2D1GeometrySink> sink;
+                factory->CreatePathGeometry(tri.put());
+                tri->Open(sink.put());
+                const float cx = std::round((c.x + c.w / 2) * s) / s, top = 1.5f, bottom = 5.0f;
+                const bool down = m_source->SortDescending();
+                sink->BeginFigure({cx - 3.5f, down ? top : bottom}, D2D1_FIGURE_BEGIN_FILLED);
+                sink->AddLine({cx + 3.5f, down ? top : bottom});
+                sink->AddLine({cx, down ? bottom : top});
+                sink->EndFigure(D2D1_FIGURE_END_CLOSED);
+                sink->Close();
+                dc->FillGeometry(tri.get(), Brush(dc, 0x7A96B8).get());
+            }
         }
         if (m_drag == Drag::Move) {  // insertion mark where the column would land
             float mark = cols.empty() ? kGutter : cols.back().x + cols.back().w;
@@ -731,6 +769,11 @@ void ListView::OnMouseMove(POINT pt) {
         break;
     }
     const Hit hit = HitAt(pt);
+    const size_t hotHeader = hit.part == Part::HeaderCell ? hit.col : SIZE_MAX;
+    if (hotHeader != m_hotHeader) {
+        m_hotHeader = hotHeader;
+        PaintHeader();
+    }
     const size_t hot = hit.part == Part::Row ? hit.row : SIZE_MAX;
     const size_t hotGroup = hit.part == Part::AlbumColumn || hit.part == Part::Link ? hit.group : SIZE_MAX;
     const size_t linkGroup = hit.part == Part::Link ? hit.group : SIZE_MAX;
@@ -751,6 +794,10 @@ void ListView::OnMouseMove(POINT pt) {
 
 void ListView::OnMouseLeave() {
     if (m_drag != Drag::None) return;
+    if (m_hotHeader != SIZE_MAX) {
+        m_hotHeader = SIZE_MAX;
+        PaintHeader();
+    }
     if (m_hot != SIZE_MAX || m_hotGroup != SIZE_MAX || m_hotLinkGroup != SIZE_MAX) {
         m_hot = SIZE_MAX;
         m_hotGroup = SIZE_MAX;
@@ -799,6 +846,9 @@ void ListView::OnLButtonDown(POINT pt, bool ctrl, bool shift) {
             m_drag = Drag::PendingMove;
             m_dragCol = hit.col;
             m_dragStartX = m_dragX = pt.x;
+            PaintHeader();  // pressed look
+        } else if (hit.col == 0 && AlbumColumn()) {
+            SortBy(0);  // the album column cannot move but still sorts
         }
         break;
     case Part::Row:
@@ -827,6 +877,12 @@ void ListView::OnLButtonUp(POINT pt) {
     switch (drag) {
     case Drag::Thumb: PaintScrollBar(); break;
     case Drag::Resize: SaveColumnLayout(); break;
+    case Drag::PendingMove: {  // a click on a header sorts by that column
+        const auto cols = Columns(RowsWidth());
+        if (m_dragCol < cols.size()) SortBy(cols[m_dragCol].src);
+        PaintHeader();
+        break;
+    }
     case Drag::Move: {
         const auto cols = Columns(RowsWidth());
         const float x = (pt.x - m_bounds.left) / m_scale;
@@ -837,11 +893,14 @@ void ListView::OnLButtonUp(POINT pt) {
                 break;
             }
         if (AlbumColumn()) target = std::max<size_t>(target, 1);
-        if (m_dragCol < m_order.size() && target != m_dragCol && target != m_dragCol + 1) {
-            const size_t src = m_order[m_dragCol];
-            m_order.erase(m_order.begin() + static_cast<ptrdiff_t>(m_dragCol));
-            if (target > m_dragCol) --target;
-            m_order.insert(m_order.begin() + static_cast<ptrdiff_t>(std::min(target, m_order.size())), src);
+        if (m_dragCol < cols.size() && target != m_dragCol && target != m_dragCol + 1) {
+            // Move in m_order, which also holds the hidden columns: before the column now
+            // shown at `target`, or after the last shown one.
+            const size_t src = cols[m_dragCol].src;
+            m_order.erase(std::find(m_order.begin(), m_order.end(), src));
+            auto at = target < cols.size() ? std::find(m_order.begin(), m_order.end(), cols[target].src)
+                                           : std::find(m_order.begin(), m_order.end(), cols.back().src) + 1;
+            m_order.insert(at, src);
             SaveColumnLayout();
         }
         PaintHeader();
@@ -889,12 +948,63 @@ void ListView::OnRButtonUp(HWND owner, POINT pt) {
             PaintRows();
         }
     } else if (hit.part == Part::HeaderCell || hit.part == Part::HeaderEdge) {
+        ShowHeaderMenu(owner, pt, hit.col);
         return;
     }
     POINT screen = pt;
     ClientToScreen(owner, &screen);
     m_source->ContextMenu(owner, screen);
     Refresh();
+}
+
+void ListView::SortBy(size_t src) {
+    if (!m_source || !m_source->CanSort(src)) return;
+    // Same column again: reverse the direction.
+    const bool descending = m_source->SortColumn() == src && !m_source->SortDescending();
+    m_source->Sort(src, descending);
+    Refresh();
+}
+
+void ListView::ShowHeaderMenu(HWND owner, POINT pt, size_t displayCol) {
+    if (!m_source) return;
+    const auto& srcCols = m_source->Columns();
+    const auto cols = Columns(RowsWidth());
+    const size_t src = displayCol < cols.size() ? cols[displayCol].src : SIZE_MAX;
+    enum : UINT { kSort = 1, kReset = 2, kColumn = 100 };
+    HMENU menu = CreatePopupMenu();
+    HMENU choose = CreatePopupMenu();
+    if (src != SIZE_MAX && m_source->CanSort(src) && !srcCols[src].title.empty()) {
+        AppendMenuW(menu, MF_STRING, kSort, (L"Sort by \u201C" + srcCols[src].title + L"\u201D").c_str());
+        AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+    }
+    for (size_t i = 0; i < srcCols.size(); ++i) {
+        if (srcCols[i].title.empty()) continue;
+        const bool shown = i < m_hidden.size() ? m_hidden[i] == 0 : !srcCols[i].hidden;
+        UINT flags = MF_STRING | (shown ? MF_CHECKED : 0);
+        if ((AlbumColumn() && i == 0) || (shown && cols.size() <= 1)) flags |= MF_GRAYED;  // keep one
+        AppendMenuW(choose, flags, kColumn + i, srcCols[i].title.c_str());
+    }
+    AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(choose), L"Choose &columns");
+    AppendMenuW(menu, MF_STRING, kReset, L"&Reset columns");
+    POINT screen = pt;
+    ClientToScreen(owner, &screen);
+    const UINT cmd = TrackPopupMenuEx(menu, TPM_RETURNCMD | TPM_NONOTIFY, screen.x, screen.y, owner, nullptr);
+    DestroyMenu(menu);  // also destroys the submenu
+    if (cmd == kSort) {
+        SortBy(src);
+    } else if (cmd == kReset) {
+        Store().erase(m_columnKey);
+        Persist();
+        m_columnKey.clear();
+        Refresh();  // reloads the defaults
+    } else if (cmd >= kColumn && cmd < kColumn + srcCols.size()) {
+        const size_t i = cmd - kColumn;
+        if (m_hidden.size() < srcCols.size()) m_hidden.resize(srcCols.size(), 0);
+        m_hidden[i] = m_hidden[i] ? 0 : 1;
+        SaveColumnLayout();
+        PaintHeader();
+        PaintRows();
+    }
 }
 
 void ListView::OnWheel(int delta) {
