@@ -88,6 +88,7 @@ private:
     void SetHoverWidget(Widget* w);
     void OnActivate(bool active);
     void PaintSideHighlights();
+    void SetLightBlur(bool light);
     void SetVolumeFromX(int x);
     float SeekFractionAt(int x) const;
 
@@ -119,6 +120,7 @@ private:
     winrt::Windows::UI::Composition::SpriteVisual m_frameOutline{nullptr};
     std::array<winrt::Windows::UI::Composition::SpriteVisual, 2> m_sideHighlight{nullptr, nullptr};  // left, right
     SIZE m_sideHighlightSize{};
+    SIZE m_windowRegionSize{};  // window region applied for the legacy blur; {-1,-1} = none
     winrt::Windows::UI::Composition::SpriteVisual m_clientEdge{nullptr};
     winrt::Windows::UI::Composition::SpriteVisual m_navBar{nullptr};
     winrt::Windows::UI::Composition::SpriteVisual m_cmdBar{nullptr};

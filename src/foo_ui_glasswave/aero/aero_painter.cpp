@@ -33,6 +33,14 @@ Grid GridOf(ID2D1DeviceContext* dc) {
     return g;
 }
 
+// DWM draws the frame from bitmaps 1:1 in device pixels at any DPI: its lines stay one
+// device pixel wide (measured on Win7 at 150 %).
+Grid DeviceGridOf(ID2D1DeviceContext* dc) {
+    Grid g = GridOf(dc);
+    g.L = 1.0f / g.s;
+    return g;
+}
+
 com_ptr<ID2D1Factory> FactoryOf(ID2D1DeviceContext* dc) {
     com_ptr<ID2D1Factory> f;
     dc->GetFactory(f.put());
@@ -441,7 +449,7 @@ void CaptionButton(ID2D1DeviceContext* dc, D2D1_SIZE_F size, CaptionGlyph glyph,
 // ---- Frame and client edge -----------------------------------------------------------------
 
 void FrameOutline(ID2D1DeviceContext* dc, D2D1_SIZE_F size, float cornerRadius) {
-    const Grid g = GridOf(dc);
+    const Grid g = DeviceGridOf(dc);
     auto f = FactoryOf(dc);
     const D2D1_RECT_F rc = g.Snap(D2D1_RECT_F{0, 0, size.width, size.height});
     const Radii rad{cornerRadius, cornerRadius, cornerRadius, cornerRadius};
@@ -455,7 +463,7 @@ void FrameOutline(ID2D1DeviceContext* dc, D2D1_SIZE_F size, float cornerRadius) 
 }
 
 void ClientEdge(ID2D1DeviceContext* dc, D2D1_SIZE_F size) {
-    const Grid g = GridOf(dc);
+    const Grid g = DeviceGridOf(dc);
     const D2D1_RECT_F rc = g.Snap(D2D1_RECT_F{0, 0, size.width, size.height});
     // measured: light #e0e5e9 a0.65 outside, dark #1b1e21 a0.66 against the client
     auto light = Solid(dc, Rgba(224, 229, 233, 0.65f));
@@ -469,7 +477,7 @@ void ClientEdge(ID2D1DeviceContext* dc, D2D1_SIZE_F size) {
 void ClientGlow(ID2D1DeviceContext* dc, D2D1_SIZE_F size) {
     // Faint cyan glow just inside the client edge (#d7f7ff -> #def6fe -> #e5f7fc), drawn
     // as translucent rings over whatever the client paints there.
-    const Grid g = GridOf(dc);
+    const Grid g = DeviceGridOf(dc);
     const D2D1_RECT_F rc = g.Snap(D2D1_RECT_F{0, 0, size.width, size.height});
     const float alpha[] = {0.55f, 0.35f, 0.18f};
     for (int i = 0; i < 3; ++i) {

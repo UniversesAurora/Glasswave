@@ -19,6 +19,10 @@ public:
     const winrt::Windows::UI::Composition::ContainerVisual& Root() const { return m_root; }
 
     void SetActive(bool active);
+    // Lighter blur (experimental): DWM's legacy blur-behind accent on `hwnd` with a fitted
+    // translucent overlay (FitLegacyOverlay) instead of the host backdrop and color matrix.
+    void SetLegacyBlur(HWND hwnd, bool legacy);
+    bool LegacyBlur() const { return m_legacy; }
     void SetColorization(const Colorization& colorization);
     // Call when the system "Transparency effects" setting may have changed.
     void RefreshTransparencyPolicy();
@@ -37,6 +41,8 @@ private:
     bool m_active = true;
     bool m_transparency = true;
     bool m_dwmArt = false;
+    bool m_legacy = false;
+    HWND m_hwnd = nullptr;
     float m_scale = 1.0f;
     RECT m_reflectionMonitor{};
 
@@ -48,6 +54,9 @@ private:
     winrt::Windows::UI::Composition::CompositionBrush m_inactiveBrush{nullptr};
     winrt::Windows::UI::Composition::CompositionBrush m_basicActive{nullptr};
     winrt::Windows::UI::Composition::CompositionBrush m_basicInactive{nullptr};
+    winrt::Windows::UI::Composition::CompositionBrush m_legacyActive{nullptr};
+    winrt::Windows::UI::Composition::CompositionBrush m_legacyInactive{nullptr};
+    void ApplyAccent();
 };
 
 }  // namespace glasswave::aero

@@ -62,11 +62,17 @@ Updated: 2026-11-08
   cursor with an insertion line. Header clicks cycle ascending / descending / unsorted.
   DWM side highlights (atlas part 43) on the active frame. The view options button no longer
   shows at the window origin on views without view styles.
+- Frame and client edge lines are one device pixel and the corner radius 6 device pixels at
+  any DPI, as DWM draws them (they were floor(scale) px, i.e. 2 px thick at 200 %).
+- Experimental lighter glass (Organize > "Use lighter glass blur"): DWM legacy blur-behind
+  accent on our window plus a flat overlay fitted to the Win7 recipe (FitLegacyOverlay;
+  #BFD7F1 vs Win7 #B8DBFD on white, exact around mid grey); window region rounds the corners.
+  Default stays the host backdrop + color matrix. Owner to compare.
 
 ## Next
 
 1. Owner tests: header hover / press / drag, sort cycle, side highlights, @2x WMP bitmaps.
-2. Glass blur: try ACCENT_ENABLE_BLURBEHIND (lighter blur) against the HostBackdropBrush recipe.
+2. Glass blur: owner compares the lighter legacy blur with the host backdrop; keep one.
 3. Remaining tuning from the Win7 captures.
 4. Rating column (STARS_PNG), stacked covers for artists, year view.
 5. Playlist editing: drag to reorder, drag from library to playlists, rename inline.

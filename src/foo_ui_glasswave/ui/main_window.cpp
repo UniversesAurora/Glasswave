@@ -38,6 +38,9 @@ enum WidgetId {
 };
 bool IsCaptionWidget(int id) { return id >= kCapMin && id <= kCapClose; }
 
+// Win7 frame corner radius in device pixels; DWM does not scale it (6 px at 96 and 144 DPI).
+constexpr float kCornerRadiusPx = 6.0f;
+
 // {0C9E7B42-1F3A-4D5E-8B6C-7A2F9E1D4C83}
 cfg_var_modern::cfg_struct_t<WINDOWPLACEMENT> cfg_placement(
     {0x0c9e7b42, 0x1f3a, 0x4d5e, {0x8b, 0x6c, 0x7a, 0x2f, 0x9e, 0x1d, 0x4c, 0x83}});
@@ -50,6 +53,10 @@ cfg_var_modern::cfg_int cfg_viewAlbums({0x6a1f3c59, 0x2b7e, 0x4d90, {0x8c, 0x15,
                                        static_cast<int>(media::ViewStyle::Icons));
 cfg_var_modern::cfg_int cfg_viewArtists({0x6a1f3c5a, 0x2b7e, 0x4d90, {0x8c, 0x15, 0x3e, 0x9a, 0x7b, 0x2d, 0x4f, 0x61}},
                                         static_cast<int>(media::ViewStyle::Tiles));
+// Glass blur: 0 = host backdrop + Win7 color matrix, 1 = lighter legacy blur-behind (experimental).
+// {3B7D9E21-5C4A-4F86-9A12-7E5C3D8B1F04}
+cfg_var_modern::cfg_int cfg_lightBlur({0x3b7d9e21, 0x5c4a, 0x4f86, {0x9a, 0x12, 0x7e, 0x5c, 0x3d, 0x8b, 0x1f, 0x04}}, 0);
+
 cfg_var_modern::cfg_int cfg_viewGenres({0x6a1f3c5b, 0x2b7e, 0x4d90, {0x8c, 0x15, 0x3e, 0x9a, 0x7b, 0x2d, 0x4f, 0x61}},
                                        static_cast<int>(media::ViewStyle::Tiles));
 
@@ -313,6 +320,7 @@ void MainWindow::InitComposition() {
     m_root.Clip(comp.CreateGeometricClip(m_clipGeometry));
 
     m_glass = std::make_unique<aero::GlassMaterial>(aero::kWin7Sky, aero::atlas::Available());
+    if (cfg_lightBlur.get()) m_glass->SetLegacyBlur(m_hwnd, true);
     auto children = m_root.Children();
     children.InsertAtTop(m_glass->Root());
 
@@ -504,8 +512,8 @@ void MainWindow::UpdateLayout() {
     const int capH = PxI(max ? m::kCaptionHeightMax : m::kCaptionHeight);
     L.caption = {0, 0, W, capH};
     L.client = {L.border, capH, W - L.border, H - L.border};
-    L.clientEdge = {L.client.left - 2 * line, L.client.top - 2 * line, L.client.right + 2 * line,
-                    L.client.bottom + 2 * line};
+    // Light + dark client edge lines, one device pixel each (DWM frame bitmap, 1:1).
+    L.clientEdge = {L.client.left - 2, L.client.top - 2, L.client.right + 2, L.client.bottom + 2};
     L.navBar = {L.client.left, L.client.top, L.client.right, L.client.top + PxI(NavBarHeight())};
     L.cmdBar = {L.client.left, L.navBar.bottom, L.client.right, L.navBar.bottom + PxI(m::kCommandBarHeight)};
     L.transport = {L.client.left, L.client.bottom - PxI(TransportHeight()), L.client.right, L.client.bottom};
@@ -608,10 +616,22 @@ void MainWindow::UpdateLayout() {
                     std::max<int>(L.client.left + PxI(10), capsuleLeft - PxI(12)), L.transport.bottom - PxI(3)};
 
     // Apply to the visual tree.
-    const float radius = max ? 0.0f : Px(m::kCornerRadius);
+    const float radius = max ? 0.0f : kCornerRadiusPx;
     m_clipGeometry.Size(float2{static_cast<float>(W), static_cast<float>(H)});
     m_clipGeometry.CornerRadius(float2{radius, radius});
     m_frameOutline.IsVisible(!max);
+
+    // The legacy blur covers the whole window rectangle: round it off with a window region,
+    // one pixel wider than the frame's corner so its anti-aliased pixels stay.
+    {
+        const bool round = m_glass->LegacyBlur() && !max;
+        const SIZE want = round ? SIZE{W, H} : SIZE{-1, -1};
+        if (want.cx != m_windowRegionSize.cx || want.cy != m_windowRegionSize.cy) {
+            m_windowRegionSize = want;
+            const int d = 2 * (static_cast<int>(kCornerRadiusPx) + 1);
+            SetWindowRgn(m_hwnd, round ? CreateRoundRectRgn(0, 0, W + 1, H + 1, d, d) : nullptr, TRUE);
+        }
+    }
 
     // DWM's side highlights run down the left / right frame from the top and end sharply at
     // H / 4 + 20 DIP (fitted to Win7 captures: 110 px on a 360 px window at 96 DPI, 290 px on
@@ -692,17 +712,16 @@ void MainWindow::RepaintScaleDependent() {
     PaintSideHighlights();
     const int line = LinePx();
 
+    // DWM draws the frame 1:1 in device pixels: one-pixel lines and a 6 px corner at any DPI.
     const int frameSrc = PxI(32);
-    m_frameOutline.Brush(NineGrid(frameSrc, frameSrc, s, static_cast<float>(PxI(m::kCornerRadius + 2)), true,
-                                  [&](ID2D1DeviceContext* dc) {
-                                      paint::FrameOutline(dc, D2D1::SizeF(frameSrc / s, frameSrc / s),
-                                                          m::kCornerRadius);
-                                  }));
+    m_frameOutline.Brush(NineGrid(frameSrc, frameSrc, s, kCornerRadiusPx + 2.0f, true, [&](ID2D1DeviceContext* dc) {
+        paint::FrameOutline(dc, D2D1::SizeF(frameSrc / s, frameSrc / s), kCornerRadiusPx / s);
+    }));
     const int edgeSrc = PxI(16);
-    m_clientEdge.Brush(NineGrid(edgeSrc, edgeSrc, s, static_cast<float>(3 * line), false, [&](ID2D1DeviceContext* dc) {
+    m_clientEdge.Brush(NineGrid(edgeSrc, edgeSrc, s, 3.0f, false, [&](ID2D1DeviceContext* dc) {
         paint::ClientEdge(dc, D2D1::SizeF(edgeSrc / s, edgeSrc / s));
     }));
-    m_clientGlow.Brush(NineGrid(edgeSrc, edgeSrc, s, static_cast<float>(4 * line), true, [&](ID2D1DeviceContext* dc) {
+    m_clientGlow.Brush(NineGrid(edgeSrc, edgeSrc, s, 4.0f, true, [&](ID2D1DeviceContext* dc) {
         paint::ClientGlow(dc, D2D1::SizeF(edgeSrc / s, edgeSrc / s));
     }));
 
@@ -1027,7 +1046,16 @@ void MainWindow::ShowOrganizeMenu() {
                   {L"Add folder...", [] { standard_commands::main_add_directory(); }},
                   {L"Add location...", [] { standard_commands::run_main(standard_commands::guid_main_add_location); }},
                   {L"", nullptr},
+                  {cfg_lightBlur.get() ? L"Use standard glass blur" : L"Use lighter glass blur (experimental)",
+                   [this] { SetLightBlur(!cfg_lightBlur.get()); }},
                   {L"Preferences...", [] { standard_commands::run_main(standard_commands::guid_main_preferences); }}});
+}
+
+void MainWindow::SetLightBlur(bool light) {
+    cfg_lightBlur = light ? 1 : 0;
+    m_glass->SetLegacyBlur(m_hwnd, light);
+    m_windowRegionSize = {};
+    UpdateLayout();
 }
 
 void MainWindow::ShowPlaylistMenu(size_t playlist, POINT screen) {
