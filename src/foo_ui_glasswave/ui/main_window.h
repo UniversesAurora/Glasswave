@@ -46,7 +46,7 @@ private:
             viewOptionsArrow{};
         RECT navPane{}, list{};
         RECT seek{}, capsule{}, divider{}, shuffle{}, repeat{}, stop{}, prev{}, next{}, play{}, mute{}, volume{};
-        RECT nowPlaying{};
+        RECT nowPlaying{}, time{}, stream{};
         POINT cluster{};  // origin of the WMP 12 transport cluster bitmap
     };
 
@@ -110,6 +110,27 @@ private:
     void SetHoverWidget(Widget* w);
     void OnActivate(bool active);
     void PaintSideHighlights();
+    // Now playing details in the transport band: title and artist are links, a synced
+    // lyric line under them; the time right of the controls; stream format and the
+    // output device (a menu) right-aligned.
+    std::wstring m_streamInfo;
+    std::vector<std::pair<double, std::wstring>> m_lyrics;  // synced lines (seconds, text)
+    RECT m_npTitleRect{}, m_npArtistRect{};  // client px, for clicks
+    D2D1_RECT_F m_deviceText{};             // DIP inside m_layout.stream
+    std::wstring m_deviceName;              // cached: listing devices is slow
+    LONG m_streamWidth = 0;                 // width the stream block was painted at
+    void RefreshDeviceName();
+    RECT DeviceRect() const;
+    int m_npHot = 0;                                           // 1 title, 2 artist, 3 device
+    winrt::Windows::UI::Composition::SpriteVisual m_time{nullptr}, m_streamVisual{nullptr};
+    service_ptr m_outputCallback;
+    void RepaintStreamInfo();
+    void LoadLyrics(const metadb_handle_ptr& track);
+    int NowPlayingPartAt(POINT pt) const;
+    void UpdateNowPlayingHover(POINT pt);
+    void OnNowPlayingClick(int part);
+    void JumpToPlaying();
+    void ShowDeviceMenu();
     void SetVolumeFromX(int x);
     void ShowVolumeTip(float thumbX);  // Win7 tooltip bubble with the volume while dragging
     void HideVolumeTip();

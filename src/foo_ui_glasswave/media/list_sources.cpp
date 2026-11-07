@@ -221,6 +221,13 @@ void PlaylistSource::SetSelection(const std::vector<size_t>& rows) {
     pm->playlist_set_selection(m_playlist, pfc::bit_array_true(), state);
 }
 
+size_t PlaylistSource::FindRow(const metadb_handle_ptr& track) const {
+    auto pm = playlist_manager::get();
+    for (size_t r = 0; r < m_rows.size(); ++r)
+        if (pm->playlist_get_item_handle(m_playlist, m_rows[r]) == track) return r;
+    return SIZE_MAX;
+}
+
 void PlaylistSource::SelectAll() {
     auto pm = playlist_manager::get();
     const t_size n = pm->playlist_get_item_count(m_playlist);
@@ -412,6 +419,13 @@ void TrackSource::SelectRange(size_t a, size_t b, bool keepOthers) {
 
 void TrackSource::SelectAll() {
     for (size_t r : m_rows) m_selected[r] = 1;
+}
+
+size_t TrackSource::FindRow(const metadb_handle_ptr& track) const {
+    const auto& tracks = m_model.Tracks();
+    for (size_t r = 0; r < m_rows.size(); ++r)
+        if (tracks[m_all[m_rows[r]]].handle == track) return r;
+    return SIZE_MAX;
 }
 
 void TrackSource::SetSelection(const std::vector<size_t>& rows) {

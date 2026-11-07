@@ -1,4 +1,7 @@
 #include "pch.h"
+#include <filesystem>
+#include <fstream>
+#include <cwctype>
 #include "ui/main_window.h"
 #include "aero/aero_atlas.h"
 #include "aero/aero_metrics.h"
@@ -348,7 +351,8 @@ void MainWindow::InitComposition() {
     m_frameOutline = comp.CreateSpriteVisual();
     m_frameOutline.RelativeSizeAdjustment(float2{1, 1});
     for (auto* v : {&m_clientEdge, &m_navBar, &m_cmdBar, &m_contentTop, &m_transportBand, &m_capsule, &m_cluster,
-                    &m_divider, &m_clientGlow, &m_title, &m_nowPlaying, &m_breadcrumb, &m_navGroove})
+                    &m_divider, &m_clientGlow, &m_title, &m_nowPlaying, &m_breadcrumb, &m_navGroove, &m_time,
+                    &m_streamVisual})
         *v = comp.CreateSpriteVisual();
     for (auto& v : m_sideHighlight) {
         v = comp.CreateSpriteVisual();
@@ -377,7 +381,8 @@ void MainWindow::InitComposition() {
         m_libraryBg.Brush(brush);
     }
     m_contentLayer.Children().InsertAtBottom(m_libraryBg);
-    for (const auto& v : {m_capsule, m_cluster, m_divider, m_clientGlow, m_title, m_nowPlaying, m_breadcrumb})
+    for (const auto& v : {m_capsule, m_cluster, m_divider, m_clientGlow, m_title, m_nowPlaying, m_breadcrumb, m_time,
+                          m_streamVisual})
         children.InsertAtTop(v);
     m_win7Art = wt::Available();
     m_aeroArt = aero::atlas::Available();
@@ -684,6 +689,15 @@ void MainWindow::UpdateLayout() {
         L.volume = {at(m::kSliderLeft), tcy - ibh / 2, at(m::kSliderRight), tcy - ibh / 2 + ibh};
         L.divider = CenteredRect(at(m::kDividerX), tcy, PxI(4), PxI(16));
     }
+    // Time right of the controls (after the volume slider); stream format and the output
+    // device right-aligned at the band's end.
+    {
+        const int tcyMid = (L.transport.top + PxI(4) + L.transport.bottom) / 2;
+        const int after = (m_win7Art ? ClusterRect(wt::kCapsuleVisible).right : L.volume.right) + PxI(12);
+        L.time = {after, tcyMid - PxI(10), after + PxI(110), tcyMid + PxI(10)};
+        L.stream = {std::max<LONG>(L.time.right, L.client.right - PxI(10) - PxI(320)), L.transport.top + PxI(8),
+                    L.client.right - PxI(10), L.transport.bottom - PxI(4)};
+    }
     const int capsuleLeft = m_win7Art ? ClusterRect(wt::kCapsuleVisible).left : L.capsule.left;
     L.nowPlaying = {L.client.left + PxI(10), L.transport.top + PxI(7),
                     std::max<int>(L.client.left + PxI(10), capsuleLeft - PxI(12)), L.transport.bottom - PxI(3)};
@@ -738,6 +752,12 @@ void MainWindow::UpdateLayout() {
         RECT t = L.nowPlaying;
         t.right = std::min<LONG>(t.right, t.left + PxI(360));
         Place(m_nowPlaying, t);
+    }
+    Place(m_time, L.time);
+    Place(m_streamVisual, L.stream);
+    if (const LONG sw = L.stream.right - L.stream.left; sw != m_streamWidth) {
+        m_streamWidth = sw;
+        RepaintStreamInfo();
     }
     {
         RECT t = L.breadcrumb;
@@ -898,18 +918,253 @@ void MainWindow::RepaintNowPlaying() {
                 x = dst.right + 8;
             }
         }
-        com_ptr<ID2D1SolidColorBrush> dark, grey;
+        com_ptr<ID2D1SolidColorBrush> dark, grey, link, lyricInk;
         dc->CreateSolidColorBrush(Hex(0x1E1E1E), dark.put());
         dc->CreateSolidColorBrush(Hex(0x5B5B5B), grey.put());
-        auto t = MakeText(m_trackTitle, 12.0f, DWRITE_FONT_WEIGHT_NORMAL, 350 - x, 17);
-        dc->DrawTextLayout({x, 0}, t.get(), dark.get());
-        std::wstring second = FormatTime(m_position);
-        if (m_length > 0) second += L" / " + FormatTime(m_length);
-        if (!m_trackArtist.empty()) second = m_trackArtist + L"   " + second;
-        auto a = MakeText(second, 12.0f, DWRITE_FONT_WEIGHT_NORMAL, 350 - x, 17);
-        dc->DrawTextLayout({x, 16}, a.get(), grey.get());
+        dc->CreateSolidColorBrush(Hex(0x0066CC), link.put());
+        dc->CreateSolidColorBrush(Hex(0x2E64B4), lyricInk.put());
+        // Title and artist are links (to the song in the list, to the artist); the synced
+        // lyric line, if any, goes under the artist.
+        std::wstring lyric;
+        for (const auto& [at, text] : m_lyrics) {
+            if (at > m_position + 0.05) break;
+            lyric = text;
+        }
+        const float lh = 15, top = std::round((H - (m_lyrics.empty() ? 2 : 3) * lh) / 2);
+        auto line = [&](const std::wstring& text, float y, ID2D1SolidColorBrush* ink, bool hot) {
+            auto layout = MakeText(text, 12.0f, DWRITE_FONT_WEIGHT_NORMAL, 350 - x, lh + 2);
+            if (hot) layout->SetUnderline(TRUE, {0, static_cast<UINT32>(text.size())});
+            dc->DrawTextLayout({x, y - 1}, layout.get(), hot ? link.get() : ink);
+            DWRITE_TEXT_METRICS tm{};
+            layout->GetMetrics(&tm);
+            return D2D1_RECT_F{x, y, x + std::min(tm.widthIncludingTrailingWhitespace, 350 - x), y + lh};
+        };
+        const auto toClient = [&](D2D1_RECT_F r) {
+            return RECT{m_layout.nowPlaying.left + PxI(r.left), m_layout.nowPlaying.top + PxI(r.top),
+                        m_layout.nowPlaying.left + PxI(r.right), m_layout.nowPlaying.top + PxI(r.bottom)};
+        };
+        m_npTitleRect = toClient(line(m_trackTitle, top, dark.get(), m_npHot == 1));
+        m_npArtistRect = m_trackArtist.empty() ? RECT{}
+                                               : toClient(line(m_trackArtist, top + lh, grey.get(), m_npHot == 2));
+        if (!m_lyrics.empty()) line(lyric, top + 2 * lh, lyricInk.get(), false);
+    });
+    if (m_trackTitle.empty()) m_npTitleRect = m_npArtistRect = {};
+    // Time right of the controls.
+    host.Repaint(m_time, PxI(110), PxI(20), m_scale, [&](ID2D1DeviceContext* dc) {
+        if (m_length <= 0 && m_trackTitle.empty()) return;
+        std::wstring text = FormatTime(m_position);
+        if (m_length > 0) text += L" / " + FormatTime(m_length);
+        com_ptr<ID2D1SolidColorBrush> grey;
+        dc->CreateSolidColorBrush(Hex(0x4A4A4A), grey.put());
+        auto layout = MakeText(text, 12.0f, DWRITE_FONT_WEIGHT_NORMAL, 110, 20);
+        dc->DrawTextLayout({0, 0}, layout.get(), grey.get());
     });
     UpdateLayout();
+}
+
+void MainWindow::RepaintStreamInfo() {
+    // Right-aligned: stream format on top, the output device (a menu) below.
+    auto& host = gfx::CompositionHost::Get();
+    // Painted at the block's real width (narrow windows shrink it); long names get an ellipsis.
+    const int w = std::max<int>(1, m_layout.stream.right - m_layout.stream.left), h = PxI(TransportHeight() - 12);
+    if (m_deviceName.empty()) RefreshDeviceName();
+    const std::wstring device = m_deviceName.empty() ? L"Output device" : m_deviceName;
+    float deviceLeft = 0, deviceTop = 0, deviceRight = 0;
+    host.Repaint(m_streamVisual, w, h, m_scale, [&](ID2D1DeviceContext* dc) {
+        const float W = w / m_scale, H = h / m_scale;
+        com_ptr<ID2D1SolidColorBrush> grey, link;
+        dc->CreateSolidColorBrush(Hex(0x5B5B5B), grey.put());
+        dc->CreateSolidColorBrush(Hex(m_npHot == 3 ? 0x0066CC : 0x2E4E7A), link.put());
+        const float lh = 15, top = std::round((H - 2 * lh) / 2);
+        if (!m_streamInfo.empty()) {
+            auto info = MakeText(m_streamInfo, 11.5f, DWRITE_FONT_WEIGHT_NORMAL, W, lh + 2);
+            info->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_TRAILING);
+            dc->DrawTextLayout({0, top - 1}, info.get(), grey.get());
+        }
+        const std::wstring label = device + L"  ▾";
+        auto dev = MakeText(label, 11.5f, DWRITE_FONT_WEIGHT_NORMAL, W, lh + 2);
+        dev->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_TRAILING);
+        dev->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+        const DWRITE_TRIMMING ellipsis{DWRITE_TRIMMING_GRANULARITY_CHARACTER, 0, 0};
+        com_ptr<IDWriteInlineObject> sign;
+        if (com_ptr<IDWriteFactory> f; SUCCEEDED(DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED, __uuidof(IDWriteFactory), reinterpret_cast<IUnknown**>(f.put()))))
+            f->CreateEllipsisTrimmingSign(dev.get(), sign.put());
+        dev->SetTrimming(&ellipsis, sign.get());
+        if (m_npHot == 3) dev->SetUnderline(TRUE, {0, static_cast<UINT32>(device.size())});
+        dc->DrawTextLayout({0, top + lh - 1}, dev.get(), link.get());
+        DWRITE_TEXT_METRICS tm{};
+        dev->GetMetrics(&tm);
+        deviceLeft = tm.left;
+        deviceRight = tm.left + tm.width;
+        deviceTop = top + lh;
+    });
+    m_deviceText = {deviceLeft, deviceTop, deviceRight, deviceTop + 15};
+}
+
+void MainWindow::RefreshDeviceName() {
+    m_deviceName.clear();
+    try {
+        const auto cfg = output_manager::get()->getCoreConfig();
+        output_manager_v2::get()->listDevices([&](const char* name, const GUID& output, const GUID& dev) {
+            if (output == cfg.m_output && dev == cfg.m_device) m_deviceName = Wide(name);
+        });
+    } catch (...) {
+    }
+}
+
+RECT MainWindow::DeviceRect() const {
+    const RECT& s = m_layout.stream;
+    if (m_deviceText.right <= m_deviceText.left) return {};
+    return {s.left + PxI(m_deviceText.left), s.top + PxI(m_deviceText.top), s.left + PxI(m_deviceText.right),
+            s.top + PxI(m_deviceText.bottom)};
+}
+
+void MainWindow::LoadLyrics(const metadb_handle_ptr& track) {
+    // Synced lyrics only ([mm:ss.xx] lines): a SYNCEDLYRICS / LYRICS tag, else a .lrc file
+    // next to the audio file.
+    m_lyrics.clear();
+    if (!track.is_valid()) return;
+    std::wstring text;
+    if (auto info = track->get_info_ref(); info.is_valid()) {
+        for (const char* field : {"SYNCEDLYRICS", "LYRICS", "UNSYNCEDLYRICS"}) {
+            if (const char* v = info->info().meta_get(field, 0); v && std::strchr(v, '[')) {
+                text = Wide(v);
+                break;
+            }
+        }
+    }
+    if (text.empty()) {
+        pfc::string8 native;
+        if (filesystem::g_get_native_path(track->get_path(), native)) {
+            std::wstring path = Wide(native);
+            if (const size_t dot = path.find_last_of(L'.'); dot != std::wstring::npos && dot > path.find_last_of(L"\\/"))
+                path = path.substr(0, dot);
+            path += L".lrc";
+            if (std::ifstream in{std::filesystem::path(path), std::ios::binary}) {
+                const std::string bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+                if (bytes.size() >= 2 && static_cast<unsigned char>(bytes[0]) == 0xFF &&
+                    static_cast<unsigned char>(bytes[1]) == 0xFE) {
+                    text.assign(reinterpret_cast<const wchar_t*>(bytes.data() + 2), (bytes.size() - 2) / 2);
+                } else {
+                    const size_t skip = bytes.rfind("\xEF\xBB\xBF", 0) == 0 ? 3 : 0;
+                    const char* p = bytes.data() + skip;
+                    const int n = static_cast<int>(bytes.size() - skip);
+                    UINT cp = CP_UTF8;
+                    int len = MultiByteToWideChar(cp, MB_ERR_INVALID_CHARS, p, n, nullptr, 0);
+                    if (len <= 0) {
+                        cp = CP_ACP;
+                        len = MultiByteToWideChar(cp, 0, p, n, nullptr, 0);
+                    }
+                    text.resize(static_cast<size_t>(std::max(len, 0)));
+                    if (len > 0) MultiByteToWideChar(cp, 0, p, n, text.data(), len);
+                }
+            }
+        }
+    }
+    std::wstringstream in(text);
+    for (std::wstring l; std::getline(in, l);) {
+        if (!l.empty() && l.back() == L'\r') l.pop_back();
+        std::vector<double> times;
+        size_t pos = 0;
+        while (pos < l.size() && l[pos] == L'[') {
+            const size_t end = l.find(L']', pos);
+            if (end == std::wstring::npos) break;
+            int mm = 0;
+            double ss = 0;
+            if (swscanf_s(l.c_str() + pos + 1, L"%d:%lf", &mm, &ss) == 2) times.push_back(mm * 60 + ss);
+            pos = end + 1;
+        }
+        const std::wstring words = l.substr(pos);
+        for (double t : times) m_lyrics.emplace_back(t, words);
+    }
+    std::stable_sort(m_lyrics.begin(), m_lyrics.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
+}
+
+int MainWindow::NowPlayingPartAt(POINT pt) const {
+    if (PtInRect(&m_npTitleRect, pt)) return 1;
+    if (PtInRect(&m_npArtistRect, pt)) return 2;
+    if (const RECT d = DeviceRect(); PtInRect(&d, pt)) return 3;
+    return 0;
+}
+
+void MainWindow::UpdateNowPlayingHover(POINT pt) {
+    const int part = NowPlayingPartAt(pt);
+    if (part == m_npHot) return;
+    const int old = m_npHot;
+    m_npHot = part;
+    if (old == 3 || part == 3) RepaintStreamInfo();
+    if (old == 1 || old == 2 || part == 1 || part == 2) RepaintNowPlaying();
+}
+
+void MainWindow::OnNowPlayingClick(int part) {
+    switch (part) {
+    case 1: JumpToPlaying(); break;
+    case 2: {  // the artist's page (artists are grouped by album artist)
+        metadb_handle_ptr now;
+        if (!playback_control::get()->get_now_playing(now)) break;
+        const media::Track* t = m_library.FindTrack(now);
+        const media::Group* g = t ? m_library.FindGroup(media::GroupKind::Artist, t->albumArtist) : nullptr;
+        if (!g) g = m_library.FindGroup(media::GroupKind::Artist, m_trackArtist);
+        if (!g) break;
+        View v;
+        v.kind = View::Kind::Group;
+        v.group = media::GroupKind::Artist;
+        v.key = g->key;
+        v.name = g->name;
+        Navigate(v, true);
+        break;
+    }
+    case 3: ShowDeviceMenu(); break;
+    default: break;
+    }
+}
+
+void MainWindow::JumpToPlaying() {
+    metadb_handle_ptr now;
+    if (!playback_control::get()->get_now_playing(now)) return;
+    size_t row = m_source ? m_source->FindRow(now) : SIZE_MAX;
+    if (row == SIZE_MAX) {  // not on this page: open the playlist it plays from
+        t_size playlist = SIZE_MAX, index = SIZE_MAX;
+        if (!playlist_manager::get()->get_playing_item_location(&playlist, &index)) return;
+        View v;
+        v.kind = View::Kind::Playlist;
+        v.playlist = playlist;
+        Navigate(v, true);
+        row = m_source ? m_source->FindRow(now) : SIZE_MAX;
+    }
+    if (row == SIZE_MAX) return;
+    m_source->SelectOnly(row);
+    m_source->SetFocus(row);
+    m_list->EnsureVisible(row);
+    m_list->Refresh();
+}
+
+void MainWindow::ShowDeviceMenu() {
+    struct Device {
+        GUID output, device;
+    };
+    std::vector<Device> devices;
+    std::vector<MenuAction> actions;
+    size_t current = SIZE_MAX;
+    try {
+        const auto cfg = output_manager::get()->getCoreConfig();
+        output_manager_v2::get()->listDevices([&](const char* name, const GUID& output, const GUID& device) {
+            if (output == cfg.m_output && device == cfg.m_device) current = devices.size();
+            devices.push_back({output, device});
+            actions.push_back({Wide(name), [this, output, device] {
+                                   output_manager_v2::get()->setCoreConfigDevice(output, device);
+                                   RefreshDeviceName();
+                                   RepaintStreamInfo();
+                               }});
+        });
+    } catch (const std::exception& e) {
+        popup_message::g_show(e.what(), "Output device");
+        return;
+    }
+    const RECT d = DeviceRect();
+    POINT pt{d.left, d.bottom};
+    ClientToScreen(m_hwnd, &pt);
+    ShowActionMenu(m_hwnd, pt, actions, current);
 }
 
 void MainWindow::RepaintBreadcrumb() {
@@ -1449,6 +1704,44 @@ void MainWindow::OnTrackChanged() {
     }
     m_length = pc->is_playing() ? pc->playback_get_length() : 0;
     m_position = pc->is_playing() ? pc->playback_get_position() : 0;
+
+    // Stream format: codec, bit rate, sample rate, bit depth, channels.
+    static titleformat_object::ptr s_stream;
+    if (!s_stream)
+        titleformat_compiler::get()->compile_safe(
+            s_stream, "[%codec%]|[%bitrate%]|[%samplerate%]|[$info(bitspersample)]|[%channels%]");
+    m_streamInfo.clear();
+    if (pc->is_playing()) {
+        pfc::string8 raw;
+        pc->playback_format_title(nullptr, raw, s_stream, nullptr, playback_control::display_level_all);
+        std::vector<std::wstring> f;
+        std::wstringstream in(Wide(raw));
+        for (std::wstring part; std::getline(in, part, L'|');) f.push_back(part);
+        f.resize(5);
+        auto add = [&](const std::wstring& s) {
+            if (s.empty()) return;
+            if (!m_streamInfo.empty()) m_streamInfo += L"   ";
+            m_streamInfo += s;
+        };
+        add(f[0]);
+        if (!f[1].empty()) add(f[1] + L" kbps");
+        if (!f[2].empty()) {
+            wchar_t khz[32];
+            const double rate = _wtof(f[2].c_str()) / 1000.0;
+            swprintf_s(khz, std::fmod(rate, 1.0) == 0 ? L"%.0f kHz" : L"%.1f kHz", rate);
+            add(khz);
+        }
+        if (!f[3].empty()) add(f[3] + L" bit");
+        if (!f[4].empty()) {
+            std::wstring ch = f[4];
+            ch[0] = static_cast<wchar_t>(::towupper(ch[0]));
+            add(ch);
+        }
+    }
+    metadb_handle_ptr playing;
+    if (pc->get_now_playing(playing)) LoadLyrics(playing);
+    else m_lyrics.clear();
+    RepaintStreamInfo();
     RepaintNowPlaying();
     if (auto* w = WidgetById(kSeek)) w->Invalidate();
     if (m_list) m_list->Refresh();
@@ -1776,6 +2069,13 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
         m_shuffle = cfg_shuffle.get() != 0;
         m_repeat = static_cast<Repeat>(std::clamp<int>(static_cast<int>(cfg_repeat.get()), 0, 2));
         OnPlaybackOrderChanged();
+        try {  // output device changed elsewhere (preferences)
+            m_outputCallback = output_manager_v2::get()->addCallback([this] {
+                RefreshDeviceName();
+                RepaintStreamInfo();
+            });
+        } catch (...) {
+        }
         SetWindowPos(hwnd, nullptr, 0, 0, 0, 0, SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER);
         return 0;
     }
@@ -1824,6 +2124,10 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
                     SetCursor(LoadCursorW(nullptr, cursor));
                     return TRUE;
                 }
+            if (NowPlayingPartAt(pt)) {  // now-playing links, output device
+                SetCursor(LoadCursorW(nullptr, IDC_HAND));
+                return TRUE;
+            }
         }
         break;
 
@@ -1953,6 +2257,7 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
             m_list->OnMouseMove(pt);
             m_nav->OnMouseMove(pt);
             UpdateCrumbHover(pt);
+            UpdateNowPlayingHover(pt);
         }
         if (!m_trackingClient) {
             TRACKMOUSEEVENT tme{sizeof(tme), TME_LEAVE, hwnd, 0};
@@ -1967,6 +2272,7 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
             m_list->OnMouseLeave();
             m_nav->OnMouseLeave();
             UpdateCrumbHover({-1, -1});
+            UpdateNowPlayingHover({-1, -1});
         }
         return 0;
     case WM_LBUTTONDOWN:
@@ -1975,6 +2281,10 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
         const bool dbl = msg == WM_LBUTTONDBLCLK;
         if (PtInRect(&m_layout.breadcrumb, pt)) {
             OnCrumbClick(pt);
+            return 0;
+        }
+        if (const int part = NowPlayingPartAt(pt)) {
+            OnNowPlayingClick(part);
             return 0;
         }
         if (Widget* w = WidgetAt(pt)) {
@@ -2193,6 +2503,7 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
         m_source.reset();
         m_widgets.clear();
         m_glass.reset();
+        m_outputCallback.release();
         m_root = nullptr;
         m_windowRoot = nullptr;
         m_target = nullptr;

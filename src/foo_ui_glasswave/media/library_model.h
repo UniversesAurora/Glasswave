@@ -37,6 +37,7 @@ public:
     const std::vector<Track>& Tracks() const { return m_tracks; }
     const std::vector<Group>& Groups(GroupKind kind) const;
     const Group* FindGroup(GroupKind kind, std::wstring_view key) const;
+    const Track* FindTrack(const metadb_handle_ptr& handle) const;  // linear; for clicks
     // Position of an album in the "All music" order (album artist, year, title).
     size_t AlbumRank(size_t album) const { return album < m_albumRank.size() ? m_albumRank[album] : SIZE_MAX; }
 

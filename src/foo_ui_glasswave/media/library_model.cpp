@@ -247,4 +247,10 @@ const Group* LibraryModel::FindGroup(GroupKind kind, std::wstring_view key) cons
     return nullptr;
 }
 
+const Track* LibraryModel::FindTrack(const metadb_handle_ptr& handle) const {
+    for (const auto& t : m_tracks)
+        if (t.handle == handle) return &t;
+    return nullptr;
+}
+
 }  // namespace glasswave::media
