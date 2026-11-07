@@ -8,12 +8,14 @@
 #include "ui/shell_glue.h"
 #include "ui/text.h"
 #include "wmp/wmp_painter.h"
+#include "wmp/wmp_transport.h"
 
 namespace glasswave::ui {
 
 namespace m = aero::metrics;
 namespace paint = aero::paint;
 namespace wp = wmp::paint;
+namespace wt = wmp::transport;
 namespace wuc = winrt::Windows::UI::Composition;
 using paint::Layer;
 using paint::TransportGlyph;
@@ -304,16 +306,19 @@ void MainWindow::InitComposition() {
 
     m_frameOutline = comp.CreateSpriteVisual();
     m_frameOutline.RelativeSizeAdjustment(float2{1, 1});
-    for (auto* v : {&m_clientEdge, &m_navBar, &m_cmdBar, &m_contentTop, &m_transportBand, &m_capsule, &m_divider,
-                    &m_clientGlow, &m_title, &m_nowPlaying, &m_breadcrumb})
+    for (auto* v : {&m_clientEdge, &m_navBar, &m_cmdBar, &m_contentTop, &m_transportBand, &m_capsule, &m_cluster,
+                    &m_divider, &m_clientGlow, &m_title, &m_nowPlaying, &m_breadcrumb})
         *v = comp.CreateSpriteVisual();
     for (const auto& v : {m_frameOutline, m_clientEdge, m_navBar, m_cmdBar, m_contentTop, m_transportBand})
         children.InsertAtTop(v);
     // Navigation pane, list and search box live in their own layer above the bars.
     m_contentLayer = comp.CreateContainerVisual();
     children.InsertAtTop(m_contentLayer);
-    for (const auto& v : {m_capsule, m_divider, m_clientGlow, m_title, m_nowPlaying, m_breadcrumb})
+    for (const auto& v : {m_capsule, m_cluster, m_divider, m_clientGlow, m_title, m_nowPlaying, m_breadcrumb})
         children.InsertAtTop(v);
+    m_win7Art = wt::Available();
+    m_divider.IsVisible(!m_win7Art);  // part of the original capsule bitmap
+    m_cluster.IsVisible(m_win7Art);
 
     m_nav = std::make_unique<NavPane>(m_contentLayer);
     m_list = std::make_unique<ListView>(m_contentLayer);
@@ -354,10 +359,13 @@ void MainWindow::CreateWidgets() {
     Widget::Options round;
     round.circular = true;
     add(kBack, [this](auto* dc, D2D1_SIZE_F s, Layer l) {
-        wp::NavArrow(dc, s, l, true, m_historyPos > 0);
+        if (m_win7Art) wt::NavOrb(dc, l, true, m_historyPos > 0);
+        else wp::NavArrow(dc, s, l, true, m_historyPos > 0);
     }, round)->onClick = [this] { GoBack(); };
     add(kForward, [this](auto* dc, D2D1_SIZE_F s, Layer l) {
-        wp::NavArrow(dc, s, l, false, m_historyPos + 1 < m_history.size());
+        const bool enabled = m_historyPos + 1 < m_history.size();
+        if (m_win7Art) wt::NavOrb(dc, l, false, enabled);
+        else wp::NavArrow(dc, s, l, false, enabled);
     }, round)->onClick = [this] { GoForward(); };
 
     // Command bar
@@ -389,28 +397,42 @@ void MainWindow::CreateWidgets() {
 
     // Transport controls
     add(kShuffle, [this](auto* dc, D2D1_SIZE_F s, Layer l) {
-        paint::IconButton(dc, s, l, TransportGlyph::Shuffle, true, m_shuffle);
+        if (m_win7Art) wt::Toggle(dc, l, true, m_shuffle);
+        else paint::IconButton(dc, s, l, TransportGlyph::Shuffle, true, m_shuffle);
     }, {})->onClick = [this] { SetOrderByName(m_shuffle ? "Default" : "Shuffle (tracks)"); };
     add(kRepeat, [this](auto* dc, D2D1_SIZE_F s, Layer l) {
-        paint::IconButton(dc, s, l, TransportGlyph::Repeat, true, m_repeat);
+        if (m_win7Art) wt::Toggle(dc, l, false, m_repeat);
+        else paint::IconButton(dc, s, l, TransportGlyph::Repeat, true, m_repeat);
     }, {})->onClick = [this] { SetOrderByName(m_repeat ? "Default" : "Repeat (playlist)"); };
     add(kStop, [this](auto* dc, D2D1_SIZE_F s, Layer l) {
-        paint::IconButton(dc, s, l, TransportGlyph::Stop, m_playing, false);
+        if (m_win7Art) wt::ClusterButton(dc, ClusterRegion(m_layout.stop), wt::Button::Stop, l, m_playing);
+        else paint::IconButton(dc, s, l, TransportGlyph::Stop, m_playing, false);
     }, {})->onClick = [] { playback_control::get()->stop(); };
-    add(kPrev, [](auto* dc, D2D1_SIZE_F s, Layer l) {
-        paint::Segment(dc, s, true, l, TransportGlyph::Previous, true);
+    // Like WMP 12, previous / next look disabled while nothing plays (they still start playback).
+    add(kPrev, [this](auto* dc, D2D1_SIZE_F s, Layer l) {
+        if (m_win7Art) wt::ClusterButton(dc, ClusterRegion(m_layout.prev), wt::Button::Prev, l, m_playing);
+        else paint::Segment(dc, s, true, l, TransportGlyph::Previous, true);
     }, {})->onClick = [] { playback_control::get()->previous(); };
-    add(kNext, [](auto* dc, D2D1_SIZE_F s, Layer l) {
-        paint::Segment(dc, s, false, l, TransportGlyph::Next, true);
+    add(kNext, [this](auto* dc, D2D1_SIZE_F s, Layer l) {
+        if (m_win7Art) wt::ClusterButton(dc, ClusterRegion(m_layout.next), wt::Button::Next, l, m_playing);
+        else paint::Segment(dc, s, false, l, TransportGlyph::Next, true);
     }, {})->onClick = [] { playback_control::get()->next(); };
 
     Widget::Options orb;
     orb.circular = true;
-    orb.haloFactor = 1.6f;
-    orb.halo = [](ID2D1DeviceContext* dc, float size) { paint::OrbHalo(dc, size); };
+    if (m_win7Art) {
+        // WMP 12: the orb brightens and a glow ring fades in around it (no pulsing).
+        orb.haloFactor = wt::kGlowFactor;
+        orb.haloPulse = false;
+        orb.halo = [](ID2D1DeviceContext* dc, float size) { wt::GlowRing(dc, size); };
+    } else {
+        orb.haloFactor = 1.6f;
+        orb.halo = [](ID2D1DeviceContext* dc, float size) { paint::OrbHalo(dc, size); };
+    }
     add(kPlay, [this](auto* dc, D2D1_SIZE_F s, Layer l) {
         const bool showPause = m_playing && !m_paused;
-        paint::PlayOrb(dc, s.width, l, showPause ? TransportGlyph::Pause : TransportGlyph::Play);
+        if (m_win7Art) wt::Orb(dc, l, showPause);
+        else paint::PlayOrb(dc, s.width, l, showPause ? TransportGlyph::Pause : TransportGlyph::Play);
     }, orb)->onClick = [this] {
         auto pc = playback_control::get();
         if (pc->is_playing()) {
@@ -423,9 +445,13 @@ void MainWindow::CreateWidgets() {
     };
 
     add(kMute, [this](auto* dc, D2D1_SIZE_F s, Layer l) {
-        paint::IconButton(dc, s, l, m_muted ? TransportGlyph::Mute : TransportGlyph::Volume, true, false);
+        if (m_win7Art) wt::Mute(dc, l, m_muted, m_volume);
+        else paint::IconButton(dc, s, l, m_muted ? TransportGlyph::Mute : TransportGlyph::Volume, true, false);
     }, {})->onClick = [] { playback_control::get()->volume_mute_toggle(); };
-    add(kVolume, [this](auto* dc, D2D1_SIZE_F s, Layer l) { paint::VolumeSlider(dc, s, m_volume, l); }, {});
+    add(kVolume, [this](auto* dc, D2D1_SIZE_F s, Layer l) {
+        if (m_win7Art) wt::Volume(dc, l, m_volume);
+        else paint::VolumeSlider(dc, s, m_volume, l);
+    }, {});
 }
 
 // ---- Layout and painting -------------------------------------------------------------
@@ -446,9 +472,9 @@ void MainWindow::UpdateLayout() {
     L.client = {L.border, capH, W - L.border, H - L.border};
     L.clientEdge = {L.client.left - 2 * line, L.client.top - 2 * line, L.client.right + 2 * line,
                     L.client.bottom + 2 * line};
-    L.navBar = {L.client.left, L.client.top, L.client.right, L.client.top + PxI(m::kNavBarHeight)};
+    L.navBar = {L.client.left, L.client.top, L.client.right, L.client.top + PxI(NavBarHeight())};
     L.cmdBar = {L.client.left, L.navBar.bottom, L.client.right, L.navBar.bottom + PxI(m::kCommandBarHeight)};
-    L.transport = {L.client.left, L.client.bottom - PxI(m::kTransportHeight), L.client.right, L.client.bottom};
+    L.transport = {L.client.left, L.client.bottom - PxI(TransportHeight()), L.client.right, L.client.bottom};
     L.content = {L.client.left, L.cmdBar.bottom, L.client.right, L.transport.top};
 
     // Caption buttons hang from the top edge (flush when maximized).
@@ -470,10 +496,18 @@ void MainWindow::UpdateLayout() {
 
     // Navigation bar: back / forward orbs and the breadcrumb
     const int nbcy = (L.navBar.top + L.navBar.bottom) / 2;
-    const int orb = PxI(24);
-    L.back = CenteredRect(L.client.left + PxI(18), nbcy, orb, orb);
-    L.forward = CenteredRect(L.client.left + PxI(44), nbcy, orb, orb);
-    L.breadcrumb = {L.client.left + PxI(64), L.navBar.top, L.client.right - PxI(8), L.navBar.bottom - line};
+    if (m_win7Art) {
+        // WMP 12 orbs (27x27 bitmaps), 8 DIP from the client edge, touching each other.
+        const int orb = PxI(wt::kNavOrb), top = L.navBar.top + PxI(3);
+        L.back = {L.client.left + PxI(8), top, L.client.left + PxI(8) + orb, top + orb};
+        L.forward = {L.back.right, top, L.back.right + orb, top + orb};
+        L.breadcrumb = {L.forward.right + PxI(8), L.navBar.top + PxI(3), L.client.right - PxI(8), L.navBar.bottom - line};
+    } else {
+        const int orb = PxI(24);
+        L.back = CenteredRect(L.client.left + PxI(18), nbcy, orb, orb);
+        L.forward = CenteredRect(L.client.left + PxI(44), nbcy, orb, orb);
+        L.breadcrumb = {L.client.left + PxI(64), L.navBar.top, L.client.right - PxI(8), L.navBar.bottom - line};
+    }
 
     // Command bar
     const int cbcy = (L.cmdBar.top + L.cmdBar.bottom) / 2 - line;
@@ -497,23 +531,39 @@ void MainWindow::UpdateLayout() {
     // Transport band: seek rule on top, capsule centered on the orb below it.
     L.seek = {L.client.left + PxI(8), L.transport.top - PxI(5), L.client.right - PxI(8), L.transport.top + PxI(7)};
     const int tcx = (L.transport.left + L.transport.right) / 2;
-    const int tcy = (L.transport.top + PxI(6) + L.transport.bottom) / 2;
-    auto at = [&](float dx) { return tcx + PxI(dx); };
-    L.capsule = CenteredRect(tcx, tcy, PxI(m::kCapsuleWidth), PxI(m::kCapsuleHeight));
-    const int orbPx = PxI(m::kOrbDiameter + 2.0f);
-    L.play = CenteredRect(tcx, tcy, orbPx, orbPx);
-    const int segH = PxI(m::kSegmentHeight);
-    L.prev = {at(-m::kSegmentReach), tcy - segH / 2, tcx, tcy - segH / 2 + segH};
-    L.next = {tcx, tcy - segH / 2, at(m::kSegmentReach), tcy - segH / 2 + segH};
-    const int ibw = PxI(m::kIconButtonW), ibh = PxI(m::kIconButtonH);
-    L.shuffle = CenteredRect(at(m::kShuffleX), tcy, ibw, ibh);
-    L.repeat = CenteredRect(at(m::kRepeatX), tcy, ibw, ibh);
-    L.stop = CenteredRect(at(m::kStopX), tcy, ibw, ibh);
-    L.mute = CenteredRect(at(m::kVolumeX), tcy, ibw, ibh);
-    L.volume = {at(m::kSliderLeft), tcy - ibh / 2, at(m::kSliderRight), tcy - ibh / 2 + ibh};
-    L.divider = CenteredRect(at(m::kDividerX), tcy, PxI(4), PxI(16));
+    if (m_win7Art) {
+        // Original bitmaps, placed relative to the cluster as in WMP 12 (orb center = band center).
+        L.cluster = {tcx - PxI(108), L.transport.top + PxI(wt::kClusterTop)};
+        L.capsule = ClusterRect(wt::kCapsuleRect);
+        L.play = ClusterRect(wt::kOrbRect);
+        L.prev = ClusterRect(wt::kPrevRect);
+        L.next = ClusterRect(wt::kNextRect);
+        L.stop = ClusterRect(wt::kStopRect);
+        L.shuffle = ClusterRect(wt::kShuffleRect);
+        L.repeat = ClusterRect(wt::kRepeatRect);
+        L.mute = ClusterRect(wt::kMuteRect);
+        L.volume = ClusterRect(wt::kVolumeRect);
+        L.divider = {};
+    } else {
+        const int tcy = (L.transport.top + PxI(6) + L.transport.bottom) / 2;
+        auto at = [&](float dx) { return tcx + PxI(dx); };
+        L.capsule = CenteredRect(tcx, tcy, PxI(m::kCapsuleWidth), PxI(m::kCapsuleHeight));
+        const int orbPx = PxI(m::kOrbDiameter + 2.0f);
+        L.play = CenteredRect(tcx, tcy, orbPx, orbPx);
+        const int segH = PxI(m::kSegmentHeight);
+        L.prev = {at(-m::kSegmentReach), tcy - segH / 2, tcx, tcy - segH / 2 + segH};
+        L.next = {tcx, tcy - segH / 2, at(m::kSegmentReach), tcy - segH / 2 + segH};
+        const int ibw = PxI(m::kIconButtonW), ibh = PxI(m::kIconButtonH);
+        L.shuffle = CenteredRect(at(m::kShuffleX), tcy, ibw, ibh);
+        L.repeat = CenteredRect(at(m::kRepeatX), tcy, ibw, ibh);
+        L.stop = CenteredRect(at(m::kStopX), tcy, ibw, ibh);
+        L.mute = CenteredRect(at(m::kVolumeX), tcy, ibw, ibh);
+        L.volume = {at(m::kSliderLeft), tcy - ibh / 2, at(m::kSliderRight), tcy - ibh / 2 + ibh};
+        L.divider = CenteredRect(at(m::kDividerX), tcy, PxI(4), PxI(16));
+    }
+    const int capsuleLeft = m_win7Art ? ClusterRect(wt::kCapsuleVisible).left : L.capsule.left;
     L.nowPlaying = {L.client.left + PxI(10), L.transport.top + PxI(7),
-                    std::max<int>(L.client.left + PxI(10), L.capsule.left - PxI(12)), L.transport.bottom - PxI(3)};
+                    std::max<int>(L.client.left + PxI(10), capsuleLeft - PxI(12)), L.transport.bottom - PxI(3)};
 
     // Apply to the visual tree.
     const float radius = max ? 0.0f : Px(m::kCornerRadius);
@@ -528,6 +578,7 @@ void MainWindow::UpdateLayout() {
     Place(m_contentTop, {L.content.left, L.content.top, L.content.right, L.content.top + PxI(14)});
     Place(m_transportBand, L.transport);
     Place(m_capsule, L.capsule);
+    Place(m_cluster, ClusterRect(wt::kClusterRect));
     Place(m_divider, L.divider);
     {
         RECT t = L.title;
@@ -595,7 +646,7 @@ void MainWindow::RepaintScaleDependent() {
 
     // WMP 12 client chrome (measured; docs/design/visual-spec.md)
     const float lineDip = line / s;
-    m_navBar.Brush(Strip(PxI(m::kNavBarHeight), s, [&](ID2D1DeviceContext* dc, float h) {
+    m_navBar.Brush(Strip(PxI(NavBarHeight()), s, [&](ID2D1DeviceContext* dc, float h) {
         dc->FillRectangle({-1, 0, 100, h}, VGrad(dc, 0, h, {{0.0f, 0xDAEFFF}, {0.3f, 0xE2EBF8}, {1.0f, 0xE7EEFE}}).get());
         FillLine(dc, h - lineDip, lineDip, 0xC3CCCF);
     }));
@@ -610,15 +661,31 @@ void MainWindow::RepaintScaleDependent() {
     m_contentTop.Brush(Strip(PxI(14), s, [&](ID2D1DeviceContext* dc, float h) {
         dc->FillRectangle({-1, 0, 100, h}, VGrad(dc, 0, h, {{0.0f, 0xE0E7F5}, {1.0f, 0xF1F7FD}}).get());
     }));
-    m_transportBand.Brush(Strip(PxI(m::kTransportHeight), s, [&](ID2D1DeviceContext* dc, float h) {
+    m_transportBand.Brush(Strip(PxI(TransportHeight()), s, [&](ID2D1DeviceContext* dc, float h) {
+        if (m_win7Art) {
+            // Native WMP 12 capture, 96 DPI: dark top rule, then E9F1F9 fading to DFEAF7.
+            dc->FillRectangle({-1, 0, 100, h}, VGrad(dc, 0, h, {{0.0f, 0xEBF2FA}, {0.1f, 0xE9F1F9},
+                                                                 {0.4f, 0xE3EDF8}, {1.0f, 0xDFEAF7}})
+                                                    .get());
+            FillLine(dc, 0, lineDip, 0x9DA1A6);
+            return;
+        }
         dc->FillRectangle({-1, 0, 100, h}, VGrad(dc, 0, h, {{0.0f, 0xEBF2FB}, {1.0f, 0xE3ECF7}}).get());
         FillLine(dc, 0, lineDip, 0x99A1AA);
         FillLine(dc, lineDip, lineDip, 0xF6FAFE);
     }));
-    const int capH = PxI(m::kCapsuleHeight);
-    m_capsule.Brush(NineGrid(2 * capH, capH, s, static_cast<float>(capH / 2), false, [&](ID2D1DeviceContext* dc) {
-        paint::TransportCapsule(dc, D2D1::SizeF(2 * capH / s, capH / s));
-    }));
+    if (m_win7Art) {
+        auto& host = gfx::CompositionHost::Get();
+        const RECT cap = ClusterRect(wt::kCapsuleRect), cl = ClusterRect(wt::kClusterRect);
+        host.Repaint(m_capsule, cap.right - cap.left, cap.bottom - cap.top, s, [](ID2D1DeviceContext* dc) { wt::Capsule(dc); });
+        host.Repaint(m_cluster, cl.right - cl.left, cl.bottom - cl.top, s,
+                     [](ID2D1DeviceContext* dc) { wt::ClusterBackground(dc); });
+    } else {
+        const int capH = PxI(m::kCapsuleHeight);
+        m_capsule.Brush(NineGrid(2 * capH, capH, s, static_cast<float>(capH / 2), false, [&](ID2D1DeviceContext* dc) {
+            paint::TransportCapsule(dc, D2D1::SizeF(2 * capH / s, capH / s));
+        }));
+    }
     {
         auto& host = gfx::CompositionHost::Get();
         const int w = PxI(4), h = PxI(16);
@@ -646,7 +713,7 @@ void MainWindow::RepaintTitle() {
 
 void MainWindow::RepaintNowPlaying() {
     auto& host = gfx::CompositionHost::Get();
-    const int w = PxI(360), h = PxI(m::kTransportHeight - 10);
+    const int w = PxI(360), h = PxI(TransportHeight() - 10);
     host.Repaint(m_nowPlaying, w, h, m_scale, [&](ID2D1DeviceContext* dc) {
         if (m_trackTitle.empty()) return;
         const float H = h / m_scale;
@@ -696,7 +763,7 @@ void MainWindow::RepaintBreadcrumb() {
     }
     }
     auto& host = gfx::CompositionHost::Get();
-    const int w = PxI(900), h = PxI(m::kNavBarHeight - 1);
+    const int w = PxI(900), h = PxI(NavBarHeight() - 1);
     host.Repaint(m_breadcrumb, w, h, m_scale, [&](ID2D1DeviceContext* dc) {
         com_ptr<ID2D1SolidColorBrush> ink;
         dc->CreateSolidColorBrush(Hex(0x1E395B), ink.put());
@@ -902,7 +969,7 @@ void MainWindow::OnPlaybackStateChanged() {
     if (playing == m_playing && paused == m_paused) return;
     m_playing = playing;
     m_paused = paused;
-    for (int id : {kPlay, kStop})
+    for (int id : {kPlay, kStop, kPrev, kNext})
         if (auto* w = WidgetById(id)) w->Invalidate();
     if (m_list) m_list->Refresh();  // playing marker
 }
@@ -960,7 +1027,8 @@ void MainWindow::OnVolumeChanged() {
     }
     if (std::abs(v - m_volume) > 1e-4f) {
         m_volume = v;
-        if (auto* w = WidgetById(kVolume)) w->Invalidate();
+        for (int id : {kVolume, kMute})  // the speaker icon shows the level
+            if (auto* w = WidgetById(id)) w->Invalidate();
     }
 }
 
@@ -1001,13 +1069,35 @@ void MainWindow::ScheduleLibraryReload() {
     if (m_hwnd) SetTimer(m_hwnd, kLibraryTimer, 400, nullptr);  // debounce bursts of library events
 }
 
+RECT MainWindow::ClusterRect(const D2D1_RECT_F& r) const {
+    const POINT o = m_layout.cluster;
+    return {o.x + PxI(r.left), o.y + PxI(r.top), o.x + PxI(r.right), o.y + PxI(r.bottom)};
+}
+
+D2D1_RECT_F MainWindow::ClusterRegion(const RECT& r) const {
+    const POINT o = m_layout.cluster;
+    return {(r.left - o.x) / m_scale, (r.top - o.y) / m_scale, (r.right - o.x) / m_scale, (r.bottom - o.y) / m_scale};
+}
+
+// With the original artwork the bars follow WMP 12's bitmaps (27-DIP orbs, 51-DIP cluster).
+float MainWindow::NavBarHeight() const { return m_win7Art ? 33.0f : m::kNavBarHeight; }
+float MainWindow::TransportHeight() const { return m_win7Art ? wt::kBandHeight : m::kTransportHeight; }
+
 void MainWindow::SetVolumeFromX(int x) {
     const RECT& r = m_layout.volume;
-    const float thumb = Px(11.0f);
-    const float x0 = r.left + thumb / 2, x1 = r.right - thumb / 2;
+    float x0, x1;
+    if (m_win7Art) {
+        x0 = m_layout.cluster.x + Px(wt::kThumbMin);
+        x1 = m_layout.cluster.x + Px(wt::kThumbMax);
+    } else {
+        const float thumb = Px(11.0f);
+        x0 = r.left + thumb / 2;
+        x1 = r.right - thumb / 2;
+    }
     const float v = std::clamp((x - x0) / std::max(1.0f, x1 - x0), 0.0f, 1.0f);
     m_volume = v;
-    if (auto* w = WidgetById(kVolume)) w->Invalidate();
+    for (int id : {kVolume, kMute})
+        if (auto* w = WidgetById(id)) w->Invalidate();
     playback_control::get()->set_volume(DbFromSlider(v));
 }
 
@@ -1091,7 +1181,7 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
         m_playlistCallback = std::make_unique<PlaylistCallback>(*this);
         m_libraryCallback = std::make_unique<LibraryCallback>(*this);
         m_artNotify = now_playing_album_art_notify_manager::get()->add([this](album_art_data::ptr data) {
-            m_art = DecodeArt(data, PxI(m::kTransportHeight));
+            m_art = DecodeArt(data, PxI(TransportHeight()));
             RepaintNowPlaying();
         });
         m_dropTarget = MakeFileDropTarget([this](IDataObject* data) { AddDroppedFiles(data); });
@@ -1171,6 +1261,18 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
     case WM_MOVE:
         if (m_glass) m_glass->UpdateReflectionAnchor(hwnd);
         return 0;
+
+    case WM_WINDOWPOSCHANGING: {
+        const auto* pos = reinterpret_cast<const WINDOWPOS*>(lp);
+        if (m_glass && !(pos->flags & SWP_NOMOVE) && !IsIconic(hwnd)) {
+            RECT wr{};
+            GetWindowRect(hwnd, &wr);
+            const LONG w = (pos->flags & SWP_NOSIZE) ? wr.right - wr.left : pos->cx;
+            const LONG h = (pos->flags & SWP_NOSIZE) ? wr.bottom - wr.top : pos->cy;
+            m_glass->UpdateReflectionAnchor(hwnd, RECT{pos->x, pos->y, pos->x + w, pos->y + h});
+        }
+        break;
+    }
 
     case WM_WINDOWPOSCHANGED: {
         const LRESULT r = DefWindowProcW(hwnd, msg, wp, lp);  // generates WM_SIZE / WM_MOVE

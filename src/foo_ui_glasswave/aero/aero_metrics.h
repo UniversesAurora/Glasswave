@@ -46,6 +46,7 @@ inline constexpr float kSliderRight = 156.0f;
 // Animation timings (ms): Win7 hover fades in fast and out slowly.
 inline constexpr int kHoverInMs = 120;
 inline constexpr int kHoverOutMs = 420;
+inline constexpr int kGlowInMs = 250;  // WMP 12 play-orb glow ring
 inline constexpr int kPressMs = 60;
 inline constexpr int kPulsePeriodMs = 1800;  // WMC-style "breathing" focus glow
 

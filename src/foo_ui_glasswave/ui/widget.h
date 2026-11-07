@@ -18,6 +18,7 @@ public:
         bool circular = false;       // circular hit testing
         bool inactiveLayer = false;  // separate "window inactive" look (caption buttons)
         float haloFactor = 0.0f;     // > 0: add a halo layer of size * haloFactor
+        bool haloPulse = true;       // breathe while hovered (WMC); false: plain fade (WMP)
         HaloPainter halo;
     };
 

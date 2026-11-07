@@ -44,6 +44,25 @@ $pdb = Join-Path $built 'foo_ui_glasswave.pdb'
 if (Test-Path -LiteralPath $pdb) { Copy-Item -LiteralPath $pdb -Destination $dest -Force }
 Write-Host "Deployed $Configuration build to $dest"
 
+# Original Win7 artwork (ADR 0007): never committed; copied from the owner's local
+# references into the dev profile, where Glasswave looks for it at run time.
+$art = Join-Path $Instance 'profile/glasswave'
+$sources = @{
+    'wmploc.dll'    = '.local/refs/wmploc.dll'
+    'ehres.dll'     = '.local/refs/ehres.dll'
+    'aero.msstyles' = '.local/refs/Aero/aero.msstyles'
+}
+foreach ($name in $sources.Keys) {
+    $src = Join-Path $Root $sources[$name]
+    if (-not (Test-Path -LiteralPath $src)) { continue }
+    New-Item -ItemType Directory -Force -Path $art | Out-Null
+    $dst = Join-Path $art $name
+    if (-not (Test-Path -LiteralPath $dst) -or (Get-Item -LiteralPath $src).Length -ne (Get-Item -LiteralPath $dst).Length) {
+        Copy-Item -LiteralPath $src -Destination $dst -Force
+        Write-Host "Copied Win7 artwork $name"
+    }
+}
+
 if (-not $NoLaunch) {
     Start-Process -FilePath $Exe -WorkingDirectory $Instance
     Write-Host 'Dev instance started'

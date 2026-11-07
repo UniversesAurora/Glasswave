@@ -179,8 +179,13 @@ metadb_handle_list PlaylistSource::SelectedItems() const {
 
 TrackSource::TrackSource(const LibraryModel& model, std::vector<size_t> tracks, std::wstring emptyText)
     : m_model(model), m_all(std::move(tracks)), m_emptyText(std::move(emptyText)) {
-    m_columns = {{L"Title", 0, true},  {L"Contributing artist", 170}, {L"Album", 170},
-                 {L"#", 34, false, true}, {L"Length", 56, false, true}, {L"Year", 50, false, true}};
+    // WMP 12 music details view: album column, then the track columns.
+    m_columns = {{L"Album", 200},          {L"#", 34, false, true},         {L"Title", 0, true},
+                 {L"Length", 56, false, true}, {L"Contributing artist", 190}, {L"Genre", 110}};
+    // Album by album in "All music" order; tracks keep their library order inside an album.
+    std::stable_sort(m_all.begin(), m_all.end(), [&](size_t a, size_t b) {
+        return m_model.AlbumRank(m_model.Tracks()[a].albumIndex) < m_model.AlbumRank(m_model.Tracks()[b].albumIndex);
+    });
     m_selected.assign(m_all.size(), 0);
     SetFilter({});
 }
@@ -188,12 +193,12 @@ TrackSource::TrackSource(const LibraryModel& model, std::vector<size_t> tracks, 
 std::wstring TrackSource::Cell(size_t row, size_t column) const {
     const Track& t = m_model.Tracks()[m_all[m_rows[row]]];
     switch (column) {
-    case 0: return t.title;
-    case 1: return t.artist;
-    case 2: return t.album;
-    case 3: return t.number;
-    case 4: return t.length;
-    default: return t.year;
+    case 0: return {};  // drawn by the list as the album column
+    case 1: return t.number;
+    case 2: return t.title;
+    case 3: return t.length;
+    case 4: return t.artist;
+    default: return t.genre;
     }
 }
 
@@ -242,6 +247,24 @@ void TrackSource::SetFilter(std::wstring_view filterLower) {
     for (size_t i = 0; i < m_all.size(); ++i)
         if (filterLower.empty() || MatchesFilter(m_model.Tracks()[m_all[i]].search, filterLower)) m_rows.push_back(i);
     m_focus = SIZE_MAX;
+
+    m_groups.clear();
+    const auto& albums = m_model.Groups(GroupKind::Album);
+    for (size_t r = 0; r < m_rows.size(); ++r) {
+        const Track& t = m_model.Tracks()[m_all[m_rows[r]]];
+        if (!m_groups.empty() && m_model.Tracks()[m_all[m_rows[m_groups.back().first]]].albumIndex == t.albumIndex) {
+            ++m_groups.back().count;
+            continue;
+        }
+        RowGroup g;
+        g.first = r;
+        g.count = 1;
+        g.art = t.handle;
+        const Group* album = t.albumIndex < albums.size() ? &albums[t.albumIndex] : nullptr;
+        g.header = album ? album->secondary : t.albumArtist;
+        g.lines = {t.album, album ? album->secondary : t.albumArtist, t.genre, album ? album->year : t.year};
+        m_groups.push_back(std::move(g));
+    }
 }
 
 // ---- GroupSource ------------------------------------------------------------------------
@@ -250,14 +273,14 @@ GroupSource::GroupSource(const LibraryModel& model, GroupKind kind, DrillDown on
     : m_model(model), m_kind(kind), m_onOpen(std::move(onOpen)) {
     switch (kind) {
     case GroupKind::Album:
-        m_columns = {{L"Album", 0, true}, {L"Album artist", 200}, {L"Year", 50, false, true},
-                     {L"Songs", 56, false, true}};
+        m_columns = {{L"Album", 160}, {L"Album artist", 160}, {L"Genre", 100}, {L"Release year", 90},
+                     {L"Count", 70}, {L"", 0, true}};
         break;
     case GroupKind::Artist:
-        m_columns = {{L"Album artist", 0, true}, {L"Songs", 56, false, true}};
+        m_columns = {{L"Album artist", 160}, {L"Count", 80}, {L"Length", 80}, {L"", 0, true}};
         break;
     default:
-        m_columns = {{L"Genre", 0, true}, {L"Songs", 56, false, true}};
+        m_columns = {{L"Genre", 160}, {L"Count", 80}, {L"", 0, true}};
         break;
     }
     m_selected.assign(m_model.Groups(kind).size(), 0);
@@ -272,6 +295,23 @@ std::wstring GroupSource::Cell(size_t row, size_t column) const {
         if (column == 2) return g.year;
     }
     return std::to_wstring(g.tracks.size());
+}
+
+TileInfo GroupSource::Tile(size_t row) const {
+    const Group& g = At(row);
+    TileInfo info;
+    if (!g.tracks.empty()) info.art = m_model.Tracks()[g.tracks.front()].handle;
+    const auto songs = g.tracks.size();
+    const std::wstring count = std::to_wstring(songs) + (songs == 1 ? L" song" : L" songs");
+    const long minutes = std::lround(g.seconds / 60.0);
+    switch (m_kind) {
+    case GroupKind::Album: info.lines = {g.name, g.secondary, {}}; break;
+    case GroupKind::Artist:
+        info.lines = {g.name, count, std::to_wstring(minutes) + (minutes == 1 ? L" minute" : L" minutes")};
+        break;
+    default: info.lines = {g.name, count, {}}; break;
+    }
+    return info;
 }
 
 std::wstring GroupSource::EmptyText() const {

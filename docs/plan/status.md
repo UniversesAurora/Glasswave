@@ -33,12 +33,25 @@ Updated: 2026-11-07
   Checked offline against every cue in the owner's E:\music\CDs; UI test by the owner pending.
 - Owner supplied Win7 wmploc.dll / ehres.dll / aero.msstyles; ADR 0007 adopts original artwork
   loaded at runtime. Inventory started in docs/design/win7-assets.md.
+- Original artwork in use (2026-11-07): the whole WMP 12 transport (capsule, cluster, orb with
+  its glow ring fading in, glyphs, shuffle / repeat / speaker icons, volume slider) and the
+  back / forward orbs come from wmploc.dll, placed by pixel matching against a native capture.
+  Procedural painting remains the fallback when the files are absent.
+- Library song views are grouped by album like WMP 12 (header line, album column with the
+  cover and album / artist / genre / year); album, artist and genre views are cover tiles.
+  Covers load on a background thread (ui/art_cache.*); WMP's generic cover and drop shadow
+  are used when available.
+- Glass reflection anchor is applied in WM_WINDOWPOSCHANGING (before the move) to stop the
+  streaks shaking while the window is dragged. Owner to confirm.
+- Owner's Win7 VM runs at 150 %; WMP 12 draws its bitmaps 1:1 there. The dev machine is 4K
+  at 200 %.
 
 ## Next
 
-1. Owner review of the functional pass; collect bugs.
-2. Visual fine-tuning from the owner's Win7 captures (caption buttons, list, nav pane, bars).
-3. WMP 12 album grouping in song lists (album art + header rows), column sorting/resizing.
+1. Owner tests: transport hover / press, album grouping, tiles, drag the window (reflection).
+2. Caption buttons and frame from the owner's Win7 uDWM.dll (requested), then the remaining
+   visual tuning from the Win7 captures (list header, selection, nav pane icons, bars).
+3. Column sorting / resizing, rating column (STARS_PNG), artist tiles with stacked covers.
 4. Playlist editing: drag to reorder, drag from library to playlists, rename inline.
 
 ## Known issues

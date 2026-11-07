@@ -96,6 +96,9 @@
     <ClCompile Include="ui\search_box.cpp" />
     <ClCompile Include="ui\shell_glue.cpp" />
     <ClCompile Include="wmp\wmp_painter.cpp" />
+    <ClCompile Include="wmp\wmp_transport.cpp" />
+    <ClCompile Include="win7\win7_resources.cpp" />
+    <ClCompile Include="ui\art_cache.cpp" />
     <ClCompile Include="media\library_model.cpp" />
     <ClCompile Include="media\list_sources.cpp" />
     <ClCompile Include="media\source_identity.cpp" />
@@ -118,6 +121,9 @@
     <ClInclude Include="ui\search_box.h" />
     <ClInclude Include="ui\shell_glue.h" />
     <ClInclude Include="wmp\wmp_painter.h" />
+    <ClInclude Include="wmp\wmp_transport.h" />
+    <ClInclude Include="win7\win7_resources.h" />
+    <ClInclude Include="ui\art_cache.h" />
     <ClInclude Include="media\library_model.h" />
     <ClInclude Include="media\list_sources.h" />
     <ClInclude Include="media\source_identity.h" />

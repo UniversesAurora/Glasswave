@@ -46,8 +46,11 @@ winrt::com_ptr<IDropTarget> MakeFileDropTarget(std::function<void(IDataObject*)>
 }
 
 winrt::com_ptr<IWICBitmapSource> DecodeArt(const album_art_data::ptr& data, int sizePx) {
+    return DecodeArt(gfx::CompositionHost::Get().Wic(), data, sizePx);
+}
+
+winrt::com_ptr<IWICBitmapSource> DecodeArt(IWICImagingFactory* wic, const album_art_data::ptr& data, int sizePx) {
     if (!data.is_valid() || data->get_size() == 0) return nullptr;
-    auto* wic = gfx::CompositionHost::Get().Wic();
     winrt::com_ptr<IWICStream> stream;
     winrt::com_ptr<IWICBitmapDecoder> decoder;
     winrt::com_ptr<IWICBitmapFrameDecode> frame;

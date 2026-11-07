@@ -80,7 +80,9 @@ void Widget::SetHover(bool hover) {
     host.AnimateOpacity(m_hoverLayer, hover ? 1.0f : 0.0f, hover ? m::kHoverInMs : m::kHoverOutMs);
     if (m_halo) {
         // WMC-style breathing halo: loops only while hovered, fades out after; idle = no frames
-        if (hover)
+        if (!m_options.haloPulse)
+            host.AnimateOpacity(m_halo, hover ? 1.0f : 0.0f, hover ? m::kGlowInMs : m::kHoverOutMs);
+        else if (hover)
             host.StartPulse(m_halo, 0.30f, 0.85f, m::kPulsePeriodMs);
         else
             host.StopPulse(m_halo, 0.0f, m::kHoverOutMs);

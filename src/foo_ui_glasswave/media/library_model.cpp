@@ -12,7 +12,7 @@ constexpr wchar_t kSep = L'\x1F';
 // One titleformat pass per track, fields separated by U+001F.
 constexpr const char* kTrackScript =
     "[$meta(album artist)]\x1f[%artist%]\x1f[%album%]\x1f[%genre%]\x1f[%title%]\x1f[%tracknumber%]\x1f"
-    "[%length%]\x1f[$year(%date%)]\x1f$if2(%discnumber%,1)\x1f$directory_path(%path%)";
+    "[%length%]\x1f[$year(%date%)]\x1f$if2(%discnumber%,1)\x1f$directory_path(%path%)\x1f[%length_seconds_fp%]";
 
 std::vector<std::wstring> Split(const std::wstring& s, size_t expected) {
     std::vector<std::wstring> out;
@@ -57,6 +57,7 @@ void LibraryModel::Reload() {
     m_artists.clear();
     m_albums.clear();
     m_genres.clear();
+    m_albumRank.clear();
 
     auto lib = library_manager::get();
     m_enabled = lib->is_library_enabled();
@@ -101,7 +102,7 @@ void LibraryModel::Reload() {
         if (!keep[i]) continue;
         const auto& h = items[i];
         h->format_title(nullptr, buf, script, nullptr);
-        auto f = Split(ui::Wide(buf), 10);
+        auto f = Split(ui::Wide(buf), 11);
         Sortable s;
         s.track.handle = h;
         s.track.hasAlbumArtist = !f[0].empty();
@@ -117,6 +118,7 @@ void LibraryModel::Reload() {
         }
         s.track.number = f[5];
         s.track.length = f[6];
+        s.track.seconds = _wtof(f[10].c_str());
         s.track.year = (f[7].empty() || NumberOf(f[7]) <= 0) ? std::wstring() : f[7];
         // Cue sheets foobar2000 decoded with the wrong code page: use the real text.
         if (const RepairedText* r = cues.Repair(h)) {
@@ -137,8 +139,23 @@ void LibraryModel::Reload() {
         rows.push_back(std::move(s));
     }
 
-    auto cmp = [](const std::wstring& a, const std::wstring& b) {
-        return CompareStringEx(LOCALE_NAME_USER_DEFAULT, LINGUISTIC_IGNORECASE | SORT_DIGITSASNUMBERS, a.c_str(),
+    // Tagging is often inconsistent inside one album: borrow the ALBUM ARTIST tag from any
+    // track of the same album in the same folder (before sorting, so albums stay together).
+    {
+        std::map<std::wstring, std::wstring> tagByAlbumFolder;
+        for (const auto& r : rows)
+            if (r.track.hasAlbumArtist)
+                tagByAlbumFolder.try_emplace(Lower(r.track.album) + kSep + r.track.folder, r.track.albumArtist);
+        for (auto& r : rows) {
+            if (r.track.hasAlbumArtist) continue;
+            auto it = tagByAlbumFolder.find(Lower(r.track.album) + kSep + r.track.folder);
+            if (it == tagByAlbumFolder.end()) continue;
+            r.track.albumArtist = it->second;
+            r.track.hasAlbumArtist = true;
+        }
+    }
+
+    auto cmp = [](const std::wstring& a, const std::wstring& b) {        return CompareStringEx(LOCALE_NAME_USER_DEFAULT, LINGUISTIC_IGNORECASE | SORT_DIGITSASNUMBERS, a.c_str(),
                                static_cast<int>(a.size()), b.c_str(), static_cast<int>(b.size()), nullptr, nullptr,
                                0) - 2;  // -1, 0, 1
     };
@@ -173,20 +190,7 @@ void LibraryModel::Reload() {
         });
         for (auto& g : out) g.search = Lower(g.name + L' ' + g.secondary);
     };
-    // Tagging is often inconsistent inside one album: borrow the ALBUM ARTIST tag from any
-    // track of the same album in the same folder.
-    {
-        std::map<std::wstring, std::wstring> tagByAlbumFolder;
-        for (const auto& t : m_tracks)
-            if (t.hasAlbumArtist) tagByAlbumFolder.try_emplace(Lower(t.album) + kSep + t.folder, t.albumArtist);
-        for (auto& t : m_tracks) {
-            if (t.hasAlbumArtist) continue;
-            auto it = tagByAlbumFolder.find(Lower(t.album) + kSep + t.folder);
-            if (it == tagByAlbumFolder.end()) continue;
-            t.albumArtist = it->second;
-            t.hasAlbumArtist = true;
-        }
-    }
+
     build(m_artists, [](const Track& t) { return t.albumArtist; },
           [](Group& g, const Track& t) { g.name = t.albumArtist; });
     // Albums without an ALBUM ARTIST tag (compilations) are keyed by folder so their
@@ -198,6 +202,8 @@ void LibraryModel::Reload() {
               g.secondary = t.albumArtist;
               g.year = t.year;
           });
+    for (size_t a = 0; a < m_albums.size(); ++a)
+        for (size_t i : m_albums[a].tracks) m_tracks[i].albumIndex = a;
     for (auto& g : m_albums) {
         if (g.tracks.empty() || m_tracks[g.tracks.front()].hasAlbumArtist) continue;
         const std::wstring& first = m_tracks[g.tracks.front()].artist;
@@ -209,6 +215,22 @@ void LibraryModel::Reload() {
             if (g.year.empty()) g.year = m_tracks[i].year;
     }
     build(m_genres, [](const Track& t) { return t.genre; }, [](Group& g, const Track& t) { g.name = t.genre; });
+
+    for (auto* groups : {&m_artists, &m_albums, &m_genres})
+        for (auto& g : *groups)
+            for (size_t i : g.tracks) g.seconds += m_tracks[i].seconds;
+
+    // "All music" lists albums by album artist (compilations under "Various Artists"), year, title.
+    std::vector<size_t> order(m_albums.size());
+    for (size_t i = 0; i < order.size(); ++i) order[i] = i;
+    std::stable_sort(order.begin(), order.end(), [&](size_t x, size_t y) {
+        const Group &a = m_albums[x], &b = m_albums[y];
+        if (int c = cmp(a.secondary, b.secondary)) return c < 0;
+        if (int c = cmp(a.year, b.year)) return c < 0;
+        return cmp(a.name, b.name) < 0;
+    });
+    m_albumRank.assign(m_albums.size(), 0);
+    for (size_t r = 0; r < order.size(); ++r) m_albumRank[order[r]] = r;
 }
 
 const std::vector<Group>& LibraryModel::Groups(GroupKind kind) const {

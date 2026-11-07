@@ -12,6 +12,8 @@ struct Track {
     std::wstring search;  // lower-cased "artist album title genre" for filtering
     std::wstring folder;  // lower-cased directory, groups compilations without ALBUM ARTIST
     bool hasAlbumArtist = false;
+    double seconds = 0;
+    size_t albumIndex = SIZE_MAX;  // into Groups(GroupKind::Album)
 };
 
 enum class GroupKind { Artist, Album, Genre };
@@ -23,6 +25,7 @@ struct Group {
     std::wstring year;       // album only
     std::vector<size_t> tracks;  // indices into LibraryModel::Tracks()
     std::wstring search;
+    double seconds = 0;  // total length
 };
 
 class LibraryModel {
@@ -34,11 +37,14 @@ public:
     const std::vector<Track>& Tracks() const { return m_tracks; }
     const std::vector<Group>& Groups(GroupKind kind) const;
     const Group* FindGroup(GroupKind kind, std::wstring_view key) const;
+    // Position of an album in the "All music" order (album artist, year, title).
+    size_t AlbumRank(size_t album) const { return album < m_albumRank.size() ? m_albumRank[album] : SIZE_MAX; }
 
 private:
     bool m_enabled = false;
     std::vector<Track> m_tracks;
     std::vector<Group> m_artists, m_albums, m_genres;
+    std::vector<size_t> m_albumRank;
 };
 
 std::wstring Lower(std::wstring_view s);

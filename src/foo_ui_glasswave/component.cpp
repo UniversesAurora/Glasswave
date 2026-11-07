@@ -1,6 +1,8 @@
 #include "pch.h"
 #include "gfx/composition_host.h"
+#include "ui/art_cache.h"
 #include "ui/main_window.h"
+#include "win7/win7_resources.h"
 
 DECLARE_COMPONENT_VERSION(
     "Glasswave", "0.1.0-m0",
@@ -39,6 +41,8 @@ public:
             m_window->Destroy();
             m_window.reset();
         }
+        glasswave::ui::ArtCache::Shutdown();     // stops the album art thread
+        glasswave::win7::Resources::Shutdown();  // device bitmaps before the device
         glasswave::gfx::CompositionHost::Shutdown();
     }
 

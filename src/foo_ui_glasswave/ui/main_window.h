@@ -45,6 +45,7 @@ private:
         RECT navPane{}, list{};
         RECT seek{}, capsule{}, divider{}, shuffle{}, repeat{}, stop{}, prev{}, next{}, play{}, mute{}, volume{};
         RECT nowPlaying{};
+        POINT cluster{};  // origin of the WMP 12 transport cluster bitmap
     };
 
     struct View {
@@ -85,6 +86,12 @@ private:
     void SetVolumeFromX(int x);
     float SeekFractionAt(int x) const;
 
+    // Pixel rect of a region given in transport-cluster coordinates, and back.
+    RECT ClusterRect(const D2D1_RECT_F& r) const;
+    D2D1_RECT_F ClusterRegion(const RECT& r) const;
+    float NavBarHeight() const;
+    float TransportHeight() const;
+
     float Px(float dip) const { return dip * m_scale; }
     int PxI(float dip) const { return static_cast<int>(std::lround(dip * m_scale)); }
     int LinePx() const { return std::max(1, static_cast<int>(std::floor(m_scale))); }
@@ -111,6 +118,8 @@ private:
     winrt::Windows::UI::Composition::SpriteVisual m_contentTop{nullptr};
     winrt::Windows::UI::Composition::SpriteVisual m_transportBand{nullptr};
     winrt::Windows::UI::Composition::SpriteVisual m_capsule{nullptr};
+    winrt::Windows::UI::Composition::SpriteVisual m_cluster{nullptr};  // WMP 12 transport cluster bitmap
+    bool m_win7Art = false;  // original Win7 / WMP 12 artwork available (ADR 0007)
     winrt::Windows::UI::Composition::SpriteVisual m_divider{nullptr};
     winrt::Windows::UI::Composition::SpriteVisual m_clientGlow{nullptr};
     winrt::Windows::UI::Composition::SpriteVisual m_title{nullptr};

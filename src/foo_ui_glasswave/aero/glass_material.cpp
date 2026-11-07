@@ -100,8 +100,14 @@ void GlassMaterial::RefreshTransparencyPolicy() {
 }
 
 void GlassMaterial::UpdateReflectionAnchor(HWND hwnd) {
+    RECT wr{};
+    GetWindowRect(hwnd, &wr);
+    UpdateReflectionAnchor(hwnd, wr);
+}
+
+void GlassMaterial::UpdateReflectionAnchor(HWND hwnd, const RECT& windowRect) {
     MONITORINFO mi{sizeof(mi)};
-    if (!GetMonitorInfoW(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST), &mi)) return;
+    if (!GetMonitorInfoW(MonitorFromRect(&windowRect, MONITOR_DEFAULTTONEAREST), &mi)) return;
     const RECT mon = mi.rcMonitor;
     const int w = mon.right - mon.left, h = mon.bottom - mon.top;
 
@@ -120,9 +126,14 @@ void GlassMaterial::UpdateReflectionAnchor(HWND hwnd) {
         m_reflection.Size(float2{static_cast<float>(w), static_cast<float>(h)});
     }
 
-    POINT origin{0, 0};
-    ClientToScreen(hwnd, &origin);
-    m_reflection.Offset(float3{static_cast<float>(mon.left - origin.x), static_cast<float>(mon.top - origin.y), 0});
+    // The client area starts at the window origin plus the current window-to-client inset
+    // (zero unless maximized), which a move does not change.
+    POINT client{0, 0};
+    ClientToScreen(hwnd, &client);
+    RECT current{};
+    GetWindowRect(hwnd, &current);
+    const LONG ox = windowRect.left + (client.x - current.left), oy = windowRect.top + (client.y - current.top);
+    m_reflection.Offset(float3{static_cast<float>(mon.left - ox), static_cast<float>(mon.top - oy), 0});
 }
 
 }  // namespace glasswave::aero

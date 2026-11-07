@@ -39,14 +39,18 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <condition_variable>
+#include <deque>
 #include <cmath>
 #include <functional>
 #include <map>
 #include <set>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <vector>
 
 // foobar2000 SDK --------------------------------------------------------------

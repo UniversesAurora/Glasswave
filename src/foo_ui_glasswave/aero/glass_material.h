@@ -22,6 +22,10 @@ public:
     void RefreshTransparencyPolicy();
     // Streaks are fixed to screen coordinates: moving the window only shifts an offset.
     void UpdateReflectionAnchor(HWND hwnd);
+    // Same, for a window about to move to `windowRect` (WM_WINDOWPOSCHANGING). Applying
+    // the offset before the move lets DWM show both in the same frame; doing it after
+    // the move (WM_MOVE) lags a frame behind and makes the streaks shake while dragging.
+    void UpdateReflectionAnchor(HWND hwnd, const RECT& windowRect);
 
 private:
     void RebuildBrushes();

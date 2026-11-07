@@ -12,6 +12,22 @@ struct Column {
     bool rightAlign = false;
 };
 
+// WMP 12 details view grouped by album: a header line, then the tracks next to an
+// album column showing the cover and up to four lines of album information.
+struct RowGroup {
+    size_t first = 0, count = 0;  // rows
+    metadb_handle_ptr art;        // track whose front cover represents the group
+    std::wstring header;
+    std::array<std::wstring, 4> lines;
+};
+
+// WMP 12 icon views: albums (cover above two lines) or artists (cover beside three lines).
+enum class TileStyle { None, Album, Artist };
+struct TileInfo {
+    metadb_handle_ptr art;
+    std::array<std::wstring, 3> lines;
+};
+
 class ListSource {
 public:
     virtual ~ListSource() = default;
@@ -21,6 +37,11 @@ public:
     virtual std::wstring Cell(size_t row, size_t column) const = 0;
     virtual std::wstring EmptyText() const = 0;
     virtual bool IsPlaying(size_t /*row*/) const { return false; }
+
+    // Optional layouts. Groups (if any) cover all rows in order; column 0 is the album column.
+    virtual const std::vector<RowGroup>* Groups() const { return nullptr; }
+    virtual TileStyle Tiles() const { return TileStyle::None; }
+    virtual TileInfo Tile(size_t /*row*/) const { return {}; }
 
     // Selection / focus
     virtual bool IsSelected(size_t row) const = 0;
@@ -84,6 +105,7 @@ public:
     std::wstring Cell(size_t row, size_t column) const override;
     std::wstring EmptyText() const override { return m_emptyText; }
     bool IsPlaying(size_t row) const override;
+    const std::vector<RowGroup>* Groups() const override { return &m_groups; }
     bool IsSelected(size_t row) const override { return m_selected[m_rows[row]] != 0; }
     void SelectOnly(size_t row) override;
     void Toggle(size_t row) override;
@@ -104,6 +126,7 @@ private:
     size_t m_focus = SIZE_MAX;
     std::wstring m_emptyText;
     std::vector<Column> m_columns;
+    std::vector<RowGroup> m_groups;
 };
 
 // Artists, albums or genres. Activating a row drills into its tracks.
@@ -116,6 +139,8 @@ public:
     size_t Count() const override { return m_rows.size(); }
     std::wstring Cell(size_t row, size_t column) const override;
     std::wstring EmptyText() const override;
+    TileStyle Tiles() const override { return m_kind == GroupKind::Artist ? TileStyle::Artist : TileStyle::Album; }
+    TileInfo Tile(size_t row) const override;
     bool IsSelected(size_t row) const override { return m_selected[m_rows[row]] != 0; }
     void SelectOnly(size_t row) override;
     void Toggle(size_t row) override;
