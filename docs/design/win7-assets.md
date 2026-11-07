@@ -47,10 +47,10 @@ below the rule, the orb centered horizontally.
 | ID | Size | Content |
 | --- | --- | --- |
 | 5350 / 5352 / 5351 / 5353 | 54x27 | back + forward orbs normal / hover / pressed / disabled (27 px each) |
-| ALBUM_0_PNG..ALBUM_6_PNG | 200x200 | generic "no album art" covers |
-| ALBUMDROPSHADOW_200X200_PNG, 4161 | 200x200 | album cover drop shadow (8 px blur margin) |
+| ALBUM_0.PNG..ALBUM_6_PNG | 200x200 | generic "no album art" covers |
+| ALBUMDROPSHADOW_200X200.PNG, 4161 | 200x200 | album cover drop shadow (8 px blur margin) |
 | STARS_PNG | 429x16 | rating stars |
-| LISTVIEWHEADER_PNG | 6x92 | list header states |
+| LISTVIEWHEADER.PNG | 6x92 | list header cells, 23 px each: normal, hot, pressed, a fourth light state (unused) |
 
 In the 150 % capture the back/forward orbs sit 8 px from the client edge and 4 px below it.
 WMP 12 draws these bitmaps 1:1 at every DPI; Glasswave draws one bitmap pixel per DIP
@@ -79,6 +79,7 @@ value padded to 8 bytes. Code: `aero/aero_atlas.*`.
 | 48-51 | | 4 | | | small (tool window) close glyph |
 | 34 | 327,0-555,350 | 2 | | | top-left glare, active / inactive (opacity 75) |
 | 40 | 555,0-1357,604 | 1 | | | reflection streaks (opacity 90 active, 75 inactive) |
+| 43 | 0,0-7,236 | 2 | 0,0,0,2 | | side highlight on the left / right frame, active / inactive (opacity 100 / 50); ends at H / 4 + 20 DIP (fitted) |
 | 39, 54, 56, 58, 62, 66, 70, 1, 2, 36... | | | | | frame edges and corners (not used yet) |
 
 Button states are stacked top to bottom: normal, hot, pressed, disabled. The glyph set is

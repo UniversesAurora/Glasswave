@@ -87,6 +87,7 @@ private:
     Widget* WidgetById(int id) const;
     void SetHoverWidget(Widget* w);
     void OnActivate(bool active);
+    void PaintSideHighlights();
     void SetVolumeFromX(int x);
     float SeekFractionAt(int x) const;
 
@@ -116,6 +117,8 @@ private:
     winrt::Windows::UI::Composition::CompositionRoundedRectangleGeometry m_clipGeometry{nullptr};
     std::unique_ptr<aero::GlassMaterial> m_glass;
     winrt::Windows::UI::Composition::SpriteVisual m_frameOutline{nullptr};
+    std::array<winrt::Windows::UI::Composition::SpriteVisual, 2> m_sideHighlight{nullptr, nullptr};  // left, right
+    SIZE m_sideHighlightSize{};
     winrt::Windows::UI::Composition::SpriteVisual m_clientEdge{nullptr};
     winrt::Windows::UI::Composition::SpriteVisual m_navBar{nullptr};
     winrt::Windows::UI::Composition::SpriteVisual m_cmdBar{nullptr};

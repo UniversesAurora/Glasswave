@@ -15,7 +15,7 @@ using winrt::Windows::Foundation::Numerics::float3;
 
 namespace {
 constexpr float kRowHeight = 22.0f;
-constexpr float kHeaderHeight = 25.0f;
+constexpr float kHeaderHeight = 23.0f;  // wmploc LISTVIEWHEADER cells are 23 px
 constexpr float kScrollWidth = 14.0f;
 constexpr float kGutter = 18.0f;  // playing marker column
 constexpr float kCellPad = 6.0f;
@@ -361,7 +361,7 @@ void ListView::PaintHeader() {
         const D2D1_SIZE_F size{w / s, h / s};
         // WMP 12 header cells (wmploc LISTVIEWHEADER: normal / hot / pressed, 23 px each);
         // drawn per cell, so the cell edges form the separators.
-        static const std::wstring kHeader = L"LISTVIEWHEADER_PNG";
+        static const std::wstring kHeader = L"LISTVIEWHEADER.PNG";
         const bool art = win7::Resources::Get().Has(win7::Module::Wmploc, kHeader);
         auto cell = [&](float x0, float x1, int state) {
             return win7::DrawNineGrid(dc, win7::Module::Wmploc, kHeader, {0, 23.0f * state, 6, 23.0f * state + 23},
@@ -372,16 +372,14 @@ void ListView::PaintHeader() {
         const auto& srcCols = m_source->Columns();
         const auto cols = Columns(RowsWidth());
         const float dragX = (m_dragX - m_bounds.left) / s;
-        for (size_t d = 0; d < cols.size(); ++d) {
-            const Col& c = cols[d];
-            const bool pressed = (m_drag == Drag::PendingMove || m_drag == Drag::Move) && d == m_dragCol;
-            const int state = pressed ? 2 : (d == m_hotHeader && m_drag == Drag::None) ? 1 : 0;
-            if (art) cell(c.x, c.x + c.w, state);
-            else if (state) wp::RowPlate(dc, {c.x, 1, c.x + c.w, size.height - 1}, wp::RowState::Hot, true);
+        // One header cell (background, title, sort chevron) with its left edge at `x`.
+        auto drawCell = [&](const Col& c, float x, int state) {
+            if (art) cell(x, x + c.w, state);
+            else if (state) wp::RowPlate(dc, {x, 1, x + c.w, size.height - 1}, wp::RowState::Hot, true);
             const auto& col = srcCols[c.src];
-            Text(dc, col.title, {c.x + kCellPad, 0, c.x + c.w - kCellPad, size.height}, 0x4C607A,
+            Text(dc, col.title, {x + kCellPad, 0, x + c.w - kCellPad, size.height}, 0x4C607A,
                  col.rightAlign ? DWRITE_TEXT_ALIGNMENT_TRAILING : DWRITE_TEXT_ALIGNMENT_LEADING);
-            if (!art) wp::HeaderSeparator(dc, c.x + c.w, size.height);
+            if (!art) wp::HeaderSeparator(dc, x + c.w, size.height);
             if (c.src == m_source->SortColumn()) {  // sort chevron at the top center, as in Win7
                 winrt::com_ptr<ID2D1Factory> factory;
                 dc->GetFactory(factory.put());
@@ -389,7 +387,7 @@ void ListView::PaintHeader() {
                 winrt::com_ptr<ID2D1GeometrySink> sink;
                 factory->CreatePathGeometry(tri.put());
                 tri->Open(sink.put());
-                const float cx = std::round((c.x + c.w / 2) * s) / s, top = 1.5f, bottom = 5.0f;
+                const float cx = std::round((x + c.w / 2) * s) / s, top = 1.5f, bottom = 5.0f;
                 const bool down = m_source->SortDescending();
                 sink->BeginFigure({cx - 3.5f, down ? top : bottom}, D2D1_FIGURE_BEGIN_FILLED);
                 sink->AddLine({cx + 3.5f, down ? top : bottom});
@@ -398,15 +396,33 @@ void ListView::PaintHeader() {
                 sink->Close();
                 dc->FillGeometry(tri.get(), Brush(dc, 0x7A96B8).get());
             }
+        };
+        // Pressed (and dragged) cells use the sunken state, the hovered one the hot state;
+        // both fill the whole cell like WMP's.
+        for (size_t d = 0; d < cols.size(); ++d) {
+            const bool pressed = (m_drag == Drag::PendingMove || m_drag == Drag::Move) && d == m_dragCol;
+            drawCell(cols[d], cols[d].x, pressed ? 2 : (d == m_hotHeader && m_drag == Drag::None) ? 1 : 0);
         }
-        if (m_drag == Drag::Move) {  // insertion mark where the column would land
+        if (m_drag == Drag::Move && m_dragCol < cols.size()) {
+            // Insertion mark where the column would land.
             float mark = cols.empty() ? kGutter : cols.back().x + cols.back().w;
             for (const Col& c : cols)
                 if (dragX < c.x + c.w / 2) {
                     mark = c.x;
                     break;
                 }
-            dc->FillRectangle({mark - 1, 1, mark + 1, size.height - 1}, Brush(dc, 0x3C7FB1).get());
+            const float line = 1.0f / s * std::max(1.0f, std::floor(s));
+            dc->FillRectangle({mark - line, 0, mark + line, size.height}, Brush(dc, 0x3C7FB1).get());
+            // A translucent copy of the dragged header follows the cursor, as in WMP.
+            const Col& c = cols[m_dragCol];
+            const float x = std::round((c.x + (m_dragX - m_dragStartX) / s) * s) / s;
+            winrt::com_ptr<ID2D1Layer> layer;
+            dc->CreateLayer(nullptr, layer.put());
+            dc->PushLayer(D2D1::LayerParameters(D2D1::InfiniteRect(), nullptr, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
+                                                D2D1::IdentityMatrix(), 0.6f),
+                          layer.get());
+            drawCell(c, x, 0);
+            dc->PopLayer();
         }
     });
     PlaceVisual(m_header, 0, 0, static_cast<float>(w), static_cast<float>(h));
@@ -609,11 +625,11 @@ void ListView::DrawArt(ID2D1DeviceContext* dc, const metadb_handle_ptr& track, D
     }
     // WMP's soft drop shadow (wmploc ALBUMDROPSHADOW: a blurred square with an 8/200 margin).
     const float m = (dst.right - dst.left) * 8.0f / 184.0f;
-    win7::DrawStretched(dc, win7::Module::Wmploc, L"ALBUMDROPSHADOW_200X200_PNG",
+    win7::DrawStretched(dc, win7::Module::Wmploc, L"ALBUMDROPSHADOW_200X200.PNG",
                         {dst.left - m + 1, dst.top - m + 2, dst.right + m + 1, dst.bottom + m + 2}, 0.45f);
     if (bmp) {
         dc->DrawBitmap(bmp.get(), &dst, 1.0f, D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC, nullptr, nullptr);
-    } else if (!win7::DrawStretched(dc, win7::Module::Wmploc, L"ALBUM_0_PNG", dst)) {
+    } else if (!win7::DrawStretched(dc, win7::Module::Wmploc, L"ALBUM_0.PNG", dst)) {
         dc->FillRectangle(dst, Brush(dc, 0xDCE4EE).get());  // no artwork files: plain placeholder
     }
     const float px = 1.0f / m_scale;
@@ -959,9 +975,13 @@ void ListView::OnRButtonUp(HWND owner, POINT pt) {
 
 void ListView::SortBy(size_t src) {
     if (!m_source || !m_source->CanSort(src)) return;
-    // Same column again: reverse the direction.
-    const bool descending = m_source->SortColumn() == src && !m_source->SortDescending();
-    m_source->Sort(src, descending);
+    // WMP 12 cycles a column: ascending, descending, then back to the default order.
+    if (m_source->SortColumn() != src)
+        m_source->Sort(src, false);
+    else if (!m_source->SortDescending())
+        m_source->Sort(src, true);
+    else
+        m_source->Sort(SIZE_MAX, false);
     Refresh();
 }
 

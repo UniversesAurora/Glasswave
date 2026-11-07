@@ -22,7 +22,7 @@ public:
     static void Shutdown();  // before the D2D device goes away
 
     // Resources are named like FindResource names them: "#4153" for numeric IDs, or a
-    // string name such as "ALBUM_0_PNG". The int overloads take numeric IDs.
+    // string name such as "ALBUM_0.PNG". The int overloads take numeric IDs.
     bool Has(Module module) const { return Handle(module) != nullptr; }
     bool Has(Module module, const std::wstring& name);
     bool Has(Module module, int id) { return Has(module, L"#" + std::to_wstring(id)); }

@@ -122,9 +122,31 @@ std::wstring PlaylistSource::Cell(size_t row, size_t column) const {
 }
 
 void PlaylistSource::Sort(size_t column, bool descending) {
-    if (!CanSort(column)) return;
     auto pm = playlist_manager::get();
     const t_size n = pm->playlist_get_item_count(m_playlist);
+    if (!CanSort(column)) {  // back to the order the playlist had before sorting
+        if (m_sortColumn == SIZE_MAX) return;
+        m_sortColumn = SIZE_MAX;
+        metadb_handle_list current;
+        pm->playlist_get_all_items(m_playlist, current);
+        std::vector<bool> used(n, false);
+        std::vector<t_size> order;
+        order.reserve(n);
+        for (t_size k = 0; k < m_unsorted.get_count(); ++k)
+            for (t_size i = 0; i < n; ++i)
+                if (!used[i] && current[i] == m_unsorted[k]) {
+                    used[i] = true;
+                    order.push_back(i);
+                    break;
+                }
+        for (t_size i = 0; i < n; ++i)  // added since: keep them at the end
+            if (!used[i]) order.push_back(i);
+        m_unsorted.remove_all();
+        pm->playlist_undo_backup(m_playlist);
+        pm->playlist_reorder_items(m_playlist, order.data(), n);
+        return;
+    }
+    if (m_sortColumn == SIZE_MAX) pm->playlist_get_all_items(m_playlist, m_unsorted);
     std::vector<std::wstring> keys(n);
     pfc::string8 buf;
     // Sort lengths by duration, everything else by its text.
@@ -465,7 +487,11 @@ std::wstring GroupSource::Cell(size_t row, size_t column) const {
 }
 
 void GroupSource::Sort(size_t column, bool descending) {
-    if (!CanSort(column)) return;
+    if (!CanSort(column)) {  // default order
+        m_sortColumn = SIZE_MAX;
+        SetFilter(m_filter);
+        return;
+    }
     m_sortColumn = column;
     m_sortDescending = descending;
     const auto& groups = m_model.Groups(m_kind);
@@ -547,6 +573,7 @@ metadb_handle_list GroupSource::SelectedItems() const {
 }
 
 void GroupSource::SetFilter(std::wstring_view filterLower) {
+    m_filter = filterLower;
     m_rows.clear();
     const auto& groups = m_model.Groups(m_kind);
     for (size_t i = 0; i < groups.size(); ++i)

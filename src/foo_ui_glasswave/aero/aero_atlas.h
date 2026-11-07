@@ -26,6 +26,9 @@ D2D1_RECT_F GlowOutset(bool close);  // left, top, right, bottom in device pixel
 // DWM does; `size` is that in DIP.
 inline constexpr D2D1_SIZE_U kGlarePixels{226, 173};  // 228x175 less the atlas gutter
 void Glare(ID2D1DeviceContext* dc, bool active, D2D1_SIZE_F size);
+// Highlight along the left / right frame edge of an active window (part 43: a white
+// gradient brightening downwards that ends sharply; inactive state drawn at 50 %).
+void SideHighlight(ID2D1DeviceContext* dc, bool active, D2D1_SIZE_F size);
 // Reflection streak texture stretched over `size` (the monitor).
 void Streaks(ID2D1DeviceContext* dc, D2D1_SIZE_F size);
 

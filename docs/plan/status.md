@@ -1,6 +1,6 @@
 # Status
 
-Updated: 2026-11-07
+Updated: 2026-11-08
 
 ## Where things stand
 
@@ -53,14 +53,22 @@ Updated: 2026-11-07
   (Icon / Expanded tile / Details) next to the search box, remembered per view; list columns
   can be resized and reordered by dragging the header, remembered per column set.
 - Artwork can be overridden by locally made 2x PNGs in `<profile>\glasswave\hd\<module>\`
-  (`<id>@2x.png`); none exist yet.
+  (`<id>@2x.png`). `scripts/upscale-art.ps1` makes them for the WMP bitmaps with
+  waifu2x-ncnn-vulkan (cunet, no denoise, TTA; colour and alpha upscaled separately); the
+  dev profile has them (2026-11-08).
+- 2026-11-08: named wmploc resources are `NAME.PNG` (dot), not `NAME_PNG`; the WMP list
+  header (normal / hot / pressed cells), the generic cover and its drop shadow now actually
+  load. Header is 23 DIP like the art; a translucent copy of a dragged header follows the
+  cursor with an insertion line. Header clicks cycle ascending / descending / unsorted.
+  DWM side highlights (atlas part 43) on the active frame. The view options button no longer
+  shows at the window origin on views without view styles.
 
 ## Next
 
-1. Owner tests: caption buttons, links, view options, column drag, reflection while dragging.
-2. Sharper WMP bitmaps at 200 %: decide with the owner (AI upscale into hd\, or vector redraw).
-3. Frame edges from the DWM atlas; remaining tuning from the Win7 captures.
-4. Column sorting, rating column (STARS_PNG), stacked covers for artists, year view.
+1. Owner tests: header hover / press / drag, sort cycle, side highlights, @2x WMP bitmaps.
+2. Glass blur: try ACCENT_ENABLE_BLURBEHIND (lighter blur) against the HostBackdropBrush recipe.
+3. Remaining tuning from the Win7 captures.
+4. Rating column (STARS_PNG), stacked covers for artists, year view.
 5. Playlist editing: drag to reorder, drag from library to playlists, rename inline.
 
 ## Known issues
@@ -68,3 +76,4 @@ Updated: 2026-11-07
 - Library rows are formatted once per reload; very large libraries (100k+) not yet profiled.
 - No device-lost handling yet; hover/pressed colors still extrapolated.
 - DWM host backdrop blur is stronger than Win7's blur (no API to tune it).
+- Side highlight length (H / 4 + 20 DIP) is fitted to two captures, not taken from uDWM.

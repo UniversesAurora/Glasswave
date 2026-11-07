@@ -321,6 +321,10 @@ void MainWindow::InitComposition() {
     for (auto* v : {&m_clientEdge, &m_navBar, &m_cmdBar, &m_contentTop, &m_transportBand, &m_capsule, &m_cluster,
                     &m_divider, &m_clientGlow, &m_title, &m_nowPlaying, &m_breadcrumb})
         *v = comp.CreateSpriteVisual();
+    for (auto& v : m_sideHighlight) {
+        v = comp.CreateSpriteVisual();
+        children.InsertAtTop(v);
+    }
     for (const auto& v : {m_frameOutline, m_clientEdge, m_navBar, m_cmdBar, m_contentTop, m_transportBand})
         children.InsertAtTop(v);
     // Navigation pane, list and search box live in their own layer above the bars.
@@ -609,6 +613,23 @@ void MainWindow::UpdateLayout() {
     m_clipGeometry.CornerRadius(float2{radius, radius});
     m_frameOutline.IsVisible(!max);
 
+    // DWM's side highlights run down the left / right frame from the top and end sharply at
+    // H / 4 + 20 DIP (fitted to Win7 captures: 110 px on a 360 px window at 96 DPI, 290 px on
+    // a 1050 px window at 144 DPI).
+    {
+        const bool show = m_aeroArt && !max && L.clientEdge.left > 0;
+        const SIZE size{L.clientEdge.left, H / 4 + PxI(20)};
+        for (auto& v : m_sideHighlight) v.IsVisible(show);
+        if (show) {
+            Place(m_sideHighlight[0], {0, 0, size.cx, size.cy});
+            Place(m_sideHighlight[1], {W - size.cx, 0, W, size.cy});
+            if (size.cx != m_sideHighlightSize.cx || size.cy != m_sideHighlightSize.cy) {
+                m_sideHighlightSize = size;
+                PaintSideHighlights();
+            }
+        }
+    }
+
     Place(m_clientEdge, L.clientEdge);
     Place(m_clientGlow, L.client);
     Place(m_navBar, L.navBar);
@@ -668,6 +689,7 @@ void MainWindow::UpdateLayout() {
 void MainWindow::RepaintScaleDependent() {
     const float s = m_scale;
     m_glass->SetScale(s);
+    PaintSideHighlights();
     const int line = LinePx();
 
     const int frameSrc = PxI(32);
@@ -1261,6 +1283,17 @@ void MainWindow::OnActivate(bool active) {
         if (IsCaptionWidget(w->Id())) w->SetInactive(!active);
     if (m_title) gfx::CompositionHost::Get().AnimateOpacity(m_title, active ? 1.0f : 0.85f, 200);
     m_shadow.SetActive(active);
+    PaintSideHighlights();
+}
+
+void MainWindow::PaintSideHighlights() {
+    const SIZE size = m_sideHighlightSize;
+    if (!m_aeroArt || size.cx <= 0 || size.cy <= 0 || !m_sideHighlight[0]) return;
+    auto& host = gfx::CompositionHost::Get();
+    const D2D1_SIZE_F dip{size.cx / m_scale, size.cy / m_scale};
+    for (auto& v : m_sideHighlight)
+        host.Repaint(v, size.cx, size.cy, m_scale,
+                     [&](ID2D1DeviceContext* dc) { aero::atlas::SideHighlight(dc, m_active, dip); });
 }
 
 // ---- Window procedure ----------------------------------------------------------------

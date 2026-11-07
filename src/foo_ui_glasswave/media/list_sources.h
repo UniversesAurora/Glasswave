@@ -117,6 +117,7 @@ private:
     size_t m_playlist;
     size_t m_sortColumn = SIZE_MAX;
     bool m_sortDescending = false;
+    metadb_handle_list m_unsorted;  // playlist order before the first sort
     std::wstring m_filter;
     std::vector<size_t> m_rows;  // playlist item index per visible row
     std::vector<Column> m_columns;
@@ -219,6 +220,7 @@ private:
     std::vector<uint8_t> m_selected;
     size_t m_focus = SIZE_MAX;
     std::vector<Column> m_columns;
+    std::wstring m_filter;
     ViewStyle m_style = ViewStyle::Icons;
     size_t m_sortColumn = SIZE_MAX;
     bool m_sortDescending = false;

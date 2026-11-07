@@ -28,6 +28,7 @@ constexpr Part kGlow{{83, 440, 132, 480}, 1, {9, 8, 9, 7}, {}};                 
 constexpr Part kCloseGlow{{261, 0, 327, 40}, 1, {9, 8, 8, 7}, {}};                   // part 11
 constexpr D2D1_RECT_F kGlare{327, 0, 555, 350};                                     // part 34, 2 states
 constexpr D2D1_RECT_F kStreaks{555, 0, 1357, 604};                                  // part 40
+constexpr Part kSide{{0, 0, 7, 236}, 2, {0, 0, 0, 2}, {}};  // part 43, opacity 100 / 50
 
 // Glyph sets for 96, 120, 144 and 192 DPI, four states each.
 constexpr D2D1_RECT_F kCloseGlyph[4] = {{0, 484, 13, 540}, {15, 378, 32, 446}, {36, 270, 57, 350}, {58, 423, 83, 511}};
@@ -107,6 +108,11 @@ void CaptionGlow(ID2D1DeviceContext* dc, D2D1_SIZE_F size, bool close) {
 void Glare(ID2D1DeviceContext* dc, bool active, D2D1_SIZE_F size) {
     win7::DrawNineGrid(dc, Module::AeroAtlas, kAtlas, State(kGlare, 2, active ? 0 : 1), {},
                        D2D1::RectF(0, 0, size.width, size.height));
+}
+
+void SideHighlight(ID2D1DeviceContext* dc, bool active, D2D1_SIZE_F size) {
+    win7::DrawNineGrid(dc, Module::AeroAtlas, kAtlas, State(kSide.rect, kSide.states, active ? 0 : 1), kSide.sizing,
+                       D2D1::RectF(0, 0, size.width, size.height), active ? 1.0f : 0.5f);
 }
 
 void Streaks(ID2D1DeviceContext* dc, D2D1_SIZE_F size) {

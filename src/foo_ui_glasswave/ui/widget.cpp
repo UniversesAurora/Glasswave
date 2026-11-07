@@ -47,6 +47,9 @@ void Widget::SetBounds(const RECT& b, float scale) {
     m_scale = scale;
     m_root.Offset(float3{static_cast<float>(b.left), static_cast<float>(b.top), 0});
     m_root.Size(float2{static_cast<float>(b.right - b.left), static_cast<float>(b.bottom - b.top)});
+    // Empty bounds hide the widget (its layers keep their last size otherwise and would
+    // show at the window origin).
+    m_root.IsVisible(b.right > b.left && b.bottom > b.top);
     if (sizeChanged) Repaint();
 }
 
