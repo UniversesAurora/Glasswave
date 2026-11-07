@@ -36,6 +36,7 @@ enum WidgetId {
     kCapMin = 1, kCapMax, kCapClose,
     kBack, kForward, kOrganize, kAddFiles, kAddFolder, kNewPlaylist,
     kSeek, kShuffle, kRepeat, kStop, kPrev, kNext, kPlay, kMute, kVolume, kViewOptions,
+    kViewOptionsArrow, kNewPlaylistArrow,
 };
 bool IsCaptionWidget(int id) { return id >= kCapMin && id <= kCapClose; }
 
@@ -430,21 +431,21 @@ void MainWindow::CreateWidgets() {
         ->onClick = [] { standard_commands::main_add_files(); };
     add(kAddFolder, [](auto* dc, D2D1_SIZE_F s, Layer l) { wp::CommandButton(dc, s, l, L"Add folder", false); }, {})
         ->onClick = [] { standard_commands::main_add_directory(); };
+    // View options split button: the icon steps to the next view, the arrow lists them all.
     add(kViewOptions, [this](auto* dc, D2D1_SIZE_F s, Layer l) {
         wp::CommandButton(dc, s, l, L"", false);
         wp::ViewOptionsGlyph(dc, s, m_source ? m_source->GetViewStyle() : media::ViewStyle::Details);
-    }, {})->onClick = [this] { ShowViewMenu(); };
+    }, {})->onClick = [this] { CycleViewStyle(); };
+    add(kViewOptionsArrow, [](auto* dc, D2D1_SIZE_F s, Layer l) { wp::CommandButton(dc, s, l, L"", true); }, {})
+        ->onClick = [this] { ShowViewMenu(); };
     add(kNewPlaylist, [](auto* dc, D2D1_SIZE_F s, Layer l) { wp::CommandButton(dc, s, l, L"Create playlist", false); }, {})
+        ->onClick = [this] { CreatePlaylist(false); };
+    add(kNewPlaylistArrow, [](auto* dc, D2D1_SIZE_F s, Layer l) { wp::CommandButton(dc, s, l, L"", true); }, {})
         ->onClick = [this] {
-              auto pm = playlist_manager::get();
-              const t_size p = pm->create_playlist("New Playlist", SIZE_MAX, SIZE_MAX);
-              if (p != SIZE_MAX) {
-                  pm->set_active_playlist(p);
-                  View v;
-                  v.kind = View::Kind::Playlist;
-                  v.playlist = p;
-                  Navigate(v, true);
-              }
+              POINT pt{m_layout.newPlaylist.left, m_layout.newPlaylist.bottom};
+              ClientToScreen(m_hwnd, &pt);
+              ShowActionMenu(m_hwnd, pt, {{L"Create playlist", [this] { CreatePlaylist(false); }},
+                                          {L"Create auto playlist", [this] { CreatePlaylist(true); }}});
           };
 
     // Seek bar (the band's top rule, as in WMP 12)
@@ -600,13 +601,19 @@ void MainWindow::UpdateLayout() {
     L.organize = button(82);
     L.addFiles = button(70);
     L.addFolder = button(76);
-    L.newPlaylist = button(100);
+    // Split buttons (WMP 12): the main part acts at once, the arrow part opens a menu.
+    L.newPlaylist = button(96);
+    x -= PxI(2);
+    L.newPlaylistArrow = button(16);
     L.search = {L.client.right - PxI(8) - PxI(230), cbcy - PxI(11), L.client.right - PxI(8), cbcy + PxI(11)};
     // View options (WMP: icon / expanded tile / details) left of the search box, library only.
-    if (m_source && ViewStyles() > 1)
-        L.viewOptions = {L.search.left - PxI(8) - PxI(38), cbcy - PxI(11), L.search.left - PxI(8), cbcy + PxI(11)};
-    else
-        L.viewOptions = {};
+    if (m_source && ViewStyles() > 1) {
+        const int right = L.search.left - PxI(8);
+        L.viewOptionsArrow = {right - PxI(14), cbcy - PxI(11), right, cbcy + PxI(11)};
+        L.viewOptions = {L.viewOptionsArrow.left - PxI(26), cbcy - PxI(11), L.viewOptionsArrow.left, cbcy + PxI(11)};
+    } else {
+        L.viewOptions = L.viewOptionsArrow = {};
+    }
 
     // Content: navigation pane + list
     L.navPane = {L.content.left, L.content.top, L.content.left + PxI(kNavPaneWidth), L.content.bottom};
@@ -715,6 +722,8 @@ void MainWindow::UpdateLayout() {
         case kAddFolder: r = &L.addFolder; break;
         case kNewPlaylist: r = &L.newPlaylist; break;
         case kViewOptions: r = &L.viewOptions; break;
+        case kViewOptionsArrow: r = &L.viewOptionsArrow; break;
+        case kNewPlaylistArrow: r = &L.newPlaylistArrow; break;
         case kSeek: r = &L.seek; break;
         case kShuffle: r = &L.shuffle; break;
         case kRepeat: r = &L.repeat; break;
@@ -1185,11 +1194,48 @@ void MainWindow::ShowViewMenu() {
                                       m_hwnd, nullptr);
     DestroyMenu(menu);
     if (cmd == 0 || cmd == current) return;
-    const auto style = static_cast<media::ViewStyle>(cmd - 1);
+    ApplyViewStyle(static_cast<media::ViewStyle>(cmd - 1));
+}
+
+void MainWindow::ApplyViewStyle(media::ViewStyle style) {
     m_source->SetViewStyle(style);
     if (auto* setting = ViewStyleSetting(static_cast<int>(m_view.kind))) setting->set(static_cast<int>(style));
     m_list->SetSource(m_source.get(), true);
     if (auto* w = WidgetById(kViewOptions)) w->Invalidate();
+}
+
+void MainWindow::CycleViewStyle() {
+    // WMP 12: clicking the view icon steps Icon -> Expanded tile -> Details -> Icon,
+    // skipping styles the current view does not offer.
+    if (!m_source) return;
+    int s = static_cast<int>(m_source->GetViewStyle());
+    for (int i = 0; i < 3; ++i) {
+        s = (s + 1) % 3;
+        if (m_source->SupportsViewStyle(static_cast<media::ViewStyle>(s))) {
+            ApplyViewStyle(static_cast<media::ViewStyle>(s));
+            return;
+        }
+    }
+}
+
+void MainWindow::CreatePlaylist(bool autoPlaylist) {
+    auto pm = playlist_manager::get();
+    const t_size p = pm->create_playlist(autoPlaylist ? "New Auto Playlist" : "New Playlist", SIZE_MAX, SIZE_MAX);
+    if (p == SIZE_MAX) return;
+    pm->set_active_playlist(p);
+    View v;
+    v.kind = View::Kind::Playlist;
+    v.playlist = p;
+    Navigate(v, true);
+    if (!autoPlaylist) return;
+    // foobar2000 auto playlist: starts as the whole library, its own dialog edits the query.
+    try {
+        auto apm = autoplaylist_manager::get();
+        apm->add_client_simple("ALL", "", p, 0);
+        if (auto client = apm->query_client(p); client.is_valid()) client->show_ui(p);
+    } catch (const std::exception& e) {
+        popup_message::g_show(e.what(), "Create auto playlist");
+    }
 }
 
 void MainWindow::OnAlbumLink(size_t group, size_t line) {

@@ -151,8 +151,8 @@ void CommandButton(ID2D1DeviceContext* dc, D2D1_SIZE_F size, Layer layer, std::w
     const float arrowW = dropDown ? 12.0f : 0.0f;
     auto layout = ui::MakeText(text, 12.0f, DWRITE_FONT_WEIGHT_NORMAL, size.width - 12 - arrowW, size.height);
     dc->DrawTextLayout({6, 0}, layout.get(), Solid(dc, Hex(0x1E395B)).get());
-    if (dropDown) {
-        const float cx = size.width - 9, cy = size.height / 2 + 0.5f;
+    if (dropDown) {  // after the text, or centered on the arrow part of a split button
+        const float cx = text.empty() ? std::round(size.width / 2) : size.width - 9, cy = size.height / 2 + 0.5f;
         dc->FillGeometry(Polygon(dc, {{cx - 3.5f, cy - 1.5f}, {cx + 3.5f, cy - 1.5f}, {cx, cy + 2.0f}}).get(),
                          Solid(dc, Hex(0x1E395B)).get());
     }
@@ -326,19 +326,5 @@ void ViewOptionsGlyph(ID2D1DeviceContext* dc, D2D1_SIZE_F size, media::ViewStyle
         }
         break;
     }
-    // Drop-down arrow
-    winrt::com_ptr<ID2D1Factory> factory;
-    dc->GetFactory(factory.put());
-    winrt::com_ptr<ID2D1PathGeometry> tri;
-    winrt::com_ptr<ID2D1GeometrySink> sink;
-    factory->CreatePathGeometry(tri.put());
-    tri->Open(sink.put());
-    const float ax = size.width - 13, ay = size.height / 2 - 1.5f;
-    sink->BeginFigure({ax, ay}, D2D1_FIGURE_BEGIN_FILLED);
-    sink->AddLine({ax + 7, ay});
-    sink->AddLine({ax + 3.5f, ay + 4});
-    sink->EndFigure(D2D1_FIGURE_END_CLOSED);
-    sink->Close();
-    dc->FillGeometry(tri.get(), ink.get());
 }
 }  // namespace glasswave::wmp::paint

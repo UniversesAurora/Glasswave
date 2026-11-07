@@ -42,7 +42,8 @@ private:
         RECT caption{}, client{}, clientEdge{}, navBar{}, cmdBar{}, content{}, transport{};
         RECT capMin{}, capMax{}, capClose{}, icon{}, title{};
         RECT back{}, forward{}, breadcrumb{};
-        RECT organize{}, addFiles{}, addFolder{}, newPlaylist{}, search{}, viewOptions{};
+        RECT organize{}, addFiles{}, addFolder{}, newPlaylist{}, newPlaylistArrow{}, search{}, viewOptions{},
+            viewOptionsArrow{};
         RECT navPane{}, list{};
         RECT seek{}, capsule{}, divider{}, shuffle{}, repeat{}, stop{}, prev{}, next{}, play{}, mute{}, volume{};
         RECT nowPlaying{};
@@ -93,6 +94,9 @@ private:
     void ShowOrganizeMenu();
     void ShowPlaylistMenu(size_t playlist, POINT screen);
     void ShowViewMenu();
+    void ApplyViewStyle(media::ViewStyle style);
+    void CycleViewStyle();
+    void CreatePlaylist(bool autoPlaylist);
     void OnAlbumLink(size_t group, size_t line);
     cfg_var_modern::cfg_int* ViewStyleSetting(int viewKind) const;
     int ViewStyles() const;  // view options the current source offers
