@@ -10,6 +10,7 @@
 #include "ui/text.h"
 #include "wmp/wmp_painter.h"
 #include "wmp/wmp_transport.h"
+#include "win7/win7_resources.h"
 
 namespace glasswave::ui {
 
@@ -141,6 +142,12 @@ void SetOrderByName(const char* name) {
 
 bool KeyDown(int vk) { return (GetKeyState(vk) & 0x8000) != 0; }
 
+// Shuffle and repeat are independent like in current players; foobar2000 has one playback
+// order, so the pair is kept here and mapped onto it (see ApplyPlaybackOrder).
+// {8D2F6A13-4B7C-4E19-9F3A-2C6E8B1D5A70} / {8D2F6A14-...}
+cfg_var_modern::cfg_int cfg_shuffle({0x8d2f6a13, 0x4b7c, 0x4e19, {0x9f, 0x3a, 0x2c, 0x6e, 0x8b, 0x1d, 0x5a, 0x70}}, 0);
+cfg_var_modern::cfg_int cfg_repeat({0x8d2f6a14, 0x4b7c, 0x4e19, {0x9f, 0x3a, 0x2c, 0x6e, 0x8b, 0x1d, 0x5a, 0x70}}, 0);
+
 }  // namespace
 
 // ---- Core callbacks ----------------------------------------------------------------------
@@ -152,8 +159,14 @@ struct MainWindow::PlayCallback : play_callback_impl_base {
                                   flag_on_playback_time | flag_on_playback_dynamic_info_track | flag_on_volume_change),
           window(w) {}
 
-    void on_playback_starting(play_control::t_track_command, bool) override { window.OnPlaybackStateChanged(); }
+    void on_playback_starting(play_control::t_track_command cmd, bool) override {
+        // A track the user picked starts a new shuffled pass; next / previous continue it.
+        if (cmd != play_control::track_command_next && cmd != play_control::track_command_prev)
+            window.m_shufflePass = 0;
+        window.OnPlaybackStateChanged();
+    }
     void on_playback_new_track(metadb_handle_ptr) override {
+        window.OnShuffleTrack();
         window.OnTrackChanged();
         window.OnPlaybackStateChanged();
     }
@@ -396,15 +409,19 @@ void MainWindow::CreateWidgets() {
     // Navigation bar
     Widget::Options round;
     round.circular = true;
-    add(kBack, [this](auto* dc, D2D1_SIZE_F s, Layer l) {
+    auto* back = add(kBack, [this](auto* dc, D2D1_SIZE_F s, Layer l) {
         if (m_win7Art) wt::NavOrb(dc, l, true, m_historyPos > 0);
         else wp::NavArrow(dc, s, l, true, m_historyPos > 0);
-    }, round)->onClick = [this] { GoBack(); };
-    add(kForward, [this](auto* dc, D2D1_SIZE_F s, Layer l) {
+    }, round);
+    back->onClick = [this] { GoBack(); };
+    back->enabled = [this] { return m_historyPos > 0; };
+    auto* forward = add(kForward, [this](auto* dc, D2D1_SIZE_F s, Layer l) {
         const bool enabled = m_historyPos + 1 < m_history.size();
         if (m_win7Art) wt::NavOrb(dc, l, false, enabled);
         else wp::NavArrow(dc, s, l, false, enabled);
-    }, round)->onClick = [this] { GoForward(); };
+    }, round);
+    forward->onClick = [this] { GoForward(); };
+    forward->enabled = [this] { return m_historyPos + 1 < m_history.size(); };
 
     // Command bar
     add(kOrganize, [](auto* dc, D2D1_SIZE_F s, Layer l) { wp::CommandButton(dc, s, l, L"Organize", true); }, {})
@@ -434,23 +451,38 @@ void MainWindow::CreateWidgets() {
     add(kSeek, [this](auto* dc, D2D1_SIZE_F s, Layer l) {
         const float progress = m_seeking ? m_seekPreview
                                          : (m_length > 0 ? static_cast<float>(m_position / m_length) : 0.0f);
-        wp::SeekBar(dc, s, progress, l == Layer::Hover || l == Layer::Pressed, m_length > 0);
+        wp::SeekBar(dc, s, progress, l == Layer::Hover || l == Layer::Pressed, m_length > 0,
+                    (m_layout.transport.top - m_layout.seek.top) / m_scale);
     }, {});
 
     // Transport controls
     add(kShuffle, [this](auto* dc, D2D1_SIZE_F s, Layer l) {
         if (m_win7Art) wt::Toggle(dc, l, true, m_shuffle);
         else paint::IconButton(dc, s, l, TransportGlyph::Shuffle, true, m_shuffle);
-    }, {})->onClick = [this] { SetOrderByName(m_shuffle ? "Default" : "Shuffle (tracks)"); };
+    }, {})->onClick = [this] { SetShuffleRepeat(!m_shuffle, m_repeat); };
+    // Repeat cycles off -> all -> one; "one" is the original icon with a small "1".
     add(kRepeat, [this](auto* dc, D2D1_SIZE_F s, Layer l) {
-        if (m_win7Art) wt::Toggle(dc, l, false, m_repeat);
-        else paint::IconButton(dc, s, l, TransportGlyph::Repeat, true, m_repeat);
-    }, {})->onClick = [this] { SetOrderByName(m_repeat ? "Default" : "Repeat (playlist)"); };
+        const bool on = m_repeat != Repeat::Off;
+        if (m_win7Art) wt::Toggle(dc, l, false, on);
+        else paint::IconButton(dc, s, l, TransportGlyph::Repeat, true, on);
+        if (m_repeat == Repeat::One) {
+            auto t = MakeText(L"1", 8.0f, DWRITE_FONT_WEIGHT_BOLD, 8, 10);
+            com_ptr<ID2D1SolidColorBrush> halo, ink;
+            dc->CreateSolidColorBrush(D2D1::ColorF(1, 1, 1, 0.9f), halo.put());
+            dc->CreateSolidColorBrush(Hex(0x1C5DB2), ink.put());
+            const D2D1_POINT_2F at{s.width - 8.5f, s.height - 12.0f};
+            for (float dx = -0.75f; dx <= 0.75f; dx += 0.75f)
+                for (float dy = -0.75f; dy <= 0.75f; dy += 0.75f) dc->DrawTextLayout({at.x + dx, at.y + dy}, t.get(), halo.get());
+            dc->DrawTextLayout(at, t.get(), ink.get());
+        }
+    }, {})->onClick = [this] {
+        SetShuffleRepeat(m_shuffle, m_repeat == Repeat::Off ? Repeat::All : m_repeat == Repeat::All ? Repeat::One : Repeat::Off);
+    };
     add(kStop, [this](auto* dc, D2D1_SIZE_F s, Layer l) {
         if (m_win7Art) wt::ClusterButton(dc, ClusterRegion(m_layout.stop), wt::Button::Stop, l, m_playing);
         else paint::IconButton(dc, s, l, TransportGlyph::Stop, m_playing, false);
     }, {})->onClick = [] { playback_control::get()->stop(); };
-    // Like WMP 12, previous / next look disabled while nothing plays (they still start playback).
+    // Like WMP 12, stop / previous / next are disabled while nothing plays: no hover, no click.
     add(kPrev, [this](auto* dc, D2D1_SIZE_F s, Layer l) {
         if (m_win7Art) wt::ClusterButton(dc, ClusterRegion(m_layout.prev), wt::Button::Prev, l, m_playing);
         else paint::Segment(dc, s, true, l, TransportGlyph::Previous, true);
@@ -459,6 +491,8 @@ void MainWindow::CreateWidgets() {
         if (m_win7Art) wt::ClusterButton(dc, ClusterRegion(m_layout.next), wt::Button::Next, l, m_playing);
         else paint::Segment(dc, s, false, l, TransportGlyph::Next, true);
     }, {})->onClick = [] { playback_control::get()->next(); };
+    for (int id : {kStop, kPrev, kNext})
+        WidgetById(id)->enabled = [this] { return m_playing; };
 
     Widget::Options orb;
     orb.circular = true;
@@ -579,7 +613,9 @@ void MainWindow::UpdateLayout() {
     L.list = {L.navPane.right, L.content.top, L.content.right, L.content.bottom};
 
     // Transport band: seek rule on top, capsule centered on the orb below it.
-    L.seek = {L.client.left + PxI(8), L.transport.top - PxI(5), L.client.right - PxI(8), L.transport.top + PxI(7)};
+    // WMP 12: the seek bar runs the full client width right under the band's top rule;
+    // the widget is taller than the bar for the hover thumb and an easier grab.
+    L.seek = {L.client.left, L.transport.top - PxI(6), L.client.right, L.transport.top + PxI(9)};
     const int tcx = (L.transport.left + L.transport.right) / 2;
     if (m_win7Art) {
         // Original bitmaps, placed relative to the cluster as in WMP 12 (orb center = band center).
@@ -793,12 +829,17 @@ void MainWindow::RepaintNowPlaying() {
                 const D2D1_SIZE_F sz = bmp->GetSize();
                 const float side = H - 2;
                 const float k = side / std::max(sz.width, sz.height);
-                const D2D1_RECT_F dst{0, 1 + (side - sz.height * k) / 2, sz.width * k, 1 + (side + sz.height * k) / 2};
-                dc->DrawBitmap(bmp.get(), dst, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+                const D2D1_RECT_F dst{2, 1 + (side - sz.height * k) / 2, 2 + sz.width * k, 1 + (side + sz.height * k) / 2};
+                // Same edge as the covers in the library (soft shadow, one-pixel 18 % black line).
+                const float m = (dst.right - dst.left) * 8.0f / 184.0f;
+                win7::DrawStretched(dc, win7::Module::Wmploc, L"ALBUMDROPSHADOW_200X200.PNG",
+                                    {dst.left - m + 1, dst.top - m + 2, dst.right + m + 1, dst.bottom + m + 2}, 0.45f);
+                dc->DrawBitmap(bmp.get(), &dst, 1.0f, D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC, nullptr, nullptr);
                 com_ptr<ID2D1SolidColorBrush> frame;
-                dc->CreateSolidColorBrush(Hex(0x8E9AA8), frame.put());
-                dc->DrawRectangle({dst.left + 0.5f, dst.top + 0.5f, dst.right - 0.5f, dst.bottom - 0.5f}, frame.get(), 1.0f);
-                x = side + 8;
+                dc->CreateSolidColorBrush(D2D1::ColorF(0, 0.18f), frame.put());
+                const float px = 1.0f / m_scale;
+                dc->DrawRectangle({dst.left + px / 2, dst.top + px / 2, dst.right - px / 2, dst.bottom - px / 2}, frame.get(), px);
+                x = dst.right + 8;
             }
         }
         com_ptr<ID2D1SolidColorBrush> dark, grey;
@@ -1160,9 +1201,28 @@ void MainWindow::OnVolumeChanged() {
 }
 
 void MainWindow::OnPlaybackOrderChanged() {
+    if (m_applyingOrder) return;
+    // Changed elsewhere (foobar2000's menu): read the pair back from the order, keeping what
+    // the order cannot express from the saved state.
     const std::string name = ActiveOrderName();
-    const bool shuffle = name.find("Shuffle") != std::string::npos || name.find("Random") != std::string::npos;
-    const bool repeat = name.rfind("Repeat", 0) == 0;
+    bool shuffle = m_shuffle;
+    Repeat repeat = m_repeat;
+    if (pfc::stricmp_ascii(name.c_str(), "Default") == 0) {
+        shuffle = false;
+        repeat = Repeat::Off;
+    } else if (pfc::stricmp_ascii(name.c_str(), "Repeat (playlist)") == 0) {
+        shuffle = false;
+        repeat = Repeat::All;
+    } else if (pfc::stricmp_ascii(name.c_str(), "Repeat (track)") == 0) {
+        repeat = Repeat::One;
+    } else if (name.find("Shuffle") != std::string::npos || name.find("Random") != std::string::npos) {
+        shuffle = true;
+        if (repeat == Repeat::One) repeat = Repeat::All;
+    }
+    UpdateShuffleRepeat(shuffle, repeat);
+}
+
+void MainWindow::UpdateShuffleRepeat(bool shuffle, Repeat repeat) {
     if (shuffle != m_shuffle) {
         m_shuffle = shuffle;
         if (auto* w = WidgetById(kShuffle)) w->Invalidate();
@@ -1170,6 +1230,42 @@ void MainWindow::OnPlaybackOrderChanged() {
     if (repeat != m_repeat) {
         m_repeat = repeat;
         if (auto* w = WidgetById(kRepeat)) w->Invalidate();
+    }
+    cfg_shuffle = shuffle ? 1 : 0;
+    cfg_repeat = static_cast<int>(repeat);
+}
+
+void MainWindow::SetShuffleRepeat(bool shuffle, Repeat repeat) {
+    UpdateShuffleRepeat(shuffle, repeat);
+    m_shufflePass = 0;
+    ApplyPlaybackOrder();
+}
+
+void MainWindow::ApplyPlaybackOrder() {
+    // Repeat one wins; shuffle without repeat is shuffle that stops after one pass
+    // (OnShuffleTrack), since foobar2000's shuffle orders loop.
+    const char* name = m_repeat == Repeat::One ? "Repeat (track)"
+                       : m_shuffle             ? "Shuffle (tracks)"
+                       : m_repeat == Repeat::All ? "Repeat (playlist)"
+                                                 : "Default";
+    m_applyingOrder = true;
+    if (pfc::stricmp_ascii(ActiveOrderName().c_str(), name) != 0) SetOrderByName(name);
+    m_applyingOrder = false;
+    if (m_stopAfterPass) {  // undo our own "stop after this one" when the mode changes
+        m_stopAfterPass = false;
+        playback_control::get()->set_stop_after_current(false);
+    }
+}
+
+void MainWindow::OnShuffleTrack() {
+    if (!m_shuffle || m_repeat != Repeat::Off) return;
+    auto pm = playlist_manager::get();
+    const t_size playing = pm->get_playing_playlist();
+    const t_size count = playing != SIZE_MAX ? pm->playlist_get_item_count(playing) : 0;
+    if (++m_shufflePass >= count && count > 0) {
+        m_stopAfterPass = true;
+        playback_control::get()->set_stop_after_current(true);
+        m_shufflePass = 0;
     }
 }
 
@@ -1226,6 +1322,60 @@ void MainWindow::SetVolumeFromX(int x) {
     for (int id : {kVolume, kMute})
         if (auto* w = WidgetById(id)) w->Invalidate();
     playback_control::get()->set_volume(DbFromSlider(v));
+    ShowVolumeTip(x0 + v * (x1 - x0));
+}
+
+void MainWindow::ShowVolumeTip(float thumbX) {
+    // Win7 tooltip: white to #E4E5F0, #767676 border, small radius, soft shadow, grey text.
+    auto& host = gfx::CompositionHost::Get();
+    if (!m_volumeTip) {
+        m_volumeTip = host.Compositor().CreateSpriteVisual();
+        m_volumeTip.Opacity(0.0f);
+    }
+    m_root.Children().Remove(m_volumeTip);
+    m_root.Children().InsertAtTop(m_volumeTip);  // above everything added since
+    const std::wstring text = std::to_wstring(static_cast<int>(std::lround(m_volume * 100))) + L"%";
+    auto layout = MakeText(text, 12.0f, DWRITE_FONT_WEIGHT_NORMAL, 200, 20);
+    DWRITE_TEXT_METRICS tm{};
+    layout->GetMetrics(&tm);
+    const float shadow = 3, w = std::ceil(tm.widthIncludingTrailingWhitespace) + 14, h = 21;
+    const int pw = PxI(w + shadow), ph = PxI(h + shadow);
+    host.Repaint(m_volumeTip, pw, ph, m_scale, [&](ID2D1DeviceContext* dc) {
+        const float px = 1.0f / m_scale;
+        for (int i = 3; i >= 1; --i) {
+            com_ptr<ID2D1SolidColorBrush> s;
+            dc->CreateSolidColorBrush(D2D1::ColorF(0, 0.06f), s.put());
+            dc->FillRoundedRectangle({{static_cast<float>(i), static_cast<float>(i), w - 1 + i, h - 1 + i}, 3, 3}, s.get());
+        }
+        com_ptr<ID2D1GradientStopCollection> stops;
+        const D2D1_GRADIENT_STOP gs[] = {{0.0f, Hex(0xFFFFFF)}, {1.0f, Hex(0xE4E5F0)}};
+        dc->CreateGradientStopCollection(gs, 2, stops.put());
+        com_ptr<ID2D1LinearGradientBrush> fill;
+        dc->CreateLinearGradientBrush({{0, 0}, {0, h}}, stops.get(), fill.put());
+        const D2D1_ROUNDED_RECT box{{px / 2, px / 2, w - px / 2, h - px / 2}, 2.5f, 2.5f};
+        dc->FillRoundedRectangle(box, fill.get());
+        com_ptr<ID2D1SolidColorBrush> border, ink;
+        dc->CreateSolidColorBrush(Hex(0x767676), border.put());
+        dc->CreateSolidColorBrush(Hex(0x575757), ink.put());
+        dc->DrawRoundedRectangle(box, border.get(), px);
+        dc->DrawTextLayout({7, (h - tm.height) / 2}, layout.get(), ink.get());
+    });
+    RECT client{};
+    GetClientRect(m_hwnd, &client);
+    const float left = std::clamp(thumbX - Px(w) / 2, 0.0f, static_cast<float>(client.right - pw));
+    const float top = static_cast<float>(m_layout.volume.top - ph - PxI(2));
+    m_volumeTip.Offset({std::round(left), std::round(top), 0});
+    m_volumeTip.Size({static_cast<float>(pw), static_cast<float>(ph)});
+    if (!m_volumeTipShown) {
+        m_volumeTipShown = true;
+        host.AnimateOpacity(m_volumeTip, 1.0f, 100);
+    }
+}
+
+void MainWindow::HideVolumeTip() {
+    if (!m_volumeTipShown) return;
+    m_volumeTipShown = false;
+    gfx::CompositionHost::Get().AnimateOpacity(m_volumeTip, 0.0f, 300);
 }
 
 float MainWindow::SeekFractionAt(int x) const {
@@ -1337,6 +1487,8 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
         OnPlaybackStateChanged();
         OnTrackChanged();
         OnVolumeChanged();
+        m_shuffle = cfg_shuffle.get() != 0;
+        m_repeat = static_cast<Repeat>(std::clamp<int>(static_cast<int>(cfg_repeat.get()), 0, 2));
         OnPlaybackOrderChanged();
         SetWindowPos(hwnd, nullptr, 0, 0, 0, 0, SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER);
         return 0;
@@ -1589,6 +1741,7 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
             m_capture = Capture::None;
             ReleaseCapture();
             w->SetPressed(false);
+            if (w->Id() == kVolume) HideVolumeTip();
             if (w->Id() == kSeek) {
                 if (seek && m_length > 0) playback_control::get()->playback_seek(preview * m_length);
                 m_seeking = false;
@@ -1597,12 +1750,13 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
             }
             const bool inside = w->HitTest(pt);
             if (!inside || IsCaptionWidget(w->Id())) SetHoverWidget(nullptr);
-            if (inside && w->onClick) w->onClick();
+            if (inside && w->onClick && w->IsEnabled()) w->onClick();
         }
         return 0;
     }
     case WM_CAPTURECHANGED:
         if (reinterpret_cast<HWND>(lp) != hwnd) {
+            HideVolumeTip();
             if (m_pressed) {
                 m_pressed->SetPressed(false);
                 m_pressed = nullptr;

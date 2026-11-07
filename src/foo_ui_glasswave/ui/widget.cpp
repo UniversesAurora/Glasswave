@@ -92,6 +92,7 @@ bool Widget::HitTest(POINT pt) const {
 }
 
 void Widget::SetHover(bool hover) {
+    if (hover && !IsEnabled()) hover = false;
     if (m_hover == hover) return;
     m_hover = hover;
     auto& host = gfx::CompositionHost::Get();
@@ -109,6 +110,7 @@ void Widget::SetHover(bool hover) {
 }
 
 void Widget::SetPressed(bool pressed) {
+    if (pressed && !IsEnabled()) pressed = false;
     if (m_pressed == pressed) return;
     m_pressed = pressed;
     gfx::CompositionHost::Get().AnimateOpacity(m_pressedLayer, pressed ? 1.0f : 0.0f, pressed ? m::kPressMs : 200);

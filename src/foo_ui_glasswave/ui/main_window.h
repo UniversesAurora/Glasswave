@@ -89,6 +89,10 @@ private:
     void OnActivate(bool active);
     void PaintSideHighlights();
     void SetVolumeFromX(int x);
+    void ShowVolumeTip(float thumbX);  // Win7 tooltip bubble with the volume while dragging
+    void HideVolumeTip();
+    winrt::Windows::UI::Composition::SpriteVisual m_volumeTip{nullptr};
+    bool m_volumeTipShown = false;
     float SeekFractionAt(int x) const;
 
     // Pixel rect of a region given in transport-cluster coordinates, and back.
@@ -160,7 +164,15 @@ private:
     bool m_seeking = false;
     float m_seekPreview = 0;
     float m_volume = 1.0f;  // slider position, 0..1
-    bool m_muted = false, m_shuffle = false, m_repeat = false;
+    bool m_muted = false, m_shuffle = false;
+    enum class Repeat { Off, All, One } m_repeat = Repeat::Off;
+    bool m_applyingOrder = false;  // our own playback order change in flight
+    bool m_stopAfterPass = false;  // we set "stop after current" to end a shuffled pass
+    size_t m_shufflePass = 0;      // tracks played in the current shuffled pass
+    void UpdateShuffleRepeat(bool shuffle, Repeat repeat);
+    void SetShuffleRepeat(bool shuffle, Repeat repeat);
+    void ApplyPlaybackOrder();
+    void OnShuffleTrack();
 
     struct PlayCallback;
     struct PlaylistCallback;

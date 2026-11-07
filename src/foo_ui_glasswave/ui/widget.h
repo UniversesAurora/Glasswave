@@ -42,6 +42,9 @@ public:
     void SetInactive(bool inactive);  // window lost activation
 
     std::function<void()> onClick;
+    // Optional: a disabled widget shows no hover / pressed feedback and ignores clicks.
+    std::function<bool()> enabled;
+    bool IsEnabled() const { return !enabled || enabled(); }
 
 private:
     void Repaint();

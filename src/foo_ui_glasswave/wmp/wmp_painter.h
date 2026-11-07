@@ -35,7 +35,8 @@ void NavArrow(ID2D1DeviceContext* dc, D2D1_SIZE_F size, Layer layer, bool back, 
 void SearchFrame(ID2D1DeviceContext* dc, D2D1_SIZE_F size, bool focused);
 
 // Seek bar: track, elapsed fill, and (when hot) the thumb.
-void SeekBar(ID2D1DeviceContext* dc, D2D1_SIZE_F size, float progress, bool hot, bool enabled);
+// WMP 12 seek bar: three rows under the transport band's top rule at `ruleY` (DIP).
+void SeekBar(ID2D1DeviceContext* dc, D2D1_SIZE_F size, float progress, bool hot, bool enabled, float ruleY);
 
 // Small glyphs used in lists and the navigation pane.
 enum class NavIcon { None, Library, Playlist, Music, Artist, Album, Genre, NowPlaying };

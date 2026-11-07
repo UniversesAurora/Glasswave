@@ -202,17 +202,20 @@ std::vector<ListView::Col> ListView::Columns(float total) const {
         return i < m_widths.size() && m_widths[i] > 0 ? m_widths[i] : (cols[i].flex ? -1.0f : cols[i].width);
     };
     auto shown = [&](size_t i) { return !(i < m_hidden.size() ? m_hidden[i] != 0 : cols[i].hidden); };
+    // With the album column the playing-marker gutter sits after it, before the tracks.
+    const bool album = AlbumColumn();
     float fixed = kGutter;
     for (size_t i = 0; i < cols.size(); ++i)
         if (shown(i) && widthOf(i) > 0) fixed += widthOf(i);
     const float flex = std::max(120.0f, total - fixed);
-    float x = kGutter;
+    float x = album ? 0.0f : kGutter;
     for (size_t d = 0; d < cols.size(); ++d) {
         const size_t src = d < m_order.size() ? m_order[d] : d;
         if (!shown(src)) continue;
         const float w = widthOf(src) > 0 ? widthOf(src) : flex;
         out.push_back({src, x, w});
         x += w;
+        if (album && out.size() == 1) x += kGutter;
     }
     return out;
 }
@@ -455,6 +458,18 @@ void ListView::PaintRows() {
         case Mode::Tiles: PaintTiles(dc); break;
         default: PaintPlain(dc, size); break;
         }
+        if (m_mode != Mode::Tiles) {
+            // WMP 12 column lines, down to the bottom of the view (owner capture at 150 %): on
+            // each column's last pixel a translucent blue (#75B5F4 at 15 %), a faint white
+            // line just left of it.
+            const float line = std::max(1.0f, std::floor(s)) / s;
+            auto blue = Brush(dc, 0x75B5F4, 0.15f), white = Brush(dc, 0xFFFFFF, 0.2f);
+            for (const Col& c : Columns(size.width)) {
+                const float x = std::round((c.x + c.w) * s) / s;
+                dc->FillRectangle({x - line, 0, x, size.height}, blue.get());
+                dc->FillRectangle({x - 2 * line, 0, x - line, size.height}, white.get());
+            }
+        }
     });
 }
 
@@ -463,8 +478,9 @@ void ListView::PaintCells(ID2D1DeviceContext* dc, size_t row, float y, float row
     const auto& srcCols = m_source->Columns();
     const bool skipAlbum = AlbumColumn();
     if (isPlaying) {
-        // In the gutter, or at the left of the first track column after the album column.
-        const float x = skipAlbum && cols.size() > 1 ? cols[1].x + 5 : kGutter / 2 + 1;
+        // In the gutter: before the first column, or between the album column and the tracks;
+        // the same distance from the row highlight's left edge in both layouts.
+        const float x = skipAlbum && !cols.empty() ? cols[0].x + cols[0].w + kGutter / 2 - 1 : kGutter / 2 + 1;
         wp::PlayingMarker(dc, {x, y + rowH / 2 + 0.5f}, playback_control::get()->is_paused());
     }
     for (const Col& c : cols) {

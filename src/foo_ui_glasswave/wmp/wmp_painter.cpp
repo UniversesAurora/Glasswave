@@ -29,6 +29,17 @@ com_ptr<ID2D1LinearGradientBrush> Vertical(ID2D1DeviceContext* dc, float y0, flo
     return b;
 }
 
+com_ptr<ID2D1LinearGradientBrush> Horizontal(ID2D1DeviceContext* dc, float x0, float x1,
+                                             std::initializer_list<std::pair<float, D2D1_COLOR_F>> stops) {
+    std::vector<D2D1_GRADIENT_STOP> v;
+    for (auto& [p, c] : stops) v.push_back({p, c});
+    com_ptr<ID2D1GradientStopCollection> coll;
+    winrt::check_hresult(dc->CreateGradientStopCollection(v.data(), static_cast<UINT32>(v.size()), coll.put()));
+    com_ptr<ID2D1LinearGradientBrush> b;
+    winrt::check_hresult(dc->CreateLinearGradientBrush({{x0, 0}, {x1, 0}}, coll.get(), b.put()));
+    return b;
+}
+
 float Hairline(ID2D1DeviceContext* dc) {
     float dx = 96, dy = 96;
     dc->GetDpi(&dx, &dy);
@@ -190,21 +201,33 @@ void SearchFrame(ID2D1DeviceContext* dc, D2D1_SIZE_F size, bool focused) {
     dc->DrawLine({c.x - 2.5f, c.y + 2.5f}, {c.x - 6.0f, c.y + 6.0f}, ink.get(), 1.8f);
 }
 
-void SeekBar(ID2D1DeviceContext* dc, D2D1_SIZE_F size, float progress, bool hot, bool enabled) {
-    const float L = Hairline(dc);
-    const float y = Snap(dc, size.height / 2);
+void SeekBar(ID2D1DeviceContext* dc, D2D1_SIZE_F size, float progress, bool hot, bool enabled, float ruleY) {
+    // WMP 12 (owner capture at 150 %, bitmap pixels = DIP here): the transport band's top
+    // rule is the bar's top edge; under it three rows. Unplayed: background, background,
+    // #BEC3CB. Played: #7FC9FA / #014CB6 / #619FF2, and over the last 16 px the head
+    // brightens to #C6EDFD / #5CB8F4 / #A0C6EB, then stops sharply.
+    const float y = Snap(dc, ruleY) + 1;  // first row under the rule
     const float x0 = 0, x1 = size.width;
     progress = std::clamp(progress, 0.0f, 1.0f);
-    const float px = x0 + (x1 - x0) * progress;
-    const float h = hot ? 2 * L + 2 : 2 * L;
-    dc->FillRectangle({x0, y - h / 2, x1, y + h / 2}, Solid(dc, Hex(0xBCC7D3)).get());
-    dc->FillRectangle({x0, y + h / 2, x1, y + h / 2 + L}, Solid(dc, Hex(0xFFFFFF, 0.9f)).get());
-    if (enabled && progress > 0)
-        dc->FillRectangle({x0, y - h / 2, px, y + h / 2},
-                          Vertical(dc, y - h / 2, y + h / 2, {{0.0f, Hex(0x5AA2EA)}, {1.0f, Hex(0x1E5EB4)}}).get());
+    const float px = Snap(dc, x0 + (x1 - x0) * progress);
+    dc->FillRectangle({x0, y + 2, x1, y + 3}, Solid(dc, Hex(0xBEC3CB)).get());
+    if (enabled && progress > 0) {
+        struct Row {
+            uint32_t body, head;
+        };
+        const Row rows[] = {{0x7FC9FA, 0xC6EDFD}, {0x014CB6, 0x5CB8F4}, {0x619FF2, 0xA0C6EB}};
+        const float h0 = std::max(x0, px - 16);
+        for (int r = 0; r < 3; ++r) {
+            const D2D1_RECT_F row{x0, y + r, px, y + r + 1};
+            dc->FillRectangle(row, Solid(dc, Hex(rows[r].body)).get());
+            dc->FillRectangle({h0, row.top, px, row.bottom},
+                              Horizontal(dc, h0, px, {{0.0f, Hex(rows[r].body)}, {1.0f, Hex(rows[r].head)}}).get());
+        }
+    }
     if (enabled && hot) {
+        const float L = Hairline(dc);
         const float r = 5.5f;
-        const D2D1_POINT_2F c{std::clamp(px, x0 + r, x1 - r), y};
+        const D2D1_POINT_2F c{std::clamp(px, x0 + r, x1 - r), y + 1.5f};
         dc->FillEllipse({c, r, r}, Vertical(dc, y - r, y + r, {{0.0f, Hex(0x6F7F9A)}, {1.0f, Hex(0x3F7486)}}).get());
         dc->FillEllipse({c, r - L, r - L},
                         Vertical(dc, y - r, y + r, {{0.0f, Hex(0xE2EAF6)}, {0.45f, Hex(0xA6C4E6)},
