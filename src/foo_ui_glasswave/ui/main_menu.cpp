@@ -50,4 +50,19 @@ void ShowMainMenu(HWND owner, POINT pt, const std::vector<MenuAction>& actions) 
     }
 }
 
+void ShowActionMenu(HWND owner, POINT pt, const std::vector<MenuAction>& actions, size_t checked) {
+    if (actions.empty()) return;
+    HMENU menu = CreatePopupMenu();
+    for (size_t i = 0; i < actions.size(); ++i) {
+        if (actions[i].label.empty())
+            AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+        else
+            AppendMenuW(menu, MF_STRING | (i == checked ? MF_CHECKED : 0), 1 + i, actions[i].label.c_str());
+    }
+    const UINT cmd = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_NONOTIFY | TPM_LEFTALIGN | TPM_TOPALIGN, pt.x, pt.y, 0,
+                                    owner, nullptr);
+    DestroyMenu(menu);
+    if (cmd >= 1 && cmd <= actions.size() && actions[cmd - 1].run) actions[cmd - 1].run();
+}
+
 }  // namespace glasswave::ui

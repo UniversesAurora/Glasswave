@@ -857,30 +857,203 @@ void MainWindow::RepaintNowPlaying() {
 }
 
 void MainWindow::RepaintBreadcrumb() {
-    std::wstring path = L"Library";
-    switch (m_view.kind) {
-    case View::Kind::Playlist: path += L"  ▸  Playlists  ▸  " + m_view.name; break;
-    case View::Kind::AllMusic: path += L"  ▸  Music  ▸  All music"; break;
-    case View::Kind::Artists: path += L"  ▸  Music  ▸  Artist"; break;
-    case View::Kind::Albums: path += L"  ▸  Music  ▸  Album"; break;
-    case View::Kind::Genres: path += L"  ▸  Music  ▸  Genre"; break;
-    case View::Kind::Group: {
-        const wchar_t* kind = m_view.group == media::GroupKind::Artist  ? L"Artist"
-                              : m_view.group == media::GroupKind::Album ? L"Album"
-                                                                        : L"Genre";
-        path += std::wstring(L"  ▸  Music  ▸  ") + kind + L"  ▸  " + m_view.name;
-        break;
+    BuildCrumbs();
+    PaintBreadcrumb();
+    UpdateLayout();
+}
+
+void MainWindow::BuildCrumbs() {
+    auto go = [this](View v) { return [this, v] { Navigate(v, true); }; };
+    View all;
+    all.kind = View::Kind::AllMusic;
+    auto kindView = [](View::Kind k) {
+        View v;
+        v.kind = k;
+        return v;
+    };
+    auto playlists = [this, go] {
+        std::vector<MenuAction> out;
+        auto pm = playlist_manager::get();
+        for (t_size i = 0, n = pm->get_playlist_count(); i < n; ++i) {
+            pfc::string8 name;
+            pm->playlist_get_name(i, name);
+            View v;
+            v.kind = View::Kind::Playlist;
+            v.playlist = i;
+            out.push_back({Wide(name), go(v)});
+        }
+        return out;
+    };
+    auto groupsOf = [this, go](media::GroupKind kind) {
+        return [this, go, kind] {
+            std::vector<MenuAction> out;
+            for (const auto& g : m_library.Groups(kind)) {
+                if (out.size() >= 300) break;  // a menu, not a list view
+                View v;
+                v.kind = View::Kind::Group;
+                v.group = kind;
+                v.key = g.key;
+                v.name = g.name;
+                out.push_back({g.name.empty() ? L"Unknown" : g.name, go(v)});
+            }
+            return out;
+        };
+    };
+    auto music = [go, kindView, all] {
+        return std::vector<MenuAction>{{L"Artist", go(kindView(View::Kind::Artists))},
+                                       {L"Album", go(kindView(View::Kind::Albums))},
+                                       {L"All music", go(all)},
+                                       {L"Genre", go(kindView(View::Kind::Genres))}};
+    };
+    View nowPlaying;
+    nowPlaying.kind = View::Kind::Playlist;
+    nowPlaying.playlist = playlist_manager::get()->get_active_playlist();
+
+    m_crumbs.clear();
+    m_crumbs.push_back({L"", {}, [go, all] { return std::vector<MenuAction>{{L"Library", go(all)}}; }});
+    m_crumbs.push_back({L"Library", go(all), [go, all, nowPlaying] {
+                            return std::vector<MenuAction>{{L"Playlists", go(nowPlaying)}, {L"Music", go(all)}};
+                        }});
+    if (m_view.kind == View::Kind::Playlist) {
+        m_crumbs.push_back({L"Playlists", go(nowPlaying), playlists});
+        m_crumbs.push_back({m_view.name, go(m_view), {}});
+    } else {
+        m_crumbs.push_back({L"Music", go(all), music});
+        const media::GroupKind kind = m_view.kind == View::Kind::Artists  ? media::GroupKind::Artist
+                                      : m_view.kind == View::Kind::Albums ? media::GroupKind::Album
+                                      : m_view.kind == View::Kind::Genres ? media::GroupKind::Genre
+                                                                          : m_view.group;
+        if (m_view.kind == View::Kind::AllMusic) {
+            m_crumbs.push_back({L"All music", go(all), {}});
+        } else {
+            const View::Kind kv = kind == media::GroupKind::Artist  ? View::Kind::Artists
+                                  : kind == media::GroupKind::Album ? View::Kind::Albums
+                                                                    : View::Kind::Genres;
+            const wchar_t* label = kind == media::GroupKind::Artist  ? L"Artist"
+                                   : kind == media::GroupKind::Album ? L"Album"
+                                                                     : L"Genre";
+            m_crumbs.push_back({label, go(kindView(kv)), groupsOf(kind)});
+            if (m_view.kind == View::Kind::Group) m_crumbs.push_back({m_view.name, go(m_view), {}});
+        }
     }
+
+    // Lay out: name with 6 DIP padding, arrow 15 DIP; the root crumb is an arrow only.
+    float x = 0;
+    for (auto& c : m_crumbs) {
+        c.x0 = x;
+        if (!c.text.empty()) {
+            auto t = MakeText(c.text, 12.0f, DWRITE_FONT_WEIGHT_NORMAL, 400, 20);
+            DWRITE_TEXT_METRICS tm{};
+            t->GetMetrics(&tm);
+            x += std::ceil(tm.widthIncludingTrailingWhitespace) + 12;
+        }
+        c.split = x;
+        if (c.children) x += 15;
+        c.x1 = x;
     }
+    if (m_crumbHot >= static_cast<int>(m_crumbs.size())) m_crumbHot = -1;
+}
+
+void MainWindow::PaintBreadcrumb() {
     auto& host = gfx::CompositionHost::Get();
     const int w = PxI(900), h = PxI(NavBarHeight() - 1);
     host.Repaint(m_breadcrumb, w, h, m_scale, [&](ID2D1DeviceContext* dc) {
-        com_ptr<ID2D1SolidColorBrush> ink;
+        const float H = h / m_scale, top = 1, bottom = std::min(H - 2, 23.0f);
+        com_ptr<ID2D1SolidColorBrush> ink, divider;
         dc->CreateSolidColorBrush(Hex(0x1E395B), ink.put());
-        auto t = MakeText(path, 12.0f, DWRITE_FONT_WEIGHT_NORMAL, 890, h / m_scale);
-        dc->DrawTextLayout({0, 0}, t.get(), ink.get());
+        dc->CreateSolidColorBrush(Hex(0x8DB2E3, 0.8f), divider.put());
+        for (int i = 0; i < static_cast<int>(m_crumbs.size()); ++i) {
+            const Crumb& c = m_crumbs[i];
+            const bool hot = i == m_crumbHot, open = i == m_crumbOpen;
+            // Hover lights the whole crumb (name and arrow, split by a line); the part
+            // under the mouse or with its menu open looks pressed.
+            if (hot || open) {
+                wp::RowPlate(dc, {c.x0, top, c.x1, bottom}, wp::RowState::Hot, true);
+                if (open || m_crumbHotPart == 1) {
+                    if (c.children && (open || hot))
+                        wp::RowPlate(dc, {c.split, top, c.x1, bottom}, wp::RowState::Selected, true);
+                } else if (!c.text.empty()) {
+                    wp::RowPlate(dc, {c.x0, top, c.split, bottom}, wp::RowState::SelectedHot, true);
+                }
+                if (!c.text.empty() && c.children) {
+                    const float px = 1.0f / m_scale;
+                    dc->FillRectangle({c.split, top + 1, c.split + px, bottom - 1}, divider.get());
+                }
+            }
+            if (!c.text.empty()) {
+                auto t = MakeText(c.text, 12.0f, DWRITE_FONT_WEIGHT_NORMAL, c.split - c.x0, H);
+                dc->DrawTextLayout({c.x0 + 6, 0}, t.get(), ink.get());
+            }
+            if (c.children) {  // small black triangle: right, or down while the menu is open
+                const float cx = std::round(((c.split + c.x1) / 2) * m_scale) / m_scale;
+                const float cy = std::round((H / 2) * m_scale) / m_scale;
+                com_ptr<ID2D1Factory> f;
+                dc->GetFactory(f.put());
+                com_ptr<ID2D1PathGeometry> tri;
+                com_ptr<ID2D1GeometrySink> sink;
+                f->CreatePathGeometry(tri.put());
+                tri->Open(sink.put());
+                if (open) {
+                    sink->BeginFigure({cx - 3.5f, cy - 1.5f}, D2D1_FIGURE_BEGIN_FILLED);
+                    sink->AddLine({cx + 3.5f, cy - 1.5f});
+                    sink->AddLine({cx, cy + 2.5f});
+                } else {
+                    sink->BeginFigure({cx - 1.5f, cy - 3.5f}, D2D1_FIGURE_BEGIN_FILLED);
+                    sink->AddLine({cx + 2.5f, cy});
+                    sink->AddLine({cx - 1.5f, cy + 3.5f});
+                }
+                sink->EndFigure(D2D1_FIGURE_END_CLOSED);
+                sink->Close();
+                com_ptr<ID2D1SolidColorBrush> arrow;
+                dc->CreateSolidColorBrush(Hex(0x1A1A1A), arrow.put());
+                dc->FillGeometry(tri.get(), arrow.get());
+            }
+        }
     });
-    UpdateLayout();
+}
+
+bool MainWindow::CrumbAt(POINT pt, int* index, int* part) const {
+    if (!PtInRect(&m_layout.breadcrumb, pt)) return false;
+    const float x = (pt.x - m_layout.breadcrumb.left) / m_scale;
+    for (int i = 0; i < static_cast<int>(m_crumbs.size()); ++i) {
+        const Crumb& c = m_crumbs[i];
+        if (x >= c.x0 && x < c.x1) {
+            *index = i;
+            *part = x >= c.split ? 1 : 0;
+            return true;
+        }
+    }
+    return false;
+}
+
+void MainWindow::UpdateCrumbHover(POINT pt) {
+    int index = -1, part = 0;
+    if (!CrumbAt(pt, &index, &part)) index = -1;
+    if (index == m_crumbHot && (index < 0 || part == m_crumbHotPart)) return;
+    m_crumbHot = index;
+    m_crumbHotPart = part;
+    PaintBreadcrumb();
+}
+
+void MainWindow::OnCrumbClick(POINT pt) {
+    int index = -1, part = 0;
+    if (!CrumbAt(pt, &index, &part)) return;
+    const Crumb c = m_crumbs[index];  // navigation rebuilds m_crumbs
+    if (part == 0 && c.open) {
+        c.open();
+        return;
+    }
+    if (!c.children) return;
+    m_crumbOpen = index;
+    PaintBreadcrumb();
+    POINT screen{m_layout.breadcrumb.left + static_cast<LONG>(std::lround(c.split * m_scale)),
+                 m_layout.breadcrumb.top + PxI(23)};
+    ClientToScreen(m_hwnd, &screen);
+    const auto items = c.children();
+    ShowActionMenu(m_hwnd, screen, items);  // runs the chosen action
+    m_crumbOpen = -1;
+    m_crumbHot = -1;
+    PaintBreadcrumb();
 }
 
 // ---- Navigation --------------------------------------------------------------------------
@@ -1666,6 +1839,7 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
             SetHoverWidget(WidgetAt(pt));
             m_list->OnMouseMove(pt);
             m_nav->OnMouseMove(pt);
+            UpdateCrumbHover(pt);
         }
         if (!m_trackingClient) {
             TRACKMOUSEEVENT tme{sizeof(tme), TME_LEAVE, hwnd, 0};
@@ -1679,12 +1853,17 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
         if (m_capture == Capture::None) {
             m_list->OnMouseLeave();
             m_nav->OnMouseLeave();
+            UpdateCrumbHover({-1, -1});
         }
         return 0;
     case WM_LBUTTONDOWN:
     case WM_LBUTTONDBLCLK: {
         POINT pt{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
         const bool dbl = msg == WM_LBUTTONDBLCLK;
+        if (PtInRect(&m_layout.breadcrumb, pt)) {
+            OnCrumbClick(pt);
+            return 0;
+        }
         if (Widget* w = WidgetAt(pt)) {
             m_pressed = w;
             w->SetPressed(true);

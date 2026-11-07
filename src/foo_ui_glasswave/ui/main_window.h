@@ -4,6 +4,7 @@
 #include "media/library_model.h"
 #include "media/list_sources.h"
 #include "ui/list_view.h"
+#include "ui/main_menu.h"
 #include "ui/nav_pane.h"
 #include "ui/search_box.h"
 #include "ui/widget.h"
@@ -54,6 +55,23 @@ private:
         media::GroupKind group = media::GroupKind::Artist;
         std::wstring key, name;
     };
+
+    // Breadcrumb (WMP 12 address bar): each level is a name that navigates there and, if
+    // the level has children, an arrow after it that lists them.
+    struct Crumb {
+        std::wstring text;                                 // empty: the leading root arrow
+        std::function<void()> open;                        // click on the name
+        std::function<std::vector<MenuAction>()> children; // arrow menu; empty = no arrow
+        float x0 = 0, split = 0, x1 = 0;                   // DIP: name [x0, split), arrow [split, x1)
+    };
+    std::vector<Crumb> m_crumbs;
+    int m_crumbHot = -1, m_crumbHotPart = 0;  // part 0 = name, 1 = arrow
+    int m_crumbOpen = -1;                      // crumb whose arrow menu is open
+    void BuildCrumbs();
+    void PaintBreadcrumb();
+    bool CrumbAt(POINT pt, int* index, int* part) const;
+    void UpdateCrumbHover(POINT pt);
+    void OnCrumbClick(POINT pt);
 
     enum class Capture { None, Widget, List };
 
