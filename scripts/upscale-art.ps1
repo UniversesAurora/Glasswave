@@ -50,7 +50,7 @@ if (-not $Waifu2x -or -not (Test-Path -LiteralPath $Waifu2x)) {
 
 # Resources drawn by wmp/wmp_transport.* and ui/list_view.cpp (type 257 in wmploc.dll).
 $ids = @(4153, 4154, 4155, 4160) + (4162..4169) + (4174..4177) + @(4179, 4180, 2164) +
-       (5244..5247) + (5678..5681) + (5350..5353)
+       (5244..5247) + (5678..5681) + (5350..5353) + @(5360) + (4723..4725) + @(331)
 $names = @($ids | ForEach-Object { "#$_" }) + @('ALBUM_0.PNG', 'ALBUMDROPSHADOW_200X200.PNG')
 
 Add-Type -AssemblyName System.Drawing
@@ -113,19 +113,25 @@ public static class GlasswaveArt {
         return b;
     }
 
-    // Splits a PNG into opaque premultiplied colour and opaque grey alpha.
+    // The upscaler is poor at image edges (shapes touching the border come out dented and
+    // soft), so every image gets a transparent margin of Pad pixels, cropped off afterwards.
+    public const int Pad = 8;
+
+    // Splits a PNG into opaque premultiplied colour and opaque grey alpha, padded.
     public static int[] Split(byte[] png, string colorOut, string alphaOut) {
         using var src = new Bitmap(new MemoryStream(png));
-        int w = src.Width, h = src.Height;
-        byte[] px = Pixels(src), color = new byte[px.Length], alpha = new byte[px.Length];
-        for (int i = 0; i < px.Length; i += 4) {  // BGRA
-            int a = px[i + 3];
-            for (int c = 0; c < 3; ++c) color[i + c] = (byte)((px[i + c] * a + 127) / 255);
-            alpha[i] = alpha[i + 1] = alpha[i + 2] = (byte)a;
-            color[i + 3] = alpha[i + 3] = 255;
-        }
-        using (var b = FromPixels(color, w, h)) b.Save(colorOut, ImageFormat.Png);
-        using (var b = FromPixels(alpha, w, h)) b.Save(alphaOut, ImageFormat.Png);
+        int w = src.Width, h = src.Height, pw = w + 2 * Pad, ph = h + 2 * Pad;
+        byte[] px = Pixels(src), color = new byte[pw * ph * 4], alpha = new byte[pw * ph * 4];
+        for (int i = 3; i < color.Length; i += 4) color[i] = alpha[i] = 255;
+        for (int y = 0; y < h; ++y)
+            for (int x = 0; x < w; ++x) {
+                int i = (y * w + x) * 4, o = ((y + Pad) * pw + x + Pad) * 4;  // BGRA
+                int a = px[i + 3];
+                for (int c = 0; c < 3; ++c) color[o + c] = (byte)((px[i + c] * a + 127) / 255);
+                alpha[o] = alpha[o + 1] = alpha[o + 2] = (byte)a;
+            }
+        using (var b = FromPixels(color, pw, ph)) b.Save(colorOut, ImageFormat.Png);
+        using (var b = FromPixels(alpha, pw, ph)) b.Save(alphaOut, ImageFormat.Png);
         return new[] { w, h };
     }
 
@@ -134,14 +140,16 @@ public static class GlasswaveArt {
         using var cb = new Bitmap(colorIn);
         using var ab = new Bitmap(alphaIn);
         if (cb.Width != ab.Width || cb.Height != ab.Height) throw new InvalidDataException("size mismatch");
-        int w = cb.Width, h = cb.Height;
-        byte[] color = Pixels(cb), alpha = Pixels(ab), px = new byte[color.Length];
-        for (int i = 0; i < px.Length; i += 4) {
-            int a = (alpha[i] + alpha[i + 1] + alpha[i + 2] + 1) / 3;
-            px[i + 3] = (byte)a;
-            for (int c = 0; c < 3; ++c)
-                px[i + c] = a == 0 ? (byte)0 : (byte)Math.Min(255, (color[i + c] * 255 + a / 2) / a);
-        }
+        int pw = cb.Width, m = 2 * Pad, w = cb.Width - 2 * m, h = cb.Height - 2 * m;  // crop the 2x margin
+        byte[] color = Pixels(cb), alpha = Pixels(ab), px = new byte[w * h * 4];
+        for (int y = 0; y < h; ++y)
+            for (int x = 0; x < w; ++x) {
+                int i = ((y + m) * pw + x + m) * 4, o = (y * w + x) * 4;
+                int a = (alpha[i] + alpha[i + 1] + alpha[i + 2] + 1) / 3;
+                px[o + 3] = (byte)a;
+                for (int c = 0; c < 3; ++c)
+                    px[o + c] = a == 0 ? (byte)0 : (byte)Math.Min(255, (color[i + c] * 255 + a / 2) / a);
+            }
         using (var b = FromPixels(px, w, h)) b.Save(output, ImageFormat.Png);
         return new[] { w, h };
     }

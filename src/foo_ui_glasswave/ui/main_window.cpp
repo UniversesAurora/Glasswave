@@ -109,8 +109,16 @@ void Place(const wuc::Visual& v, const RECT& r) {
 
 RECT CenteredRect(int cx, int cy, int w, int h) { return {cx - w / 2, cy - h / 2, cx - w / 2 + w, cy - h / 2 + h}; }
 
+// Windows Media Player's own icon from the user's wmploc.dll (icon group 102), else
+// foobar2000's.
+constexpr int kWmpIcon = 102;
+HICON CreateAppIcon(int sizePx) {
+    if (HICON icon = win7::Resources::Get().Icon(win7::Module::Wmploc, kWmpIcon, sizePx)) return icon;
+    return ui_control::get()->load_main_icon(sizePx, sizePx);
+}
+
 com_ptr<IWICBitmapSource> LoadAppIcon(int sizePx) {
-    HICON icon = ui_control::get()->load_main_icon(sizePx, sizePx);
+    HICON icon = CreateAppIcon(sizePx);
     if (!icon) return nullptr;
     auto* wic = gfx::CompositionHost::Get().Wic();
     com_ptr<IWICBitmap> bmp;
@@ -340,18 +348,35 @@ void MainWindow::InitComposition() {
     m_frameOutline = comp.CreateSpriteVisual();
     m_frameOutline.RelativeSizeAdjustment(float2{1, 1});
     for (auto* v : {&m_clientEdge, &m_navBar, &m_cmdBar, &m_contentTop, &m_transportBand, &m_capsule, &m_cluster,
-                    &m_divider, &m_clientGlow, &m_title, &m_nowPlaying, &m_breadcrumb})
+                    &m_divider, &m_clientGlow, &m_title, &m_nowPlaying, &m_breadcrumb, &m_navGroove})
         *v = comp.CreateSpriteVisual();
     for (auto& v : m_sideHighlight) {
         v = comp.CreateSpriteVisual();
         children.InsertAtTop(v);
     }
     m_windowRoot.Children().InsertAtTop(m_frameOutline);
-    for (const auto& v : {m_clientEdge, m_navBar, m_cmdBar, m_contentTop, m_transportBand})
+    for (const auto& v : {m_clientEdge, m_navBar, m_navGroove, m_cmdBar, m_contentTop, m_transportBand})
         children.InsertAtTop(v);
     // Navigation pane, list and search box live in their own layer above the bars.
     m_contentLayer = comp.CreateContainerVisual();
     children.InsertAtTop(m_contentLayer);
+    // WMP 12's library background (light blue with soft diagonal streaks) behind the list,
+    // scaled to cover it; painted once, the compositor scales it on resize.
+    m_libraryBg = comp.CreateSpriteVisual();
+    if (win7::Resources::Get().Has(win7::Module::Wmploc, L"LIBRARY_BACKGROUND7.PNG")) {
+        const D2D1_SIZE_U bs = win7::Resources::Get().Size(win7::Module::Wmploc, L"LIBRARY_BACKGROUND7.PNG");
+        auto surface = host.CreateSurface(static_cast<int>(bs.width), static_cast<int>(bs.height));
+        host.Draw(surface, 1.0f, [&](ID2D1DeviceContext* dc) {
+            win7::DrawStretched(dc, win7::Module::Wmploc, L"LIBRARY_BACKGROUND7.PNG",
+                                D2D1::RectF(0, 0, static_cast<float>(bs.width), static_cast<float>(bs.height)));
+        });
+        auto brush = comp.CreateSurfaceBrush(surface);
+        brush.Stretch(wuc::CompositionStretch::UniformToFill);
+        brush.HorizontalAlignmentRatio(0.0f);
+        brush.VerticalAlignmentRatio(0.0f);
+        m_libraryBg.Brush(brush);
+    }
+    m_contentLayer.Children().InsertAtBottom(m_libraryBg);
     for (const auto& v : {m_capsule, m_cluster, m_divider, m_clientGlow, m_title, m_nowPlaying, m_breadcrumb})
         children.InsertAtTop(v);
     m_win7Art = wt::Available();
@@ -411,14 +436,14 @@ void MainWindow::CreateWidgets() {
     Widget::Options round;
     round.circular = true;
     auto* back = add(kBack, [this](auto* dc, D2D1_SIZE_F s, Layer l) {
-        if (m_win7Art) wt::NavOrb(dc, l, true, m_historyPos > 0);
+        if (m_win7Art) wt::NavOrb(dc, s, l, true, m_historyPos > 0);
         else wp::NavArrow(dc, s, l, true, m_historyPos > 0);
     }, round);
     back->onClick = [this] { GoBack(); };
     back->enabled = [this] { return m_historyPos > 0; };
     auto* forward = add(kForward, [this](auto* dc, D2D1_SIZE_F s, Layer l) {
         const bool enabled = m_historyPos + 1 < m_history.size();
-        if (m_win7Art) wt::NavOrb(dc, l, false, enabled);
+        if (m_win7Art) wt::NavOrb(dc, s, l, false, enabled);
         else wp::NavArrow(dc, s, l, false, enabled);
     }, round);
     forward->onClick = [this] { GoForward(); };
@@ -577,11 +602,16 @@ void MainWindow::UpdateLayout() {
     // Navigation bar: back / forward orbs and the breadcrumb
     const int nbcy = (L.navBar.top + L.navBar.bottom) / 2;
     if (m_win7Art) {
-        // WMP 12 orbs (27x27 bitmaps), 8 DIP from the client edge, touching each other.
-        const int orb = PxI(wt::kNavOrb), top = L.navBar.top + PxI(3);
-        L.back = {L.client.left + PxI(8), top, L.client.left + PxI(8) + orb, top + orb};
-        L.forward = {L.back.right, top, L.back.right + orb, top + orb};
-        L.breadcrumb = {L.forward.right + PxI(8), L.navBar.top + PxI(3), L.client.right - PxI(8), L.navBar.bottom - line};
+        // WMP 12 orbs in their recess, 8 DIP from the client edge, scaled to the command bar's
+        // button height; the orbs sit one bitmap pixel inside the recess.
+        const float k = wt::kNavOrbShown / wt::kNavOrb;
+        const int gw = PxI(wt::kNavGrooveSize.width * k), gh = PxI(wt::kNavGrooveSize.height * k);
+        const int gx = L.client.left + PxI(8), gy = nbcy - gh / 2;
+        L.navGroove = {gx, gy, gx + gw, gy + gh};
+        const int orb = PxI(wt::kNavOrbShown), inset = PxI(k);
+        L.back = {gx + inset, gy + inset, gx + inset + orb, gy + inset + orb};
+        L.forward = {L.back.right, L.back.top, L.back.right + orb, L.back.bottom};
+        L.breadcrumb = {L.navGroove.right + PxI(8), L.navBar.top + PxI(3), L.client.right - PxI(8), L.navBar.bottom - line};
     } else {
         const int orb = PxI(24);
         L.back = CenteredRect(L.client.left + PxI(18), nbcy, orb, orb);
@@ -602,7 +632,7 @@ void MainWindow::UpdateLayout() {
     L.addFiles = button(70);
     L.addFolder = button(76);
     // Split buttons (WMP 12): the main part acts at once, the arrow part opens a menu.
-    L.newPlaylist = button(96);
+    L.newPlaylist = button(86);
     x -= PxI(2);
     L.newPlaylistArrow = button(16);
     L.search = {L.client.right - PxI(8) - PxI(230), cbcy - PxI(11), L.client.right - PxI(8), cbcy + PxI(11)};
@@ -681,11 +711,20 @@ void MainWindow::UpdateLayout() {
         }
     }
 
+    Place(m_navGroove, L.navGroove);
+    if (const SIZE gs{L.navGroove.right - L.navGroove.left, L.navGroove.bottom - L.navGroove.top};
+        m_win7Art && gs.cx > 0 && (gs.cx != m_navGrooveSize.cx || gs.cy != m_navGrooveSize.cy)) {
+        m_navGrooveSize = gs;
+        gfx::CompositionHost::Get().Repaint(m_navGroove, gs.cx, gs.cy, m_scale, [&](ID2D1DeviceContext* dc) {
+            wt::NavGroove(dc, D2D1::SizeF(gs.cx / m_scale, gs.cy / m_scale));
+        });
+    }
     Place(m_clientEdge, L.clientEdge);
     Place(m_clientGlow, L.client);
     Place(m_navBar, L.navBar);
     Place(m_cmdBar, L.cmdBar);
     Place(m_contentTop, {L.content.left, L.content.top, L.content.right, L.content.top + PxI(14)});
+    Place(m_libraryBg, L.list);
     Place(m_transportBand, L.transport);
     Place(m_capsule, L.capsule);
     Place(m_cluster, ClusterRect(wt::kClusterRect));
@@ -743,6 +782,7 @@ void MainWindow::RepaintScaleDependent() {
     const float s = m_scale;
     m_glass->SetScale(s);
     PaintSideHighlights();
+    m_navGrooveSize = {};  // repainted at the new scale by the next layout
     const int line = LinePx();
 
     // Frame lines are one device pixel at any DPI (as DWM draws them); the corner scales with DPI.
@@ -807,6 +847,13 @@ void MainWindow::RepaintScaleDependent() {
                      [&](ID2D1DeviceContext* dc) { paint::CapsuleDivider(dc, D2D1::SizeF(w / s, h / s)); });
     }
     m_icon = LoadAppIcon(PxI(m::kIconSize));
+    // Window icons for the taskbar, Alt+Tab and the system menu, at this monitor's sizes.
+    const UINT dpi = static_cast<UINT>(std::lround(m_scale * 96));
+    for (auto [which, metric] : {std::pair{ICON_SMALL, SM_CXSMICON}, std::pair{ICON_BIG, SM_CXICON}}) {
+        HICON icon = CreateAppIcon(GetSystemMetricsForDpi(metric, dpi));
+        if (HICON old = reinterpret_cast<HICON>(SendMessageW(m_hwnd, WM_SETICON, which, reinterpret_cast<LPARAM>(icon))))
+            if (old != icon) DestroyIcon(old);
+    }
     RepaintTitle();
     RepaintNowPlaying();
     RepaintBreadcrumb();
@@ -974,9 +1021,22 @@ void MainWindow::PaintBreadcrumb() {
         for (int i = 0; i < static_cast<int>(m_crumbs.size()); ++i) {
             const Crumb& c = m_crumbs[i];
             const bool hot = i == m_crumbHot, open = i == m_crumbOpen;
-            // Hover lights the whole crumb (name and arrow, split by a line); the part
-            // under the mouse or with its menu open looks pressed.
-            if (hot || open) {
+            // Hover lights the whole crumb. WMP 12 art (WMP_BREADCRUMB_MAINBUTTON / _SPLITBUTTON,
+            // states empty / hot / pressed / grey): the part under the mouse is hot, the
+            // other half grey, the arrow pressed while its menu is open.
+            const bool crumbArt = win7::Resources::Get().Has(win7::Module::Wmploc, L"WMP_BREADCRUMB_MAINBUTTON.PNG");
+            if ((hot || open) && crumbArt) {
+                const int nameState = open || m_crumbHotPart == 1 ? 3 : 1;
+                const int arrowState = open ? 2 : m_crumbHotPart == 1 ? 1 : 3;
+                if (!c.text.empty())
+                    win7::DrawNineGrid(dc, win7::Module::Wmploc, L"WMP_BREADCRUMB_MAINBUTTON.PNG",
+                                       {16.0f * nameState, 0, 16.0f * nameState + 16, 22}, {3, 3, 3, 3},
+                                       {c.x0, top, c.split, bottom});
+                if (c.children)
+                    win7::DrawNineGrid(dc, win7::Module::Wmploc, L"WMP_BREADCRUMB_SPLITBUTTON.PNG",
+                                       {10.0f * arrowState, 0, 10.0f * arrowState + 10, 22}, {3, 3, 3, 3},
+                                       {c.split, top, c.x1, bottom});
+            } else if (hot || open) {
                 wp::RowPlate(dc, {c.x0, top, c.x1, bottom}, wp::RowState::Hot, true);
                 if (open || m_crumbHotPart == 1) {
                     if (c.children && (open || hot))
@@ -996,6 +1056,10 @@ void MainWindow::PaintBreadcrumb() {
             if (c.children) {  // small black triangle: right, or down while the menu is open
                 const float cx = std::round(((c.split + c.x1) / 2) * m_scale) / m_scale;
                 const float cy = std::round((H / 2) * m_scale) / m_scale;
+                // WMP 12's 9x9 arrows: 5235 right, 5237 down.
+                if (win7::Draw(dc, win7::Module::Wmploc, open ? 5237 : 5235,
+                               {std::round(cx - 4.5f), std::round(cy - 4.5f)}))
+                    continue;
                 com_ptr<ID2D1Factory> f;
                 dc->GetFactory(f.put());
                 com_ptr<ID2D1PathGeometry> tri;
@@ -1566,17 +1630,20 @@ void MainWindow::ShowVolumeTip(float thumbX) {
             dc->CreateSolidColorBrush(D2D1::ColorF(0, 0.06f), s.put());
             dc->FillRoundedRectangle({{static_cast<float>(i), static_cast<float>(i), w - 1 + i, h - 1 + i}, 3, 3}, s.get());
         }
-        com_ptr<ID2D1GradientStopCollection> stops;
-        const D2D1_GRADIENT_STOP gs[] = {{0.0f, Hex(0xFFFFFF)}, {1.0f, Hex(0xE4E5F0)}};
-        dc->CreateGradientStopCollection(gs, 2, stops.put());
-        com_ptr<ID2D1LinearGradientBrush> fill;
-        dc->CreateLinearGradientBrush({{0, 0}, {0, h}}, stops.get(), fill.put());
-        const D2D1_ROUNDED_RECT box{{px / 2, px / 2, w - px / 2, h - px / 2}, 2.5f, 2.5f};
-        dc->FillRoundedRectangle(box, fill.get());
         com_ptr<ID2D1SolidColorBrush> border, ink;
         dc->CreateSolidColorBrush(Hex(0x767676), border.put());
         dc->CreateSolidColorBrush(Hex(0x575757), ink.put());
-        dc->DrawRoundedRectangle(box, border.get(), px);
+        // Win7's own tooltip (aero.msstyles Tooltip part 1, image 881, sizing margins 4).
+        if (!win7::DrawNineGrid(dc, win7::Module::Aero, 881, {0, 0, 9, 22}, {4, 4, 4, 4}, {0, 0, w, h})) {
+            com_ptr<ID2D1GradientStopCollection> stops;
+            const D2D1_GRADIENT_STOP gs[] = {{0.0f, Hex(0xFFFFFF)}, {1.0f, Hex(0xE4E5F0)}};
+            dc->CreateGradientStopCollection(gs, 2, stops.put());
+            com_ptr<ID2D1LinearGradientBrush> fill;
+            dc->CreateLinearGradientBrush({{0, 0}, {0, h}}, stops.get(), fill.put());
+            const D2D1_ROUNDED_RECT box{{px / 2, px / 2, w - px / 2, h - px / 2}, 2.5f, 2.5f};
+            dc->FillRoundedRectangle(box, fill.get());
+            dc->DrawRoundedRectangle(box, border.get(), px);
+        }
         dc->DrawTextLayout({7, (h - tm.height) / 2}, layout.get(), ink.get());
     });
     RECT client{};

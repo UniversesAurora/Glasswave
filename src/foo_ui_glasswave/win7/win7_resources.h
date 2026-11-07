@@ -39,6 +39,8 @@ public:
     ID2D1Bitmap* Piece(ID2D1DeviceContext* dc, Module module, const std::wstring& name, const D2D1_RECT_U& src);
 
     const std::wstring& Folder() const { return m_folder; }
+    // An icon group resource at `size` pixels (caller destroys it); nullptr when missing.
+    HICON Icon(Module module, int id, int size) const;
 
     ~Resources();
     Resources(const Resources&) = delete;
@@ -72,6 +74,14 @@ bool DrawNineGrid(ID2D1DeviceContext* dc, Module module, const std::wstring& nam
 inline bool DrawNineGrid(ID2D1DeviceContext* dc, Module module, int id, D2D1_RECT_F src, D2D1_RECT_F margins,
                          D2D1_RECT_F dst, float opacity = 1.0f) {
     return DrawNineGrid(dc, module, L"#" + std::to_wstring(id), src, margins, dst, opacity);
+}
+// Draw the `src` part (bitmap pixels) of a resource scaled into `dst` (DIP), high-quality
+// cubic, from an isolated copy so neighbouring pixels never bleed in.
+bool DrawPartTo(ID2D1DeviceContext* dc, Module module, const std::wstring& name, D2D1_RECT_U src, D2D1_RECT_F dst,
+                float opacity = 1.0f);
+inline bool DrawPartTo(ID2D1DeviceContext* dc, Module module, int id, D2D1_RECT_U src, D2D1_RECT_F dst,
+                       float opacity = 1.0f) {
+    return DrawPartTo(dc, module, L"#" + std::to_wstring(id), src, dst, opacity);
 }
 // Draw a whole resource scaled into `dst` (DIP).
 bool DrawStretched(ID2D1DeviceContext* dc, Module module, const std::wstring& name, D2D1_RECT_F dst,

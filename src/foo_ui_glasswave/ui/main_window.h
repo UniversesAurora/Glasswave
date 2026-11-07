@@ -41,7 +41,7 @@ private:
         int border = 0;
         RECT caption{}, client{}, clientEdge{}, navBar{}, cmdBar{}, content{}, transport{};
         RECT capMin{}, capMax{}, capClose{}, icon{}, title{};
-        RECT back{}, forward{}, breadcrumb{};
+        RECT back{}, forward{}, breadcrumb{}, navGroove{};
         RECT organize{}, addFiles{}, addFolder{}, newPlaylist{}, newPlaylistArrow{}, search{}, viewOptions{},
             viewOptionsArrow{};
         RECT navPane{}, list{};
@@ -148,6 +148,9 @@ private:
     SIZE m_sideHighlightSize{};
     winrt::Windows::UI::Composition::SpriteVisual m_clientEdge{nullptr};
     winrt::Windows::UI::Composition::SpriteVisual m_navBar{nullptr};
+    winrt::Windows::UI::Composition::SpriteVisual m_navGroove{nullptr};  // recess behind back / forward
+    winrt::Windows::UI::Composition::SpriteVisual m_libraryBg{nullptr};  // WMP library background image
+    SIZE m_navGrooveSize{};
     winrt::Windows::UI::Composition::SpriteVisual m_cmdBar{nullptr};
     winrt::Windows::UI::Composition::SpriteVisual m_contentTop{nullptr};
     winrt::Windows::UI::Composition::SpriteVisual m_transportBand{nullptr};

@@ -1,6 +1,7 @@
 #include "pch.h"
 #include "wmp/wmp_painter.h"
 #include "ui/text.h"
+#include "win7/win7_resources.h"
 
 namespace glasswave::wmp::paint {
 
@@ -135,7 +136,25 @@ void ScrollBar(ID2D1DeviceContext* dc, D2D1_SIZE_F size, float thumbTop, float t
 void CommandButton(ID2D1DeviceContext* dc, D2D1_SIZE_F size, Layer layer, std::wstring_view text, bool dropDown) {
     const float L = Hairline(dc);
     const D2D1_RECT_F rc{0, 0, Snap(dc, size.width), Snap(dc, size.height)};
-    if (layer == Layer::Hover || layer == Layer::Pressed) {
+    using win7::Module;
+    const int state = layer == Layer::Pressed ? 2 : layer == Layer::Hover ? 1 : 0;
+    // Original WMP 12 art: WW_SPLIT (arrow part of a split button: arrow / hot / pressed,
+    // 14x20 each) and WMP_TOOLBARBUTTON (empty / hot / pressed, 17x22 each), nine-grids.
+    if (text.empty() && dropDown && win7::Resources::Get().Has(Module::Wmploc, L"WW_SPLIT.PNG")) {
+        if (state == 0)
+            win7::DrawPartTo(dc, Module::Wmploc, L"WW_SPLIT.PNG", D2D1::RectU(0, 0, 14, 20),
+                             {std::round(size.width / 2 - 7), std::round(size.height / 2 - 10),
+                              std::round(size.width / 2 - 7) + 14, std::round(size.height / 2 - 10) + 20});
+        else
+            win7::DrawNineGrid(dc, Module::Wmploc, L"WW_SPLIT.PNG", {14.0f * state, 0, 14.0f * state + 14, 20},
+                               {3, 3, 3, 3}, rc);
+        return;
+    }
+    const bool art = win7::Resources::Get().Has(Module::Wmploc, L"WMP_TOOLBARBUTTON.PNG");
+    if (art && state > 0) {
+        win7::DrawNineGrid(dc, Module::Wmploc, L"WMP_TOOLBARBUTTON.PNG", {17.0f * state, 0, 17.0f * state + 17, 22},
+                           {3, 3, 3, 3}, rc);
+    } else if (layer == Layer::Hover || layer == Layer::Pressed) {
         const bool pressed = layer == Layer::Pressed;
         const D2D1_ROUNDED_RECT rr{Inset(rc, L / 2), 2.5f, 2.5f};
         dc->FillRoundedRectangle(rr, Vertical(dc, rc.top, rc.bottom,
@@ -298,6 +317,14 @@ void PlayingMarker(ID2D1DeviceContext* dc, D2D1_POINT_2F c, bool paused) {
 }
 
 void ViewOptionsGlyph(ID2D1DeviceContext* dc, D2D1_SIZE_F size, media::ViewStyle style) {
+    // Original icons: wmploc strip 331, 16x16 slots 55 details / 56 expanded tile / 57 icon.
+    {
+        const UINT32 slot = style == media::ViewStyle::Icons ? 57 : style == media::ViewStyle::Tiles ? 56 : 55;
+        const float x = std::round((size.width - 16) / 2), y = std::round((size.height - 16) / 2);
+        if (win7::DrawPartTo(dc, win7::Module::Wmploc, 331, D2D1::RectU(slot * 16, 0, slot * 16 + 16, 16),
+                             {x, y, x + 16, y + 16}))
+            return;
+    }
     winrt::com_ptr<ID2D1SolidColorBrush> ink, light;
     dc->CreateSolidColorBrush(D2D1::ColorF(0x4D6185), ink.put());
     dc->CreateSolidColorBrush(D2D1::ColorF(0x8FA3C0), light.put());

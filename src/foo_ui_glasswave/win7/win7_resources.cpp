@@ -231,6 +231,20 @@ bool DrawStretched(ID2D1DeviceContext* dc, Module module, const std::wstring& na
     return true;
 }
 
+HICON Resources::Icon(Module module, int id, int size) const {
+    HMODULE mod = Handle(module);
+    if (!mod) return nullptr;
+    return static_cast<HICON>(LoadImageW(mod, MAKEINTRESOURCEW(id), IMAGE_ICON, size, size, LR_DEFAULTCOLOR));
+}
+
+bool DrawPartTo(ID2D1DeviceContext* dc, Module module, const std::wstring& name, D2D1_RECT_U src, D2D1_RECT_F dst,
+                float opacity) {
+    ID2D1Bitmap* piece = Resources::Get().Piece(dc, module, name, src);
+    if (!piece) return false;
+    dc->DrawBitmap(piece, &dst, opacity, D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC, nullptr, nullptr);
+    return true;
+}
+
 bool Draw(ID2D1DeviceContext* dc, Module module, int id, D2D1_POINT_2F at, float opacity) {
     const D2D1_SIZE_U s = Resources::Get().Size(module, id);
     if (s.width == 0) return false;

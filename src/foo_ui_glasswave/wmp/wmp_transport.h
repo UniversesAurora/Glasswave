@@ -43,8 +43,13 @@ inline constexpr float kGlowFactor = 52.0f / 44.0f;          // glow ring size /
 inline constexpr float kBandHeight = 56;                      // transport band, top rule included
 inline constexpr float kClusterTop = 5;                       // band top to cluster origin
 
-// Navigation bar back / forward orbs (5350..5353 hold both, 27x27 each).
+// Navigation bar back / forward orbs (5350..5353 hold both, 27x27 each) and the recess they sit in
+// (5360, 56x29, orbs at (1, 1)). Drawn at the command bar's button height (owner: the 27 px
+// bitmaps at one per DIP looked too big next to the text).
 inline constexpr float kNavOrb = 27;
+inline constexpr int kNavGroove = 5360;
+inline constexpr D2D1_SIZE_F kNavGrooveSize{56, 29};
+inline constexpr float kNavOrbShown = 22;  // DIP
 
 bool Available();  // wmploc.dll artwork present
 
@@ -58,6 +63,7 @@ void Mute(ID2D1DeviceContext* dc, Layer layer, bool muted, float volume);
 void Volume(ID2D1DeviceContext* dc, Layer layer, float value);
 void ClusterBackground(ID2D1DeviceContext* dc);
 void Capsule(ID2D1DeviceContext* dc);
-void NavOrb(ID2D1DeviceContext* dc, Layer layer, bool back, bool enabled);
+void NavOrb(ID2D1DeviceContext* dc, D2D1_SIZE_F size, Layer layer, bool back, bool enabled);
+void NavGroove(ID2D1DeviceContext* dc, D2D1_SIZE_F size);
 
 }  // namespace glasswave::wmp::transport

@@ -88,8 +88,10 @@ void Toggle(ID2D1DeviceContext* dc, Layer layer, bool shuffle, bool on) {
 }
 
 void Mute(ID2D1DeviceContext* dc, Layer layer, bool muted, float volume) {
+    // WMP 12 square button plate under the speaker: 4725 hot, 4724 pressed (25x25).
+    if (layer == Layer::Hover || layer == Layer::Pressed) Bitmap(dc, layer == Layer::Hover ? 4725 : 4724, 0, 0);
     const int id = muted ? kMuted : volume <= 0.0f ? kVolume0 : volume < 0.67f ? kVolume1 : kVolume2;
-    Bitmap(dc, id, 0, 0, layer == Layer::Pressed ? 0.8f : 1.0f);
+    Bitmap(dc, id, 0, 0);
 }
 
 void Volume(ID2D1DeviceContext* dc, Layer layer, float value) {
@@ -102,13 +104,18 @@ void Volume(ID2D1DeviceContext* dc, Layer layer, float value) {
     Bitmap(dc, thumb, std::round(cx - 7), 0);
 }
 
-void NavOrb(ID2D1DeviceContext* dc, Layer layer, bool back, bool enabled) {
+void NavOrb(ID2D1DeviceContext* dc, D2D1_SIZE_F size, Layer layer, bool back, bool enabled) {
     const int id = !enabled                 ? kNavArrowsDisabled
                    : layer == Layer::Hover   ? kNavArrowsHover
                    : layer == Layer::Pressed ? kNavArrowsPressed
                                              : kNavArrows;
-    win7::DrawPart(dc, Module::Wmploc, id, D2D1::RectF(back ? 0.0f : kNavOrb, 0, back ? kNavOrb : 2 * kNavOrb, kNavOrb),
-                   D2D1::Point2F(0, 0));
+    const UINT32 n = static_cast<UINT32>(kNavOrb);
+    win7::DrawPartTo(dc, Module::Wmploc, id, D2D1::RectU(back ? 0 : n, 0, back ? n : 2 * n, n),
+                     D2D1::RectF(0, 0, size.width, size.height));
+}
+
+void NavGroove(ID2D1DeviceContext* dc, D2D1_SIZE_F size) {
+    win7::DrawStretched(dc, Module::Wmploc, L"#" + std::to_wstring(kNavGroove), D2D1::RectF(0, 0, size.width, size.height));
 }
 
 }  // namespace glasswave::wmp::transport
