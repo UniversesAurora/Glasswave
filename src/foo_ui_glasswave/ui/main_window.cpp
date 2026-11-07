@@ -53,10 +53,6 @@ cfg_var_modern::cfg_int cfg_viewAlbums({0x6a1f3c59, 0x2b7e, 0x4d90, {0x8c, 0x15,
                                        static_cast<int>(media::ViewStyle::Icons));
 cfg_var_modern::cfg_int cfg_viewArtists({0x6a1f3c5a, 0x2b7e, 0x4d90, {0x8c, 0x15, 0x3e, 0x9a, 0x7b, 0x2d, 0x4f, 0x61}},
                                         static_cast<int>(media::ViewStyle::Tiles));
-// Glass blur: 0 = host backdrop + Win7 color matrix, 1 = lighter legacy blur-behind (experimental).
-// {3B7D9E21-5C4A-4F86-9A12-7E5C3D8B1F04}
-cfg_var_modern::cfg_int cfg_lightBlur({0x3b7d9e21, 0x5c4a, 0x4f86, {0x9a, 0x12, 0x7e, 0x5c, 0x3d, 0x8b, 0x1f, 0x04}}, 0);
-
 cfg_var_modern::cfg_int cfg_viewGenres({0x6a1f3c5b, 0x2b7e, 0x4d90, {0x8c, 0x15, 0x3e, 0x9a, 0x7b, 0x2d, 0x4f, 0x61}},
                                        static_cast<int>(media::ViewStyle::Tiles));
 
@@ -320,7 +316,6 @@ void MainWindow::InitComposition() {
     m_root.Clip(comp.CreateGeometricClip(m_clipGeometry));
 
     m_glass = std::make_unique<aero::GlassMaterial>(aero::kWin7Sky, aero::atlas::Available());
-    if (cfg_lightBlur.get()) m_glass->SetLegacyBlur(m_hwnd, true);
     auto children = m_root.Children();
     children.InsertAtTop(m_glass->Root());
 
@@ -620,18 +615,6 @@ void MainWindow::UpdateLayout() {
     m_clipGeometry.Size(float2{static_cast<float>(W), static_cast<float>(H)});
     m_clipGeometry.CornerRadius(float2{radius, radius});
     m_frameOutline.IsVisible(!max);
-
-    // The legacy blur covers the whole window rectangle: round it off with a window region,
-    // one pixel wider than the frame's corner so its anti-aliased pixels stay.
-    {
-        const bool round = m_glass->LegacyBlur() && !max;
-        const SIZE want = round ? SIZE{W, H} : SIZE{-1, -1};
-        if (want.cx != m_windowRegionSize.cx || want.cy != m_windowRegionSize.cy) {
-            m_windowRegionSize = want;
-            const int d = 2 * (static_cast<int>(kCornerRadiusPx) + 1);
-            SetWindowRgn(m_hwnd, round ? CreateRoundRectRgn(0, 0, W + 1, H + 1, d, d) : nullptr, TRUE);
-        }
-    }
 
     // DWM's side highlights run down the left / right frame from the top and end sharply at
     // H / 4 + 20 DIP (fitted to Win7 captures: 110 px on a 360 px window at 96 DPI, 290 px on
@@ -1046,16 +1029,7 @@ void MainWindow::ShowOrganizeMenu() {
                   {L"Add folder...", [] { standard_commands::main_add_directory(); }},
                   {L"Add location...", [] { standard_commands::run_main(standard_commands::guid_main_add_location); }},
                   {L"", nullptr},
-                  {cfg_lightBlur.get() ? L"Use standard glass blur" : L"Use lighter glass blur (experimental)",
-                   [this] { SetLightBlur(!cfg_lightBlur.get()); }},
                   {L"Preferences...", [] { standard_commands::run_main(standard_commands::guid_main_preferences); }}});
-}
-
-void MainWindow::SetLightBlur(bool light) {
-    cfg_lightBlur = light ? 1 : 0;
-    m_glass->SetLegacyBlur(m_hwnd, light);
-    m_windowRegionSize = {};
-    UpdateLayout();
 }
 
 void MainWindow::ShowPlaylistMenu(size_t playlist, POINT screen) {

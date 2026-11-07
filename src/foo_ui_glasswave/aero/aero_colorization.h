@@ -81,47 +81,4 @@ inline std::array<float, 20> BuildGlassColorMatrix(const Colorization& c) {
     return m;
 }
 
-// The legacy "blur behind" accent lets DWM draw the blurred backdrop B itself (a lighter blur
-// than the host backdrop); all we can add is a flat translucent layer over it:
-//   out = overlay.rgb * alpha + B * (1 - alpha)
-// The recipe's slope differs per channel (afterglow tints the backdrop) while a blend has
-// one slope, so this is a least-squares fit for grey backdrops of luma 0.4..1 (glass is
-// mostly over bright windows and wallpaper), with a non-negative overlay.
-struct Overlay {
-    Rgb color;  // straight (not premultiplied)
-    float alpha = 0;
-};
-
-inline Overlay FitLegacyOverlay(const Colorization& c) {
-    const Rgb base = RgbFromArgb(c.color), glow = RgbFromArgb(c.afterglow);
-    const float a[3] = {base.r * c.colorBalance, base.g * c.colorBalance, base.b * c.colorBalance};
-    const float b[3] = {glow.r * c.afterglowBalance + c.blurBalance, glow.g * c.afterglowBalance + c.blurBalance,
-                        glow.b * c.afterglowBalance + c.blurBalance};
-    constexpr float t0 = 0.4f, t1 = 1.0f;
-    constexpr int kSamples = 13;
-    float best = 1e30f, bestS = 1.0f, bestK[3] = {};
-    for (int i = 0; i <= 1000; ++i) {
-        const float s = i / 1000.0f;  // backdrop weight, 1 - alpha
-        float k[3], err = 0;
-        for (int ch = 0; ch < 3; ++ch) {
-            const float v = a[ch] + (b[ch] - s) * (t0 + t1) / 2;
-            k[ch] = v < 0 ? 0 : (v > 1 - s ? 1 - s : v);
-            for (int n = 0; n < kSamples; ++n) {
-                const float t = t0 + (t1 - t0) * n / (kSamples - 1);
-                const float d = k[ch] + s * t - (a[ch] + b[ch] * t);
-                err += d * d;
-            }
-        }
-        if (err < best) {
-            best = err;
-            bestS = s;
-            for (int ch = 0; ch < 3; ++ch) bestK[ch] = k[ch];
-        }
-    }
-    Overlay o;
-    o.alpha = 1 - bestS;
-    if (o.alpha > 0) o.color = {bestK[0] / o.alpha, bestK[1] / o.alpha, bestK[2] / o.alpha};
-    return o;
-}
-
 }  // namespace glasswave::aero

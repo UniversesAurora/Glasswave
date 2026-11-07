@@ -64,15 +64,14 @@ Updated: 2026-11-08
   shows at the window origin on views without view styles.
 - Frame and client edge lines are one device pixel and the corner radius 6 device pixels at
   any DPI, as DWM draws them (they were floor(scale) px, i.e. 2 px thick at 200 %).
-- Experimental lighter glass (Organize > "Use lighter glass blur"): DWM legacy blur-behind
-  accent on our window plus a flat overlay fitted to the Win7 recipe (FitLegacyOverlay;
-  #BFD7F1 vs Win7 #B8DBFD on white, exact around mid grey); window region rounds the corners.
-  Default stays the host backdrop + color matrix. Owner to compare.
+- Tried and removed (2026-11-08): DWM legacy blur-behind accent with a fitted overlay as a
+  lighter glass. The owner saw no difference from the host backdrop, and the blur filled the
+  window corners square despite a window region.
 
 ## Next
 
 1. Owner tests: header hover / press / drag, sort cycle, side highlights, @2x WMP bitmaps.
-2. Glass blur: owner compares the lighter legacy blur with the host backdrop; keep one.
+2. Glass blur stays the host backdrop + color matrix (legacy accent tried, no gain).
 3. Remaining tuning from the Win7 captures.
 4. Rating column (STARS_PNG), stacked covers for artists, year view.
 5. Playlist editing: drag to reorder, drag from library to playlists, rename inline.

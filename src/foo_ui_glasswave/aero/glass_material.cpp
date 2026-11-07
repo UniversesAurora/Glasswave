@@ -33,35 +33,6 @@ bool SystemTransparencyEnabled() {
     }
 }
 
-// Undocumented but stable since Windows 10: SetWindowCompositionAttribute(WCA_ACCENT_POLICY)
-// asks DWM to blur behind this one window. No system state changes.
-struct AccentPolicy {
-    int state;  // 0 disabled, 3 ACCENT_ENABLE_BLURBEHIND
-    int flags;
-    uint32_t gradientColor;
-    int animationId;
-};
-struct WindowCompositionAttribData {
-    int attribute;  // 19 = WCA_ACCENT_POLICY
-    void* data;
-    SIZE_T size;
-};
-
-bool SetAccent(HWND hwnd, bool blur) {
-    using Fn = BOOL(WINAPI*)(HWND, WindowCompositionAttribData*);
-    static const auto fn =
-        reinterpret_cast<Fn>(GetProcAddress(GetModuleHandleW(L"user32.dll"), "SetWindowCompositionAttribute"));
-    if (!fn || !hwnd) return false;
-    AccentPolicy policy{blur ? 3 : 0, 0, 0, 0};
-    WindowCompositionAttribData data{19, &policy, sizeof(policy)};
-    return fn(hwnd, &data) != FALSE;
-}
-
-winrt::Windows::UI::Color OverlayColor(const Overlay& o) {
-    auto ch = [](float v) { return static_cast<uint8_t>(std::clamp(v, 0.0f, 1.0f) * 255.0f + 0.5f); };
-    return winrt::Windows::UI::Color{ch(o.alpha), ch(o.color.r), ch(o.color.g), ch(o.color.b)};
-}
-
 }  // namespace
 
 GlassMaterial::GlassMaterial(const Colorization& colorization, bool dwmArt)
@@ -107,28 +78,13 @@ void GlassMaterial::RebuildBrushes() {
     m_inactiveBrush = makeGlass(inactive);
     m_basicActive = comp.CreateColorBrush(SolidApproximation(m_colorization));
     m_basicInactive = comp.CreateColorBrush(SolidApproximation(inactive));
-    m_legacyActive = comp.CreateColorBrush(OverlayColor(FitLegacyOverlay(m_colorization)));
-    m_legacyInactive = comp.CreateColorBrush(OverlayColor(FitLegacyOverlay(inactive)));
-}
-
-void GlassMaterial::SetLegacyBlur(HWND hwnd, bool legacy) {
-    m_hwnd = hwnd;
-    m_legacy = legacy;
-    ApplyAccent();
-    ApplyBrush();
-}
-
-void GlassMaterial::ApplyAccent() {
-    if (m_hwnd) SetAccent(m_hwnd, m_legacy && m_transparency);
 }
 
 void GlassMaterial::ApplyBrush() {
-    if (!m_transparency)
-        m_glass.Brush(m_active ? m_basicActive : m_basicInactive);
-    else if (m_legacy)
-        m_glass.Brush(m_active ? m_legacyActive : m_legacyInactive);
-    else
+    if (m_transparency)
         m_glass.Brush(m_active ? m_activeBrush : m_inactiveBrush);
+    else
+        m_glass.Brush(m_active ? m_basicActive : m_basicInactive);
 
     const auto& c = m_active ? m_colorization : MakeInactive(m_colorization);
     if (m_dwmArt) {
@@ -168,7 +124,6 @@ void GlassMaterial::RefreshTransparencyPolicy() {
     const bool t = SystemTransparencyEnabled();
     if (t == m_transparency) return;
     m_transparency = t;
-    ApplyAccent();
     ApplyBrush();
 }
 
