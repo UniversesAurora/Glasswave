@@ -305,9 +305,15 @@ void MainWindow::InitComposition() {
         m_hwnd, FALSE,
         reinterpret_cast<ABI::Windows::UI::Composition::Desktop::IDesktopWindowTarget**>(winrt::put_abi(m_target))));
 
+    // The frame outline sits above the rounded clip, not inside it: clipping an anti-aliased
+    // one-pixel line along the same curve multiplies the two coverages and the dark line
+    // all but vanishes at the corners while the light line inside it stays.
+    m_windowRoot = comp.CreateContainerVisual();
+    m_windowRoot.RelativeSizeAdjustment(float2{1, 1});
+    m_target.Root(m_windowRoot);
     m_root = comp.CreateContainerVisual();
     m_root.RelativeSizeAdjustment(float2{1, 1});
-    m_target.Root(m_root);
+    m_windowRoot.Children().InsertAtTop(m_root);
 
     // Win7 windows have all four corners rounded (radius 6 at 96 DPI).
     m_clipGeometry = comp.CreateRoundedRectangleGeometry();
@@ -326,7 +332,8 @@ void MainWindow::InitComposition() {
         v = comp.CreateSpriteVisual();
         children.InsertAtTop(v);
     }
-    for (const auto& v : {m_frameOutline, m_clientEdge, m_navBar, m_cmdBar, m_contentTop, m_transportBand})
+    m_windowRoot.Children().InsertAtTop(m_frameOutline);
+    for (const auto& v : {m_clientEdge, m_navBar, m_cmdBar, m_contentTop, m_transportBand})
         children.InsertAtTop(v);
     // Navigation pane, list and search box live in their own layer above the bars.
     m_contentLayer = comp.CreateContainerVisual();
@@ -1732,6 +1739,7 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
         m_widgets.clear();
         m_glass.reset();
         m_root = nullptr;
+        m_windowRoot = nullptr;
         m_target = nullptr;
         return 0;
     }

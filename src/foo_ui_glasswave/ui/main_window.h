@@ -112,7 +112,8 @@ private:
 
     // Composition visual tree
     winrt::Windows::UI::Composition::Desktop::DesktopWindowTarget m_target{nullptr};
-    winrt::Windows::UI::Composition::ContainerVisual m_root{nullptr};
+    winrt::Windows::UI::Composition::ContainerVisual m_windowRoot{nullptr};  // unclipped: root + frame outline
+    winrt::Windows::UI::Composition::ContainerVisual m_root{nullptr};        // clipped to the rounded window
     winrt::Windows::UI::Composition::ContainerVisual m_contentLayer{nullptr};
     winrt::Windows::UI::Composition::CompositionRoundedRectangleGeometry m_clipGeometry{nullptr};
     std::unique_ptr<aero::GlassMaterial> m_glass;
