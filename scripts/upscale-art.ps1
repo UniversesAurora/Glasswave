@@ -31,6 +31,9 @@ param(
     [string]$Model = 'models-cunet',
     # TTA: average the 8 flips / rotations of every image (8x slower, slightly cleaner edges).
     [bool]$Tta = $true,
+    # waifu2x tile size; its automatic choice garbled the right part of wide bitmaps (the
+    # 558 px transport capsule) on the owner's RTX 5070 Ti.
+    [int]$TileSize = 128,
     # Where the @2x files go; default <profile>\glasswave\hd\wmploc (for trying settings).
     [string]$OutputDir
 )
@@ -176,7 +179,7 @@ try {
 
     $modelDir = Join-Path (Split-Path $Waifu2x) $Model
     Write-Host "Upscaling $($sizes.Count) bitmaps with $(Split-Path -Leaf $Waifu2x) ($Model, noise $Noise, TTA $Tta)"
-    [string[]]$cmd = @('-i', $inDir, '-o', $outDir, '-s', '2', '-n', "$Noise", '-m', $modelDir, '-f', 'png')
+    [string[]]$cmd = @('-i', $inDir, '-o', $outDir, '-s', '2', '-n', "$Noise", '-m', $modelDir, '-f', 'png', '-t', "$TileSize")
     if ($Tta) { $cmd = @('-x') + $cmd }
     & $Waifu2x $cmd
     if ($LASTEXITCODE -ne 0) { throw "waifu2x failed with exit code $LASTEXITCODE" }
