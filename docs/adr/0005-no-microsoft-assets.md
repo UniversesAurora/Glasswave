@@ -1,6 +1,6 @@
 # ADR 0005: Procedural rendering, no Microsoft bitmaps
 
-Status: accepted (2026-11-07)
+Status: amended by ADR 0007 (2026-11-07): original artwork may be loaded at runtime from user-provided Win7 files; nothing Microsoft-owned is committed. Procedural rendering below remains the fallback.
 
 ## Decision
 

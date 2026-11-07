@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "media/library_model.h"
+#include "media/source_identity.h"
 #include "ui/text.h"
 
 namespace glasswave::media {
@@ -72,16 +73,33 @@ void LibraryModel::Reload() {
     std::vector<Sortable> rows;
     rows.reserve(items.get_count());
     pfc::string8 buf;
-    // The same file can be registered twice under differently-cased paths when a folder
-    // was added twice; show it once.
-    std::set<std::wstring> seen;
-    // Image + cue rips often appear twice: the FLAC's embedded cue sheet and the external
-    // .cue both expose the same tracks. Keep one per folder/album/disc/track/title.
-    std::set<std::wstring> seenTracks;
+    // Hide entries that are the same audio source exposed more than once (embedded cue sheet
+    // plus external .cue files, duplicate folder registrations). Only identical sources are
+    // merged: an MP3 and a FLAC of the same song both stay.
+    std::vector<bool> keep(items.get_count(), true);
+    auto& cues = CueCatalog::Get();
+    cues.Clear();
+    {
+        std::map<std::wstring, std::pair<int, t_size>> best;  // key -> (preference, index)
+        for (t_size i = 0, n = items.get_count(); i < n; ++i) {
+            const SourceIdentity id = cues.Identify(items[i]);
+            auto [it, inserted] = best.try_emplace(id.key, id.preference, i);
+            if (inserted) continue;
+            if (id.preference < it->second.first) {
+                keep[it->second.second] = false;
+                it->second = {id.preference, i};
+            } else {
+                keep[i] = false;
+            }
+        }
+    }
+    // An image that a cue sheet splits into tracks is not shown as one long track as well.
+    for (t_size i = 0, n = items.get_count(); i < n; ++i)
+        if (keep[i] && cues.IsSplitImage(items[i])) keep[i] = false;
+
     for (t_size i = 0, n = items.get_count(); i < n; ++i) {
+        if (!keep[i]) continue;
         const auto& h = items[i];
-        const std::wstring id = Lower(ui::Wide(h->get_path())) + L'|' + std::to_wstring(h->get_subsong_index());
-        if (!seen.insert(id).second) continue;
         h->format_title(nullptr, buf, script, nullptr);
         auto f = Split(ui::Wide(buf), 10);
         Sortable s;
@@ -100,13 +118,20 @@ void LibraryModel::Reload() {
         s.track.number = f[5];
         s.track.length = f[6];
         s.track.year = (f[7].empty() || NumberOf(f[7]) <= 0) ? std::wstring() : f[7];
+        // Cue sheets foobar2000 decoded with the wrong code page: use the real text.
+        if (const RepairedText* r = cues.Repair(h)) {
+            if (!r->title.empty()) s.track.title = r->title;
+            if (!r->artist.empty()) s.track.artist = r->artist;
+            if (!r->album.empty()) s.track.album = r->album;
+            if (!r->albumArtist.empty()) {
+                s.track.albumArtist = r->albumArtist;
+                s.track.hasAlbumArtist = true;
+            }
+            if (!r->genre.empty()) s.track.genre = r->genre;
+            if (!r->year.empty()) s.track.year = r->year;
+        }
         s.disc = NumberOf(f[8]);
         s.number = NumberOf(f[5]);
-        if (s.number > 0) {
-            const std::wstring trackKey = s.track.folder + kSep + Lower(s.track.album) + kSep + std::to_wstring(s.disc) +
-                                          kSep + std::to_wstring(s.number) + kSep + Lower(s.track.title);
-            if (!seenTracks.insert(trackKey).second) continue;
-        }
         s.track.search = Lower(s.track.artist + L' ' + s.track.albumArtist + L' ' + s.track.album + L' ' +
                                s.track.title + L' ' + s.track.genre);
         rows.push_back(std::move(s));

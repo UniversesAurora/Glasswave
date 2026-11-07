@@ -25,6 +25,15 @@ Updated: 2026-11-07
 - Visual fine-tuning is **paused** until the owner provides Win7 reference captures.
 - 32-bit builds were dropped (owner decision).
 
+- Library de-duplication now works on the *audio source*: entries are merged only when they
+  play the same file and track (embedded cue sheet vs external .cue, duplicate registrations);
+  an image split by a cue is hidden as a whole-file entry; BOM-less cue sheets get their
+  encoding detected (ICU + per-line validity + script heuristics, see media/cue_encoding.h)
+  and mis-decoded text is repaired for display in library, playlist and now-playing views.
+  Checked offline against every cue in the owner's E:\music\CDs; UI test by the owner pending.
+- Owner supplied Win7 wmploc.dll / ehres.dll / aero.msstyles; ADR 0007 adopts original artwork
+  loaded at runtime. Inventory started in docs/design/win7-assets.md.
+
 ## Next
 
 1. Owner review of the functional pass; collect bugs.

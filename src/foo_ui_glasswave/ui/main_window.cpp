@@ -3,6 +3,7 @@
 #include "aero/aero_metrics.h"
 #include "aero/aero_painter.h"
 #include "gfx/composition_host.h"
+#include "media/source_identity.h"
 #include "ui/main_menu.h"
 #include "ui/shell_glue.h"
 #include "ui/text.h"
@@ -922,6 +923,12 @@ void MainWindow::OnTrackChanged() {
     }
     m_trackTitle = Wide(title);
     m_trackArtist = Wide(artist);
+    if (metadb_handle_ptr now; pc->get_now_playing(now)) {
+        if (const media::RepairedText* r = media::CueCatalog::Get().Repair(now)) {  // mis-decoded cue sheet
+            if (!r->title.empty()) m_trackTitle = r->title;
+            if (!r->artist.empty()) m_trackArtist = r->artist;
+        }
+    }
     m_length = pc->is_playing() ? pc->playback_get_length() : 0;
     m_position = pc->is_playing() ? pc->playback_get_position() : 0;
     RepaintNowPlaying();

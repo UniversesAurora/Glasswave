@@ -9,6 +9,7 @@
 #include <shellapi.h>
 #include <ole2.h>
 #include <imm.h>
+#include <icu.h>
 
 // DirectX ---------------------------------------------------------------------
 #include <d3d11_4.h>

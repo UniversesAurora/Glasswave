@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "media/list_sources.h"
+#include "media/source_identity.h"
 #include "ui/text.h"
 
 namespace glasswave::media {
@@ -58,8 +59,15 @@ void PlaylistSource::Rebuild() {
     auto script = Compile("[%artist% ][%album artist% ][%album% ][%title% ][%genre%]");
     pfc::string8 buf;
     for (size_t i = 0; i < n; ++i) {
-        pm->playlist_item_format_title(m_playlist, i, nullptr, buf, script, nullptr, playback_control::display_level_none);
-        if (MatchesFilter(Lower(ui::Wide(buf)), m_filter)) m_rows.push_back(i);
+        std::wstring text;
+        if (const RepairedText* r = CueCatalog::Get().Repair(pm->playlist_get_item_handle(m_playlist, i))) {
+            text = r->artist + L' ' + r->albumArtist + L' ' + r->album + L' ' + r->title + L' ' + r->genre;
+        } else {
+            pm->playlist_item_format_title(m_playlist, i, nullptr, buf, script, nullptr,
+                                           playback_control::display_level_none);
+            text = ui::Wide(buf);
+        }
+        if (MatchesFilter(Lower(text), m_filter)) m_rows.push_back(i);
     }
 }
 
@@ -71,6 +79,13 @@ void PlaylistSource::SetFilter(std::wstring_view filterLower) {
 std::wstring PlaylistSource::Cell(size_t row, size_t column) const {
     const size_t item = m_rows[row];
     if (column == 0) return std::to_wstring(item + 1);
+    if (column >= 1 && column <= 3) {  // title / artist / album from a mis-decoded cue sheet
+        auto pm = playlist_manager::get();
+        if (const RepairedText* r = CueCatalog::Get().Repair(pm->playlist_get_item_handle(m_playlist, item))) {
+            const std::wstring& v = column == 1 ? r->title : column == 2 ? r->artist : r->album;
+            if (!v.empty()) return v;
+        }
+    }
     pfc::string8 out;
     playlist_manager::get()->playlist_item_format_title(m_playlist, item, nullptr, out, m_scripts[column], nullptr,
                                                         playback_control::display_level_all);
