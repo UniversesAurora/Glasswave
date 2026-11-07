@@ -35,7 +35,7 @@ foobar2000's; we only build the UI. Read before changing anything substantial:
 
 ```bash
 pwsh -File scripts/bootstrap.ps1    # once, or after deps.lock.json changes
-pwsh -File scripts/build.ps1        # Release|x64 by default; -Configuration Debug, -Platform Win32
+pwsh -File scripts/build.ps1        # Release|x64 (x64 only); -Configuration Debug
 pwsh -File scripts/run-dev.ps1      # deploy to .local/fb2k-dev and start it
 ```
 

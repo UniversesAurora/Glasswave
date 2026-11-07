@@ -4,11 +4,15 @@
 #include "aero/aero_painter.h"
 #include "gfx/composition_host.h"
 #include "ui/main_menu.h"
+#include "ui/shell_glue.h"
+#include "ui/text.h"
+#include "wmp/wmp_painter.h"
 
 namespace glasswave::ui {
 
 namespace m = aero::metrics;
 namespace paint = aero::paint;
+namespace wp = wmp::paint;
 namespace wuc = winrt::Windows::UI::Composition;
 using paint::Layer;
 using paint::TransportGlyph;
@@ -20,10 +24,13 @@ namespace {
 
 constexpr wchar_t kClassName[] = L"Glasswave.MainWindow";
 constexpr wchar_t kAppName[] = L"Glasswave";
+constexpr UINT_PTR kLibraryTimer = 1;
+constexpr float kNavPaneWidth = 190.0f;
 
 enum WidgetId {
     kCapMin = 1, kCapMax, kCapClose,
-    kShuffle, kRepeat, kStop, kPrev, kNext, kPlay, kMute, kVolume,
+    kBack, kForward, kOrganize, kAddFiles, kAddFolder, kNewPlaylist,
+    kSeek, kShuffle, kRepeat, kStop, kPrev, kNext, kPlay, kMute, kVolume,
 };
 bool IsCaptionWidget(int id) { return id >= kCapMin && id <= kCapClose; }
 
@@ -31,27 +38,8 @@ bool IsCaptionWidget(int id) { return id >= kCapMin && id <= kCapClose; }
 cfg_var_modern::cfg_struct_t<WINDOWPLACEMENT> cfg_placement(
     {0x0c9e7b42, 0x1f3a, 0x4d5e, {0x8b, 0x6c, 0x7a, 0x2f, 0x9e, 0x1d, 0x4c, 0x83}});
 
-std::wstring Wide(const char* utf8) { return std::wstring(pfc::stringcvt::string_wide_from_utf8(utf8)); }
-
 D2D1_COLOR_F Hex(uint32_t rgb, float a = 1.0f) {
     return D2D1::ColorF(((rgb >> 16) & 0xFF) / 255.0f, ((rgb >> 8) & 0xFF) / 255.0f, (rgb & 0xFF) / 255.0f, a);
-}
-
-com_ptr<IDWriteTextLayout> MakeText(const std::wstring& text, const wchar_t* family, float size,
-                                    DWRITE_FONT_WEIGHT weight, float maxW, float maxH) {
-    auto* dw = gfx::CompositionHost::Get().DWrite();
-    com_ptr<IDWriteTextFormat> fmt;
-    winrt::check_hresult(dw->CreateTextFormat(family, nullptr, weight, DWRITE_FONT_STYLE_NORMAL,
-                                              DWRITE_FONT_STRETCH_NORMAL, size, L"en-us", fmt.put()));
-    fmt->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
-    DWRITE_TRIMMING trimming{DWRITE_TRIMMING_GRANULARITY_CHARACTER, 0, 0};
-    com_ptr<IDWriteInlineObject> ellipsis;
-    if (SUCCEEDED(dw->CreateEllipsisTrimmingSign(fmt.get(), ellipsis.put())))
-        fmt->SetTrimming(&trimming, ellipsis.get());
-    com_ptr<IDWriteTextLayout> layout;
-    winrt::check_hresult(
-        dw->CreateTextLayout(text.c_str(), static_cast<UINT32>(text.size()), fmt.get(), maxW, maxH, layout.put()));
-    return layout;
 }
 
 wuc::CompositionNineGridBrush NineGrid(int wPx, int hPx, float scale, float insetPx, bool hollow,
@@ -68,11 +56,10 @@ wuc::CompositionNineGridBrush NineGrid(int wPx, int hPx, float scale, float inse
     return brush;
 }
 
-// A horizontally stretchable strip: painted once at a few pixels wide, stretched to any width.
+// A horizontally stretchable strip: painted once a few pixels wide, stretched to any width.
 wuc::CompositionSurfaceBrush Strip(int hPx, float scale, const std::function<void(ID2D1DeviceContext*, float)>& painter) {
     auto& host = gfx::CompositionHost::Get();
-    const int wPx = 4;
-    auto surface = host.CreateSurface(wPx, hPx);
+    auto surface = host.CreateSurface(4, hPx);
     host.Draw(surface, scale, [&](ID2D1DeviceContext* dc) { painter(dc, hPx / scale); });
     auto brush = host.Compositor().CreateSurfaceBrush(surface);
     brush.Stretch(wuc::CompositionStretch::Fill);
@@ -119,12 +106,10 @@ com_ptr<IWICBitmapSource> LoadAppIcon(int sizePx) {
     return result;
 }
 
-// Volume slider position <-> foobar2000 volume in dB (-100..0). A 40*log10 curve gives
-// a perceptually even slider, like WMP's.
+// Volume slider position <-> foobar2000 volume in dB (-100..0); 40*log10 feels even.
 float SliderFromDb(float db) { return db <= -99.0f ? 0.0f : std::clamp(std::pow(10.0f, db / 40.0f), 0.0f, 1.0f); }
 float DbFromSlider(float v) { return v <= 0.01f ? -100.0f : std::max(-100.0f, 40.0f * std::log10(v)); }
 
-// Playback order helpers (shuffle / repeat buttons map onto foobar2000's playback orders).
 std::string ActiveOrderName() {
     auto pm = playlist_manager::get();
     return pm->playback_order_get_name(pm->playback_order_get_active());
@@ -138,6 +123,8 @@ void SetOrderByName(const char* name) {
         }
 }
 
+bool KeyDown(int vk) { return (GetKeyState(vk) & 0x8000) != 0; }
+
 }  // namespace
 
 // ---- Core callbacks ----------------------------------------------------------------------
@@ -145,8 +132,8 @@ void SetOrderByName(const char* name) {
 struct MainWindow::PlayCallback : play_callback_impl_base {
     explicit PlayCallback(MainWindow& w)
         : play_callback_impl_base(flag_on_playback_starting | flag_on_playback_new_track | flag_on_playback_stop |
-                                  flag_on_playback_pause | flag_on_playback_edited |
-                                  flag_on_playback_dynamic_info_track | flag_on_volume_change),
+                                  flag_on_playback_pause | flag_on_playback_edited | flag_on_playback_seek |
+                                  flag_on_playback_time | flag_on_playback_dynamic_info_track | flag_on_volume_change),
           window(w) {}
 
     void on_playback_starting(play_control::t_track_command, bool) override { window.OnPlaybackStateChanged(); }
@@ -160,6 +147,8 @@ struct MainWindow::PlayCallback : play_callback_impl_base {
         window.OnTrackChanged();
     }
     void on_playback_pause(bool) override { window.OnPlaybackStateChanged(); }
+    void on_playback_seek(double) override { window.OnPlaybackTime(); }
+    void on_playback_time(double) override { window.OnPlaybackTime(); }
     void on_playback_edited(metadb_handle_ptr) override { window.OnTrackChanged(); }
     void on_playback_dynamic_info_track(const file_info&) override { window.OnTrackChanged(); }
     void on_volume_change(float) override { window.OnVolumeChanged(); }
@@ -168,8 +157,38 @@ struct MainWindow::PlayCallback : play_callback_impl_base {
 };
 
 struct MainWindow::PlaylistCallback : playlist_callback_impl_base {
-    explicit PlaylistCallback(MainWindow& w) : playlist_callback_impl_base(flag_on_playback_order_changed), window(w) {}
+    explicit PlaylistCallback(MainWindow& w) : playlist_callback_impl_base(static_cast<t_uint32>(flag_all)), window(w) {}
+
+    void on_items_added(t_size p, t_size, metadb_handle_list_cref, const pfc::bit_array&) override {
+        window.OnPlaylistContentChanged(p);
+    }
+    void on_items_reordered(t_size p, const t_size*, t_size) override { window.OnPlaylistContentChanged(p); }
+    void on_items_removed(t_size p, const pfc::bit_array&, t_size, t_size) override { window.OnPlaylistContentChanged(p); }
+    void on_items_modified(t_size p, const pfc::bit_array&) override { window.OnPlaylistContentChanged(p); }
+    void on_items_replaced(t_size p, const pfc::bit_array&, const pfc::list_base_const_t<t_on_items_replaced_entry>&) override {
+        window.OnPlaylistContentChanged(p);
+    }
+    void on_items_selection_change(t_size p, const pfc::bit_array&, const pfc::bit_array&) override {
+        window.OnPlaylistSelectionChanged(p);
+    }
+    void on_item_focus_change(t_size p, t_size, t_size) override { window.OnPlaylistSelectionChanged(p); }
+    void on_playlist_created(t_size, const char*, t_size) override { window.OnPlaylistsChanged(); }
+    void on_playlists_reorder(const t_size*, t_size) override { window.OnPlaylistsChanged(); }
+    void on_playlists_removed(const pfc::bit_array&, t_size, t_size) override { window.OnPlaylistsChanged(); }
+    void on_playlist_renamed(t_size, const char*, t_size) override { window.OnPlaylistsChanged(); }
     void on_playback_order_changed(t_size) override { window.OnPlaybackOrderChanged(); }
+
+    MainWindow& window;
+};
+
+struct MainWindow::LibraryCallback : library_callback_v2_dynamic_impl_base {
+    explicit LibraryCallback(MainWindow& w) : window(w) {}
+    void on_items_added(metadb_handle_list_cref) override { window.ScheduleLibraryReload(); }
+    void on_items_removed(metadb_handle_list_cref) override { window.ScheduleLibraryReload(); }
+    void on_items_modified_v2(metadb_handle_list_cref, metadb_io_callback_v2_data&) override {
+        window.ScheduleLibraryReload();
+    }
+    void on_library_initialized() override { window.ScheduleLibraryReload(); }
     MainWindow& window;
 };
 
@@ -194,7 +213,6 @@ HWND MainWindow::Create(user_interface::HookProc_t hook) {
     wc.lpszClassName = kClassName;
     RegisterClassExW(&wc);  // failing because it already exists is fine
 
-    // Default: 1000x680 DIP centered on the primary work area.
     const float sys = GetDpiForSystem() / 96.0f;
     RECT work{};
     SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0);
@@ -206,12 +224,12 @@ HWND MainWindow::Create(user_interface::HookProc_t hook) {
     if (!m_hwnd) throw exception_win32(GetLastError());
 
     int show = SW_SHOWNORMAL;
-    WINDOWPLACEMENT wp = cfg_placement.get();
-    if (wp.length == sizeof(WINDOWPLACEMENT)) {
-        show = (wp.showCmd == SW_SHOWMAXIMIZED) ? SW_SHOWMAXIMIZED : SW_SHOWNORMAL;
-        wp.showCmd = SW_HIDE;
-        wp.flags = 0;
-        SetWindowPlacement(m_hwnd, &wp);
+    WINDOWPLACEMENT wpl = cfg_placement.get();
+    if (wpl.length == sizeof(WINDOWPLACEMENT)) {
+        show = (wpl.showCmd == SW_SHOWMAXIMIZED) ? SW_SHOWMAXIMIZED : SW_SHOWNORMAL;
+        wpl.showCmd = SW_HIDE;
+        wpl.flags = 0;
+        SetWindowPlacement(m_hwnd, &wpl);
     }
     ShowWindow(m_hwnd, show);
     m_shadow.Sync();
@@ -286,11 +304,26 @@ void MainWindow::InitComposition() {
     m_frameOutline = comp.CreateSpriteVisual();
     m_frameOutline.RelativeSizeAdjustment(float2{1, 1});
     for (auto* v : {&m_clientEdge, &m_navBar, &m_cmdBar, &m_contentTop, &m_transportBand, &m_capsule, &m_divider,
-                    &m_clientGlow, &m_contentText, &m_title, &m_nowPlaying})
+                    &m_clientGlow, &m_title, &m_nowPlaying, &m_breadcrumb})
         *v = comp.CreateSpriteVisual();
-    for (const auto& v : {m_frameOutline, m_clientEdge, m_navBar, m_cmdBar, m_contentTop, m_transportBand,
-                          m_capsule, m_divider, m_clientGlow, m_contentText, m_title, m_nowPlaying})
+    for (const auto& v : {m_frameOutline, m_clientEdge, m_navBar, m_cmdBar, m_contentTop, m_transportBand})
         children.InsertAtTop(v);
+    // Navigation pane, list and search box live in their own layer above the bars.
+    m_contentLayer = comp.CreateContainerVisual();
+    children.InsertAtTop(m_contentLayer);
+    for (const auto& v : {m_capsule, m_divider, m_clientGlow, m_title, m_nowPlaying, m_breadcrumb})
+        children.InsertAtTop(v);
+
+    m_nav = std::make_unique<NavPane>(m_contentLayer);
+    m_list = std::make_unique<ListView>(m_contentLayer);
+    m_search = std::make_unique<SearchBox>(m_contentLayer);
+    m_search->onChange = [this](const std::wstring& text) {
+        m_filter = media::Lower(text);
+        if (m_source) {
+            m_source->SetFilter(m_filter);
+            m_list->SetSource(m_source.get(), true);
+        }
+    };
 }
 
 void MainWindow::CreateWidgets() {
@@ -316,7 +349,44 @@ void MainWindow::CreateWidgets() {
         paint::CaptionButton(dc, s, paint::CaptionGlyph::Close, l, false, true);
     }, caption)->onClick = [this] { PostMessageW(m_hwnd, WM_SYSCOMMAND, SC_CLOSE, 0); };
 
-    // Transport controls (WMP 12 library mode)
+    // Navigation bar
+    Widget::Options round;
+    round.circular = true;
+    add(kBack, [this](auto* dc, D2D1_SIZE_F s, Layer l) {
+        wp::NavArrow(dc, s, l, true, m_historyPos > 0);
+    }, round)->onClick = [this] { GoBack(); };
+    add(kForward, [this](auto* dc, D2D1_SIZE_F s, Layer l) {
+        wp::NavArrow(dc, s, l, false, m_historyPos + 1 < m_history.size());
+    }, round)->onClick = [this] { GoForward(); };
+
+    // Command bar
+    add(kOrganize, [](auto* dc, D2D1_SIZE_F s, Layer l) { wp::CommandButton(dc, s, l, L"Organize", true); }, {})
+        ->onClick = [this] { ShowOrganizeMenu(); };
+    add(kAddFiles, [](auto* dc, D2D1_SIZE_F s, Layer l) { wp::CommandButton(dc, s, l, L"Add files", false); }, {})
+        ->onClick = [] { standard_commands::main_add_files(); };
+    add(kAddFolder, [](auto* dc, D2D1_SIZE_F s, Layer l) { wp::CommandButton(dc, s, l, L"Add folder", false); }, {})
+        ->onClick = [] { standard_commands::main_add_directory(); };
+    add(kNewPlaylist, [](auto* dc, D2D1_SIZE_F s, Layer l) { wp::CommandButton(dc, s, l, L"Create playlist", false); }, {})
+        ->onClick = [this] {
+              auto pm = playlist_manager::get();
+              const t_size p = pm->create_playlist("New Playlist", SIZE_MAX, SIZE_MAX);
+              if (p != SIZE_MAX) {
+                  pm->set_active_playlist(p);
+                  View v;
+                  v.kind = View::Kind::Playlist;
+                  v.playlist = p;
+                  Navigate(v, true);
+              }
+          };
+
+    // Seek bar (the band's top rule, as in WMP 12)
+    add(kSeek, [this](auto* dc, D2D1_SIZE_F s, Layer l) {
+        const float progress = m_seeking ? m_seekPreview
+                                         : (m_length > 0 ? static_cast<float>(m_position / m_length) : 0.0f);
+        wp::SeekBar(dc, s, progress, l == Layer::Hover || l == Layer::Pressed, m_length > 0);
+    }, {});
+
+    // Transport controls
     add(kShuffle, [this](auto* dc, D2D1_SIZE_F s, Layer l) {
         paint::IconButton(dc, s, l, TransportGlyph::Shuffle, true, m_shuffle);
     }, {})->onClick = [this] { SetOrderByName(m_shuffle ? "Default" : "Shuffle (tracks)"); };
@@ -340,14 +410,21 @@ void MainWindow::CreateWidgets() {
     add(kPlay, [this](auto* dc, D2D1_SIZE_F s, Layer l) {
         const bool showPause = m_playing && !m_paused;
         paint::PlayOrb(dc, s.width, l, showPause ? TransportGlyph::Pause : TransportGlyph::Play);
-    }, orb)->onClick = [] { playback_control::get()->play_or_pause(); };
+    }, orb)->onClick = [this] {
+        auto pc = playback_control::get();
+        if (pc->is_playing()) {
+            pc->play_or_pause();
+        } else if (m_list && m_source && m_source->Focus() != SIZE_MAX && m_source->Focus() < m_source->Count()) {
+            m_source->Activate(m_source->Focus());  // like WMP: play what is selected
+        } else {
+            pc->start();
+        }
+    };
 
     add(kMute, [this](auto* dc, D2D1_SIZE_F s, Layer l) {
         paint::IconButton(dc, s, l, m_muted ? TransportGlyph::Mute : TransportGlyph::Volume, true, false);
     }, {})->onClick = [] { playback_control::get()->volume_mute_toggle(); };
-    add(kVolume, [this](auto* dc, D2D1_SIZE_F s, Layer l) {
-        paint::VolumeSlider(dc, s, m_volume, l);
-    }, {});
+    add(kVolume, [this](auto* dc, D2D1_SIZE_F s, Layer l) { paint::VolumeSlider(dc, s, m_volume, l); }, {});
 }
 
 // ---- Layout and painting -------------------------------------------------------------
@@ -390,9 +467,36 @@ void MainWindow::UpdateLayout() {
     L.title = {iconLeft - pad, cy - PxI(12) - pad, std::max<int>(iconLeft, L.capMin.left - PxI(4)),
                cy + PxI(12) + pad};
 
-    // Transport band: capsule and controls centered on the orb.
+    // Navigation bar: back / forward orbs and the breadcrumb
+    const int nbcy = (L.navBar.top + L.navBar.bottom) / 2;
+    const int orb = PxI(24);
+    L.back = CenteredRect(L.client.left + PxI(18), nbcy, orb, orb);
+    L.forward = CenteredRect(L.client.left + PxI(44), nbcy, orb, orb);
+    L.breadcrumb = {L.client.left + PxI(64), L.navBar.top, L.client.right - PxI(8), L.navBar.bottom - line};
+
+    // Command bar
+    const int cbcy = (L.cmdBar.top + L.cmdBar.bottom) / 2 - line;
+    const int bh2 = PxI(23);
+    int x = L.client.left + PxI(6);
+    auto button = [&](float wDip) {
+        RECT r{x, cbcy - bh2 / 2, x + PxI(wDip), cbcy - bh2 / 2 + bh2};
+        x = r.right + PxI(2);
+        return r;
+    };
+    L.organize = button(82);
+    L.addFiles = button(70);
+    L.addFolder = button(76);
+    L.newPlaylist = button(100);
+    L.search = {L.client.right - PxI(8) - PxI(230), cbcy - PxI(11), L.client.right - PxI(8), cbcy + PxI(11)};
+
+    // Content: navigation pane + list
+    L.navPane = {L.content.left, L.content.top, L.content.left + PxI(kNavPaneWidth), L.content.bottom};
+    L.list = {L.navPane.right, L.content.top, L.content.right, L.content.bottom};
+
+    // Transport band: seek rule on top, capsule centered on the orb below it.
+    L.seek = {L.client.left + PxI(8), L.transport.top - PxI(5), L.client.right - PxI(8), L.transport.top + PxI(7)};
     const int tcx = (L.transport.left + L.transport.right) / 2;
-    const int tcy = (L.transport.top + 2 * line + L.transport.bottom) / 2;
+    const int tcy = (L.transport.top + PxI(6) + L.transport.bottom) / 2;
     auto at = [&](float dx) { return tcx + PxI(dx); };
     L.capsule = CenteredRect(tcx, tcy, PxI(m::kCapsuleWidth), PxI(m::kCapsuleHeight));
     const int orbPx = PxI(m::kOrbDiameter + 2.0f);
@@ -407,8 +511,8 @@ void MainWindow::UpdateLayout() {
     L.mute = CenteredRect(at(m::kVolumeX), tcy, ibw, ibh);
     L.volume = {at(m::kSliderLeft), tcy - ibh / 2, at(m::kSliderRight), tcy - ibh / 2 + ibh};
     L.divider = CenteredRect(at(m::kDividerX), tcy, PxI(4), PxI(16));
-    L.nowPlaying = {L.client.left + PxI(10), L.transport.top + PxI(6),
-                    std::max<int>(L.client.left + PxI(10), L.capsule.left - PxI(12)), L.transport.bottom - PxI(6)};
+    L.nowPlaying = {L.client.left + PxI(10), L.transport.top + PxI(7),
+                    std::max<int>(L.client.left + PxI(10), L.capsule.left - PxI(12)), L.transport.bottom - PxI(3)};
 
     // Apply to the visual tree.
     const float radius = max ? 0.0f : Px(m::kCornerRadius);
@@ -425,14 +529,6 @@ void MainWindow::UpdateLayout() {
     Place(m_capsule, L.capsule);
     Place(m_divider, L.divider);
     {
-        RECT t = L.content;
-        t.left += PxI(28);
-        t.top += PxI(24);
-        t.right = std::max(t.left, std::min<LONG>(t.right - PxI(28), t.left + PxI(900)));
-        t.bottom = std::max(t.top, std::min<LONG>(t.bottom, t.top + PxI(220)));
-        Place(m_contentText, t);
-    }
-    {
         RECT t = L.title;
         t.right = std::min<LONG>(t.right, t.left + PxI(600) + 2 * pad);
         Place(m_title, t);
@@ -442,6 +538,14 @@ void MainWindow::UpdateLayout() {
         t.right = std::min<LONG>(t.right, t.left + PxI(360));
         Place(m_nowPlaying, t);
     }
+    {
+        RECT t = L.breadcrumb;
+        t.right = std::min<LONG>(t.right, t.left + PxI(900));
+        Place(m_breadcrumb, t);
+    }
+    m_nav->SetBounds(L.navPane, m_scale);
+    m_list->SetBounds(L.list, m_scale);
+    m_search->SetBounds(L.search, m_scale);
 
     for (auto& w : m_widgets) {
         const RECT* r = nullptr;
@@ -449,6 +553,13 @@ void MainWindow::UpdateLayout() {
         case kCapMin: r = &L.capMin; break;
         case kCapMax: r = &L.capMax; break;
         case kCapClose: r = &L.capClose; break;
+        case kBack: r = &L.back; break;
+        case kForward: r = &L.forward; break;
+        case kOrganize: r = &L.organize; break;
+        case kAddFiles: r = &L.addFiles; break;
+        case kAddFolder: r = &L.addFolder; break;
+        case kNewPlaylist: r = &L.newPlaylist; break;
+        case kSeek: r = &L.seek; break;
         case kShuffle: r = &L.shuffle; break;
         case kRepeat: r = &L.repeat; break;
         case kStop: r = &L.stop; break;
@@ -481,9 +592,7 @@ void MainWindow::RepaintScaleDependent() {
         paint::ClientGlow(dc, D2D1::SizeF(edgeSrc / s, edgeSrc / s));
     }));
 
-    // WMP 12 client chrome, measured: nav bar #daefff -> #e7eefe over a #c3cccf rule;
-    // command bar #f5feff / #e9f3fd | #dce6f2 / #e1eaf9 over #cbd2e2 + #abb1bf rules;
-    // transport band #99a1aa + #ecf3fc rules over #e8f0f9.
+    // WMP 12 client chrome (measured; docs/design/visual-spec.md)
     const float lineDip = line / s;
     m_navBar.Brush(Strip(PxI(m::kNavBarHeight), s, [&](ID2D1DeviceContext* dc, float h) {
         dc->FillRectangle({-1, 0, 100, h}, VGrad(dc, 0, h, {{0.0f, 0xDAEFFF}, {0.3f, 0xE2EBF8}, {1.0f, 0xE7EEFE}}).get());
@@ -512,12 +621,13 @@ void MainWindow::RepaintScaleDependent() {
     {
         auto& host = gfx::CompositionHost::Get();
         const int w = PxI(4), h = PxI(16);
-        host.Repaint(m_divider, w, h, s, [&](ID2D1DeviceContext* dc) { paint::CapsuleDivider(dc, D2D1::SizeF(w / s, h / s)); });
+        host.Repaint(m_divider, w, h, s,
+                     [&](ID2D1DeviceContext* dc) { paint::CapsuleDivider(dc, D2D1::SizeF(w / s, h / s)); });
     }
     m_icon = LoadAppIcon(PxI(m::kIconSize));
     RepaintTitle();
     RepaintNowPlaying();
-    RepaintContentText();
+    RepaintBreadcrumb();
 }
 
 void MainWindow::RepaintTitle() {
@@ -527,8 +637,7 @@ void MainWindow::RepaintTitle() {
     host.Repaint(m_title, w, h, m_scale, [&](ID2D1DeviceContext* dc) {
         const float iconSz = m::kIconSize;
         paint::Icon(dc, m_icon.get(), D2D1::RectF(pad, pad + 12 - iconSz / 2, pad + iconSz, pad + 12 + iconSz / 2));
-        auto layout = MakeText(kAppName, L"Segoe UI", m::kTitleFontSize, DWRITE_FONT_WEIGHT_NORMAL, 560, 24);
-        layout->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+        auto layout = MakeText(kAppName, m::kTitleFontSize, DWRITE_FONT_WEIGHT_NORMAL, 560, 24);
         paint::GlowText(dc, layout.get(), D2D1::Point2F(pad + iconSz + 6, pad), D2D1::ColorF(0, 0, 0, 1));
     });
     UpdateLayout();  // Repaint resets the visual to the surface size; re-apply the layout clip.
@@ -536,45 +645,252 @@ void MainWindow::RepaintTitle() {
 
 void MainWindow::RepaintNowPlaying() {
     auto& host = gfx::CompositionHost::Get();
-    const int w = PxI(360), h = PxI(33);
+    const int w = PxI(360), h = PxI(m::kTransportHeight - 10);
     host.Repaint(m_nowPlaying, w, h, m_scale, [&](ID2D1DeviceContext* dc) {
         if (m_trackTitle.empty()) return;
+        const float H = h / m_scale;
+        float x = 0;
+        if (m_art) {
+            com_ptr<ID2D1Bitmap> bmp;
+            if (SUCCEEDED(dc->CreateBitmapFromWicBitmap(m_art.get(), nullptr, bmp.put()))) {
+                const D2D1_SIZE_F sz = bmp->GetSize();
+                const float side = H - 2;
+                const float k = side / std::max(sz.width, sz.height);
+                const D2D1_RECT_F dst{0, 1 + (side - sz.height * k) / 2, sz.width * k, 1 + (side + sz.height * k) / 2};
+                dc->DrawBitmap(bmp.get(), dst, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+                com_ptr<ID2D1SolidColorBrush> frame;
+                dc->CreateSolidColorBrush(Hex(0x8E9AA8), frame.put());
+                dc->DrawRectangle({dst.left + 0.5f, dst.top + 0.5f, dst.right - 0.5f, dst.bottom - 0.5f}, frame.get(), 1.0f);
+                x = side + 8;
+            }
+        }
         com_ptr<ID2D1SolidColorBrush> dark, grey;
         dc->CreateSolidColorBrush(Hex(0x1E1E1E), dark.put());
         dc->CreateSolidColorBrush(Hex(0x5B5B5B), grey.put());
-        auto t = MakeText(m_trackTitle, L"Segoe UI", 12.0f, DWRITE_FONT_WEIGHT_NORMAL, 350, 17);
-        dc->DrawTextLayout({0, 0}, t.get(), dark.get());
-        if (!m_trackArtist.empty()) {
-            auto a = MakeText(m_trackArtist, L"Segoe UI", 12.0f, DWRITE_FONT_WEIGHT_NORMAL, 350, 17);
-            dc->DrawTextLayout({0, 16}, a.get(), grey.get());
-        }
+        auto t = MakeText(m_trackTitle, 12.0f, DWRITE_FONT_WEIGHT_NORMAL, 350 - x, 17);
+        dc->DrawTextLayout({x, 0}, t.get(), dark.get());
+        std::wstring second = FormatTime(m_position);
+        if (m_length > 0) second += L" / " + FormatTime(m_length);
+        if (!m_trackArtist.empty()) second = m_trackArtist + L"   " + second;
+        auto a = MakeText(second, 12.0f, DWRITE_FONT_WEIGHT_NORMAL, 350 - x, 17);
+        dc->DrawTextLayout({x, 16}, a.get(), grey.get());
     });
     UpdateLayout();
 }
 
-void MainWindow::RepaintContentText() {
+void MainWindow::RepaintBreadcrumb() {
+    std::wstring path = L"Library";
+    switch (m_view.kind) {
+    case View::Kind::Playlist: path += L"  ▸  Playlists  ▸  " + m_view.name; break;
+    case View::Kind::AllMusic: path += L"  ▸  Music  ▸  All music"; break;
+    case View::Kind::Artists: path += L"  ▸  Music  ▸  Artist"; break;
+    case View::Kind::Albums: path += L"  ▸  Music  ▸  Album"; break;
+    case View::Kind::Genres: path += L"  ▸  Music  ▸  Genre"; break;
+    case View::Kind::Group: {
+        const wchar_t* kind = m_view.group == media::GroupKind::Artist  ? L"Artist"
+                              : m_view.group == media::GroupKind::Album ? L"Album"
+                                                                        : L"Genre";
+        path += std::wstring(L"  ▸  Music  ▸  ") + kind + L"  ▸  " + m_view.name;
+        break;
+    }
+    }
     auto& host = gfx::CompositionHost::Get();
-    const int w = PxI(900), h = PxI(220);
-    host.Repaint(m_contentText, w, h, m_scale, [&](ID2D1DeviceContext* dc) {
-        auto solid = [&](uint32_t c) {
-            com_ptr<ID2D1SolidColorBrush> b;
-            dc->CreateSolidColorBrush(Hex(c), b.put());
-            return b;
-        };
-        auto heading = MakeText(L"Now Playing", L"Segoe UI", 12.0f, DWRITE_FONT_WEIGHT_NORMAL, 880, 20);
-        dc->DrawTextLayout({0, 0}, heading.get(), solid(0x1E5BA8).get());
-        const std::wstring title = m_trackTitle.empty() ? L"Not playing" : m_trackTitle;
-        auto t = MakeText(title, L"Segoe UI Light", 26.0f, DWRITE_FONT_WEIGHT_LIGHT, 880, 40);
-        dc->DrawTextLayout({0, 24}, t.get(), solid(0x1A1A1A).get());
-        if (!m_trackArtist.empty()) {
-            auto a = MakeText(m_trackArtist, L"Segoe UI", 14.0f, DWRITE_FONT_WEIGHT_NORMAL, 880, 22);
-            dc->DrawTextLayout({2, 68}, a.get(), solid(0x5B5B5B).get());
-        }
-        auto hint = MakeText(L"Right-click here or press Alt to open the foobar2000 menu (add files, preferences...)",
-                             L"Segoe UI", 12.0f, DWRITE_FONT_WEIGHT_NORMAL, 880, 20);
-        dc->DrawTextLayout({2, 130}, hint.get(), solid(0x8A8A8A).get());
+    const int w = PxI(900), h = PxI(m::kNavBarHeight - 1);
+    host.Repaint(m_breadcrumb, w, h, m_scale, [&](ID2D1DeviceContext* dc) {
+        com_ptr<ID2D1SolidColorBrush> ink;
+        dc->CreateSolidColorBrush(Hex(0x1E395B), ink.put());
+        auto t = MakeText(path, 12.0f, DWRITE_FONT_WEIGHT_NORMAL, 890, h / m_scale);
+        dc->DrawTextLayout({0, 0}, t.get(), ink.get());
     });
     UpdateLayout();
+}
+
+// ---- Navigation --------------------------------------------------------------------------
+
+void MainWindow::Navigate(const View& requested, bool push) {
+    View view = requested;
+    auto pm = playlist_manager::get();
+    std::unique_ptr<media::ListSource> source;
+
+    if (view.kind == View::Kind::Playlist && view.playlist >= pm->get_playlist_count()) view.kind = View::Kind::AllMusic;
+    switch (view.kind) {
+    case View::Kind::Playlist: {
+        pfc::string8 name;
+        pm->playlist_get_name(view.playlist, name);
+        view.name = Wide(name);
+        if (pm->get_active_playlist() != view.playlist) pm->set_active_playlist(view.playlist);
+        source = std::make_unique<media::PlaylistSource>(view.playlist);
+        m_nav->Select(NavPane::Target::Playlist, view.playlist);
+        break;
+    }
+    case View::Kind::AllMusic: {
+        std::vector<size_t> all(m_library.Tracks().size());
+        for (size_t i = 0; i < all.size(); ++i) all[i] = i;
+        source = std::make_unique<media::TrackSource>(
+            m_library, std::move(all),
+            L"Your library is empty. Use Organize ▸ Manage music library to add your music folders.");
+        m_nav->Select(NavPane::Target::Music, 0);
+        break;
+    }
+    case View::Kind::Artists:
+    case View::Kind::Albums:
+    case View::Kind::Genres: {
+        const auto kind = view.kind == View::Kind::Artists  ? media::GroupKind::Artist
+                          : view.kind == View::Kind::Albums ? media::GroupKind::Album
+                                                            : media::GroupKind::Genre;
+        source = std::make_unique<media::GroupSource>(m_library, kind, [this, kind](const media::Group& g) {
+            View v;
+            v.kind = View::Kind::Group;
+            v.group = kind;
+            v.key = g.key;
+            v.name = g.secondary.empty() ? g.name : g.name + L" (" + g.secondary + L")";
+            Navigate(v, true);
+        });
+        m_nav->Select(view.kind == View::Kind::Artists  ? NavPane::Target::Artists
+                      : view.kind == View::Kind::Albums ? NavPane::Target::Albums
+                                                        : NavPane::Target::Genres,
+                      0);
+        break;
+    }
+    case View::Kind::Group: {
+        const media::Group* g = m_library.FindGroup(view.group, view.key);
+        source = std::make_unique<media::TrackSource>(m_library, g ? g->tracks : std::vector<size_t>{},
+                                                      L"No songs.");
+        m_nav->Select(view.group == media::GroupKind::Artist  ? NavPane::Target::Artists
+                      : view.group == media::GroupKind::Album ? NavPane::Target::Albums
+                                                              : NavPane::Target::Genres,
+                      0);
+        break;
+    }
+    }
+
+    const bool sameView = view.kind == m_view.kind && view.playlist == m_view.playlist && view.key == m_view.key &&
+                          view.group == m_view.group;
+    if (push && !sameView) {
+        // A new view clears the search, like WMP.
+        m_filter.clear();
+        if (m_search) {
+            auto keep = std::move(m_search->onChange);
+            m_search->Clear();
+            m_search->onChange = std::move(keep);
+        }
+    }
+    if (!m_filter.empty()) source->SetFilter(m_filter);
+    m_source = std::move(source);
+    m_list->SetSource(m_source.get(), !sameView);
+    m_view = view;
+
+    if (push && !sameView) {
+        if (!m_history.empty()) m_history.resize(m_historyPos + 1);
+        m_history.push_back(view);
+        m_historyPos = m_history.size() - 1;
+    } else if (!m_history.empty()) {
+        m_history[m_historyPos] = view;
+    } else {
+        m_history.push_back(view);
+        m_historyPos = 0;
+    }
+    for (int id : {kBack, kForward})
+        if (auto* w = WidgetById(id)) w->Invalidate();
+    RepaintBreadcrumb();
+}
+
+void MainWindow::GoBack() {
+    if (m_historyPos == 0) return;
+    --m_historyPos;
+    Navigate(m_history[m_historyPos], false);
+}
+
+void MainWindow::GoForward() {
+    if (m_historyPos + 1 >= m_history.size()) return;
+    ++m_historyPos;
+    Navigate(m_history[m_historyPos], false);
+}
+
+void MainWindow::OnNavItem(const NavPane::Item& item) {
+    View v;
+    switch (item.target) {
+    case NavPane::Target::Playlist: v.kind = View::Kind::Playlist; v.playlist = item.playlist; break;
+    case NavPane::Target::Music: v.kind = View::Kind::AllMusic; break;
+    case NavPane::Target::Artists: v.kind = View::Kind::Artists; break;
+    case NavPane::Target::Albums: v.kind = View::Kind::Albums; break;
+    case NavPane::Target::Genres: v.kind = View::Kind::Genres; break;
+    case NavPane::Target::PlaylistsHeader: {
+        auto pm = playlist_manager::get();
+        const t_size active = pm->get_active_playlist();
+        if (active == SIZE_MAX) return;
+        v.kind = View::Kind::Playlist;
+        v.playlist = active;
+        break;
+    }
+    default: return;
+    }
+    Navigate(v, true);
+}
+
+void MainWindow::ShowOrganizeMenu() {
+    POINT pt{m_layout.organize.left, m_layout.organize.bottom};
+    ClientToScreen(m_hwnd, &pt);
+    ShowMainMenu(m_hwnd, pt,
+                 {{L"Manage music library...", [] { library_manager::get()->show_preferences(); }},
+                  {L"Rescan library", [] { library_manager::get()->rescan(); }},
+                  {L"", nullptr},
+                  {L"Add files...", [] { standard_commands::main_add_files(); }},
+                  {L"Add folder...", [] { standard_commands::main_add_directory(); }},
+                  {L"Add location...", [] { standard_commands::run_main(standard_commands::guid_main_add_location); }},
+                  {L"", nullptr},
+                  {L"Preferences...", [] { standard_commands::run_main(standard_commands::guid_main_preferences); }}});
+}
+
+void MainWindow::ShowPlaylistMenu(size_t playlist, POINT screen) {
+    auto pm = playlist_manager::get();
+    std::vector<MenuAction> actions;
+    if (playlist != SIZE_MAX && playlist < pm->get_playlist_count()) {
+        actions.push_back({L"Play", [playlist] {
+                               auto p = playlist_manager::get();
+                               p->set_active_playlist(playlist);
+                               const t_size focus = p->playlist_get_focus_item(playlist);
+                               if (p->playlist_get_item_count(playlist))
+                                   p->playlist_execute_default_action(playlist, focus == SIZE_MAX ? 0 : focus);
+                           }});
+        actions.push_back({L"Rename...", [playlist] {
+                               playlist_manager::get()->set_active_playlist(playlist);
+                               standard_commands::run_main(standard_commands::guid_main_rename_playlist);
+                           }});
+        actions.push_back({L"Remove", [playlist] { playlist_manager::get()->remove_playlist(playlist); }});
+        actions.push_back({L"", nullptr});
+    }
+    actions.push_back({L"New playlist", [this] {
+                           auto p = playlist_manager::get();
+                           const t_size i = p->create_playlist("New Playlist", SIZE_MAX, SIZE_MAX);
+                           if (i == SIZE_MAX) return;
+                           View v;
+                           v.kind = View::Kind::Playlist;
+                           v.playlist = i;
+                           Navigate(v, true);
+                       }});
+    ShowMainMenu(m_hwnd, screen, actions);
+}
+
+void MainWindow::AddDroppedFiles(IDataObject* data) {
+    // Drop target: the playlist on screen, else the active playlist (created if needed).
+    auto pm = playlist_manager::get();
+    t_size target = m_view.kind == View::Kind::Playlist ? m_view.playlist : pm->get_active_playlist();
+    if (target == SIZE_MAX || target >= pm->get_playlist_count()) target = pm->find_or_create_playlist("Default");
+    auto notify = process_locations_notify::create([target](metadb_handle_list_cref items) {
+        auto p = playlist_manager::get();
+        if (target < p->get_playlist_count()) {
+            p->playlist_undo_backup(target);
+            p->playlist_add_items(target, items, pfc::bit_array_false());
+        }
+    });
+    playlist_incoming_item_filter_v2::get()->process_dropped_files_async(
+        data, playlist_incoming_item_filter_v2::op_flag_delay_ui, m_hwnd, notify);
+}
+
+void MainWindow::SetSearchFocus(bool focused) {
+    m_search->SetFocused(focused);
+    m_list->SetFocused(!focused);
 }
 
 // ---- Core state ------------------------------------------------------------------------
@@ -587,12 +903,13 @@ void MainWindow::OnPlaybackStateChanged() {
     m_paused = paused;
     for (int id : {kPlay, kStop})
         if (auto* w = WidgetById(id)) w->Invalidate();
+    if (m_list) m_list->Refresh();  // playing marker
 }
 
 void MainWindow::OnTrackChanged() {
     static titleformat_object::ptr s_title, s_artist;
     if (!s_title) {
-        titleformat_compiler::get()->compile_safe(s_title, "%title%");
+        titleformat_compiler::get()->compile_safe(s_title, "$if2(%title%,%filename%)");
         titleformat_compiler::get()->compile_safe(s_artist, "[%artist%]");
     }
     auto pc = playback_control::get();
@@ -600,16 +917,30 @@ void MainWindow::OnTrackChanged() {
     if (pc->is_playing()) {
         pc->playback_format_title(nullptr, title, s_title, nullptr, playback_control::display_level_all);
         pc->playback_format_title(nullptr, artist, s_artist, nullptr, playback_control::display_level_all);
+    } else {
+        m_art = nullptr;
     }
     m_trackTitle = Wide(title);
     m_trackArtist = Wide(artist);
+    m_length = pc->is_playing() ? pc->playback_get_length() : 0;
+    m_position = pc->is_playing() ? pc->playback_get_position() : 0;
     RepaintNowPlaying();
-    RepaintContentText();
+    if (auto* w = WidgetById(kSeek)) w->Invalidate();
+    if (m_list) m_list->Refresh();
 
     std::wstring caption = m_trackTitle.empty() ? std::wstring(kAppName)
                                                 : m_trackTitle + (m_trackArtist.empty() ? L"" : L" - " + m_trackArtist) +
                                                       L" - " + kAppName;
     SetWindowTextW(m_hwnd, caption.c_str());
+}
+
+void MainWindow::OnPlaybackTime() {
+    auto pc = playback_control::get();
+    m_position = pc->playback_get_position();
+    m_length = pc->playback_get_length();
+    if (!m_seeking)
+        if (auto* w = WidgetById(kSeek)) w->Invalidate();
+    RepaintNowPlaying();
 }
 
 void MainWindow::OnVolumeChanged() {
@@ -640,6 +971,29 @@ void MainWindow::OnPlaybackOrderChanged() {
     }
 }
 
+void MainWindow::OnPlaylistContentChanged(size_t playlist) {
+    if (m_view.kind == View::Kind::Playlist && m_view.playlist == playlist && m_source) {
+        static_cast<media::PlaylistSource*>(m_source.get())->Rebuild();
+        m_list->Refresh();
+    } else if (m_list) {
+        m_list->Refresh();  // playing marker may have moved
+    }
+}
+
+void MainWindow::OnPlaylistSelectionChanged(size_t playlist) {
+    if (m_view.kind == View::Kind::Playlist && m_view.playlist == playlist && m_list) m_list->Refresh();
+}
+
+void MainWindow::OnPlaylistsChanged() {
+    if (!m_nav) return;
+    m_nav->Rebuild();
+    if (m_view.kind == View::Kind::Playlist) Navigate(m_view, false);  // index or name may have changed
+}
+
+void MainWindow::ScheduleLibraryReload() {
+    if (m_hwnd) SetTimer(m_hwnd, kLibraryTimer, 400, nullptr);  // debounce bursts of library events
+}
+
 void MainWindow::SetVolumeFromX(int x) {
     const RECT& r = m_layout.volume;
     const float thumb = Px(11.0f);
@@ -648,6 +1002,11 @@ void MainWindow::SetVolumeFromX(int x) {
     m_volume = v;
     if (auto* w = WidgetById(kVolume)) w->Invalidate();
     playback_control::get()->set_volume(DbFromSlider(v));
+}
+
+float MainWindow::SeekFractionAt(int x) const {
+    const RECT& r = m_layout.seek;
+    return std::clamp(static_cast<float>(x - r.left) / std::max<LONG>(r.right - r.left, 1), 0.0f, 1.0f);
 }
 
 // ---- Hit testing and interaction -----------------------------------------------------
@@ -714,20 +1073,48 @@ void MainWindow::OnActivate(bool active) {
 LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
     const HWND hwnd = m_hwnd;
     switch (msg) {
-    case WM_CREATE:
+    case WM_CREATE: {
         m_scale = GetDpiForWindow(hwnd) / 96.0f;
         InitComposition();
         CreateWidgets();
         RepaintScaleDependent();
         m_shadow.Create(hwnd);
+        m_library.Reload();
         m_playCallback = std::make_unique<PlayCallback>(*this);
         m_playlistCallback = std::make_unique<PlaylistCallback>(*this);
+        m_libraryCallback = std::make_unique<LibraryCallback>(*this);
+        m_artNotify = now_playing_album_art_notify_manager::get()->add([this](album_art_data::ptr data) {
+            m_art = DecodeArt(data, PxI(m::kTransportHeight));
+            RepaintNowPlaying();
+        });
+        m_dropTarget = MakeFileDropTarget([this](IDataObject* data) { AddDroppedFiles(data); });
+        RegisterDragDrop(hwnd, m_dropTarget.get());
+
+        // Start where foobar2000 is: the active playlist, else the music library.
+        View start;
+        const t_size active = playlist_manager::get()->get_active_playlist();
+        if (active != SIZE_MAX) {
+            start.kind = View::Kind::Playlist;
+            start.playlist = active;
+        }
+        Navigate(start, true);
+
         OnPlaybackStateChanged();
         OnTrackChanged();
         OnVolumeChanged();
         OnPlaybackOrderChanged();
         SetWindowPos(hwnd, nullptr, 0, 0, 0, 0, SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER);
         return 0;
+    }
+
+    case WM_TIMER:
+        if (wp == kLibraryTimer) {
+            KillTimer(hwnd, kLibraryTimer);
+            m_library.Reload();
+            if (m_view.kind != View::Kind::Playlist) Navigate(m_view, false);
+            return 0;
+        }
+        break;
 
     case WM_NCCALCSIZE:
         if (wp) {
@@ -749,6 +1136,18 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
         ScreenToClient(hwnd, &pt);
         return HitTest(pt);
     }
+
+    case WM_SETCURSOR:
+        if (LOWORD(lp) == HTCLIENT) {
+            POINT pt{};
+            GetCursorPos(&pt);
+            ScreenToClient(hwnd, &pt);
+            if (m_search && m_search->HitTest(pt)) {
+                SetCursor(LoadCursorW(nullptr, IDC_IBEAM));
+                return TRUE;
+            }
+        }
+        break;
 
     case WM_NCACTIVATE:
         OnActivate(wp != FALSE);
@@ -784,7 +1183,7 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
 
     case WM_GETMINMAXINFO: {
         auto* mmi = reinterpret_cast<MINMAXINFO*>(lp);
-        mmi->ptMinTrackSize = {PxI(520), PxI(380)};
+        mmi->ptMinTrackSize = {PxI(640), PxI(420)};
         return 0;
     }
 
@@ -822,6 +1221,7 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
             m_ncDownId = id;
             m_pressed = WidgetById(id);
             m_pressed->SetPressed(true);
+            m_capture = Capture::Widget;
             SetCapture(hwnd);
             return 0;  // keep DefWindowProc from drawing classic buttons
         }
@@ -836,6 +1236,7 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
             if (m_pressed) {
                 m_pressed->SetPressed(false);
                 m_pressed = nullptr;
+                m_capture = Capture::None;
                 if (GetCapture() == hwnd) ReleaseCapture();
             }
             if (Widget* w = WidgetById(id); same && w && w->onClick) w->onClick();
@@ -846,13 +1247,21 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
     // -- Client-area mouse --
     case WM_MOUSEMOVE: {
         POINT pt{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
-        if (m_pressed) {
-            if (m_pressed->Id() == kVolume)
+        if (m_capture == Capture::List) {
+            m_list->OnMouseMove(pt);
+        } else if (m_pressed) {
+            if (m_pressed->Id() == kVolume) {
                 SetVolumeFromX(pt.x);
-            else
+            } else if (m_pressed->Id() == kSeek) {
+                m_seekPreview = SeekFractionAt(pt.x);
+                m_pressed->Invalidate();
+            } else {
                 m_pressed->SetPressed(m_pressed->HitTest(pt));
+            }
         } else {
             SetHoverWidget(WidgetAt(pt));
+            m_list->OnMouseMove(pt);
+            m_nav->OnMouseMove(pt);
         }
         if (!m_trackingClient) {
             TRACKMOUSEEVENT tme{sizeof(tme), TME_LEAVE, hwnd, 0};
@@ -863,25 +1272,77 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
     case WM_MOUSELEAVE:
         m_trackingClient = false;
         if (m_hover && !IsCaptionWidget(m_hover->Id()) && !m_pressed) SetHoverWidget(nullptr);
+        if (m_capture == Capture::None) {
+            m_list->OnMouseLeave();
+            m_nav->OnMouseLeave();
+        }
         return 0;
     case WM_LBUTTONDOWN:
     case WM_LBUTTONDBLCLK: {
         POINT pt{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
+        const bool dbl = msg == WM_LBUTTONDBLCLK;
         if (Widget* w = WidgetAt(pt)) {
             m_pressed = w;
             w->SetPressed(true);
+            m_capture = Capture::Widget;
             SetCapture(hwnd);
             if (w->Id() == kVolume) SetVolumeFromX(pt.x);
+            if (w->Id() == kSeek && m_length > 0) {
+                m_seeking = true;
+                m_seekPreview = SeekFractionAt(pt.x);
+                w->Invalidate();
+            }
+            return 0;
+        }
+        if (m_list->HitTest(pt)) {
+            SetSearchFocus(false);
+            m_list->OnLButtonDown(pt, KeyDown(VK_CONTROL), KeyDown(VK_SHIFT));
+            if (dbl) m_list->OnDoubleClick(pt);
+            if (m_list->Capturing()) {
+                m_capture = Capture::List;
+                SetCapture(hwnd);
+            }
+            return 0;
+        }
+        if (m_nav->HitTest(pt)) {
+            if (const NavPane::Item* item = m_nav->OnLButtonDown(pt)) {
+                const NavPane::Item copy = *item;
+                OnNavItem(copy);
+                if (dbl && copy.target == NavPane::Target::Playlist && m_source && m_source->Count())
+                    m_source->Activate(0);
+            }
+            return 0;
+        }
+        if (m_search->HitTest(pt)) {
+            SetSearchFocus(true);
+            return 0;
         }
         return 0;
     }
     case WM_LBUTTONUP: {
         POINT pt{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
         m_ncDownId = 0;
+        if (m_capture == Capture::List) {
+            m_capture = Capture::None;
+            ReleaseCapture();
+            m_list->OnLButtonUp(pt);
+            return 0;
+        }
         if (Widget* w = m_pressed) {
+            // ReleaseCapture() synchronously sends WM_CAPTURECHANGED, which resets the drag
+            // state; take what we need first.
+            const bool seek = w->Id() == kSeek && m_seeking;
+            const float preview = m_seekPreview;
             m_pressed = nullptr;
+            m_capture = Capture::None;
             ReleaseCapture();
             w->SetPressed(false);
+            if (w->Id() == kSeek) {
+                if (seek && m_length > 0) playback_control::get()->playback_seek(preview * m_length);
+                m_seeking = false;
+                w->Invalidate();
+                return 0;
+            }
             const bool inside = w->HitTest(pt);
             if (!inside || IsCaptionWidget(w->Id())) SetHoverWidget(nullptr);
             if (inside && w->onClick) w->onClick();
@@ -889,17 +1350,30 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
     }
     case WM_CAPTURECHANGED:
-        if (m_pressed && reinterpret_cast<HWND>(lp) != hwnd) {
-            m_pressed->SetPressed(false);
-            m_pressed = nullptr;
+        if (reinterpret_cast<HWND>(lp) != hwnd) {
+            if (m_pressed) {
+                m_pressed->SetPressed(false);
+                m_pressed = nullptr;
+            }
+            if (m_capture == Capture::List) m_list->OnLButtonUp({});
+            m_capture = Capture::None;
+            m_seeking = false;
         }
         return 0;
     case WM_MOUSEWHEEL: {
-        // Wheel over the transport band adjusts the volume, like WMP.
         POINT pt{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
         ScreenToClient(hwnd, &pt);
-        if (PtInRect(&m_layout.transport, pt)) {
-            const short delta = GET_WHEEL_DELTA_WPARAM(wp);
+        const int delta = GET_WHEEL_DELTA_WPARAM(wp);
+        if (m_list->HitTest(pt)) {
+            m_list->OnWheel(delta);
+            m_list->OnMouseMove(pt);
+            return 0;
+        }
+        if (m_nav->HitTest(pt)) {
+            m_nav->OnWheel(delta);
+            return 0;
+        }
+        if (PtInRect(&m_layout.transport, pt)) {  // wheel over the transport band: volume, like WMP
             auto pc = playback_control::get();
             if (delta > 0) pc->volume_up(); else pc->volume_down();
             return 0;
@@ -908,9 +1382,19 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
     }
     case WM_RBUTTONUP: {
         POINT pt{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
-        if (PtInRect(&m_layout.content, pt)) {
-            ClientToScreen(hwnd, &pt);
-            ShowMainMenu(hwnd, pt);
+        if (m_list->HitTest(pt)) {
+            m_list->OnRButtonUp(hwnd, pt);
+            return 0;
+        }
+        POINT screen = pt;
+        ClientToScreen(hwnd, &screen);
+        if (m_nav->HitTest(pt)) {
+            const NavPane::Item* item = m_nav->ItemAt(pt);
+            ShowPlaylistMenu(item && item->target == NavPane::Target::Playlist ? item->playlist : SIZE_MAX, screen);
+            return 0;
+        }
+        if (pt.y >= m_layout.client.top) {
+            ShowMainMenu(hwnd, screen);
             return 0;
         }
         break;
@@ -918,9 +1402,54 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
 
     // -- Keyboard --
     case WM_KEYDOWN:
-    case WM_SYSKEYDOWN:
+    case WM_SYSKEYDOWN: {
+        const bool ctrl = KeyDown(VK_CONTROL), shift = KeyDown(VK_SHIFT);
+        if (msg == WM_KEYDOWN) {
+            if ((ctrl && wp == 'E') || wp == VK_F3) {
+                SetSearchFocus(true);
+                return 0;
+            }
+            if (m_search->Focused()) {
+                if (m_search->OnKeyDown(static_cast<UINT>(wp), ctrl, hwnd)) return 0;
+                if (wp == VK_DOWN || wp == VK_TAB) {
+                    SetSearchFocus(false);
+                    m_list->OnKeyDown(VK_HOME, false, false);
+                    return 0;
+                }
+            }
+            if (wp == VK_BACK && !m_search->Focused()) {
+                GoBack();
+                return 0;
+            }
+            if (m_list->OnKeyDown(static_cast<UINT>(wp), ctrl, shift)) return 0;
+        }
+        if (msg == WM_SYSKEYDOWN && wp == VK_LEFT) {
+            GoBack();
+            return 0;
+        }
+        if (msg == WM_SYSKEYDOWN && wp == VK_RIGHT) {
+            GoForward();
+            return 0;
+        }
         if (keyboard_shortcut_manager::get()->on_keydown_auto(wp)) return 0;
         break;
+    }
+    case WM_CHAR:
+        if (m_search->Focused() && m_search->OnChar(static_cast<wchar_t>(wp), hwnd)) return 0;
+        break;
+    case WM_IME_STARTCOMPOSITION:
+        if (m_search->Focused()) {
+            if (HIMC imc = ImmGetContext(hwnd)) {
+                COMPOSITIONFORM cf{CFS_POINT, m_search->CaretClientPoint(), {}};
+                ImmSetCompositionWindow(imc, &cf);
+                ImmReleaseContext(hwnd, imc);
+            }
+        }
+        break;
+    case WM_XBUTTONUP:
+        if (GET_XBUTTON_WPARAM(wp) == XBUTTON1) GoBack();
+        else if (GET_XBUTTON_WPARAM(wp) == XBUTTON2) GoForward();
+        return TRUE;
     case WM_SYSCOMMAND:
         // Alt or F10 alone opens the foobar2000 main menu (WMP 12 also hides its menu bar).
         if ((wp & 0xFFF0) == SC_KEYMENU && lp == 0) {
@@ -939,10 +1468,22 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
     case WM_DESTROY: {
         WINDOWPLACEMENT wpl{sizeof(wpl)};
         if (GetWindowPlacement(hwnd, &wpl)) cfg_placement.set(wpl);
+        KillTimer(hwnd, kLibraryTimer);
+        RevokeDragDrop(hwnd);
+        m_dropTarget = nullptr;
+        if (m_artNotify) {
+            now_playing_album_art_notify_manager::get()->remove(m_artNotify);
+            m_artNotify = nullptr;
+        }
         m_shadow.Destroy();
+        m_libraryCallback.reset();
         m_playlistCallback.reset();
         m_playCallback.reset();
         m_hover = m_pressed = nullptr;
+        m_list.reset();
+        m_nav.reset();
+        m_search.reset();
+        m_source.reset();
         m_widgets.clear();
         m_glass.reset();
         m_root = nullptr;

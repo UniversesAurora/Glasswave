@@ -9,9 +9,25 @@ foobar2000.exe (core: decoding, playlists, library, DSP, output, components)
      │   └─ core callbacks    play_callback, playlist_callback → repaint only what changed
      ├─ aero::GlassMaterial   HostBackdropBrush → ColorMatrix (Win7 recipe) + reflection
      ├─ aero::ShadowFrame     4 layered click-through windows with the measured Win7 shadow
-     ├─ aero::paint           Direct2D painters for every Win7 / WMP 12 element
+     ├─ aero::paint           Direct2D painters for Win7 frame / caption / transport elements
+     ├─ wmp::paint            Direct2D painters for WMP 12 client chrome (lists, nav, bars)
+     ├─ ui::ListView          virtualized list over media::ListSource (header, rows, scrollbar)
+     ├─ ui::NavPane           playlists + Music (All / Artist / Album / Genre)
+     ├─ ui::SearchBox         self-drawn search field (WM_CHAR + IME)
+     ├─ media::LibraryModel   library snapshot: dedup, sort, artist/album/genre groups
+     ├─ media::*Source        PlaylistSource / TrackSource / GroupSource behind the list
      └─ gfx::CompositionHost  DispatcherQueue, Compositor, D3D11/D2D devices, surfaces, animations
 ```
+
+## Content model
+
+- The list shows one `media::ListSource` at a time. Playlist sources keep selection and focus
+  in the foobar2000 playlist itself (so foobar2000 shortcuts and context menus agree); library
+  sources keep their own selection.
+- Library views follow WMP: activating a track rebuilds the "Now Playing" playlist from the
+  view and plays from that track; groups (artist/album/genre) drill down.
+- `MainWindow` owns navigation history (`View` records) and rebuilds the source on
+  navigation, library changes (debounced 400 ms) and playlist callbacks.
 
 ## Window
 

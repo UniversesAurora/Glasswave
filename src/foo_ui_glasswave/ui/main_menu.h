@@ -2,9 +2,14 @@
 
 namespace glasswave::ui {
 
-// Pop up the foobar2000 main menu (File/Edit/View/Playback/Library/Help) at screen point pt
-// and run the chosen command. The content comes from mainmenu_manager, so preferences,
-// components, DSP and output settings are all reachable from here.
-void ShowMainMenu(HWND owner, POINT screenPt);
+struct MenuAction {
+    std::wstring label;          // empty = separator
+    std::function<void()> run;
+};
+
+// Pop up a menu at screen point pt: optional custom actions first, then the complete
+// foobar2000 main menu (File/Edit/View/Playback/Library/Help) built by mainmenu_manager,
+// so preferences, components, DSP and output settings are always reachable.
+void ShowMainMenu(HWND owner, POINT screenPt, const std::vector<MenuAction>& actions = {});
 
 }  // namespace glasswave::ui

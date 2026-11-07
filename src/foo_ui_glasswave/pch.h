@@ -7,6 +7,8 @@
 #include <dwmapi.h>
 #include <uxtheme.h>
 #include <shellapi.h>
+#include <ole2.h>
+#include <imm.h>
 
 // DirectX ---------------------------------------------------------------------
 #include <d3d11_4.h>
@@ -38,6 +40,8 @@
 #include <chrono>
 #include <cmath>
 #include <functional>
+#include <map>
+#include <set>
 #include <memory>
 #include <optional>
 #include <string>

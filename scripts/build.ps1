@@ -10,12 +10,12 @@
 
 .EXAMPLE
     pwsh -File scripts/build.ps1                          # Release|x64
-    pwsh -File scripts/build.ps1 -Configuration Debug -Platform Win32
+    pwsh -File scripts/build.ps1 -Configuration Debug
 #>
 [CmdletBinding()]
 param(
     [ValidateSet('Debug', 'Release')] [string]$Configuration = 'Release',
-    [ValidateSet('x64', 'Win32')]     [string]$Platform = 'x64',
+    [ValidateSet('x64')]              [string]$Platform = 'x64',
     [switch]$Rebuild
 )
 

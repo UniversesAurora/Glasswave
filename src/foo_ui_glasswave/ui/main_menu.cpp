@@ -3,7 +3,7 @@
 
 namespace glasswave::ui {
 
-void ShowMainMenu(HWND owner, POINT pt) {
+void ShowMainMenu(HWND owner, POINT pt, const std::vector<MenuAction>& actions) {
     struct Root {
         const GUID* guid;
         const wchar_t* label;
@@ -14,8 +14,17 @@ void ShowMainMenu(HWND owner, POINT pt) {
         {&mainmenu_groups::library, L"&Library"}, {&mainmenu_groups::help, L"&Help"},
     };
     constexpr uint32_t kIdsPerRoot = 0x1000;
+    constexpr uint32_t kActionBase = 0x10000;
 
     HMENU menu = CreatePopupMenu();
+    for (size_t i = 0; i < actions.size(); ++i) {
+        if (actions[i].label.empty())
+            AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+        else
+            AppendMenuW(menu, MF_STRING, kActionBase + i, actions[i].label.c_str());
+    }
+    if (!actions.empty()) AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+
     std::vector<service_ptr_t<mainmenu_manager>> managers;
     uint32_t base = 1;
     for (const auto& root : kRoots) {
@@ -32,7 +41,10 @@ void ShowMainMenu(HWND owner, POINT pt) {
     const UINT cmd = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_NONOTIFY, pt.x, pt.y, 0, owner, nullptr);
     DestroyMenu(menu);  // also destroys the submenus
 
-    if (cmd >= 1) {
+    if (cmd >= kActionBase) {
+        const size_t i = cmd - kActionBase;
+        if (i < actions.size() && actions[i].run) actions[i].run();
+    } else if (cmd >= 1) {
         const uint32_t index = (cmd - 1) / kIdsPerRoot;
         if (index < managers.size()) managers[index]->execute_command(cmd - (1 + index * kIdsPerRoot));
     }
