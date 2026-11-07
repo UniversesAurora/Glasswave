@@ -62,8 +62,8 @@ Updated: 2026-11-08
   cursor with an insertion line. Header clicks cycle ascending / descending / unsorted.
   DWM side highlights (atlas part 43) on the active frame. The view options button no longer
   shows at the window origin on views without view styles.
-- Frame and client edge lines are one device pixel and the corner radius 6 device pixels at
-  any DPI, as DWM draws them (they were floor(scale) px, i.e. 2 px thick at 200 %).
+- Frame and client edge lines are one device pixel at any DPI, as DWM draws them (they were
+  floor(scale) px, i.e. 2 px thick at 200 %). The corner radius stays 6 DIP.
 - Tried and removed (2026-11-08): DWM legacy blur-behind accent with a fitted overlay as a
   lighter glass. The owner saw no difference from the host backdrop, and the blur filled the
   window corners square despite a window region.

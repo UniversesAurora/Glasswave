@@ -38,8 +38,6 @@ enum WidgetId {
 };
 bool IsCaptionWidget(int id) { return id >= kCapMin && id <= kCapClose; }
 
-// Win7 frame corner radius in device pixels; DWM does not scale it (6 px at 96 and 144 DPI).
-constexpr float kCornerRadiusPx = 6.0f;
 
 // {0C9E7B42-1F3A-4D5E-8B6C-7A2F9E1D4C83}
 cfg_var_modern::cfg_struct_t<WINDOWPLACEMENT> cfg_placement(
@@ -611,7 +609,7 @@ void MainWindow::UpdateLayout() {
                     std::max<int>(L.client.left + PxI(10), capsuleLeft - PxI(12)), L.transport.bottom - PxI(3)};
 
     // Apply to the visual tree.
-    const float radius = max ? 0.0f : kCornerRadiusPx;
+    const float radius = max ? 0.0f : Px(m::kCornerRadius);
     m_clipGeometry.Size(float2{static_cast<float>(W), static_cast<float>(H)});
     m_clipGeometry.CornerRadius(float2{radius, radius});
     m_frameOutline.IsVisible(!max);
@@ -695,10 +693,10 @@ void MainWindow::RepaintScaleDependent() {
     PaintSideHighlights();
     const int line = LinePx();
 
-    // DWM draws the frame 1:1 in device pixels: one-pixel lines and a 6 px corner at any DPI.
+    // Frame lines are one device pixel at any DPI (as DWM draws them); the corner scales with DPI.
     const int frameSrc = PxI(32);
-    m_frameOutline.Brush(NineGrid(frameSrc, frameSrc, s, kCornerRadiusPx + 2.0f, true, [&](ID2D1DeviceContext* dc) {
-        paint::FrameOutline(dc, D2D1::SizeF(frameSrc / s, frameSrc / s), kCornerRadiusPx / s);
+    m_frameOutline.Brush(NineGrid(frameSrc, frameSrc, s, static_cast<float>(PxI(m::kCornerRadius + 2)), true, [&](ID2D1DeviceContext* dc) {
+        paint::FrameOutline(dc, D2D1::SizeF(frameSrc / s, frameSrc / s), m::kCornerRadius);
     }));
     const int edgeSrc = PxI(16);
     m_clientEdge.Brush(NineGrid(edgeSrc, edgeSrc, s, 3.0f, false, [&](ID2D1DeviceContext* dc) {

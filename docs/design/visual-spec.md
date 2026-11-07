@@ -35,8 +35,8 @@ From the outside in, per side:
 - Caption: outer edge to client = 30 (maximized: 22). Corners: radius 6 on all four corners.
 - DWM draws the frame 1:1 in device pixels (Win7 at 150 %, owner capture 2026-11-07): outer
   dark line `#071521` and inner light line `#E0EAF2` (top `#F1F8FF`) are one device pixel
-  each, the client edge is one light (`#C5DDEC`) plus one dark (`#21465E`) device pixel, and
-  the corner radius stays 6 device pixels. They do not scale with DPI.
+  each, and the client edge is one light (`#C5DDEC`) plus one dark (`#21465E`) device pixel.
+  These lines do not scale with DPI. The corner radius is kept at 6 DIP (owner's choice).
 - Client inner glow (R4): first 3 px of the client `#d7f7ff`, `#def6fe`, `#e5f7fc`, then `#e9f2f8`.
 
 ## Window shadow (R3)

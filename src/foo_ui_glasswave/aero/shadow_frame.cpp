@@ -15,7 +15,7 @@ constexpr uint8_t kRight[] = {158, 137, 121, 106, 96, 84, 72, 60, 49, 40, 31, 24
 constexpr uint8_t kBottom[] = {162, 144, 129, 116, 106, 95, 84, 72, 60, 49, 39, 31, 24, 17, 12, 7, 4, 2};
 
 constexpr float kCoreRadius = 10.0f;   // DIP; rounding of the shadow's corners
-constexpr float kWindowRadius = 6.0f;  // device px (DWM keeps it at any DPI); matches the frame
+constexpr float kWindowRadius = 6.0f;  // DIP; must match the frame's corner radius
 
 template <size_t N>
 float Profile(const uint8_t (&t)[N], float d) {
@@ -55,7 +55,7 @@ float ShadowAlpha(int x, int y, int W, int H, float s) {
                         wy * (top ? Profile(kTop, d) : Profile(kBottom, d));
         // Inside the owner's rect only the pixels outside its rounded corner show.
         if (cx >= 0 && cx <= W && cy >= 0 && cy <= H) {
-            const float rw = kWindowRadius;
+            const float rw = kWindowRadius * s;
             const float wox = left ? rw : W - rw, woy = top ? rw : H - rw;
             const bool inCornerBox = (left ? cx < rw : cx > W - rw) && (top ? cy < rw : cy > H - rw);
             if (!inCornerBox) return 0.0f;
