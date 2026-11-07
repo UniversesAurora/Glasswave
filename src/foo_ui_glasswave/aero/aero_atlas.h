@@ -15,16 +15,17 @@ bool Available();
 
 enum class Button { Minimize, Maximize, Close };
 
-// Caption button background and glyph. `inactive` selects the inactive-window images.
+// Caption button background and glyph; Layer::Inactive selects the inactive-window images.
 void CaptionButton(ID2D1DeviceContext* dc, D2D1_SIZE_F size, Button button, paint::CaptionGlyph glyph,
                    paint::Layer layer);
 // Hover glow around a caption button; `size` is the button plus GlowOutset().
 void CaptionGlow(ID2D1DeviceContext* dc, D2D1_SIZE_F size, bool close);
-D2D1_RECT_F GlowOutset(bool close);  // left, top, right, bottom (DIP)
+D2D1_RECT_F GlowOutset(bool close);  // left, top, right, bottom in device pixels
 
-// Top-left glare of the glass frame (228x175 DIP).
-inline constexpr D2D1_SIZE_F kGlareSize{228, 175};
-void Glare(ID2D1DeviceContext* dc, bool active);
+// Top-left glare of the glass frame: 228x175 bitmap pixels, drawn 1:1 in device pixels as
+// DWM does; `size` is that in DIP.
+inline constexpr D2D1_SIZE_U kGlarePixels{228, 175};
+void Glare(ID2D1DeviceContext* dc, bool active, D2D1_SIZE_F size);
 // Reflection streak texture stretched over `size` (the monitor).
 void Streaks(ID2D1DeviceContext* dc, D2D1_SIZE_F size);
 

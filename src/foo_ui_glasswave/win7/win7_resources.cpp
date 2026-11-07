@@ -58,6 +58,7 @@ Resources::Resources() : m_folder(ProfileFolder()) {
 }
 
 Resources::~Resources() {
+    m_pieces.clear();
     m_device.clear();
     m_decoded.clear();
     for (HMODULE& m : m_modules)
@@ -149,6 +150,32 @@ ID2D1Bitmap* Resources::Bitmap(ID2D1DeviceContext* dc, Module module, const std:
     return bmp.get();
 }
 
+ID2D1Bitmap* Resources::Piece(ID2D1DeviceContext* dc, Module module, int id, const D2D1_RECT_U& src) {
+    const std::wstring key = std::to_wstring(static_cast<int>(module)) + L":" + std::to_wstring(id) + L":" +
+                             std::to_wstring(src.left) + L"," + std::to_wstring(src.top) + L"," +
+                             std::to_wstring(src.right) + L"," + std::to_wstring(src.bottom);
+    if (auto it = m_pieces.find(key); it != m_pieces.end()) return it->second.get();
+    ID2D1Bitmap* whole = Bitmap(dc, module, id);
+    if (!whole || src.right <= src.left || src.bottom <= src.top) return nullptr;
+    const auto props = D2D1::BitmapProperties(
+        D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED), 96.0f, 96.0f);
+    winrt::com_ptr<ID2D1Bitmap> piece;
+    const D2D1_POINT_2U origin{0, 0};
+    // A 2x replacement (192 DPI) holds twice the pixels; copy the matching area.
+    float bdpi = 96, unused = 96;
+    whole->GetDpi(&bdpi, &unused);
+    const UINT32 k = bdpi > 96.0f ? 2 : 1;
+    const D2D1_RECT_U s{src.left * k, src.top * k, src.right * k, src.bottom * k};
+    const auto pieceProps = D2D1::BitmapProperties(
+        D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED), 96.0f * k, 96.0f * k);
+    if (FAILED(dc->CreateBitmap(D2D1::SizeU(s.right - s.left, s.bottom - s.top), nullptr, 0, k == 1 ? props : pieceProps,
+                                piece.put())) ||
+        FAILED(piece->CopyFromBitmap(&origin, whole, &s)))
+        return nullptr;
+    m_pieces[key] = piece;
+    return piece.get();
+}
+
 bool DrawPart(ID2D1DeviceContext* dc, Module module, int id, D2D1_RECT_F src, D2D1_POINT_2F at, float opacity) {
     ID2D1Bitmap* bmp = Resources::Get().Bitmap(dc, module, id);
     if (!bmp) return false;
@@ -173,11 +200,13 @@ D2D1_INTERPOLATION_MODE ModeFor(ID2D1DeviceContext* dc, const D2D1_RECT_F& src, 
 
 bool DrawNineGrid(ID2D1DeviceContext* dc, Module module, int id, D2D1_RECT_F src, D2D1_RECT_F m, D2D1_RECT_F dst,
                   float opacity) {
-    ID2D1Bitmap* bmp = Resources::Get().Bitmap(dc, module, id);
-    if (!bmp) return false;
+    if (!Resources::Get().Bitmap(dc, module, id)) return false;
+    float dpiX = 96, dpiY = 96;
+    dc->GetDpi(&dpiX, &dpiY);
+    const float px = 96.0f / dpiX;  // DIP per device pixel
     // Fixed borders shrink proportionally when the target is smaller than they are.
-    const float kx = std::min(1.0f, (dst.right - dst.left) / std::max(m.left + m.right, 1e-3f));
-    const float ky = std::min(1.0f, (dst.bottom - dst.top) / std::max(m.top + m.bottom, 1e-3f));
+    const float kx = std::min(px, (dst.right - dst.left) / std::max(m.left + m.right, 1e-3f));
+    const float ky = std::min(px, (dst.bottom - dst.top) / std::max(m.top + m.bottom, 1e-3f));
     const float sx[4] = {src.left, src.left + m.left, src.right - m.right, src.right};
     const float sy[4] = {src.top, src.top + m.top, src.bottom - m.bottom, src.bottom};
     const float dx[4] = {dst.left, dst.left + m.left * kx, dst.right - m.right * kx, dst.right};
@@ -187,11 +216,13 @@ bool DrawNineGrid(ID2D1DeviceContext* dc, Module module, int id, D2D1_RECT_F src
             const D2D1_RECT_F s{sx[c], sy[r], sx[c + 1], sy[r + 1]}, d{dx[c], dy[r], dx[c + 1], dy[r + 1]};
             if (s.right - s.left <= 0 || s.bottom - s.top <= 0 || d.right - d.left <= 0 || d.bottom - d.top <= 0)
                 continue;
-            dc->DrawBitmap(bmp, &d, opacity, ModeFor(dc, s, d), &s, nullptr);
+            const D2D1_RECT_U su{static_cast<UINT32>(s.left), static_cast<UINT32>(s.top), static_cast<UINT32>(s.right),
+                                 static_cast<UINT32>(s.bottom)};
+            if (ID2D1Bitmap* piece = Resources::Get().Piece(dc, module, id, su))
+                dc->DrawBitmap(piece, &d, opacity, ModeFor(dc, s, d), nullptr, nullptr);
         }
     return true;
 }
-
 bool DrawStretched(ID2D1DeviceContext* dc, Module module, const std::wstring& name, D2D1_RECT_F dst,
                    float opacity) {
     ID2D1Bitmap* bmp = Resources::Get().Bitmap(dc, module, name);

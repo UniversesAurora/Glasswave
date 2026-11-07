@@ -24,6 +24,7 @@ public:
         // right, bottom) beyond it; painted with the glow's full size.
         std::function<void(ID2D1DeviceContext*, D2D1_SIZE_F)> glow;
         D2D1_RECT_F glowOutset{};
+        bool glowOutsetInPixels = false;  // outset given in device pixels (DWM nine-grid borders)
     };
 
     Widget(int id, Painter painter, Options options);

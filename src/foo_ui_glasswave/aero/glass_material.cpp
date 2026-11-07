@@ -102,10 +102,10 @@ void GlassMaterial::SetScale(float scale) {
     m_scale = scale;
     if (!m_dwmArt) return;
     auto& host = gfx::CompositionHost::Get();
-    const int w = static_cast<int>(std::lround(atlas::kGlareSize.width * scale));
-    const int h = static_cast<int>(std::lround(atlas::kGlareSize.height * scale));
-    host.Repaint(m_glare, w, h, scale, [](ID2D1DeviceContext* dc) { atlas::Glare(dc, true); });
-    host.Repaint(m_glareInactive, w, h, scale, [](ID2D1DeviceContext* dc) { atlas::Glare(dc, false); });
+    const int w = static_cast<int>(atlas::kGlarePixels.width), h = static_cast<int>(atlas::kGlarePixels.height);
+    const D2D1_SIZE_F dip{w / scale, h / scale};
+    host.Repaint(m_glare, w, h, scale, [&](ID2D1DeviceContext* dc) { atlas::Glare(dc, true, dip); });
+    host.Repaint(m_glareInactive, w, h, scale, [&](ID2D1DeviceContext* dc) { atlas::Glare(dc, false, dip); });
 }
 
 void GlassMaterial::SetActive(bool active) {

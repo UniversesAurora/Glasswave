@@ -363,6 +363,7 @@ void MainWindow::CreateWidgets() {
         if (dwmArt) {
             o.glow = [close](ID2D1DeviceContext* dc, D2D1_SIZE_F s) { aero::atlas::CaptionGlow(dc, s, close); };
             o.glowOutset = aero::atlas::GlowOutset(close);
+            o.glowOutsetInPixels = true;
         }
         return o;
     };
@@ -507,12 +508,15 @@ void MainWindow::UpdateLayout() {
     L.content = {L.client.left, L.cmdBar.bottom, L.client.right, L.transport.top};
 
     // Caption buttons hang from the top edge (flush when maximized).
-    const int capRight = W - (max ? PxI(2) : PxI(m::kCapBtnRightInset));
-    const int capTop = max ? 0 : PxI(m::kCapBtnTopInset);
-    const int bh = PxI(m::kCapBtnH);
-    L.capClose = {capRight - PxI(m::kCapBtnCloseW), capTop, capRight, capTop + bh};
-    L.capMax = {L.capClose.left - PxI(m::kCapBtnMaxW), capTop, L.capClose.left, capTop + bh};
-    L.capMin = {L.capMax.left - PxI(m::kCapBtnMinW), capTop, L.capMax.left, capTop + bh};
+    // With the DWM artwork: Win7 sizes measured at 150 % (43 / 41 / 73 x 29 px), hanging one
+    // device pixel below the frame's outer line.
+    const bool dwm = m_aeroArt;
+    const int capRight = W - (max ? PxI(2) : PxI(dwm ? 20.0f / 3 : m::kCapBtnRightInset));
+    const int capTop = max ? 0 : (dwm ? line : PxI(m::kCapBtnTopInset));
+    const int bh = PxI(dwm ? 29.0f / 1.5f : m::kCapBtnH);
+    L.capClose = {capRight - PxI(dwm ? 73.0f / 1.5f : m::kCapBtnCloseW), capTop, capRight, capTop + bh};
+    L.capMax = {L.capClose.left - PxI(dwm ? 41.0f / 1.5f : m::kCapBtnMaxW), capTop, L.capClose.left, capTop + bh};
+    L.capMin = {L.capMax.left - PxI(dwm ? 43.0f / 1.5f : m::kCapBtnMinW), capTop, L.capMax.left, capTop + bh};
 
     // Icon and caption text (the title visual carries a glow margin on every side)
     const int cy = max ? capH / 2 : (capH + PxI(2)) / 2;

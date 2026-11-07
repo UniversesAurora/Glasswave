@@ -34,6 +34,9 @@ public:
     ID2D1Bitmap* Bitmap(ID2D1DeviceContext* dc, Module module, int id) {
         return Bitmap(dc, module, L"#" + std::to_wstring(id));
     }
+    // A copy of one rectangle of a resource as its own bitmap, so filtering never reaches
+    // the neighbouring pixels of an atlas (cached).
+    ID2D1Bitmap* Piece(ID2D1DeviceContext* dc, Module module, int id, const D2D1_RECT_U& src);
 
     const std::wstring& Folder() const { return m_folder; }
 
@@ -51,6 +54,7 @@ private:
     std::array<HMODULE, static_cast<size_t>(Module::Count)> m_modules{};
     std::map<std::pair<int, std::wstring>, winrt::com_ptr<IWICBitmap>> m_decoded;  // nullptr = known missing
     std::map<std::pair<int, std::wstring>, winrt::com_ptr<ID2D1Bitmap>> m_device;
+    std::map<std::wstring, winrt::com_ptr<ID2D1Bitmap>> m_pieces;
 };
 
 // Draw a whole resource with its top-left corner at `at` (DIP). False if missing.
@@ -58,9 +62,11 @@ bool Draw(ID2D1DeviceContext* dc, Module module, int id, D2D1_POINT_2F at, float
 // Draw the `src` part (bitmap pixels) of a resource at `at` (DIP).
 bool DrawPart(ID2D1DeviceContext* dc, Module module, int id, D2D1_RECT_F src, D2D1_POINT_2F at,
               float opacity = 1.0f);
-// Draw `src` (bitmap pixels) of a resource as a nine-grid into `dst` (DIP). `margins` are
-// the fixed borders in bitmap pixels (left, top, right, bottom), drawn 1 pixel = 1 DIP.
-// Pieces that land on whole device pixels are copied without filtering.
+// Draw `src` (whole bitmap pixels) of a resource as a nine-grid into `dst` (DIP). `margins`
+// are the fixed borders in bitmap pixels (left, top, right, bottom). Like Win7's DWM, the
+// borders are drawn one bitmap pixel per device pixel at every DPI (hairlines stay
+// hairlines); only the middle stretches. Pieces landing on whole device pixels are copied
+// without filtering.
 bool DrawNineGrid(ID2D1DeviceContext* dc, Module module, int id, D2D1_RECT_F src, D2D1_RECT_F margins,
                   D2D1_RECT_F dst, float opacity = 1.0f);
 // Draw a whole resource scaled into `dst` (DIP).

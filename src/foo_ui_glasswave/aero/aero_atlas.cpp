@@ -90,9 +90,9 @@ void CaptionGlow(ID2D1DeviceContext* dc, D2D1_SIZE_F size, bool close) {
     win7::DrawNineGrid(dc, Module::AeroAtlas, kAtlas, part.rect, part.sizing, D2D1::RectF(0, 0, size.width, size.height));
 }
 
-void Glare(ID2D1DeviceContext* dc, bool active) {
+void Glare(ID2D1DeviceContext* dc, bool active, D2D1_SIZE_F size) {
     win7::DrawNineGrid(dc, Module::AeroAtlas, kAtlas, State(kGlare, 2, active ? 0 : 1), {},
-                       D2D1::RectF(0, 0, kGlareSize.width, kGlareSize.height));
+                       D2D1::RectF(0, 0, size.width, size.height));
 }
 
 void Streaks(ID2D1DeviceContext* dc, D2D1_SIZE_F size) {

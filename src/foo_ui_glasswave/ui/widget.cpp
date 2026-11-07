@@ -64,9 +64,10 @@ void Widget::Repaint() {
         host.Repaint(visual, w, h, m_scale, [&](ID2D1DeviceContext* dc) { m_painter(dc, dip, layer); });
     if (m_glow) {
         const auto& o = m_options.glowOutset;
-        const int l = static_cast<int>(std::lround(o.left * m_scale)), t = static_cast<int>(std::lround(o.top * m_scale));
-        const int gw = w + l + static_cast<int>(std::lround(o.right * m_scale));
-        const int gh = h + t + static_cast<int>(std::lround(o.bottom * m_scale));
+        const float k = m_options.glowOutsetInPixels ? 1.0f : m_scale;
+        const int l = static_cast<int>(std::lround(o.left * k)), t = static_cast<int>(std::lround(o.top * k));
+        const int gw = w + l + static_cast<int>(std::lround(o.right * k));
+        const int gh = h + t + static_cast<int>(std::lround(o.bottom * k));
         host.Repaint(m_glow, gw, gh, m_scale,
                      [&](ID2D1DeviceContext* dc) { m_options.glow(dc, D2D1::SizeF(gw / m_scale, gh / m_scale)); });
         m_glow.Offset(float3{static_cast<float>(-l), static_cast<float>(-t), 0});
