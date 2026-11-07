@@ -1,0 +1,18 @@
+{
+  "foobar2000-sdk": {
+    "version": "2026-10-01",
+    "url": "https://www.foobar2000.org/downloads/SDK-2026-10-01.7z",
+    "sha256": "D4C55077336FAE81BF8DF0259B5B2748FA45EA84132C656EAD93EB123CBCDC26",
+    "dest": "third_party/foobar2000-sdk",
+    "license": "BSD-style (sdk-license.txt); pfc/libPPUI zlib-style"
+  },
+  "foobar2000-dev": {
+    "version": "2.26.2",
+    "arch": "x64",
+    "url": "https://www.foobar2000.org/downloads/foobar2000-x64_v2.26.2.exe",
+    "sha256": "FFA739F87D9C374CB030426A2AB4BFB37959D0DBB892FDC742654C14D127F795",
+    "authenticode_subject": "CN=Illustrate Ltd, O=Illustrate Ltd, L=Bury, C=GB",
+    "dest": ".local/fb2k-dev",
+    "note": "仅作本地开发测试用的便携实例；用 7-Zip 解包安装程序，不执行安装程序"
+  }
+}

@@ -1,0 +1,37 @@
+# Build output (the SDK projects write to $(SolutionDir)$(Platform))
+/build/
+/out/
+/x64/
+/Win32/
+/Debug/
+/Release/
+*.obj
+*.pch
+*.ipch
+*.ilk
+*.pdb
+*.idb
+*.iobj
+*.ipdb
+*.tlog
+*.lastbuildstate
+*.log
+*.aps
+
+# Visual Studio user state
+.vs/
+*.user
+*.suo
+*.VC.db
+*.VC.opendb
+
+# Third-party code fetched by scripts/bootstrap.ps1 (only the README and lock file are tracked)
+/third_party/*
+!/third_party/README.md
+!/third_party/deps.lock.json
+
+# Local dev instance, download cache, screenshots, copyrighted reference images
+/.local/
+
+# Personal Claude Code settings
+.claude/settings.local.json

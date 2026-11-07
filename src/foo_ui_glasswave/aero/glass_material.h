@@ -1,0 +1,44 @@
+#pragma once
+#include "aero/aero_colorization.h"
+
+// Aero glass material scoped to our own window:
+//   HostBackdropBrush (DWM's live blur of whatever is behind this window)
+//     -> ColorMatrix effect (Win7 colorization recipe, see aero_colorization.h)
+//     + screen-anchored reflection streaks
+// Falls back to an opaque "Aero Basic" style color when Windows transparency
+// effects are turned off.
+
+namespace glasswave::aero {
+
+class GlassMaterial {
+public:
+    explicit GlassMaterial(const Colorization& colorization);
+
+    const winrt::Windows::UI::Composition::ContainerVisual& Root() const { return m_root; }
+
+    void SetActive(bool active);
+    void SetColorization(const Colorization& colorization);
+    // Call when the system "Transparency effects" setting may have changed.
+    void RefreshTransparencyPolicy();
+    // Streaks are fixed to screen coordinates: moving the window only shifts an offset.
+    void UpdateReflectionAnchor(HWND hwnd);
+
+private:
+    void RebuildBrushes();
+    void ApplyBrush();
+
+    Colorization m_colorization;
+    bool m_active = true;
+    bool m_transparency = true;
+    RECT m_reflectionMonitor{};
+
+    winrt::Windows::UI::Composition::ContainerVisual m_root{nullptr};
+    winrt::Windows::UI::Composition::SpriteVisual m_glass{nullptr};
+    winrt::Windows::UI::Composition::SpriteVisual m_reflection{nullptr};
+    winrt::Windows::UI::Composition::CompositionBrush m_activeBrush{nullptr};
+    winrt::Windows::UI::Composition::CompositionBrush m_inactiveBrush{nullptr};
+    winrt::Windows::UI::Composition::CompositionBrush m_basicActive{nullptr};
+    winrt::Windows::UI::Composition::CompositionBrush m_basicInactive{nullptr};
+};
+
+}  // namespace glasswave::aero
