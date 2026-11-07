@@ -37,6 +37,66 @@ constexpr uint32_t kGroupInk = 0x2E64B4, kGroupRule = 0xC9D7E8, kLinkInk = 0x006
 cfg_var_modern::cfg_string cfg_columns({0x5e8b2c47, 0x9a1d, 0x4f63, {0xb0, 0xe2, 0x6c, 0x4a, 0x7d, 0x9f, 0x1b, 0x38}},
                                        "");
 
+// Columns drawn as controls instead of text.
+enum class CellKind { Text, Rating, Favorite };
+CellKind KindOf(const media::Column& c) {
+    if (!c.format) return CellKind::Text;
+    if (std::strcmp(c.format, "[%rating%]") == 0) return CellKind::Rating;
+    if (std::strcmp(c.format, "<favorite>") == 0) return CellKind::Favorite;
+    return CellKind::Text;
+}
+constexpr float kStar = 13;  // STARS.PNG cell width (13x16)
+
+// "Favorites" is an ordinary foobar2000 playlist; the Favorite column adds and removes.
+constexpr const char* kFavorites = "Favorites";
+t_size FavoritesPlaylist(bool create) {
+    auto pm = playlist_manager::get();
+    t_size p = pm->find_playlist(kFavorites);
+    if (p == SIZE_MAX && create) p = pm->create_playlist(kFavorites, SIZE_MAX, SIZE_MAX);
+    return p;
+}
+
+void ToggleFavorite(const metadb_handle_ptr& track) {
+    auto pm = playlist_manager::get();
+    const t_size p = FavoritesPlaylist(true);
+    if (p == SIZE_MAX) return;
+    metadb_handle_list items;
+    pm->playlist_get_all_items(p, items);
+    for (t_size i = 0; i < items.get_count(); ++i)
+        if (items[i] == track) {
+            pm->playlist_remove_items(p, pfc::bit_array_one(i));
+            return;
+        }
+    metadb_handle_list add;
+    add.add_item(track);
+    pm->playlist_add_items(p, add, pfc::bit_array_false());
+}
+
+// Ratings go through foobar2000's own Playback Statistics context command
+// ("Playback Statistics" / "Rating" / "1".."5"), so they land where %rating% reads them.
+bool RateTrack(const metadb_handle_ptr& track, int stars) {
+    metadb_handle_list items;
+    items.add_item(track);
+    auto cm = contextmenu_manager::get();
+    cm->init_context(items, contextmenu_manager::flag_view_full);
+    contextmenu_node* node = cm->get_root();
+    const std::string value = stars > 0 ? std::to_string(stars) : "<not set>";
+    for (const char* want : {"Playback Statistics", "Rating", value.c_str()}) {
+        contextmenu_node* next = nullptr;
+        for (t_size i = 0, n = node ? node->get_num_children() : 0; i < n && !next; ++i) {
+            contextmenu_node* c = node->get_child(i);
+            if (!c || !c->get_name()) continue;
+            std::string name = c->get_name();
+            name.erase(std::remove(name.begin(), name.end(), '&'), name.end());
+            if (pfc::stricmp_ascii(name.c_str(), want) == 0) next = c;
+        }
+        if (!next) return false;
+        node = next;
+    }
+    node->execute();
+    return true;
+}
+
 struct SavedLayout {
     std::vector<size_t> order;
     std::vector<float> widths;
@@ -231,6 +291,30 @@ void ListView::ScrollXTo(float x) {
     m_scrollX = x;
     PaintHeader();
     PaintRows();
+}
+
+int ListView::CellAt(POINT pt, size_t* srcColumn) const {
+    if (!m_source || m_mode == Mode::Tiles) return static_cast<int>(CellKind::Text);
+    const float x = ContentPoint(pt).x;
+    const auto& srcCols = m_source->Columns();
+    for (const Col& c : Columns(0))
+        if (x >= c.x && x < c.x + c.w) {
+            if (srcColumn) *srcColumn = c.src;
+            return static_cast<int>(KindOf(srcCols[c.src]));
+        }
+    return static_cast<int>(CellKind::Text);
+}
+
+int ListView::StarAt(POINT pt) const {
+    size_t src = SIZE_MAX;
+    if (CellAt(pt, &src) != static_cast<int>(CellKind::Rating)) return -1;
+    const float x = ContentPoint(pt).x;
+    for (const Col& c : Columns(0))
+        if (c.src == src) {
+            const float rel = x - (c.x + kCellPad);
+            return rel >= 0 && rel < 5 * kStar ? static_cast<int>(rel / kStar) : -1;
+        }
+    return -1;
 }
 
 D2D1_POINT_2F ListView::ContentPoint(POINT pt) const {
@@ -481,6 +565,18 @@ void ListView::PaintRows() {
             Text(dc, m_source->EmptyText(), {20, 20, size.width - 20, 60}, kGreyInk, DWRITE_TEXT_ALIGNMENT_CENTER);
             return;
         }
+        // Favorite column shown: which tracks are in the Favorites playlist.
+        m_favorites.clear();
+        if (m_mode != Mode::Tiles) {
+            const auto& srcCols = m_source->Columns();
+            bool shown = false;
+            for (const Col& c : Columns(0)) shown = shown || KindOf(srcCols[c.src]) == CellKind::Favorite;
+            if (const t_size p = shown ? FavoritesPlaylist(false) : SIZE_MAX; p != SIZE_MAX) {
+                metadb_handle_list items;
+                playlist_manager::get()->playlist_get_all_items(p, items);
+                for (t_size i = 0; i < items.get_count(); ++i) m_favorites.insert(items[i].get_ptr());
+            }
+        }
         D2D1_MATRIX_3X2_F base;
         dc->GetTransform(&base);
         dc->SetTransform(D2D1::Matrix3x2F::Translation(-ScrollX(), 0) * base);
@@ -531,6 +627,34 @@ void ListView::PaintCells(ID2D1DeviceContext* dc, size_t row, float y, float row
     for (const Col& c : cols) {
         if (skipAlbum && c.src == 0) continue;
         const auto& col = srcCols[c.src];
+        const CellKind kind = KindOf(col);
+        if (kind == CellKind::Rating) {
+            // WMP stars (STARS.PNG 13x16 cells: 0-4 empty, 5-9 gold, 15-19 hover gold,
+            // 25-29 white on a selected row); hovering previews the rating under the mouse.
+            const int rating = _wtoi(m_source->Cell(row, c.src).c_str());
+            const bool hover = row == m_hot && m_hotStar >= 0, sel = m_source->IsSelected(row);
+            const float sy = std::round((y + (rowH - 16) / 2) * m_scale) / m_scale;
+            bool drawn = true;
+            for (int i = 0; i < 5 && drawn; ++i) {
+                const UINT32 cell = hover ? (i <= m_hotStar ? 15 + i : i) : (i < rating ? (sel ? 25 : 5) + i : i);
+                const float sx = std::round((c.x + kCellPad + i * kStar) * m_scale) / m_scale;
+                drawn = win7::DrawPartTo(dc, win7::Module::Wmploc, L"STARS.PNG",
+                                         D2D1::RectU(cell * 13, 0, cell * 13 + 13, 16), {sx, sy, sx + kStar, sy + 16});
+            }
+            if (drawn) continue;
+        } else if (kind == CellKind::Favorite) {
+            // No heart in WMP's art: a gold star (5530) when the song is in Favorites, its
+            // outline (5531) on the hovered row, else the empty one (5533).
+            const metadb_handle_ptr item = m_source->Item(row);
+            const bool fav = item.is_valid() && m_favorites.count(item.get_ptr()) != 0;
+            const int id = fav ? 5530 : row == m_hot ? 5531 : 5533;
+            const float fx = std::round((c.x + (c.w - 14) / 2) * m_scale) / m_scale;
+            const float fy = std::round((y + (rowH - 14) / 2) * m_scale) / m_scale;
+            if (win7::Draw(dc, win7::Module::Wmploc, id, {fx, fy})) continue;
+            if (fav) Text(dc, L"★", {c.x + kCellPad, y + 0.5f, c.x + c.w - kCellPad, y + 0.5f + rowH}, 0xD4A017,
+                          DWRITE_TEXT_ALIGNMENT_CENTER);
+            continue;
+        }
         const bool primary = col.flex;
         Text(dc, m_source->Cell(row, c.src), {c.x + kCellPad, y + 0.5f, c.x + c.w - kCellPad, y + 0.5f + rowH},
              isPlaying ? kPlayingInk : (primary ? kInk : kSecondaryInk),
@@ -873,6 +997,10 @@ void ListView::OnMouseMove(POINT pt) {
         PaintHeader();
     }
     const size_t hot = hit.part == Part::Row ? hit.row : SIZE_MAX;
+    if (const int star = hot != SIZE_MAX ? StarAt(pt) : -1; star != m_hotStar) {
+        m_hotStar = star;
+        if (hot == m_hot) PaintRows();  // otherwise the hot-row change below repaints
+    }
     const size_t hotGroup = hit.part == Part::AlbumColumn || hit.part == Part::Link ? hit.group : SIZE_MAX;
     const size_t linkGroup = hit.part == Part::Link ? hit.group : SIZE_MAX;
     const size_t linkLine = hit.part == Part::Link ? hit.line : 0;
@@ -949,9 +1077,19 @@ void ListView::OnLButtonDown(POINT pt, bool ctrl, bool shift) {
             SortBy(0);  // the album column cannot move but still sorts
         }
         break;
-    case Part::Row:
+    case Part::Row: {
+        // Rating stars and the Favorite star act on the clicked song (and select it).
+        const int kind = CellAt(pt, nullptr);
+        if (kind == static_cast<int>(CellKind::Rating) && StarAt(pt) >= 0) {
+            if (const auto item = m_source->Item(hit.row); item.is_valid() && !RateTrack(item, StarAt(pt) + 1))
+                popup_message::g_show("Ratings need foobar2000's Playback Statistics (Library > Playback Statistics).",
+                                      "Rating");
+        } else if (kind == static_cast<int>(CellKind::Favorite)) {
+            if (const auto item = m_source->Item(hit.row); item.is_valid()) ToggleFavorite(item);
+        }
         MoveFocus(hit.row, ctrl, shift);
         break;
+    }
     case Part::Link:
         if (onLink) onLink(hit.group, hit.line);
         break;

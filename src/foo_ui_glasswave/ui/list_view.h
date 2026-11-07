@@ -139,6 +139,10 @@ private:
     int m_dragStartX = 0, m_dragX = 0;
     float m_dragStartW = 0;
     float m_scrollX = 0;  // DIP, horizontal scroll of the detail layouts
+    int m_hotStar = -1;   // star under the mouse in the hot row's rating cell
+    std::unordered_set<const void*> m_favorites;  // tracks in the Favorites playlist (per paint)
+    int CellAt(POINT pt, size_t* srcColumn) const;  // CellKind of the column under pt
+    int StarAt(POINT pt) const;                     // 0..4 over a rating cell, else -1
     D2D1_POINT_2F m_marqueeFrom{}, m_marqueeTo{};  // content coordinates
     std::vector<size_t> m_marqueeBase;              // selection kept with Ctrl
     int m_artToken = 0;

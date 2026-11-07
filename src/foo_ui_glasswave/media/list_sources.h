@@ -70,6 +70,8 @@ public:
     virtual void Toggle(size_t row) = 0;
     virtual void SelectRange(size_t a, size_t b, bool keepOthers) = 0;
     virtual void SelectAll() = 0;
+    // The track a row shows (rating / favourite cells); empty for group rows.
+    virtual metadb_handle_ptr Item(size_t /*row*/) const { return {}; }
     // Row showing this track, or SIZE_MAX ("jump to the playing song").
     virtual size_t FindRow(const metadb_handle_ptr& /*track*/) const { return SIZE_MAX; }
     // Exactly these rows selected, all others not (rubber-band selection).
@@ -106,6 +108,7 @@ public:
     void SelectAll() override;
     void SetSelection(const std::vector<size_t>& rows) override;
     size_t FindRow(const metadb_handle_ptr& track) const override;
+    metadb_handle_ptr Item(size_t row) const override;
     size_t Focus() const override;
     void SetFocus(size_t row) override;
     void Activate(size_t row) override;
@@ -156,6 +159,7 @@ public:
     void SelectAll() override;
     void SetSelection(const std::vector<size_t>& rows) override;
     size_t FindRow(const metadb_handle_ptr& track) const override;
+    metadb_handle_ptr Item(size_t row) const override;
     size_t Focus() const override { return m_focus; }
     void SetFocus(size_t row) override { m_focus = row; }
     void Activate(size_t row) override;

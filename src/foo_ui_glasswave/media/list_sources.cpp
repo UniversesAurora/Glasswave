@@ -25,7 +25,8 @@ std::vector<Column> ExtraColumns() {
     return {
         {L"Album artist", 150, false, false, true, "[%album artist%]"},
         {L"Composer", 150, false, false, true, "[%composer%]"},
-        {L"Rating", 60, false, false, true, "[%rating%]"},
+        {L"Rating", 80, false, false, false, "[%rating%]"},  // drawn as WMP stars
+        {L"Favorite", 58, false, false, false, "<favorite>"},  // toggles the Favorites playlist
         {L"Play count", 70, false, true, true, "[%play_count%]"},
         {L"Bit rate", 70, false, true, true, "[%bitrate% kbps]"},
         {L"Type", 60, false, false, true, "[%codec%]"},
@@ -219,6 +220,10 @@ void PlaylistSource::SetSelection(const std::vector<size_t>& rows) {
     for (size_t r : rows)
         if (r < m_rows.size()) state.set(m_rows[r], true);
     pm->playlist_set_selection(m_playlist, pfc::bit_array_true(), state);
+}
+
+metadb_handle_ptr PlaylistSource::Item(size_t row) const {
+    return row < m_rows.size() ? playlist_manager::get()->playlist_get_item_handle(m_playlist, m_rows[row]) : metadb_handle_ptr{};
 }
 
 size_t PlaylistSource::FindRow(const metadb_handle_ptr& track) const {
@@ -419,6 +424,10 @@ void TrackSource::SelectRange(size_t a, size_t b, bool keepOthers) {
 
 void TrackSource::SelectAll() {
     for (size_t r : m_rows) m_selected[r] = 1;
+}
+
+metadb_handle_ptr TrackSource::Item(size_t row) const {
+    return row < m_rows.size() ? m_model.Tracks()[m_all[m_rows[row]]].handle : metadb_handle_ptr{};
 }
 
 size_t TrackSource::FindRow(const metadb_handle_ptr& track) const {

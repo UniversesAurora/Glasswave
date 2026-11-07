@@ -54,8 +54,9 @@ IWICBitmapSource* WmpIcon(int id, int px) {
     return result.get();
 }
 
-bool DrawWmpIcon(ID2D1DeviceContext* dc, D2D1_POINT_2F center, wmp::paint::NavIcon icon, bool autoPlaylist, float scale) {
-    const int id = WmpIconId(icon, autoPlaylist);
+bool DrawWmpIcon(ID2D1DeviceContext* dc, D2D1_POINT_2F center, wmp::paint::NavIcon icon, bool autoPlaylist, float scale,
+                 int overrideId = 0) {
+    const int id = overrideId ? overrideId : WmpIconId(icon, autoPlaylist);
     if (!id) return false;
     const int px = static_cast<int>(std::lround(16 * scale));
     IWICBitmapSource* src = WmpIcon(id, px);
@@ -193,7 +194,9 @@ void NavPane::Paint() {
                     wp::Disclosure(dc, {x + 2, y + rowH / 2}, expanded);
             }
             const bool autoPlaylist = it.target == Target::Playlist && autoplaylist_manager::get()->is_client_present(it.playlist);
-            if (!DrawWmpIcon(dc, {x + 16, y + rowH / 2}, it.icon, autoPlaylist, s)) wp::NavGlyph(dc, {x + 16, y + rowH / 2}, it.icon);
+            const int special = it.target == Target::Playlist && it.text == L"Favorites" ? 29526 : 0;  // star
+            if (!DrawWmpIcon(dc, {x + 16, y + rowH / 2}, it.icon, autoPlaylist, s, special))
+                wp::NavGlyph(dc, {x + 16, y + rowH / 2}, it.icon);
             auto layout = MakeText(it.text, 12.0f, DWRITE_FONT_WEIGHT_NORMAL, width - x - 34, rowH);
             dc->DrawTextLayout({x + 26, y}, layout.get(), ink.get());
         }
