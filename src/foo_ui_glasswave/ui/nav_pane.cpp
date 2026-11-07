@@ -2,6 +2,7 @@
 #include "ui/nav_pane.h"
 #include "gfx/composition_host.h"
 #include "ui/text.h"
+#include "win7/win7_resources.h"
 
 namespace glasswave::ui {
 
@@ -12,6 +13,60 @@ using winrt::Windows::Foundation::Numerics::float3;
 namespace {
 constexpr float kRowHeight = 22.0f;
 constexpr float kIndent = 16.0f;
+
+// WMP 12 navigation icons: wmploc icon groups (see docs/design/win7-asset-map.md).
+int WmpIconId(wmp::paint::NavIcon icon, bool autoPlaylist) {
+    using I = wmp::paint::NavIcon;
+    switch (icon) {
+    case I::Library: return 29527;
+    case I::Playlist: return autoPlaylist ? 29572 : 29522;
+    case I::NowPlaying: return 29522;
+    case I::Music: return 29511;
+    case I::Artist: return 29514;
+    case I::Album: return 29510;
+    case I::Genre: return 29517;
+    default: return 0;
+    }
+}
+
+// Icon as a WIC bitmap at `px` pixels, cached; nullptr when the art is missing.
+std::map<std::pair<int, int>, winrt::com_ptr<IWICBitmapSource>>& IconCache() {
+    static std::map<std::pair<int, int>, winrt::com_ptr<IWICBitmapSource>> cache;
+    return cache;
+}
+
+IWICBitmapSource* WmpIcon(int id, int px) {
+    auto& cache = IconCache();
+    const auto key = std::make_pair(id, px);
+    if (auto it = cache.find(key); it != cache.end()) return it->second.get();
+    winrt::com_ptr<IWICBitmapSource> result;
+    if (HICON h = win7::Resources::Get().Icon(win7::Module::Wmploc, id, px)) {
+        auto* wic = gfx::CompositionHost::Get().Wic();
+        winrt::com_ptr<IWICBitmap> bmp;
+        winrt::com_ptr<IWICFormatConverter> conv;
+        if (SUCCEEDED(wic->CreateBitmapFromHICON(h, bmp.put())) && SUCCEEDED(wic->CreateFormatConverter(conv.put())) &&
+            SUCCEEDED(conv->Initialize(bmp.get(), GUID_WICPixelFormat32bppPBGRA, WICBitmapDitherTypeNone, nullptr, 0,
+                                       WICBitmapPaletteTypeMedianCut)))
+            result = conv;
+        DestroyIcon(h);
+    }
+    cache[key] = result;
+    return result.get();
+}
+
+bool DrawWmpIcon(ID2D1DeviceContext* dc, D2D1_POINT_2F center, wmp::paint::NavIcon icon, bool autoPlaylist, float scale) {
+    const int id = WmpIconId(icon, autoPlaylist);
+    if (!id) return false;
+    const int px = static_cast<int>(std::lround(16 * scale));
+    IWICBitmapSource* src = WmpIcon(id, px);
+    if (!src) return false;
+    winrt::com_ptr<ID2D1Bitmap> bmp;
+    if (FAILED(dc->CreateBitmapFromWicBitmap(src, nullptr, bmp.put()))) return false;
+    const float x = std::round((center.x - 8) * scale) / scale, y = std::round((center.y - 8) * scale) / scale;
+    dc->DrawBitmap(bmp.get(), D2D1::RectF(x, y, x + px / scale, y + px / scale), 1.0f,
+                   D2D1_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR);
+    return true;
+}
 }  // namespace
 
 NavPane::NavPane(const winrt::Windows::UI::Composition::ContainerVisual& parent) {
@@ -19,6 +74,8 @@ NavPane::NavPane(const winrt::Windows::UI::Composition::ContainerVisual& parent)
     parent.Children().InsertAtTop(m_visual);
     Rebuild();
 }
+
+NavPane::~NavPane() { IconCache().clear(); }  // WIC objects go before COM does
 
 int NavPane::RowHeightPx() const { return static_cast<int>(std::lround(kRowHeight * m_scale)); }
 
@@ -129,9 +186,14 @@ void NavPane::Paint() {
             const float x = 8 + it.level * kIndent;
             if (it.expandable) {
                 const bool expanded = it.target == Target::PlaylistsHeader ? m_playlistsExpanded : m_musicExpanded;
-                wp::Disclosure(dc, {x + 2, y + rowH / 2}, expanded);
+                // Win7 tree expander (aero Explorer::TreeView glyph 928: closed / open, 16x16).
+                const float gy = std::round((y + rowH / 2 - 8) * s) / s, gx = std::round((x - 6) * s) / s;
+                if (!win7::DrawPartTo(dc, win7::Module::Aero, 928, D2D1::RectU(0, expanded ? 16 : 0, 16, expanded ? 32 : 16),
+                                      {gx, gy, gx + 16, gy + 16}))
+                    wp::Disclosure(dc, {x + 2, y + rowH / 2}, expanded);
             }
-            wp::NavGlyph(dc, {x + 16, y + rowH / 2}, it.icon);
+            const bool autoPlaylist = it.target == Target::Playlist && autoplaylist_manager::get()->is_client_present(it.playlist);
+            if (!DrawWmpIcon(dc, {x + 16, y + rowH / 2}, it.icon, autoPlaylist, s)) wp::NavGlyph(dc, {x + 16, y + rowH / 2}, it.icon);
             auto layout = MakeText(it.text, 12.0f, DWRITE_FONT_WEIGHT_NORMAL, width - x - 34, rowH);
             dc->DrawTextLayout({x + 26, y}, layout.get(), ink.get());
         }

@@ -18,6 +18,7 @@ public:
     };
 
     explicit NavPane(const winrt::Windows::UI::Composition::ContainerVisual& parent);
+    ~NavPane();
 
     void Rebuild();  // playlists changed
     void SetBounds(const RECT& px, float scale);
