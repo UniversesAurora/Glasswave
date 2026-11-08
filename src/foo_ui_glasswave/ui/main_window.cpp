@@ -3332,7 +3332,7 @@ void MainWindow::CreateNeteasePlaylist() {
         ShowNeteaseLogin();
         return;
     }
-    PromptText(m_hwnd, Tr(L"New NetEase playlist"), Tr(L"Playlist name"), Tr(L"New playlist"),
+    PromptText(m_hwnd, Tr(L"New NetEase playlist"), Tr(L"Playlist name"), Tr(L"New NetEase playlist"),
                [this](std::wstring name) {
                    if (name.empty()) return;
                    netease::Provider::Get().CreatePlaylist(
