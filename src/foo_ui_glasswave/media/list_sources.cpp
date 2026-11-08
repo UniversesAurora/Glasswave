@@ -227,12 +227,20 @@ void PlaylistSource::Rebuild() {
 void PlaylistSource::BuildGroups() {
     m_groups.clear();
     if (m_style != ViewStyle::Tiles) return;
-    // A playlist keeps its own order, so an album column covers consecutive songs only.
+    // Expanded tile collects all songs of an album into one column, ordered by the album's
+    // first appearance in the playlist. Only the display order changes; the foobar2000
+    // playlist keeps its own order, so leaving the view restores it.
     auto pm = playlist_manager::get();
     static const auto script = Compile(
         "[%album%]\x1f$if2(%album artist%,%artist%)\x1f[%genre%]\x1f[$year(%date%)]\x1f[%album artist%]");
+    struct RowInfo {
+        size_t row = 0;  // index in the unsorted m_rows
+        std::wstring key, album, albumArtist, genre, year, albumArtistLink;
+        metadb_handle_ptr item;
+    };
+    std::vector<RowInfo> infos;
+    infos.reserve(m_rows.size());
     pfc::string8 buf;
-    std::wstring last;
     for (size_t r = 0; r < m_rows.size(); ++r) {
         pm->playlist_item_format_title(m_playlist, m_rows[r], nullptr, buf, script, nullptr,
                                        playback_control::display_level_none);
@@ -245,29 +253,52 @@ void PlaylistSource::BuildGroups() {
             if (to == std::wstring::npos) break;
             from = to + 1;
         }
-        const metadb_handle_ptr item = pm->playlist_get_item_handle(m_playlist, m_rows[r]);
-        if (const RepairedText* fix = CueCatalog::Get().Repair(item)) {
+        RowInfo info;
+        info.row = r;
+        info.item = pm->playlist_get_item_handle(m_playlist, m_rows[r]);
+        if (const RepairedText* fix = CueCatalog::Get().Repair(info.item)) {
             if (!fix->album.empty()) f[0] = fix->album;
             if (!fix->albumArtist.empty()) f[1] = f[4] = fix->albumArtist;
         }
-        // Same album as the row above: one more song in that group. The album artist is not
-        // part of the key: soundtrack tracks often credit a different artist per track.
-        const std::wstring key = f[0];
-        if (!m_groups.empty() && !f[0].empty() && key == last) {
+        // A row without an album stays its own group; otherwise the album name is the key
+        // (soundtracks often credit a different artist per track).
+        info.key = f[0].empty()
+                       ? std::wstring(L"\x1f") + (info.item.is_valid() ? ui::Wide(info.item->get_path()) : L"")
+                       : f[0];
+        info.album = f[0];
+        info.albumArtist = f[1];
+        info.genre = f[2];
+        info.year = f[3];
+        info.albumArtistLink = f[4];
+        infos.push_back(std::move(info));
+    }
+    std::map<std::wstring, size_t> rank;
+    for (size_t i = 0; i < infos.size(); ++i) rank.emplace(infos[i].key, i);
+    std::vector<size_t> order(infos.size());
+    for (size_t i = 0; i < order.size(); ++i) order[i] = i;
+    std::stable_sort(order.begin(), order.end(),
+                     [&](size_t a, size_t b) { return rank[infos[a].key] < rank[infos[b].key]; });
+    std::vector<size_t> rows;
+    rows.reserve(m_rows.size());
+    for (size_t i : order) rows.push_back(m_rows[infos[i].row]);
+    m_rows = std::move(rows);
+    for (size_t i = 0; i < order.size(); ++i) {
+        const RowInfo& info = infos[order[i]];
+        if (!m_groups.empty() && m_groups.back().key == info.key) {
             ++m_groups.back().count;
             continue;
         }
-        last = key;
         RowGroup g;
-        g.first = r;
+        g.key = info.key;
+        g.first = i;
         g.count = 1;
-        g.art = item;
-        const std::wstring album = f[0].empty() ? ui::Tr(L"Unknown Album") : f[0];
+        g.art = info.item;
+        const std::wstring album = info.album.empty() ? ui::Tr(L"Unknown Album") : info.album;
         g.header = album;
-        g.lines = {album, f[1], f[2], f[3]};
+        g.lines = {album, info.albumArtist, info.genre, info.year};
         // Album, album artist and genre open their views. The main window turns these into
         // NetEase pages when the group's track is an ncm:// handle.
-        g.linkKeys = {album, f[4], f[2], std::wstring()};
+        g.linkKeys = {info.album, info.albumArtistLink, info.genre, std::wstring()};
         m_groups.push_back(std::move(g));
     }
 }
@@ -463,8 +494,9 @@ void PlaylistSource::SelectAll() {
 size_t PlaylistSource::Focus() const {
     const t_size f = playlist_manager::get()->playlist_get_focus_item(m_playlist);
     if (f == SIZE_MAX) return SIZE_MAX;
-    auto it = std::lower_bound(m_rows.begin(), m_rows.end(), f);
-    return (it != m_rows.end() && *it == f) ? static_cast<size_t>(it - m_rows.begin()) : SIZE_MAX;
+    for (size_t r = 0; r < m_rows.size(); ++r)
+        if (m_rows[r] == f) return r;
+    return SIZE_MAX;
 }
 
 void PlaylistSource::SetFocus(size_t row) {
