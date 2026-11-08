@@ -86,6 +86,18 @@ Album ParseAlbum(const json::Object& object) {
     return album;
 }
 
+Artist ParseArtist(const json::Object& object) {
+    Artist artist;
+    artist.id = json::GetInt64(object, L"id");
+    artist.name = json::GetString(object, L"name");
+    artist.avatarUrl = json::GetString(object, L"picUrl", json::GetString(object, L"img1v1Url"));
+    artist.brief = json::GetString(object, L"briefDesc");
+    artist.albumCount = json::GetInt(object, L"albumSize");
+    artist.songCount = json::GetInt(object, L"musicSize");
+    if (artist.name.empty()) artist.name = L"Unknown";
+    return artist;
+}
+
 std::vector<int64_t> IdsOf(const json::Array& array) {
     std::vector<int64_t> ids;
     if (!array) return ids;
@@ -654,6 +666,67 @@ bool Client::GetAlbum(int64_t albumId, abort_callback& abort, Album& info, std::
             Song song = ParseSong(object);
             if (song.id) songs.push_back(std::move(song));
         }
+    }
+    return true;
+}
+
+bool Client::GetFollowedArtists(abort_callback& abort, std::vector<Artist>& out, std::wstring& error) {
+    out.clear();
+    int offset = 0;
+    for (int page = 0; page < 50; ++page) {
+        json::Object body;
+        int code = 0;
+        if (!Request(L"/artist/sublist",
+                     {{L"limit", L"100"}, {L"offset", std::to_wstring(offset)}}, false, abort, body, code, error))
+            return false;
+        if (code == 301) {
+            error = L"Please sign in to NetEase Cloud Music.";
+            return false;
+        }
+        if (code != 200) {
+            error = MessageOf(body, code);
+            return false;
+        }
+        auto artists = json::GetArray(body, L"artists");
+        if (!artists) break;
+        for (const auto& object : json::Objects(*artists)) {
+            Artist artist = ParseArtist(object);
+            if (!artist.id) continue;
+            artist.followed = true;
+            artist.followKnown = true;
+            out.push_back(std::move(artist));
+        }
+        if (!json::GetBool(body, L"hasMore") || artists->Size() == 0) break;
+        offset += static_cast<int>(artists->Size());
+    }
+    return true;
+}
+
+bool Client::GetCollectedAlbums(abort_callback& abort, std::vector<Album>& out, std::wstring& error) {
+    out.clear();
+    int offset = 0;
+    for (int page = 0; page < 50; ++page) {
+        json::Object body;
+        int code = 0;
+        if (!Request(L"/album/sublist",
+                     {{L"limit", L"100"}, {L"offset", std::to_wstring(offset)}}, false, abort, body, code, error))
+            return false;
+        if (code == 301) {
+            error = L"Please sign in to NetEase Cloud Music.";
+            return false;
+        }
+        if (code != 200) {
+            error = MessageOf(body, code);
+            return false;
+        }
+        auto albums = json::GetArray(body, L"data");
+        if (!albums) break;
+        for (const auto& object : json::Objects(*albums)) {
+            Album album = ParseAlbum(object);
+            if (album.id) out.push_back(std::move(album));
+        }
+        if (!json::GetBool(body, L"hasMore") || albums->Size() == 0) break;
+        offset += static_cast<int>(albums->Size());
     }
     return true;
 }

@@ -87,6 +87,9 @@ void Provider::Shutdown() {
     m_account = {};
     m_createdPlaylists.clear();
     m_collectedPlaylists.clear();
+    m_recommendedPlaylists.clear();
+    m_followedArtists.clear();
+    m_collectedAlbums.clear();
     m_likedPlaylist = 0;
     std::lock_guard liked(m_likedMutex);
     m_liked.clear();
@@ -117,6 +120,21 @@ std::vector<Playlist> Provider::CreatedPlaylists() const {
 std::vector<Playlist> Provider::CollectedPlaylists() const {
     std::lock_guard lock(m_mutex);
     return m_collectedPlaylists;
+}
+
+std::vector<Playlist> Provider::RecommendedPlaylists() const {
+    std::lock_guard lock(m_mutex);
+    return m_recommendedPlaylists;
+}
+
+std::vector<Artist> Provider::FollowedArtists() const {
+    std::lock_guard lock(m_mutex);
+    return m_followedArtists;
+}
+
+std::vector<Album> Provider::CollectedAlbums() const {
+    std::lock_guard lock(m_mutex);
+    return m_collectedAlbums;
 }
 
 void Provider::SetAccountLocked(const Account& account) {
@@ -257,6 +275,27 @@ void Provider::RefreshAccount(DoneCallback done) {
             m_collectedPlaylists = std::move(collected);
             m_likedPlaylist = likedPlaylist;
         }
+        // Prefetch the account's saved artists/albums and the recommended list once per
+        // refresh, so the navigation pane's breadcrumb menus can list them immediately.
+        std::wstring listError;
+        std::vector<Artist> artists;
+        if (m_client.GetFollowedArtists(abort, artists, listError)) {
+            for (const auto& artist : artists) Catalog::Get().Put(artist);
+            std::lock_guard lock(m_mutex);
+            m_followedArtists = std::move(artists);
+        }
+        std::vector<Album> albums;
+        if (m_client.GetCollectedAlbums(abort, albums, listError)) {
+            Catalog::Get().Put(albums);
+            std::lock_guard lock(m_mutex);
+            m_collectedAlbums = std::move(albums);
+        }
+        std::vector<Playlist> recommended;
+        if (m_client.RecommendPlaylists(abort, recommended, listError)) {
+            for (const auto& playlist : recommended) Catalog::Get().Put(playlist);
+            std::lock_guard lock(m_mutex);
+            m_recommendedPlaylists = std::move(recommended);
+        }
         PostMain([done = std::move(done)] {
             if (done) done(true, {});
         });
@@ -378,8 +417,82 @@ void Provider::FetchRecommended(PlaylistsCallback done) {
             return;
         }
         for (const auto& playlist : playlists) Catalog::Get().Put(playlist);
+        {
+            std::lock_guard lock(m_mutex);
+            m_recommendedPlaylists = playlists;
+        }
         PostMain([done = std::move(done), playlists = std::move(playlists)] {
             if (done) done(std::move(playlists), {});
+        });
+    });
+}
+
+void Provider::FetchFollowedArtists(ArtistsCallback done) {
+    m_tasks.Post([this, done = std::move(done)] {
+        if (m_stopping) return;
+        abort_callback_impl abort;
+        std::wstring error;
+        if (!RequireLogin(error)) {
+            PostMain([done = std::move(done), error] {
+                if (done) done({}, ErrorOf(error));
+            });
+            return;
+        }
+        if (!m_service.EnsureStarted(abort, &error)) {
+            PostMain([done = std::move(done), error] {
+                if (done) done({}, ErrorOf(error));
+            });
+            return;
+        }
+        std::vector<Artist> artists;
+        if (!m_client.GetFollowedArtists(abort, artists, error)) {
+            PostMain([done = std::move(done), error] {
+                if (done) done({}, ErrorOf(error));
+            });
+            return;
+        }
+        for (const auto& artist : artists) Catalog::Get().Put(artist);
+        {
+            std::lock_guard lock(m_mutex);
+            m_followedArtists = artists;
+        }
+        PostMain([done = std::move(done), artists = std::move(artists)]() mutable {
+            if (done) done(std::move(artists), {});
+        });
+    });
+}
+
+void Provider::FetchCollectedAlbums(AlbumsCallback done) {
+    m_tasks.Post([this, done = std::move(done)] {
+        if (m_stopping) return;
+        abort_callback_impl abort;
+        std::wstring error;
+        if (!RequireLogin(error)) {
+            PostMain([done = std::move(done), error] {
+                if (done) done({}, ErrorOf(error));
+            });
+            return;
+        }
+        if (!m_service.EnsureStarted(abort, &error)) {
+            PostMain([done = std::move(done), error] {
+                if (done) done({}, ErrorOf(error));
+            });
+            return;
+        }
+        std::vector<Album> albums;
+        if (!m_client.GetCollectedAlbums(abort, albums, error)) {
+            PostMain([done = std::move(done), error] {
+                if (done) done({}, ErrorOf(error));
+            });
+            return;
+        }
+        Catalog::Get().Put(albums);
+        {
+            std::lock_guard lock(m_mutex);
+            m_collectedAlbums = albums;
+        }
+        PostMain([done = std::move(done), albums = std::move(albums)]() mutable {
+            if (done) done(std::move(albums), {});
         });
     });
 }
@@ -676,6 +789,9 @@ void Provider::Logout() {
         m_account = {};
         m_createdPlaylists.clear();
         m_collectedPlaylists.clear();
+        m_recommendedPlaylists.clear();
+        m_followedArtists.clear();
+        m_collectedAlbums.clear();
         m_likedPlaylist = 0;
         std::lock_guard liked(m_likedMutex);
         m_liked.clear();

@@ -63,6 +63,8 @@ public:
                          std::wstring& error);
     bool GetArtistTopSongs(int64_t artistId, abort_callback& abort, std::vector<Song>& out, std::wstring& error);
     bool GetAlbum(int64_t albumId, abort_callback& abort, Album& info, std::vector<Song>& songs, std::wstring& error);
+    bool GetFollowedArtists(abort_callback& abort, std::vector<Artist>& out, std::wstring& error);
+    bool GetCollectedAlbums(abort_callback& abort, std::vector<Album>& out, std::wstring& error);
     bool SetArtistFollow(int64_t artistId, bool follow, abort_callback& abort, std::wstring& error);
     bool Likelist(int64_t userId, abort_callback& abort, std::vector<int64_t>& out, std::wstring& error);
     bool SetLike(int64_t id, bool like, abort_callback& abort, std::wstring& error);
