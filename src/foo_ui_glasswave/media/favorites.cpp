@@ -3,6 +3,12 @@
 
 namespace glasswave::media {
 
+namespace {
+FavoriteHook* g_hook = nullptr;
+}
+
+void SetFavoriteHook(FavoriteHook* hook) { g_hook = hook; }
+
 t_size FavoritesPlaylist(bool create) {
     auto pm = playlist_manager::get();
     t_size p = pm->find_playlist(kFavoritesName);
@@ -11,6 +17,7 @@ t_size FavoritesPlaylist(bool create) {
 }
 
 bool IsFavorite(const metadb_handle_ptr& track) {
+    if (g_hook && track.is_valid() && g_hook->Handles(track)) return g_hook->IsFavorite(track);
     const t_size p = FavoritesPlaylist(false);
     if (p == SIZE_MAX || !track.is_valid()) return false;
     metadb_handle_list items;
@@ -22,6 +29,10 @@ bool IsFavorite(const metadb_handle_ptr& track) {
 
 void ToggleFavorite(const metadb_handle_ptr& track) {
     if (!track.is_valid()) return;
+    if (g_hook && g_hook->Handles(track)) {
+        g_hook->Toggle(track);
+        return;
+    }
     auto pm = playlist_manager::get();
     const t_size p = FavoritesPlaylist(true);
     if (p == SIZE_MAX) return;
@@ -45,8 +56,13 @@ bool AllFavorite(metadb_handle_list_cref tracks) {
 }
 
 void SetFavorite(metadb_handle_list_cref tracks, bool favorite) {
-    for (t_size i = 0; i < tracks.get_count(); ++i)
-        if (IsFavorite(tracks[i]) != favorite) ToggleFavorite(tracks[i]);
+    for (t_size i = 0; i < tracks.get_count(); ++i) {
+        const auto& track = tracks[i];
+        if (g_hook && track.is_valid() && g_hook->Handles(track))
+            g_hook->Set(track, favorite);
+        else if (IsFavorite(track) != favorite)
+            ToggleFavorite(track);
+    }
 }
 
 }  // namespace glasswave::media

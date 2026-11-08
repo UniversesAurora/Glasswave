@@ -1797,8 +1797,10 @@ void MainWindow::ShowNeteaseLogin() {
 
 void MainWindow::OnNeteaseLoginChanged() {
     m_nav->SetNeteaseState(netease::Provider::Get().LoggedIn(), netease::Provider::Get().CurrentAccount().nickname);
+    UpdateFavoriteState();
     if (m_view.library == View::Library::Netease || m_view.kind == View::Kind::AllFavorites)
         Navigate(m_view, false);
+    if (m_list) m_list->Refresh();
     RepaintBreadcrumb();
 }
 

@@ -6,6 +6,7 @@
 #include "win7/win7_resources.h"
 #include "ui/win7_menu.h"
 #include "media/favorites.h"
+#include "netease/handle.h"
 #include "ui/i18n.h"
 #include "wmp/wmp_painter.h"
 
@@ -654,7 +655,11 @@ void ListView::PaintCells(ID2D1DeviceContext* dc, size_t row, float y, float row
             // No heart in WMP's art: a gold star (5530) when the song is in Favorites, its
             // outline (5531) on the hovered row, else the empty one (5533).
             const metadb_handle_ptr item = m_source->Item(row);
-            const bool fav = item.is_valid() && m_favorites.count(item.get_ptr()) != 0;
+            const bool fav = item.is_valid() && [&] {
+                int64_t remoteId = 0;
+                if (netease::ParseSongPath(item->get_path(), remoteId)) return media::IsFavorite(item);
+                return m_favorites.count(item.get_ptr()) != 0;
+            }();
             const int id = fav ? 5530 : row == m_hot ? 5531 : 5533;
             const float fx = std::round((c.x + (c.w - 14) / 2) * m_scale) / m_scale;
             const float fy = std::round((y + (rowH - 14) / 2) * m_scale) / m_scale;

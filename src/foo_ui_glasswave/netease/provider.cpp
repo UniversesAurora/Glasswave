@@ -1,6 +1,8 @@
 #include "pch.h"
+#include "media/favorites.h"
 #include "netease/config.h"
 #include "netease/cookie.h"
+#include "netease/handle.h"
 #include "netease/log.h"
 #include "netease/provider.h"
 
@@ -11,6 +13,35 @@ namespace {
 std::wstring ErrorOf(const std::wstring& error) {
     return error.empty() ? L"The NetEase service did not return a result." : error;
 }
+
+class NeteaseFavoriteHook : public media::FavoriteHook {
+public:
+    explicit NeteaseFavoriteHook(Provider& provider) : m_provider(provider) {}
+
+    bool Handles(const metadb_handle_ptr& track) const override {
+        int64_t id = 0;
+        return track.is_valid() && ParseSongPath(track->get_path(), id);
+    }
+    bool IsFavorite(const metadb_handle_ptr& track) const override {
+        int64_t id = 0;
+        return ParseSongPath(track->get_path(), id) && m_provider.IsLiked(id);
+    }
+    void Toggle(const metadb_handle_ptr& track) override {
+        int64_t id = 0;
+        if (!ParseSongPath(track->get_path(), id)) return;
+        m_provider.ToggleLike(id, !m_provider.IsLiked(id));
+    }
+    void Set(const metadb_handle_ptr& track, bool favorite) override {
+        int64_t id = 0;
+        if (!ParseSongPath(track->get_path(), id)) return;
+        if (m_provider.IsLiked(id) != favorite) m_provider.ToggleLike(id, favorite);
+    }
+
+private:
+    Provider& m_provider;
+};
+
+std::unique_ptr<NeteaseFavoriteHook> g_favoriteHook;
 
 }  // namespace
 
@@ -30,6 +61,10 @@ void Provider::Initialize() {
     if (!CookieHasMusicU(SessionCookie())) ClearSessionCookie();
     m_service.Initialize();
     Catalog::Get().Load();
+    Log(L"art: extractor supports ncm://song/ = " +
+        std::wstring(album_art_extractor::g_is_supported_path("ncm://song/1") ? L"yes" : L"no"));
+    if (!g_favoriteHook) g_favoriteHook = std::make_unique<NeteaseFavoriteHook>(*this);
+    media::SetFavoriteHook(g_favoriteHook.get());
     std::lock_guard lock(m_mutex);
     m_account = {};
     m_account.nickname = GetAccountName();
@@ -43,6 +78,8 @@ void Provider::Initialize() {
 
 void Provider::Shutdown() {
     if (!m_initialized.exchange(false)) return;
+    media::SetFavoriteHook(nullptr);
+    g_favoriteHook.reset();
     m_stopping = true;
     m_tasks.Stop();
     m_service.Stop();
@@ -487,6 +524,7 @@ void Provider::ToggleLike(int64_t songId, bool like, DoneCallback done) {
         PostMain([done = std::move(done), ok, error] {
             if (done) done(ok, ok ? std::wstring() : ErrorOf(error));
         });
+        NotifyChanged();
     });
 }
 
