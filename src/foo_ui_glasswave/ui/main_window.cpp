@@ -38,6 +38,8 @@ namespace {
 constexpr wchar_t kClassName[] = L"Glasswave.MainWindow";
 constexpr wchar_t kAppName[] = L"Glasswave";
 constexpr UINT_PTR kLibraryTimer = 1;
+constexpr UINT_PTR kVolumeTipTimer = 2;
+constexpr UINT kVolumeTipDelayMs = 800;  // hover before the bubble appears; dragging is immediate
 constexpr float kNavPaneWidth = 190.0f;
 
 enum WidgetId {
@@ -2027,6 +2029,7 @@ void MainWindow::OnVolumeChanged() {
         m_volume = v;
         for (int id : {kVolume, kMute})  // the speaker icon shows the level
             if (auto* w = WidgetById(id)) w->Invalidate();
+        if (m_volumeTipShown) ShowVolumeTip(VolumeThumbX());  // keep a visible bubble current
     }
 }
 
@@ -2187,7 +2190,22 @@ void MainWindow::SetVolumeFromX(int x) {
     for (int id : {kVolume, kMute})
         if (auto* w = WidgetById(id)) w->Invalidate();
     playback_control::get()->set_volume(DbFromSlider(v));
-    ShowVolumeTip(x0 + v * (x1 - x0));
+    KillTimer(m_hwnd, kVolumeTipTimer);  // dragging shows at once, no hover delay
+    m_volumeHover = true;
+    ShowVolumeTip(VolumeThumbX());
+}
+
+float MainWindow::VolumeThumbX() const {
+    float x0, x1;
+    if (m_win7Art) {
+        x0 = m_layout.cluster.x + Px(wt::kThumbMin);
+        x1 = m_layout.cluster.x + Px(wt::kThumbMax);
+    } else {
+        const float thumb = Px(11.0f);
+        x0 = m_layout.volume.left + thumb / 2;
+        x1 = m_layout.volume.right - thumb / 2;
+    }
+    return x0 + m_volume * std::max(1.0f, x1 - x0);
 }
 
 void MainWindow::ShowVolumeTip(float thumbX) {
@@ -2196,14 +2214,15 @@ void MainWindow::ShowVolumeTip(float thumbX) {
     if (!m_volumeTip) {
         m_volumeTip = host.Compositor().CreateSpriteVisual();
         m_volumeTip.Opacity(0.0f);
+        m_windowRoot.Children().InsertAtTop(m_volumeTip);  // above the clipped content and frame
     }
-    m_root.Children().Remove(m_volumeTip);
-    m_root.Children().InsertAtTop(m_volumeTip);  // above everything added since
     const std::wstring text = std::to_wstring(static_cast<int>(std::lround(m_volume * 100))) + L"%";
-    auto layout = MakeText(text, 12.0f, DWRITE_FONT_WEIGHT_NORMAL, 200, 20);
+    auto measure = MakeText(text, 12.0f, DWRITE_FONT_WEIGHT_NORMAL, 200, 20);
     DWRITE_TEXT_METRICS tm{};
-    layout->GetMetrics(&tm);
+    measure->GetMetrics(&tm);
     const float shadow = 3, w = std::ceil(tm.widthIncludingTrailingWhitespace) + 14, h = 21;
+    auto layout = MakeText(text, 12.0f, DWRITE_FONT_WEIGHT_NORMAL, w, h, DWRITE_TEXT_ALIGNMENT_CENTER);
+    layout->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
     const int pw = PxI(w + shadow), ph = PxI(h + shadow);
     host.Repaint(m_volumeTip, pw, ph, m_scale, [&](ID2D1DeviceContext* dc) {
         const float px = 1.0f / m_scale;
@@ -2226,7 +2245,7 @@ void MainWindow::ShowVolumeTip(float thumbX) {
             dc->FillRoundedRectangle(box, fill.get());
             dc->DrawRoundedRectangle(box, border.get(), px);
         }
-        dc->DrawTextLayout({7, (h - tm.height) / 2}, layout.get(), ink.get());
+        dc->DrawTextLayout({0, 0}, layout.get(), ink.get());
     });
     RECT client{};
     GetClientRect(m_hwnd, &client);
@@ -2236,11 +2255,19 @@ void MainWindow::ShowVolumeTip(float thumbX) {
     m_volumeTip.Size({static_cast<float>(pw), static_cast<float>(ph)});
     if (!m_volumeTipShown) {
         m_volumeTipShown = true;
-        host.AnimateOpacity(m_volumeTip, 1.0f, 100);
+        m_volumeTip.Opacity(0.0f);
+        // Explicit 0 -> 1: AnimateOpacity starts from the current value, which can already
+        // be 1 when the bubble is shown again before the fade-out finished.
+        auto fade = host.Compositor().CreateScalarKeyFrameAnimation();
+        fade.InsertKeyFrame(0.0f, 0.0f);
+        fade.InsertKeyFrame(1.0f, 1.0f);
+        fade.Duration(std::chrono::milliseconds(180));
+        m_volumeTip.StartAnimation(L"Opacity", fade);
     }
 }
 
 void MainWindow::HideVolumeTip() {
+    KillTimer(m_hwnd, kVolumeTipTimer);
     if (!m_volumeTipShown) return;
     m_volumeTipShown = false;
     gfx::CompositionHost::Get().AnimateOpacity(m_volumeTip, 0.0f, 300);
@@ -2422,6 +2449,11 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
             if (m_view.kind != View::Kind::Playlist) Navigate(m_view, false);
             return 0;
         }
+        if (wp == kVolumeTipTimer) {
+            KillTimer(hwnd, kVolumeTipTimer);
+            if (m_volumeHover) ShowVolumeTip(VolumeThumbX());
+            return 0;
+        }
         break;
 
     case WM_NCCALCSIZE:
@@ -2594,6 +2626,16 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
             m_nav->OnMouseMove(pt);
             UpdateCrumbHover(pt);
             UpdateNowPlayingHover(pt);
+            const bool overVolume = PtInRect(&m_layout.volume, pt) != FALSE;
+            if (overVolume) {
+                if (!m_volumeHover) {
+                    m_volumeHover = true;
+                    SetTimer(hwnd, kVolumeTipTimer, kVolumeTipDelayMs, nullptr);
+                }
+            } else if (m_volumeHover) {
+                m_volumeHover = false;
+                HideVolumeTip();
+            }
         }
         if (!m_trackingClient) {
             TRACKMOUSEEVENT tme{sizeof(tme), TME_LEAVE, hwnd, 0};
@@ -2609,6 +2651,8 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
             m_nav->OnMouseLeave();
             UpdateCrumbHover({-1, -1});
             UpdateNowPlayingHover({-1, -1});
+            m_volumeHover = false;
+            HideVolumeTip();
         }
         return 0;
     case WM_LBUTTONDOWN:
@@ -2680,7 +2724,11 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
             m_capture = Capture::None;
             ReleaseCapture();
             w->SetPressed(false);
-            if (w->Id() == kVolume) HideVolumeTip();
+            if (w->Id() == kVolume) {
+                m_volumeHover = PtInRect(&m_layout.volume, pt) != FALSE;
+                if (m_volumeHover) ShowVolumeTip(VolumeThumbX());
+                else HideVolumeTip();
+            }
             if (w->Id() == kSeek) {
                 if (seek && m_length > 0) playback_control::get()->playback_seek(preview * m_length);
                 m_seeking = false;
@@ -2695,6 +2743,7 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
     }
     case WM_CAPTURECHANGED:
         if (reinterpret_cast<HWND>(lp) != hwnd) {
+            m_volumeHover = false;
             HideVolumeTip();
             if (m_pressed) {
                 m_pressed->SetPressed(false);
@@ -2718,7 +2767,7 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
             m_nav->OnWheel(delta);
             return 0;
         }
-        if (PtInRect(&m_layout.transport, pt)) {  // wheel over the transport band: volume, like WMP
+        if (PtInRect(&m_layout.volume, pt)) {  // the volume slider itself, not the whole band
             auto pc = playback_control::get();
             if (delta > 0) pc->volume_up(); else pc->volume_down();
             return 0;

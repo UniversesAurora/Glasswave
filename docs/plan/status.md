@@ -118,7 +118,11 @@ Updated: 2026-11-08
   - Win7 menus draw the submenu arrow and the radio bullet as GDI+ vectors: the 9x9 / 16x16
     theme bitmaps were soft at 200 %. The screenshots' blue ball keeps its gradient and
     highlight; the bitmap remains the fallback if GDI+ is unavailable.
-  - Details song lists now regroup by the clicked sort column as WMP does: rating groups
+  - The volume bubble works again: it was removed and reinserted into the composition tree
+    on every update, which kept it from rendering. It is now inserted once on the unclipped
+    window root, its text is centred, dragging shows it immediately and hovering the slider
+    shows it after an 800 ms delay. The wheel changes volume only inside the slider, not
+    across the whole transport band.  - Details song lists now regroup by the clicked sort column as WMP does: rating groups
     ("5 Stars", ...), length in whole minutes, year, genre, artist, title initial, etc.
     Non-album sorts are global (not just within albums); the third header click resets to
     the album grouping. Expanded tile keeps album grouping for its album column.

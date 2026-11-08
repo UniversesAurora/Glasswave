@@ -147,10 +147,12 @@ private:
     void UpdateFavoriteState();  // taskbar Favorite button for the playing song
     void ApplyLanguage(Language language);
     void SetVolumeFromX(int x);
+    float VolumeThumbX() const;  // centre of the volume thumb in client pixels
     void ShowVolumeTip(float thumbX);  // Win7 tooltip bubble with the volume while dragging
     void HideVolumeTip();
     winrt::Windows::UI::Composition::SpriteVisual m_volumeTip{nullptr};
     bool m_volumeTipShown = false;
+    bool m_volumeHover = false;
     float SeekFractionAt(int x) const;
 
     // Pixel rect of a region given in transport-cluster coordinates, and back.
