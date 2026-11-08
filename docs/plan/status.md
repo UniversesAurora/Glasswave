@@ -68,9 +68,21 @@ Updated: 2026-11-08
   lighter glass. The owner saw no difference from the host backdrop, and the blur filled the
   window corners square despite a window region.
 
+- 2026-11-08 (owner's large request): asset index docs/design/win7-asset-map.md (every image
+  in wmploc / aero.msstyles / ehres with IDs and uses; scripts/catalog-art.ps1 exports them);
+  disabled widgets without hover; WMP seek bar from measurements; column lines; Expanded tile
+  gutter; shuffle / repeat (off / all / one) independent; volume tooltip; free column widths,
+  Shift+wheel sideways scroll, rubber band, hit areas ending at the last column; breadcrumb
+  levels with child menus; split buttons (Create playlist / auto playlist, view options);
+  original art for nav orbs + groove, command bar, breadcrumb, view icons, speaker plate,
+  tooltip, library background, nav pane icons, WMP app icon; now-playing links, stream
+  format, output device menu, synced lyrics; star ratings (Playback Statistics) and a
+  Favorites playlist; taskbar thumbnail buttons and jump list tasks; Win7 popup menus.
+  waifu2x needs an explicit tile size (auto garbled wide bitmaps).
+
 ## Next
 
-1. Owner tests: header hover / press / drag, sort cycle, side highlights, @2x WMP bitmaps.
+1. Owner tests everything from 2026-11-08 (list in the session reply); fix what they report.
 2. Glass blur stays the host backdrop + color matrix (legacy accent tried, no gain).
 3. Remaining tuning from the Win7 captures.
 4. Rating column (STARS_PNG), stacked covers for artists, year view.
