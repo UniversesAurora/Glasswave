@@ -108,6 +108,8 @@ private:
     Widget* WidgetAt(POINT clientPt) const;
     Widget* WidgetById(int id) const;
     void SetHoverWidget(Widget* w);
+    Widget* SplitPartner(const Widget* w) const;
+    void RunSplitMenu(int arrowId, const std::function<void()>& menu);
     void OnActivate(bool active);
     void PaintSideHighlights();
     // Now playing details in the transport band: title and artist are links, a synced

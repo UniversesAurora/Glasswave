@@ -469,15 +469,17 @@ void MainWindow::CreateWidgets() {
         wp::ViewOptionsGlyph(dc, s, m_source ? m_source->GetViewStyle() : media::ViewStyle::Details);
     }, {})->onClick = [this] { CycleViewStyle(); };
     add(kViewOptionsArrow, [](auto* dc, D2D1_SIZE_F s, Layer l) { wp::CommandButton(dc, s, l, L"", true); }, {})
-        ->onClick = [this] { ShowViewMenu(); };
+        ->onClick = [this] { RunSplitMenu(kViewOptionsArrow, [this] { ShowViewMenu(); }); };
     add(kNewPlaylist, [](auto* dc, D2D1_SIZE_F s, Layer l) { wp::CommandButton(dc, s, l, L"Create playlist", false); }, {})
         ->onClick = [this] { CreatePlaylist(false); };
     add(kNewPlaylistArrow, [](auto* dc, D2D1_SIZE_F s, Layer l) { wp::CommandButton(dc, s, l, L"", true); }, {})
         ->onClick = [this] {
-              POINT pt{m_layout.newPlaylist.left, m_layout.newPlaylist.bottom};
-              ClientToScreen(m_hwnd, &pt);
-              ShowActionMenu(m_hwnd, pt, {{L"Create playlist", [this] { CreatePlaylist(false); }},
-                                          {L"Create auto playlist", [this] { CreatePlaylist(true); }}});
+              RunSplitMenu(kNewPlaylistArrow, [this] {
+                  POINT pt{m_layout.newPlaylist.left, m_layout.newPlaylist.bottom};
+                  ClientToScreen(m_hwnd, &pt);
+                  ShowActionMenu(m_hwnd, pt, {{L"Create playlist", [this] { CreatePlaylist(false); }},
+                                              {L"Create auto playlist", [this] { CreatePlaylist(true); }}});
+              });
           };
 
     // Seek bar (the band's top rule, as in WMP 12)
@@ -618,7 +620,7 @@ void MainWindow::UpdateLayout() {
         const int orb = PxI(wt::kNavOrbShown), inset = PxI(k);
         L.back = {gx + inset, gy + inset, gx + inset + orb, gy + inset + orb};
         L.forward = {L.back.right, L.back.top, L.back.right + orb, L.back.bottom};
-        L.breadcrumb = {L.navGroove.right + PxI(8), L.navBar.top + PxI(3), L.client.right - PxI(8), L.navBar.bottom - line};
+        L.breadcrumb = {L.navGroove.right + PxI(6), L.navBar.top, L.client.right - PxI(8), L.navBar.bottom - line};
     } else {
         const int orb = PxI(24);
         L.back = CenteredRect(L.client.left + PxI(18), nbcy, orb, orb);
@@ -635,11 +637,18 @@ void MainWindow::UpdateLayout() {
         x = r.right + PxI(2);
         return r;
     };
-    L.organize = button(82);
-    L.addFiles = button(70);
-    L.addFolder = button(76);
+    // Widths follow the text (6 DIP padding each side, 12 more for a drop-down arrow).
+    auto fit = [](const wchar_t* text, bool drop) {
+        auto layout = MakeText(text, 12.0f, DWRITE_FONT_WEIGHT_NORMAL, 400, 20);
+        DWRITE_TEXT_METRICS tm{};
+        layout->GetMetrics(&tm);
+        return std::ceil(tm.widthIncludingTrailingWhitespace) + 12 + (drop ? 12.0f : 0.0f);
+    };
+    L.organize = button(fit(L"Organize", true));
+    L.addFiles = button(fit(L"Add files", false));
+    L.addFolder = button(fit(L"Add folder", false));
     // Split buttons (WMP 12): the main part acts at once, the arrow part opens a menu.
-    L.newPlaylist = button(86);
+    L.newPlaylist = button(fit(L"Create playlist", false));
     x -= PxI(2);
     L.newPlaylistArrow = button(16);
     L.search = {L.client.right - PxI(8) - PxI(230), cbcy - PxI(11), L.client.right - PxI(8), cbcy + PxI(11)};
@@ -1250,7 +1259,8 @@ void MainWindow::BuildCrumbs() {
         }
     }
 
-    // Lay out: name with 6 DIP padding, arrow 15 DIP; the root crumb is an arrow only.
+    // Lay out: name with 4 DIP padding, arrow 12 DIP; the root crumb is an arrow only. WMP draws
+    // its 22 px crumb plates 1:1, barely taller than the text: 17 DIP here.
     float x = 0;
     for (auto& c : m_crumbs) {
         c.x0 = x;
@@ -1258,10 +1268,10 @@ void MainWindow::BuildCrumbs() {
             auto t = MakeText(c.text, 12.0f, DWRITE_FONT_WEIGHT_NORMAL, 400, 20);
             DWRITE_TEXT_METRICS tm{};
             t->GetMetrics(&tm);
-            x += std::ceil(tm.widthIncludingTrailingWhitespace) + 12;
+            x += std::ceil(tm.widthIncludingTrailingWhitespace) + 8;
         }
         c.split = x;
-        if (c.children) x += 15;
+        if (c.children) x += 12;
         c.x1 = x;
     }
     if (m_crumbHot >= static_cast<int>(m_crumbs.size())) m_crumbHot = -1;
@@ -1271,7 +1281,7 @@ void MainWindow::PaintBreadcrumb() {
     auto& host = gfx::CompositionHost::Get();
     const int w = PxI(900), h = PxI(NavBarHeight() - 1);
     host.Repaint(m_breadcrumb, w, h, m_scale, [&](ID2D1DeviceContext* dc) {
-        const float H = h / m_scale, top = 1, bottom = std::min(H - 2, 23.0f);
+        const float H = h / m_scale, top = std::round((H - 17) / 2 * m_scale) / m_scale, bottom = top + 17;
         com_ptr<ID2D1SolidColorBrush> ink, divider;
         dc->CreateSolidColorBrush(Hex(0x1E395B), ink.put());
         dc->CreateSolidColorBrush(Hex(0x8DB2E3, 0.8f), divider.put());
@@ -1308,7 +1318,8 @@ void MainWindow::PaintBreadcrumb() {
             }
             if (!c.text.empty()) {
                 auto t = MakeText(c.text, 12.0f, DWRITE_FONT_WEIGHT_NORMAL, c.split - c.x0, H);
-                dc->DrawTextLayout({c.x0 + 6, 0}, t.get(), ink.get());
+                t->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);  // centered in the bar, like WMP
+                dc->DrawTextLayout({c.x0 + 4, 0}, t.get(), ink.get());
             }
             if (c.children) {  // small black triangle: right, or down while the menu is open
                 const float cx = std::round(((c.split + c.x1) / 2) * m_scale) / m_scale;
@@ -1615,6 +1626,7 @@ void MainWindow::ShowOrganizeMenu() {
                   {L"Add location...", [] { standard_commands::run_main(standard_commands::guid_main_add_location); }},
                   {L"", nullptr},
                   {L"Preferences...", [] { standard_commands::run_main(standard_commands::guid_main_preferences); }}});
+    SetHoverWidget(nullptr);  // the menu loop swallowed the mouse leave
 }
 
 void MainWindow::ShowPlaylistMenu(size_t playlist, POINT screen) {
@@ -1881,7 +1893,9 @@ D2D1_RECT_F MainWindow::ClusterRegion(const RECT& r) const {
 }
 
 // With the original artwork the bars follow WMP 12's bitmaps (27-DIP orbs, 51-DIP cluster).
-float MainWindow::NavBarHeight() const { return m_win7Art ? 33.0f : m::kNavBarHeight; }
+// WMP 12 at 150 %: the nav bar is 35 px with the 26 px orbs nearly filling it; ours keeps the larger
+// orbs (22 DIP) with 3-4 DIP above and below.
+float MainWindow::NavBarHeight() const { return m_win7Art ? 29.0f : m::kNavBarHeight; }
 float MainWindow::TransportHeight() const { return m_win7Art ? wt::kBandHeight : m::kTransportHeight; }
 
 void MainWindow::SetVolumeFromX(int x) {
@@ -2006,11 +2020,41 @@ LRESULT MainWindow::HitTest(POINT pt) const {
     return HTCLIENT;
 }
 
+// The two halves of a split button light up together, as in WMP 12.
+Widget* MainWindow::SplitPartner(const Widget* w) const {
+    if (!w) return nullptr;
+    switch (w->Id()) {
+    case kNewPlaylist: return WidgetById(kNewPlaylistArrow);
+    case kNewPlaylistArrow: return WidgetById(kNewPlaylist);
+    case kViewOptions: return WidgetById(kViewOptionsArrow);
+    case kViewOptionsArrow: return WidgetById(kViewOptions);
+    default: return nullptr;
+    }
+}
+
 void MainWindow::SetHoverWidget(Widget* w) {
     if (w == m_hover) return;
-    if (m_hover) m_hover->SetHover(false);
+    Widget* oldPartner = SplitPartner(m_hover);
+    Widget* newPartner = SplitPartner(w);
+    if (m_hover && m_hover != newPartner) m_hover->SetHover(false);
+    if (oldPartner && oldPartner != w) oldPartner->SetHover(false);
     m_hover = w;
     if (m_hover) m_hover->SetHover(true);
+    if (newPartner) newPartner->SetHover(true);
+}
+
+void MainWindow::RunSplitMenu(int arrowId, const std::function<void()>& menu) {
+    // While the menu is up: the arrow pressed, the main part hot (WMP 12); then both clear,
+    // the next mouse move restores whatever is under the pointer.
+    Widget* arrow = WidgetById(arrowId);
+    Widget* main = SplitPartner(arrow);
+    if (main) main->SetHover(true);
+    if (arrow) arrow->SetPressed(true);
+    menu();
+    if (arrow) arrow->SetPressed(false);
+    SetHoverWidget(nullptr);
+    if (main) main->SetHover(false);
+    if (arrow) arrow->SetHover(false);
 }
 
 void MainWindow::OnActivate(bool active) {

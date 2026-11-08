@@ -138,22 +138,20 @@ void CommandButton(ID2D1DeviceContext* dc, D2D1_SIZE_F size, Layer layer, std::w
     const D2D1_RECT_F rc{0, 0, Snap(dc, size.width), Snap(dc, size.height)};
     using win7::Module;
     const int state = layer == Layer::Pressed ? 2 : layer == Layer::Hover ? 1 : 0;
-    // Original WMP 12 art: WW_SPLIT (arrow part of a split button: arrow / hot / pressed,
-    // 14x20 each) and WMP_TOOLBARBUTTON (empty / hot / pressed, 17x22 each), nine-grids.
-    if (text.empty() && dropDown && win7::Resources::Get().Has(Module::Wmploc, L"WW_SPLIT.PNG")) {
-        if (state == 0)
-            win7::DrawPartTo(dc, Module::Wmploc, L"WW_SPLIT.PNG", D2D1::RectU(0, 0, 14, 20),
-                             {std::round(size.width / 2 - 7), std::round(size.height / 2 - 10),
-                              std::round(size.width / 2 - 7) + 14, std::round(size.height / 2 - 10) + 20});
-        else
-            win7::DrawNineGrid(dc, Module::Wmploc, L"WW_SPLIT.PNG", {14.0f * state, 0, 14.0f * state + 14, 20},
-                               {3, 3, 3, 3}, rc);
-        return;
-    }
+    // Original WMP 12 art: WMP_TOOLBARBUTTON plates (empty / hot / pressed, 17x22, nine-grid)
+    // for every button and both halves of split buttons; the arrow alone is the first cell
+    // of WW_SPLIT (14x20), drawn 1:1 so it never scales with the plate.
     const bool art = win7::Resources::Get().Has(Module::Wmploc, L"WMP_TOOLBARBUTTON.PNG");
     if (art && state > 0) {
         win7::DrawNineGrid(dc, Module::Wmploc, L"WMP_TOOLBARBUTTON.PNG", {17.0f * state, 0, 17.0f * state + 17, 22},
                            {3, 3, 3, 3}, rc);
+    }
+    if (art && text.empty() && dropDown) {
+        const float ax = Snap(dc, size.width / 2 - 7), ay = Snap(dc, size.height / 2 - 10);
+        if (win7::DrawPartTo(dc, Module::Wmploc, L"WW_SPLIT.PNG", D2D1::RectU(0, 0, 14, 20), {ax, ay, ax + 14, ay + 20}))
+            return;
+    }
+    if (art) {
     } else if (layer == Layer::Hover || layer == Layer::Pressed) {
         const bool pressed = layer == Layer::Pressed;
         const D2D1_ROUNDED_RECT rr{Inset(rc, L / 2), 2.5f, 2.5f};
