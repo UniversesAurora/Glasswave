@@ -51,6 +51,37 @@ ArtCache::State ArtCache::Find(const std::wstring& key, const metadb_handle_ptr&
     if (!track.is_valid()) return State::Missing;
     const std::wstring cacheKey = CacheKeyFor(key, track, sizePx);
 
+    // The same picture is requested at several sizes (grid tile, detail header, list
+    // column). Reuse a finished larger thumbnail instead of decoding it again; the list
+    // scales it into its smaller box.
+    if (m_entries.find(cacheKey) == m_entries.end()) {
+        const size_t bar = cacheKey.rfind(L'|');
+        if (bar != std::wstring::npos) {
+            const std::wstring prefix = cacheKey.substr(0, bar + 1);
+            const Entry* best = nullptr;
+            int bestSize = 0;
+            for (const auto& [candidate, candidateEntry] : m_entries) {
+                if (candidateEntry.state != State::Ready || candidateEntry.stale || !candidateEntry.bitmap)
+                    continue;
+                if (candidate.size() <= prefix.size() || candidate.compare(0, prefix.size(), prefix) != 0)
+                    continue;
+                const int candidateSize = _wtoi(candidate.c_str() + prefix.size());
+                if (candidateSize < sizePx || (best && candidateSize >= bestSize)) continue;
+                best = &candidateEntry;
+                bestSize = candidateSize;
+            }
+            if (best) {
+                Entry& alias = m_entries[cacheKey];
+                alias.state = State::Ready;
+                alias.bitmap = best->bitmap;
+                alias.used = ++m_clock;
+                alias.content = best->content;
+                *out = alias.bitmap;
+                return State::Ready;
+            }
+        }
+    }
+
     auto [it, inserted] = m_entries.try_emplace(cacheKey);
     Entry& entry = it->second;
     entry.used = ++m_clock;

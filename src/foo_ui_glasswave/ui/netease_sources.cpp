@@ -98,7 +98,8 @@ SongTableRow MakeNeteaseRow(const netease::Song& song) {
     row.lengthMs = song.durationMs;
     row.length = LengthText(song.durationMs);
     row.albumKey = song.albumId ? std::to_wstring(song.albumId) : L"t:" + std::to_wstring(song.id);
-    row.artKey = L"ncm:" + std::to_wstring(song.albumId ? song.albumId : song.id);
+    row.artKey = song.albumId ? L"ncm:album:" + std::to_wstring(song.albumId)
+                              : L"ncm:song:" + std::to_wstring(song.id);
     row.search = Lower(row.title) + L"\n" + Lower(row.artist) + L"\n" + Lower(row.album);
     row.albumId = song.albumId;
     row.popularity = song.popularity;
@@ -139,6 +140,11 @@ std::vector<SongTableRow> FavoriteRows(const std::vector<metadb_handle_ptr>& loc
                      L"|" + std::to_wstring(track->get_subsong_index());
         row.search = Lower(row.title) + L"\n" + Lower(row.artist) + L"\n" + Lower(row.album);
         row.favorite = true;  // every local row comes from the Favorites playlist
+        row.artKey = row.album.empty()
+                         ? std::wstring(L"fav:") +
+                               pfc::stringcvt::string_wide_from_utf8(track->get_path()).get_ptr() + L"|" +
+                               std::to_wstring(track->get_subsong_index())
+                         : L"fav:" + Lower(row.album) + L"\x1f" + Lower(LocalField(track, "%album artist%"));
         rows.push_back(std::move(row));
     }
     for (auto& row : NeteaseRows(remote)) {
@@ -166,14 +172,17 @@ SongTableRow MakePlayStatRow(const media::PlayRecord& record) {
     if (record.remote) {
         row.handle = netease::Catalog::Get().Handle(record.songId);
         row.albumKey = record.albumId ? std::to_wstring(record.albumId) : L"t:" + std::to_wstring(record.songId);
-        row.artKey = L"ncm:" + std::to_wstring(record.albumId ? record.albumId : record.songId);
+        row.artKey = record.albumId ? L"ncm:album:" + std::to_wstring(record.albumId)
+                                    : L"ncm:song:" + std::to_wstring(record.songId);
         row.albumId = record.albumId;
         row.artistId = record.artistId;
         row.source = Tr(L"NetEase Cloud Music");
     } else {
         row.handle = metadb::get()->handle_create(record.path.c_str(), record.subsong);
         row.albumKey = L"l:" + Lower(row.album) + L"\x1f" + Lower(row.artist);
-        row.artKey = L"stats:" + WideUtf8(record.key);
+        row.artKey = record.album.empty()
+                         ? L"stats:" + WideUtf8(record.key)
+                         : L"stats:" + Lower(row.album) + L"\x1f" + Lower(row.artist);
         row.source = Tr(L"Local Music");
     }
     return row;
@@ -595,6 +604,12 @@ media::TileInfo NeteaseAlbumGridSource::Tile(size_t row) const {
     return tile;
 }
 
+std::wstring NeteaseAlbumGridSource::ArtKey(size_t row) const {
+    if (row >= m_rows.size()) return {};
+    const size_t index = m_rows[row];
+    return index ? L"ncm:album:" + std::to_wstring(m_albums[index - 1].id) : std::wstring{};
+}
+
 void NeteaseAlbumGridSource::SelectOnly(size_t row) {
     std::fill(m_selected.begin(), m_selected.end(), uint8_t{0});
     if (row < m_rows.size()) m_selected[row] = 1;
@@ -702,6 +717,10 @@ media::TileInfo NeteaseArtistListSource::Tile(size_t row) const {
     return tile;
 }
 
+std::wstring NeteaseArtistListSource::ArtKey(size_t row) const {
+    return row < m_rows.size() ? L"ncm:artist:" + std::to_wstring(m_artists[m_rows[row]].id) : std::wstring{};
+}
+
 void NeteaseArtistListSource::SelectOnly(size_t row) {
     std::fill(m_selected.begin(), m_selected.end(), uint8_t{0});
     if (row < m_rows.size()) m_selected[row] = 1;
@@ -773,6 +792,11 @@ media::TileInfo NeteasePlaylistSource::Tile(size_t row) const {
     tile.lines = {playlist.name, std::to_wstring(playlist.trackCount) + L" " + Tr(L"songs"),
                   Tr(L"NetEase Cloud Music")};
     return tile;
+}
+
+std::wstring NeteasePlaylistSource::ArtKey(size_t row) const {
+    return row < m_rows.size() ? L"ncm:playlist:" + std::to_wstring(m_playlists[m_rows[row]].id)
+                               : std::wstring{};
 }
 
 void NeteasePlaylistSource::SelectOnly(size_t row) {

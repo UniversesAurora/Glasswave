@@ -5,6 +5,7 @@
 #include "media/favorites.h"
 #include "ui/win7_menu.h"
 #include "media/source_identity.h"
+#include "netease/catalog.h"
 #include "netease/handle.h"
 #include "ui/text.h"
 #include "ui/i18n.h"
@@ -493,21 +494,29 @@ std::wstring PlaylistSource::ArtKey(size_t row) const {
     }
     if (!m_artKeys[row].empty()) return m_artKeys[row];
     auto pm = playlist_manager::get();
-    // Album + folder, not album artist: one album often lists different contributing artists
-    // per track, but they all share the same cover.
-    static const auto script = Compile("[%album%]\x1f$directory_path(%path%)");
-    pfc::string8 buf;
-    pm->playlist_item_format_title(m_playlist, m_rows[row], nullptr, buf, script, nullptr,
-                                   playback_control::display_level_none);
-    std::wstring text = ui::Wide(buf);
     const metadb_handle_ptr item = pm->playlist_get_item_handle(m_playlist, m_rows[row]);
     std::wstring key;
-    if (text.find_first_not_of(L'\x1f') != std::wstring::npos && item.is_valid()) {
-        key = L"pl:" + text;
-    } else if (item.is_valid()) {  // no album/folder information: keep the track distinct
-        key = L"tr:" + ui::Wide(item->get_path()) + L'|' + std::to_wstring(item->get_subsong_index());
+    int64_t songId = 0;
+    if (item.is_valid() && netease::ParseSongPath(item->get_path(), songId)) {
+        // Share the NetEase album covers with the album pages and grids.
+        int64_t albumId = 0;
+        if (auto song = netease::Catalog::Get().FindSong(songId)) albumId = song->albumId;
+        key = albumId ? L"ncm:album:" + std::to_wstring(albumId) : L"ncm:song:" + std::to_wstring(songId);
     } else {
-        key = L"row:" + std::to_wstring(row);
+        // Album + folder, not album artist: one album often lists different contributing
+        // artists per track, but they all share the same cover.
+        static const auto script = Compile("[%album%]\x1f$directory_path(%path%)");
+        pfc::string8 buf;
+        pm->playlist_item_format_title(m_playlist, m_rows[row], nullptr, buf, script, nullptr,
+                                       playback_control::display_level_none);
+        std::wstring text = ui::Wide(buf);
+        if (text.find_first_not_of(L'\x1f') != std::wstring::npos && item.is_valid()) {
+            key = L"pl:" + text;
+        } else if (item.is_valid()) {  // no album/folder information: keep the track distinct
+            key = L"tr:" + ui::Wide(item->get_path()) + L'|' + std::to_wstring(item->get_subsong_index());
+        } else {
+            key = L"row:" + std::to_wstring(row);
+        }
     }
     // One representative track per album: the first row that asked for this cover.
     const auto it = m_artReps.try_emplace(key, item).first;
@@ -1014,6 +1023,17 @@ std::wstring GroupSource::EmptyText() const {
     if (!m_model.Enabled() || m_model.Tracks().empty())
         return L"Your library is empty. Use Organize ▸ Manage music library to add your music folders.";
     return L"No items match the search.";
+}
+
+std::wstring GroupSource::ArtKey(size_t row) const {
+    const Group& g = At(row);
+    if (g.tracks.empty()) return {};
+    const auto& tracks = m_model.Tracks();
+    const size_t t = g.tracks.front();
+    if (t >= tracks.size()) return {};
+    const auto& albums = m_model.Groups(GroupKind::Album);
+    const size_t album = tracks[t].albumIndex;
+    return album < albums.size() ? L"lib:" + albums[album].key : std::wstring{};
 }
 
 void GroupSource::SelectOnly(size_t row) {

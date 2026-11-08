@@ -239,6 +239,7 @@ public:
     size_t Count() const override { return m_rows.size(); }
     std::wstring Cell(size_t row, size_t column) const override;
     std::wstring EmptyText() const override;
+    std::wstring ArtKey(size_t row) const override;
     TileStyle Tiles() const override {
         return m_style == ViewStyle::Icons ? TileStyle::Album
                : m_style == ViewStyle::Tiles ? TileStyle::Artist

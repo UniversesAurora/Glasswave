@@ -886,7 +886,7 @@ void ListView::PaintGrouped(ID2D1DeviceContext* dc, D2D1_SIZE_F size) {
                                                 : wp::RowState::Hot;
             wp::RowPlate(dc, {albumL, top + 1, albumR - 2, top + lines * albumRowH}, st, m_focused);
         }
-        DrawArt(dc, g.art, {albumL + 3, top + 4, albumL + 3 + artSize, top + 4 + artSize});
+        DrawArt(dc, m_source->ArtKey(g.first), g.art, {albumL + 3, top + 4, albumL + 3 + artSize, top + 4 + artSize});
         const float tx = AlbumTextLeft(albumL);
         for (size_t k = 0; k < g.lines.size(); ++k) {
             const bool hotLink = gi == m_hotLinkGroup && k == m_hotLinkLine;
@@ -924,7 +924,7 @@ void ListView::PaintTiles(ID2D1DeviceContext* dc) {
             const media::TileInfo info = m_source->Tile(idx);
             if (beside) {
                 const float a = kArtistTileArt, ay = y + (ts.height - a) / 2;
-                DrawArt(dc, info.art, {x + 10, ay, x + 10 + a, ay + a});
+                DrawArt(dc, m_source->ArtKey(idx), info.art, {x + 10, ay, x + 10 + a, ay + a});
                 const float tx = x + 10 + a + 12;
                 for (size_t k = 0; k < info.lines.size(); ++k)
                     Text(dc, info.lines[k], {tx, ay + 2 + k * 18, x + ts.width - 6, ay + 2 + (k + 1) * 18},
@@ -934,7 +934,7 @@ void ListView::PaintTiles(ID2D1DeviceContext* dc) {
                 if (info.icon)  // playlists page: WMP's large playlist icon instead of a cover
                     win7::DrawStretched(dc, win7::Module::Wmploc, L"#" + std::to_wstring(info.icon), {ax + 10, ay + 10, ax + a - 10, ay + a - 10});
                 else
-                    DrawArt(dc, info.art, {ax, ay, ax + a, ay + a});
+                    DrawArt(dc, m_source->ArtKey(idx), info.art, {ax, ay, ax + a, ay + a});
                 for (size_t k = 0; k < 2; ++k)
                     Text(dc, info.lines[k], {x + 6, ay + a + 5 + k * 17, x + ts.width - 6, ay + a + 5 + (k + 1) * 17},
                          k == 0 ? kInk : kGreyInk, DWRITE_TEXT_ALIGNMENT_CENTER);

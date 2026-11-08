@@ -153,6 +153,7 @@ public:
     std::wstring EmptyText() const override { return m_emptyText; }
     media::TileStyle Tiles() const override { return media::TileStyle::Album; }
     media::TileInfo Tile(size_t row) const override;
+    std::wstring ArtKey(size_t row) const override;
     bool SupportsViewStyle(media::ViewStyle style) const override {
         return style == media::ViewStyle::Icons || (m_expandedStyle && style == media::ViewStyle::Tiles);
     }
@@ -200,6 +201,7 @@ public:
     std::wstring EmptyText() const override { return m_emptyText; }
     media::TileStyle Tiles() const override { return media::TileStyle::Album; }
     media::TileInfo Tile(size_t row) const override;
+    std::wstring ArtKey(size_t row) const override;
     bool SupportsViewStyle(media::ViewStyle style) const override { return style == media::ViewStyle::Icons; }
     media::ViewStyle GetViewStyle() const override { return media::ViewStyle::Icons; }
     bool IsSelected(size_t row) const override { return row < m_selected.size() && m_selected[row]; }
@@ -243,6 +245,7 @@ class NeteasePlaylistSource : public media::ListSource {public:
         return m_style == media::ViewStyle::Icons ? media::TileStyle::Album : media::TileStyle::None;
     }
     media::TileInfo Tile(size_t row) const override;
+    std::wstring ArtKey(size_t row) const override;
     bool SupportsViewStyle(media::ViewStyle style) const override { return style != media::ViewStyle::Tiles; }
     media::ViewStyle GetViewStyle() const override { return m_style; }
     void SetViewStyle(media::ViewStyle style) override { m_style = style; }
