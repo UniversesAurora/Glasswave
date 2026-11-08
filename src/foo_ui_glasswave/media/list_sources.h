@@ -72,6 +72,12 @@ public:
     virtual ViewStyle GetViewStyle() const { return ViewStyle::Details; }
     virtual void SetViewStyle(ViewStyle) {}
 
+    // Details sections: rows are split by the sort column while grouping is on. Expanded
+    // tile always groups by album and does not offer the option.
+    virtual bool CanGroup() const { return false; }
+    virtual bool Grouping() const { return false; }
+    virtual void SetGrouping(bool /*enabled*/) {}
+
     // Selection / focus
     virtual bool IsSelected(size_t row) const = 0;
     virtual void SelectOnly(size_t row) = 0;
@@ -177,6 +183,9 @@ public:
     bool SupportsViewStyle(ViewStyle s) const override { return s != ViewStyle::Icons; }
     ViewStyle GetViewStyle() const override { return m_style; }
     void SetViewStyle(ViewStyle style) override;
+    bool CanGroup() const override { return m_style == ViewStyle::Details; }
+    bool Grouping() const override { return m_grouping; }
+    void SetGrouping(bool enabled) override;
     bool CanSort(size_t column) const override;
     void Sort(size_t column, bool descending) override;
     size_t SortColumn() const override { return m_sortColumn; }
@@ -211,6 +220,7 @@ private:
     ViewStyle m_style = ViewStyle::Tiles;
     size_t m_sortColumn = SIZE_MAX;
     bool m_sortDescending = false;
+    bool m_grouping = true;
     std::vector<size_t> m_libraryOrder;  // m_all as built, for sorting back
     std::wstring m_filter;
 

@@ -87,6 +87,12 @@ private:
     float AlbumTextLeft(float albumLeft) const;
     int RowHeightPx() const;
     int LineHeightPx() const;
+    // Grouped lines have their own height: section titles carry no cover and keep the plain
+    // row height even when the cover column makes the track rows taller.
+    float LineHeightDip(const Line& line) const;
+    float LineTopDip(size_t line) const;  // from the first line
+    size_t LineAtDip(float y) const;
+    float RowsHeightDip() const;
     int HeaderHeightPx() const;
     int ScrollWidthPx() const;
     RECT RowsRect() const;
@@ -121,6 +127,7 @@ private:
     Mode m_mode = Mode::Plain;
     bool m_groupArt = false;
     std::vector<Line> m_lines;        // Grouped mode
+    std::vector<float> m_lineTop;     // Grouped mode: DIP top of each line, plus the end
     std::vector<size_t> m_rowLine;    // Grouped mode: line of each row
     std::vector<size_t> m_groupLine;  // Grouped mode: header line of each group
 

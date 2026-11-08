@@ -555,10 +555,19 @@ void TrackSource::Sort(size_t column, bool descending) {
 }
 
 bool TrackSource::GroupBySort() const {
-    // WMP regroups a Details list by the column that was just used for sorting. Expanded
-    // tile keeps album grouping (its album column would not make sense otherwise).
-    return m_style == ViewStyle::Details && m_sortColumn != SIZE_MAX && m_sortColumn < m_fields.size() &&
-           m_fields[m_sortColumn] != kAlbum && m_fields[m_sortColumn] != kAlbumColumn;
+    // Expanded tile always groups by album. Details groups by the sort column while grouping
+    // is on; an album sort keeps the album headers, anything else starts a flat list.
+    if (m_style != ViewStyle::Details || m_sortColumn == SIZE_MAX || !m_grouping ||
+        m_sortColumn >= m_fields.size())
+        return false;
+    const int field = m_fields[m_sortColumn];
+    return field != kAlbum && field != kAlbumColumn;
+}
+
+void TrackSource::SetGrouping(bool enabled) {
+    if (m_grouping == enabled) return;
+    m_grouping = enabled;
+    SetFilter(m_filter);
 }
 
 std::pair<std::wstring, std::wstring> TrackSource::GroupInfo(const Track& t) const {
@@ -779,6 +788,8 @@ void TrackSource::SetFilter(std::wstring_view filterLower) {
     m_focus = SIZE_MAX;
 
     m_groups.clear();
+    // Details shows one continuous list unless it is sorted and grouping is on.
+    if (m_style != ViewStyle::Tiles && (m_sortColumn == SIZE_MAX || !m_grouping)) return;
     const bool bySort = GroupBySort();
     const auto& albums = m_model.Groups(GroupKind::Album);
     for (size_t r = 0; r < m_rows.size(); ++r) {

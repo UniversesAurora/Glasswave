@@ -41,167 +41,17 @@ bool SameHandle(const metadb_handle_ptr& a, const metadb_handle_ptr& b) {
 
 }  // namespace
 
-NeteaseSongSource::NeteaseSongSource(std::vector<netease::Song> songs, std::wstring emptyText)
-    : m_songs(std::move(songs)), m_emptyText(std::move(emptyText)) {
-    m_columns = {
-        {L"#", 34, false, true},
-        media::ArtColumn(false),
-        {L"Title", 0, true},
-        {L"Length", 56, false, true},
-        {L"Artist", 170},
-        {L"Album", 170},
-        {L"Favorite", 58, false, false, false, "<favorite>"},
-    };
-    m_selected.assign(m_songs.size(), 0);
-    RebuildRows();
+namespace {
+enum SongField { kAlbumColumn, kNumber, kArt, kTitle, kLength, kArtist, kAlbum, kSource, kFavorite };
+
+int CompareText(const std::wstring& a, const std::wstring& b) {
+    return CompareStringEx(LOCALE_NAME_USER_DEFAULT, LINGUISTIC_IGNORECASE | SORT_DIGITSASNUMBERS, a.c_str(),
+                           static_cast<int>(a.size()), b.c_str(), static_cast<int>(b.size()), nullptr, nullptr, 0) -
+           2;
 }
 
-void NeteaseSongSource::RebuildRows() {
-    m_rows.clear();
-    for (size_t i = 0; i < m_songs.size(); ++i) {
-        const auto& song = m_songs[i];
-        if (!m_filter.empty()) {
-            const std::wstring haystack =
-                Lower(song.title) + L"\n" + Lower(ArtistText(song)) + L"\n" + Lower(song.album);
-            if (!Contains(haystack, m_filter)) continue;
-        }
-        m_rows.push_back(i);
-    }
-    if (m_sortColumn != SIZE_MAX) {
-        const bool desc = m_sortDescending;
-        std::stable_sort(m_rows.begin(), m_rows.end(), [&](size_t a, size_t b) {
-            const auto& x = m_songs[a];
-            const auto& y = m_songs[b];
-            std::wstring xv, yv;
-            switch (m_sortColumn) {
-            case 3: xv = std::to_wstring(x.durationMs); yv = std::to_wstring(y.durationMs); break;
-            case 4: xv = ArtistText(x); yv = ArtistText(y); break;
-            case 5: xv = x.album; yv = y.album; break;
-            case 2:
-            default: xv = x.title; yv = y.title; break;
-            }
-            return desc ? xv > yv : xv < yv;
-        });
-    }
-}
-
-std::wstring NeteaseSongSource::Cell(size_t row, size_t column) const {
-    if (row >= m_rows.size()) return {};
-    const auto& song = m_songs[m_rows[row]];
-    switch (column) {
-    case 0: return std::to_wstring(row + 1);
-    case 2: return song.title;
-    case 3: return LengthText(song.durationMs);
-    case 4: return ArtistText(song);
-    case 5: return song.album;
-    default: return {};
-    }
-}
-
-bool NeteaseSongSource::IsPlaying(size_t row) const {
-    metadb_handle_ptr now;
-    return row < m_rows.size() && playback_control::get()->get_now_playing(now) && SameHandle(now, Item(row));
-}
-
-bool NeteaseSongSource::CanSort(size_t column) const {
-    return column != 1 && column != 6 && column < m_columns.size();
-}
-
-void NeteaseSongSource::Sort(size_t column, bool descending) {
-    if (!CanSort(column)) {
-        m_sortColumn = SIZE_MAX;
-        m_sortDescending = false;
-    } else {
-        m_sortColumn = column;
-        m_sortDescending = descending;
-    }
-    RebuildRows();
-}
-
-void NeteaseSongSource::SelectOnly(size_t row) {
-    std::fill(m_selected.begin(), m_selected.end(), uint8_t{0});
-    if (row < m_rows.size()) m_selected[m_rows[row]] = 1;
-    m_focus = row;
-}
-
-void NeteaseSongSource::Toggle(size_t row) {
-    if (row < m_rows.size()) m_selected[m_rows[row]] ^= 1;
-    m_focus = row;
-}
-
-void NeteaseSongSource::SelectRange(size_t a, size_t b, bool keepOthers) {
-    if (!keepOthers) std::fill(m_selected.begin(), m_selected.end(), uint8_t{0});
-    if (a > b) std::swap(a, b);
-    for (size_t r = a; r <= b && r < m_rows.size(); ++r) m_selected[m_rows[r]] = 1;
-}
-
-void NeteaseSongSource::SelectAll() {
-    for (size_t r : m_rows) m_selected[r] = 1;
-}
-
-void NeteaseSongSource::SetSelection(const std::vector<size_t>& rows) {
-    std::fill(m_selected.begin(), m_selected.end(), uint8_t{0});
-    for (size_t row : rows)
-        if (row < m_rows.size()) m_selected[m_rows[row]] = 1;
-}
-
-metadb_handle_ptr NeteaseSongSource::Item(size_t row) const {
-    if (row >= m_rows.size()) return {};
-    return netease::Catalog::Get().Handle(m_songs[m_rows[row]].id);
-}
-
-std::wstring NeteaseSongSource::ArtKey(size_t row) const {
-    if (row >= m_rows.size()) return {};
-    const auto& song = m_songs[m_rows[row]];
-    return L"ncm:" + std::to_wstring(song.albumId ? song.albumId : song.id);
-}
-
-size_t NeteaseSongSource::FindRow(const metadb_handle_ptr& track) const {
-    for (size_t r = 0; r < m_rows.size(); ++r)
-        if (SameHandle(Item(r), track)) return r;
-    return SIZE_MAX;
-}
-
-void NeteaseSongSource::Activate(size_t row) {
-    if (row >= m_rows.size()) return;
-    metadb_handle_list items;
-    for (size_t r = 0; r < m_rows.size(); ++r) items.add_item(Item(r));
-    media::PlayItems(items, row);
-}
-
-void NeteaseSongSource::ContextMenu(HWND owner, POINT screen) {
-    auto items = SelectedItems();
-    if (items.get_count() == 0 && m_focus < m_rows.size()) items.add_item(Item(m_focus));
-    if (items.get_count()) RunContextMenu(owner, items, screen);
-}
-
-metadb_handle_list NeteaseSongSource::SelectedItems() const {
-    metadb_handle_list items;
-    for (size_t r = 0; r < m_rows.size(); ++r)
-        if (m_selected[m_rows[r]]) items.add_item(Item(r));
-    return items;
-}
-
-void NeteaseSongSource::SetFilter(std::wstring_view filterLower) {
-    m_filter.assign(filterLower);
-    m_selected.assign(m_songs.size(), 0);
-    m_focus = SIZE_MAX;
-    RebuildRows();
-}
-
-// ---- favorites from all providers -------------------------------------------------------
-
-AllFavoritesSource::AllFavoritesSource(std::vector<metadb_handle_ptr> local, std::vector<netease::Song> remote)
-    : m_local(std::move(local)), m_remote(std::move(remote)) {
-    m_columns = {{L"Title", 0, true},
-                 {L"Artist", 170},
-                 {L"Album", 170},
-                 {L"Length", 56, false, true},
-                 {L"Favorite", 58, false, false, false, "<favorite>"}};
-    RebuildRows();
-}
-
-std::wstring AllFavoritesSource::LocalField(const metadb_handle_ptr& track, const char* script) const {
+// A titleformat field of a local track, with the scripts compiled once.
+std::wstring LocalField(const metadb_handle_ptr& track, const char* script) {
     static std::map<std::string, titleformat_object::ptr> scripts;
     auto it = scripts.find(script);
     if (it == scripts.end()) {
@@ -214,157 +64,339 @@ std::wstring AllFavoritesSource::LocalField(const metadb_handle_ptr& track, cons
     return Wide(out);
 }
 
-void AllFavoritesSource::RebuildRows() {
-    m_rows.clear();
-    m_groups.clear();
-    const size_t localStart = 0;
-    for (size_t i = 0; i < m_local.size(); ++i) {
-        if (!m_filter.empty()) {
-            const std::wstring haystack = Lower(LocalField(m_local[i], "%title%")) + L"\n" +
-                                          Lower(LocalField(m_local[i], "%artist%")) + L"\n" +
-                                          Lower(LocalField(m_local[i], "%album%"));
-            if (!Contains(haystack, m_filter)) continue;
-        }
-        m_rows.push_back({RowKind::Local, i});
-    }
-    const size_t localCount = m_rows.size();
-    if (localCount) {
-        media::RowGroup group;
-        group.key = L"local";
-        group.first = localStart;
-        group.count = localCount;
-        group.art = m_local.empty() ? metadb_handle_ptr{} : m_local.front();
-        group.header = Tr(L"Local Music");
-        m_groups.push_back(std::move(group));
-    }
+std::wstring AlbumLabel(const SongTableRow& row) {
+    return row.album.empty() ? Tr(L"Unknown Album") : row.album;
+}
 
-    const size_t remoteStart = m_rows.size();
-    for (size_t i = 0; i < m_remote.size(); ++i) {
-        if (!m_filter.empty()) {
-            const auto& song = m_remote[i];
-            const std::wstring haystack =
-                Lower(song.title) + L"\n" + Lower(ArtistText(song)) + L"\n" + Lower(song.album);
-            if (!Contains(haystack, m_filter)) continue;
-        }
-        m_rows.push_back({RowKind::Remote, i});
+std::wstring ArtistLabel(const SongTableRow& row) {
+    return row.artist.empty() ? Tr(L"Unknown Artist") : row.artist;
+}
+
+SongTableRow MakeNeteaseRow(const netease::Song& song) {
+    SongTableRow row;
+    row.handle = netease::Catalog::Get().Handle(song.id);
+    row.title = song.title;
+    row.artist = ArtistText(song);
+    row.album = song.album;
+    row.lengthMs = song.durationMs;
+    row.length = LengthText(song.durationMs);
+    row.albumKey = song.albumId ? std::to_wstring(song.albumId) : L"t:" + std::to_wstring(song.id);
+    row.artKey = L"ncm:" + std::to_wstring(song.albumId ? song.albumId : song.id);
+    row.search = Lower(row.title) + L"\n" + Lower(row.artist) + L"\n" + Lower(row.album);
+    row.favorite = netease::Provider::Get().IsLiked(song.id);
+    return row;
+}
+
+std::vector<SongTableRow> NeteaseRows(const std::vector<netease::Song>& songs) {
+    std::vector<SongTableRow> rows;
+    rows.reserve(songs.size());
+    for (const auto& song : songs) rows.push_back(MakeNeteaseRow(song));
+    return rows;
+}
+
+std::vector<SongTableRow> FavoriteRows(const std::vector<metadb_handle_ptr>& local,
+                                       const std::vector<netease::Song>& remote) {
+    std::vector<SongTableRow> rows;
+    rows.reserve(local.size() + remote.size());
+    for (const auto& track : local) {
+        if (!track.is_valid()) continue;
+        SongTableRow row;
+        row.handle = track;
+        row.title = LocalField(track, "%title%");
+        row.artist = LocalField(track, "%artist%");
+        row.album = LocalField(track, "%album%");
+        row.length = LocalField(track, "%length%");
+        row.lengthMs = _wtoi(LocalField(track, "%length_seconds%").c_str()) * 1000;
+        row.source = Tr(L"Local Music");
+        row.albumKey = L"l:" + Lower(row.album) + L"\x1f" + Lower(LocalField(track, "%album artist%"));
+        row.artKey = std::wstring(L"fav:") + pfc::stringcvt::string_wide_from_utf8(track->get_path()).get_ptr() +
+                     L"|" + std::to_wstring(track->get_subsong_index());
+        row.search = Lower(row.title) + L"\n" + Lower(row.artist) + L"\n" + Lower(row.album);
+        row.favorite = true;  // every local row comes from the Favorites playlist
+        rows.push_back(std::move(row));
     }
-    const size_t remoteCount = m_rows.size() - remoteStart;
-    if (remoteCount) {
-        media::RowGroup group;
-        group.key = L"netease";
-        group.first = remoteStart;
-        group.count = remoteCount;
-        group.art = Item(remoteStart);
-        group.header = Tr(L"NetEase Cloud Music");
-        m_groups.push_back(std::move(group));
+    for (auto& row : NeteaseRows(remote)) {
+        row.source = Tr(L"NetEase Cloud Music");
+        rows.push_back(std::move(row));
     }
-    m_selected.assign(m_rows.size(), 0);
+    return rows;
+}
+}  // namespace
+
+SongTableSource::SongTableSource(std::vector<SongTableRow> rows, bool showSource, std::wstring emptyText,
+                                 std::wstring columnKey)
+    : m_all(std::move(rows)),
+      m_emptyText(std::move(emptyText)),
+      m_columnKey(std::move(columnKey)),
+      m_showSource(showSource) {
+    m_order.resize(m_all.size());
+    for (size_t i = 0; i < m_order.size(); ++i) m_order[i] = i;
+    SetViewStyle(media::ViewStyle::Details);
+}
+
+std::wstring SongTableSource::ColumnSetKey() const {
+    return m_columnKey + (m_style == media::ViewStyle::Tiles ? L"-tiles" : L"-details");
+}
+
+void SongTableSource::SetViewStyle(media::ViewStyle style) {
+    m_style = style == media::ViewStyle::Icons ? media::ViewStyle::Tiles : style;
+    if (m_style == media::ViewStyle::Tiles) {
+        m_columns = {{L"Album", 200},
+                     {L"#", 34, false, true},
+                     {L"Title", 0, true},
+                     {L"Length", 56, false, true},
+                     {L"Artist", 190}};
+        m_fields = {kAlbumColumn, kNumber, kTitle, kLength, kArtist};
+    } else {
+        m_columns = {{L"#", 34, false, true},
+                     media::ArtColumn(false),
+                     {L"Title", 0, true},
+                     {L"Length", 56, false, true},
+                     {L"Artist", 170},
+                     {L"Album", 170}};
+        m_fields = {kNumber, kArt, kTitle, kLength, kArtist, kAlbum};
+    }
+    if (m_showSource) {
+        m_columns.push_back({L"Source", 140});
+        m_fields.push_back(kSource);
+    }
+    m_columns.push_back({L"Favorite", 58, false, false, false, "<favorite>"});
+    m_fields.push_back(kFavorite);
+    m_sortColumn = SIZE_MAX;  // columns changed: back to the view's own order
+    m_sortDescending = false;
+    ApplySort();
+}
+
+bool SongTableSource::CanSort(size_t column) const {
+    return column < m_fields.size() && m_fields[column] != kArt && m_fields[column] != kAlbumColumn;
+}
+
+void SongTableSource::Sort(size_t column, bool descending) {
+    if (!CanSort(column)) {
+        m_sortColumn = SIZE_MAX;
+        m_sortDescending = false;
+    } else {
+        m_sortColumn = column;
+        m_sortDescending = descending;
+    }
+    ApplySort();
+}
+
+void SongTableSource::SetGrouping(bool enabled) {
+    if (m_grouping == enabled) return;
+    m_grouping = enabled;
+    BuildGroups();
+}
+
+std::pair<std::wstring, std::wstring> SongTableSource::GroupInfo(size_t row) const {
+    if (m_sortColumn >= m_fields.size()) return {L"", L""};
+    const SongTableRow& item = m_all[row];
+    switch (m_fields[m_sortColumn]) {
+    case kTitle: {
+        wchar_t c = item.title.empty() ? L'#' : item.title[0];
+        if (c >= L'a' && c <= L'z') c = static_cast<wchar_t>(c - L'a' + L'A');
+        if (std::iswpunct(static_cast<wint_t>(c)) || std::iswspace(static_cast<wint_t>(c))) c = L'#';
+        const std::wstring label(1, c);
+        return {label, label};
+    }
+    case kLength: {
+        const long long minutes = item.lengthMs / 60000;
+        return {std::to_wstring(minutes), std::to_wstring(minutes) + Tr(minutes == 1 ? L" minute" : L" minutes")};
+    }
+    case kArtist: {
+        const std::wstring label = ArtistLabel(item);
+        return {label, label};
+    }
+    case kAlbum: {
+        const std::wstring label = AlbumLabel(item);
+        return {label, label};
+    }
+    case kSource: return {item.source, item.source};
+    case kFavorite:
+        return {item.favorite ? L"1" : L"0", Tr(item.favorite ? L"Favorite" : L"Not in Favorites")};
+    default: return {L"", L""};  // # is the row number itself: nothing to group by
+    }
+}
+
+void SongTableSource::ApplySort() {
+    m_order.resize(m_all.size());
+    for (size_t i = 0; i < m_order.size(); ++i) m_order[i] = i;
+    if (m_sortColumn != SIZE_MAX && m_sortColumn < m_fields.size()) {
+        const bool desc = m_sortDescending;
+        const bool tiles = m_style == media::ViewStyle::Tiles;
+        const int field = m_fields[m_sortColumn];
+        auto key = [&](size_t index) {
+            const SongTableRow& item = m_all[index];
+            switch (field) {
+            case kNumber: {
+                wchar_t pad[32];
+                swprintf_s(pad, L"%06zu", index + 1);
+                return std::wstring(pad);
+            }
+            case kTitle: return item.title;
+            case kLength: {
+                wchar_t pad[32];
+                swprintf_s(pad, L"%012d", item.lengthMs);
+                return std::wstring(pad);
+            }
+            case kArtist: return ArtistLabel(item);
+            case kAlbum: return AlbumLabel(item);
+            case kSource: return item.source;
+            case kFavorite: return std::wstring(item.favorite ? L"1" : L"0");
+            default: return std::wstring();
+            }
+        };
+        std::stable_sort(m_order.begin(), m_order.end(), [&](size_t a, size_t b) {
+            if (tiles) {  // expanded tile keeps albums together; the sort orders rows inside one
+                const int c = CompareText(AlbumLabel(m_all[a]), AlbumLabel(m_all[b]));
+                if (c) return desc ? c > 0 : c < 0;
+                if (m_all[a].albumKey != m_all[b].albumKey) return m_all[a].albumKey < m_all[b].albumKey;
+            }
+            const int c = CompareText(key(a), key(b));
+            if (!tiles) return desc ? c > 0 : c < 0;
+            return c ? (desc ? c > 0 : c < 0) : a < b;
+        });
+    }
+    m_selected.assign(m_all.size(), 0);
     m_focus = SIZE_MAX;
+    RebuildVisible();
 }
 
-std::wstring AllFavoritesSource::Cell(size_t row, size_t column) const {
-    if (row >= m_rows.size()) return {};
-    const Row& r = m_rows[row];
-    if (column == 4) return {};
-    if (r.kind == RowKind::Local) {
-        const auto& track = m_local[r.index];
-        switch (column) {
-        case 0: return LocalField(track, "%title%");
-        case 1: return LocalField(track, "%artist%");
-        case 2: return LocalField(track, "%album%");
-        case 3: return LocalField(track, "%length%");
-        default: return {};
+void SongTableSource::RebuildVisible() {
+    m_visible.clear();
+    for (size_t index : m_order)
+        if (m_filter.empty() || Contains(m_all[index].search, m_filter)) m_visible.push_back(index);
+    BuildGroups();
+}
+
+void SongTableSource::BuildGroups() {
+    m_groups.clear();
+    if (m_visible.empty()) return;
+    const bool tiles = m_style == media::ViewStyle::Tiles;
+    if (!tiles && (m_sortColumn == SIZE_MAX || !m_grouping)) return;  // no sort or grouping off: one list
+
+    for (size_t r = 0; r < m_visible.size(); ++r) {
+        const SongTableRow& item = m_all[m_visible[r]];
+        std::wstring key, header;
+        if (tiles) {
+            key = L"a:" + item.albumKey;
+            header = AlbumLabel(item);
+        } else {
+            auto info = GroupInfo(m_visible[r]);
+            if (info.first.empty()) {  // sorting by #: the row numbers are not a grouping
+                m_groups.clear();
+                return;
+            }
+            key = std::move(info.first);
+            header = std::move(info.second);
         }
-    }
-    const auto& song = m_remote[r.index];
-    switch (column) {
-    case 0: return song.title;
-    case 1: return ArtistText(song);
-    case 2: return song.album;
-    case 3: return LengthText(song.durationMs);
-    default: return {};
+        if (!m_groups.empty() && m_groups.back().key == key) {
+            ++m_groups.back().count;
+            continue;
+        }
+        media::RowGroup group;
+        group.key = std::move(key);
+        group.first = r;
+        group.count = 1;
+        group.art = item.handle;
+        group.header = std::move(header);
+        group.lines[0] = group.header;
+        if (tiles) group.lines[1] = ArtistLabel(item);
+        m_groups.push_back(std::move(group));
     }
 }
 
-bool AllFavoritesSource::IsPlaying(size_t row) const {
+std::wstring SongTableSource::Cell(size_t row, size_t column) const {
+    if (row >= m_visible.size() || column >= m_fields.size()) return {};
+    const SongTableRow& item = m_all[m_visible[row]];
+    switch (m_fields[column]) {
+    case kNumber: return std::to_wstring(row + 1);
+    case kTitle: return item.title;
+    case kLength: return item.length;
+    case kArtist: return item.artist;
+    case kAlbum: return item.album;
+    case kSource: return item.source;
+    default: return {};  // the album, art and favorite columns are drawn by the list
+    }
+}
+
+bool SongTableSource::IsPlaying(size_t row) const {
     metadb_handle_ptr now;
-    return row < m_rows.size() && playback_control::get()->get_now_playing(now) && SameHandle(now, Item(row));
+    return row < m_visible.size() && playback_control::get()->get_now_playing(now) && SameHandle(now, Item(row));
 }
 
-void AllFavoritesSource::SelectOnly(size_t row) {
+void SongTableSource::SelectOnly(size_t row) {
     std::fill(m_selected.begin(), m_selected.end(), uint8_t{0});
-    if (row < m_selected.size()) m_selected[row] = 1;
+    if (row < m_visible.size()) m_selected[m_visible[row]] = 1;
     m_focus = row;
 }
 
-void AllFavoritesSource::Toggle(size_t row) {
-    if (row < m_selected.size()) m_selected[row] ^= 1;
+void SongTableSource::Toggle(size_t row) {
+    if (row < m_visible.size()) m_selected[m_visible[row]] ^= 1;
     m_focus = row;
 }
 
-void AllFavoritesSource::SelectRange(size_t a, size_t b, bool keepOthers) {
+void SongTableSource::SelectRange(size_t a, size_t b, bool keepOthers) {
     if (!keepOthers) std::fill(m_selected.begin(), m_selected.end(), uint8_t{0});
     if (a > b) std::swap(a, b);
-    for (size_t r = a; r <= b && r < m_selected.size(); ++r) m_selected[r] = 1;
+    for (size_t r = a; r <= b && r < m_visible.size(); ++r) m_selected[m_visible[r]] = 1;
 }
 
-void AllFavoritesSource::SelectAll() { std::fill(m_selected.begin(), m_selected.end(), uint8_t{1}); }
+void SongTableSource::SelectAll() {
+    for (size_t index : m_visible) m_selected[index] = 1;
+}
 
-void AllFavoritesSource::SetSelection(const std::vector<size_t>& rows) {
+void SongTableSource::SetSelection(const std::vector<size_t>& rows) {
     std::fill(m_selected.begin(), m_selected.end(), uint8_t{0});
     for (size_t row : rows)
-        if (row < m_selected.size()) m_selected[row] = 1;
+        if (row < m_visible.size()) m_selected[m_visible[row]] = 1;
 }
 
-metadb_handle_ptr AllFavoritesSource::Item(size_t row) const {
-    if (row >= m_rows.size()) return {};
-    const Row& r = m_rows[row];
-    if (r.kind == RowKind::Local) return m_local[r.index];
-    return netease::Catalog::Get().Handle(m_remote[r.index].id);
+metadb_handle_ptr SongTableSource::Item(size_t row) const {
+    return row < m_visible.size() ? m_all[m_visible[row]].handle : metadb_handle_ptr{};
 }
 
-std::wstring AllFavoritesSource::ArtKey(size_t row) const {
-    if (row >= m_rows.size()) return {};
-    const Row& r = m_rows[row];
-    if (r.kind == RowKind::Local) {
-        const auto& track = m_local[r.index];
-        return std::wstring(L"fav:") + pfc::stringcvt::string_wide_from_utf8(track->get_path()).get_ptr() + L"|" +
-               std::to_wstring(track->get_subsong_index());
-    }
-    const auto& song = m_remote[r.index];
-    return L"ncm:" + std::to_wstring(song.albumId ? song.albumId : song.id);
+std::wstring SongTableSource::ArtKey(size_t row) const {
+    return row < m_visible.size() ? m_all[m_visible[row]].artKey : std::wstring();
 }
 
-size_t AllFavoritesSource::FindRow(const metadb_handle_ptr& track) const {
-    for (size_t r = 0; r < m_rows.size(); ++r)
+size_t SongTableSource::FindRow(const metadb_handle_ptr& track) const {
+    for (size_t r = 0; r < m_visible.size(); ++r)
         if (SameHandle(Item(r), track)) return r;
     return SIZE_MAX;
 }
 
-void AllFavoritesSource::Activate(size_t row) {
-    if (row >= m_rows.size()) return;
+void SongTableSource::Activate(size_t row) {
+    if (row >= m_visible.size()) return;
     metadb_handle_list items;
-    for (size_t r = 0; r < m_rows.size(); ++r) items.add_item(Item(r));
+    for (size_t r = 0; r < m_visible.size(); ++r) items.add_item(Item(r));
     media::PlayItems(items, row);
 }
 
-void AllFavoritesSource::ContextMenu(HWND owner, POINT screen) {
+void SongTableSource::ContextMenu(HWND owner, POINT screen) {
     auto items = SelectedItems();
-    if (items.get_count() == 0 && m_focus < m_rows.size()) items.add_item(Item(m_focus));
+    if (items.get_count() == 0 && m_focus < m_visible.size()) items.add_item(Item(m_focus));
     if (items.get_count()) RunContextMenu(owner, items, screen);
 }
 
-metadb_handle_list AllFavoritesSource::SelectedItems() const {
+metadb_handle_list SongTableSource::SelectedItems() const {
     metadb_handle_list items;
-    for (size_t r = 0; r < m_rows.size(); ++r)
-        if (m_selected[r]) items.add_item(Item(r));
+    for (size_t r = 0; r < m_visible.size(); ++r)
+        if (m_selected[m_visible[r]]) items.add_item(Item(r));
     return items;
 }
 
-void AllFavoritesSource::SetFilter(std::wstring_view filterLower) {
+void SongTableSource::SetFilter(std::wstring_view filterLower) {
     m_filter.assign(filterLower);
-    RebuildRows();
+    m_focus = SIZE_MAX;
+    RebuildVisible();
 }
+
+NeteaseSongSource::NeteaseSongSource(std::vector<netease::Song> songs, std::wstring emptyText)
+    : SongTableSource(NeteaseRows(songs), false, std::move(emptyText), L"netease-songs") {}
+
+AllFavoritesSource::AllFavoritesSource(std::vector<metadb_handle_ptr> local, std::vector<netease::Song> remote)
+    : SongTableSource(FavoriteRows(local, remote), true, L"No favorites.", L"all-favorites") {}
 
 // ---- playlists --------------------------------------------------------------------------
 
