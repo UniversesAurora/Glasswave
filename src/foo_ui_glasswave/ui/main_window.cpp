@@ -3463,6 +3463,20 @@ std::vector<ContextAction> MainWindow::BuildContextActions(metadb_handle_list_cr
     } else if (m_view.kind == View::Kind::AllMostPlayed) {
         actions.push_back({L"Remove from Most Played", [this, selected] { ForgetPlayStats(selected, false); }});
     }
+    // A regular foobar2000 playlist takes local and NetEase tracks alike, so this applies
+    // to every song selection; source-only playlists (NetEase) are offered separately below.
+    std::vector<ContextAction> localPlaylists;
+    const size_t exclude = m_view.kind == View::Kind::Playlist ? m_view.playlist : SIZE_MAX;
+    for (const auto& [id, name] : LocalPlaylistTargets(exclude)) {
+        localPlaylists.push_back({name.empty() ? L"Unnamed playlist" : name, [selected, id] {
+                                      auto pm = playlist_manager::get();
+                                      if (id >= 0 && static_cast<t_size>(id) < pm->get_playlist_count())
+                                          pm->playlist_add_items(static_cast<t_size>(id), selected,
+                                                                 pfc::bit_array_false());
+                                  }});
+    }
+    if (localPlaylists.empty()) localPlaylists.push_back({L"No playlists", nullptr});
+    actions.push_back({L"Add to playlist", nullptr, std::move(localPlaylists)});
     const metadb_handle_ptr& first = items[0];
     int64_t firstSong = 0;
     if (first.is_valid() && netease::ParseSongPath(first->get_path(), firstSong)) {
