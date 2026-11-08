@@ -291,8 +291,10 @@ size_t ListView::MaxTop() const {
         const float viewH = RowsHeightDip();
         const float total = m_lineTop.back();
         if (total <= viewH) return 0;
-        auto it = std::upper_bound(m_lineTop.begin(), m_lineTop.end(), total - viewH);
-        const size_t line = it == m_lineTop.begin() ? 0 : static_cast<size_t>(it - m_lineTop.begin() - 1);
+        // Stop where the last line's bottom reaches the viewport bottom; scrolling further
+        // would only add empty space below it.
+        auto it = std::lower_bound(m_lineTop.begin(), m_lineTop.end(), total - viewH);
+        const size_t line = static_cast<size_t>(it - m_lineTop.begin());
         return std::min(line, n ? n - 1 : 0);
     }
     const size_t v = VisibleLines();

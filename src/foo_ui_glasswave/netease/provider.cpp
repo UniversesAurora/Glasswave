@@ -528,7 +528,6 @@ void Provider::FetchAlbumTracks(std::vector<Album> albums, SongsCallback done) {
             });
             return;
         }
-        if (albums.size() > 120) albums.resize(120);  // a browse page, not the whole library
         std::vector<std::vector<Song>> tracks(albums.size());
         std::atomic<size_t> next{0};
         auto fetch = [this, &albums, &tracks, &next] {
@@ -544,7 +543,7 @@ void Provider::FetchAlbumTracks(std::vector<Album> albums, SongsCallback done) {
             }
         };
         std::vector<std::thread> threads;
-        const size_t count = std::min<size_t>(4, albums.size());
+        const size_t count = std::min<size_t>(6, albums.size());
         for (size_t t = 0; t < count; ++t) threads.emplace_back(fetch);
         for (auto& thread : threads) thread.join();
         if (m_stopping) return;
