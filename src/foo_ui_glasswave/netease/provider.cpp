@@ -699,6 +699,30 @@ void Provider::FetchArtistDetail(int64_t artistId, ArtistDetailCallback done) {
     });
 }
 
+void Provider::FetchArtistDescription(int64_t artistId, ArtistDescriptionCallback done) {
+    m_tasks.Post([this, artistId, done = std::move(done)] {
+        if (m_stopping) return;
+        abort_callback_impl abort;
+        std::wstring error;
+        if (!m_service.EnsureStarted(abort, &error)) {
+            PostMain([done = std::move(done), error] {
+                if (done) done({}, {}, ErrorOf(error));
+            });
+            return;
+        }
+        std::wstring brief, full;
+        if (!m_client.GetArtistDescription(artistId, abort, brief, full, error)) {
+            PostMain([done = std::move(done), error] {
+                if (done) done({}, {}, ErrorOf(error));
+            });
+            return;
+        }
+        PostMain([done = std::move(done), brief = std::move(brief), full = std::move(full)]() mutable {
+            if (done) done(std::move(brief), std::move(full), {});
+        });
+    });
+}
+
 void Provider::FetchArtistAlbumsPage(int64_t artistId, int offset, int limit, ArtistAlbumsCallback done) {
     m_tasks.Post([this, artistId, offset, limit, done = std::move(done)] {
         if (m_stopping) return;

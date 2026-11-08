@@ -59,6 +59,8 @@ public:
                      std::wstring& error);
     bool GetSongUrl(int64_t id, std::wstring_view level, abort_callback& abort, SongUrl& out, std::wstring& error);
     bool GetArtistDetail(int64_t artistId, abort_callback& abort, Artist& out, std::wstring& error);
+    bool GetArtistDescription(int64_t artistId, abort_callback& abort, std::wstring& brief, std::wstring& full,
+                              std::wstring& error);
     bool GetArtistAlbumsPage(int64_t artistId, int offset, int limit, abort_callback& abort,
                              std::vector<Album>& out, bool* followed, bool* more, std::wstring& error);
     bool GetArtistTopSongs(int64_t artistId, abort_callback& abort, std::vector<Song>& out, std::wstring& error);

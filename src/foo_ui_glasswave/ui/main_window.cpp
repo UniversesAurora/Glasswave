@@ -866,6 +866,7 @@ void MainWindow::UpdateLayout() {
             const float used = m_artistBriefExpanded ? expandedShown : collapsed;
             float needed = 62 + used + 12;
             if (m_artistBriefOverflow) needed += 18;
+            if (m_artistBriefExpanded) needed += 6;  // pixel rounding must not clip the last line
             L.artistHeader.bottom =
                 std::min<LONG>(L.content.top + std::max<int>(PxI(kArtistHeaderHeight), PxI(needed)), L.content.bottom);
             if (m_artistBriefOverflow) {
@@ -1433,6 +1434,8 @@ void MainWindow::RepaintBreadcrumb() {
     BuildCrumbs();
     PaintBreadcrumb();
     UpdateLayout();
+    // The view options glyph follows the current source, which asynchronous loads replace.
+    if (auto* w = WidgetById(kViewOptions)) w->Invalidate();
 }
 
 void MainWindow::BuildCrumbs() {
@@ -2397,6 +2400,17 @@ void MainWindow::ShowNeteaseArtistDetail(const View& view, netease::Artist artis
             break;
         }
     m_followPending = false;
+    // The profile's briefDesc is only a summary; the full article comes from /artist/desc.
+    const int64_t artistId = m_artist->id;
+    netease::Provider::Get().FetchArtistDescription(
+        artistId, [this, artistId](std::wstring brief, std::wstring full, std::wstring error) {
+            if (!error.empty() || !m_artist || m_artist->id != artistId) return;
+            const std::wstring& text = full.empty() ? brief : full;
+            if (text.empty()) return;
+            m_artist->brief = text;
+            RepaintBreadcrumb();
+            RepaintArtistHeader();
+        });
     RepaintBreadcrumb();
     RepaintArtistHeader();
     ContinueArtistLoad();

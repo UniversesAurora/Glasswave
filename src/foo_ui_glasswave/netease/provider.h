@@ -48,6 +48,8 @@ public:
     using AlbumsCallback = std::function<void(std::vector<Album> albums, std::wstring error)>;
     using DetailCallback = std::function<void(PlaylistDetail detail, std::wstring error)>;
     using ArtistDetailCallback = std::function<void(Artist artist, std::wstring error)>;
+    using ArtistDescriptionCallback =
+        std::function<void(std::wstring brief, std::wstring full, std::wstring error)>;
     using ArtistAlbumsCallback =
         std::function<void(std::vector<Album> albums, bool more, bool followedKnown, bool followed, std::wstring error)>;
 
@@ -61,6 +63,7 @@ public:
     void FetchLiked(SongsCallback done);
     void FetchPlaylist(int64_t playlistId, DetailCallback done);
     void FetchArtistDetail(int64_t artistId, ArtistDetailCallback done);
+    void FetchArtistDescription(int64_t artistId, ArtistDescriptionCallback done);
     void FetchArtistAlbumsPage(int64_t artistId, int offset, int limit, ArtistAlbumsCallback done);
     void FetchArtistTopSongs(int64_t artistId, SongsCallback done);
     void FetchAlbumSongs(int64_t albumId, SongsCallback done);

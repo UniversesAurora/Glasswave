@@ -597,6 +597,33 @@ bool Client::GetArtistDetail(int64_t artistId, abort_callback& abort, Artist& ou
     return true;
 }
 
+bool Client::GetArtistDescription(int64_t artistId, abort_callback& abort, std::wstring& brief,
+                                  std::wstring& full, std::wstring& error) {
+    brief.clear();
+    full.clear();
+    json::Object body;
+    int code = 0;
+    if (!Request(L"/artist/desc", {{L"id", std::to_wstring(artistId)}}, false, abort, body, code, error))
+        return false;
+    if (code != 200) {
+        error = MessageOf(body, code);
+        return false;
+    }
+    brief = json::GetString(body, L"briefDesc");
+    if (auto introduction = json::GetArray(body, L"introduction")) {
+        for (const auto& section : json::Objects(*introduction)) {
+            const std::wstring title = json::GetString(section, L"ti");
+            const std::wstring text = json::GetString(section, L"txt");
+            if (title.empty() && text.empty()) continue;
+            if (!full.empty()) full += L"\n\n";
+            if (!title.empty()) full += title + L"\n";
+            full += text;
+        }
+    }
+    if (full.empty()) full = brief;
+    return true;
+}
+
 bool Client::GetArtistAlbumsPage(int64_t artistId, int offset, int limit, abort_callback& abort,
                                  std::vector<Album>& out, bool* followed, bool* more, std::wstring& error) {
     out.clear();
