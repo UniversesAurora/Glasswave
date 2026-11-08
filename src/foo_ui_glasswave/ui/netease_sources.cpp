@@ -145,6 +145,43 @@ std::vector<SongTableRow> FavoriteRows(const std::vector<metadb_handle_ptr>& loc
     }
     return rows;
 }
+
+std::wstring WideUtf8(const std::string& text) {
+    return text.empty() ? std::wstring() : pfc::stringcvt::string_wide_from_utf8(text.c_str()).get_ptr();
+}
+
+SongTableRow MakePlayStatRow(const media::PlayRecord& record) {
+    SongTableRow row;
+    row.title = WideUtf8(record.title);
+    row.artist = WideUtf8(record.artist);
+    row.album = WideUtf8(record.album);
+    row.lengthMs = record.durationMs;
+    row.length = LengthText(record.durationMs);
+    row.search = Lower(row.title) + L"\n" + Lower(row.artist) + L"\n" + Lower(row.album);
+    row.remote = record.remote;
+    row.favorite = record.remote && netease::Provider::Get().IsLiked(record.songId);
+    if (record.remote) {
+        row.handle = netease::Catalog::Get().Handle(record.songId);
+        row.albumKey = record.albumId ? std::to_wstring(record.albumId) : L"t:" + std::to_wstring(record.songId);
+        row.artKey = L"ncm:" + std::to_wstring(record.albumId ? record.albumId : record.songId);
+        row.albumId = record.albumId;
+        row.artistId = record.artistId;
+        row.source = Tr(L"NetEase Cloud Music");
+    } else {
+        row.handle = metadb::get()->handle_create(record.path.c_str(), record.subsong);
+        row.albumKey = L"l:" + Lower(row.album) + L"\x1f" + Lower(row.artist);
+        row.artKey = L"stats:" + WideUtf8(record.key);
+        row.source = Tr(L"Local Music");
+    }
+    return row;
+}
+
+std::vector<SongTableRow> PlayStatRows(const std::vector<media::PlayRecord>& records) {
+    std::vector<SongTableRow> rows;
+    rows.reserve(records.size());
+    for (const auto& record : records) rows.push_back(MakePlayStatRow(record));
+    return rows;
+}
 }  // namespace
 
 SongTableSource::SongTableSource(std::vector<SongTableRow> rows, bool showSource, std::wstring emptyText,
@@ -475,6 +512,9 @@ size_t NeteaseSongSource::RemoveSongs(const std::vector<int64_t>& ids) {
 
 AllFavoritesSource::AllFavoritesSource(std::vector<metadb_handle_ptr> local, std::vector<netease::Song> remote)
     : SongTableSource(FavoriteRows(local, remote), true, L"No favorites.", L"all-favorites") {}
+
+PlayStatsSource::PlayStatsSource(std::vector<media::PlayRecord> records, std::wstring emptyText)
+    : SongTableSource(PlayStatRows(records), true, std::move(emptyText), L"all-play-stats") {}
 
 // ---- artist page ------------------------------------------------------------------------
 

@@ -108,6 +108,8 @@ std::wstring NavPane::ItemKey(const Item& item) {
     case Target::LibraryLocal: return L"local";
     case Target::LibraryNetease: return L"netease";
     case Target::AllFavorites: return L"favorites";
+    case Target::AllRecentPlayed: return L"recent";
+    case Target::AllMostPlayed: return L"mostplayed";
     case Target::PlaylistsHeader: return L"playlists";
     case Target::SmartHeader: return L"smart";
     case Target::NeteaseLiked: return L"liked";
@@ -257,6 +259,8 @@ void NavPane::Rebuild() {
     m_items.push_back({Target::LibraryAll, 0, 0, L"All Music", wp::NavIcon::Library, true});
     if (m_allExpanded) {
         m_items.push_back({Target::AllFavorites, 0, 1, L"Favorites", wp::NavIcon::Playlist, false});
+        m_items.push_back({Target::AllRecentPlayed, 0, 1, L"Recently Played", wp::NavIcon::Playlist, false});
+        m_items.push_back({Target::AllMostPlayed, 0, 1, L"Most Played", wp::NavIcon::Playlist, false});
         m_items.push_back({Target::PlaylistsHeader, 0, 1, L"Playlists", wp::NavIcon::Playlist, true});
         if (m_playlistsExpanded) {
             pfc::string8 name;
@@ -266,6 +270,11 @@ void NavPane::Rebuild() {
                 m_items.push_back({Target::Playlist, i, 2, Wide(name), wp::NavIcon::Playlist, false});
             }
         }
+    }
+    // Local Music: the Smart playlists section (they only see the local library) and the
+    // categories directly, without the old Music level.
+    m_items.push_back({Target::LibraryLocal, 0, 0, L"Local Music", wp::NavIcon::Music, true});
+    if (m_localExpanded) {
         m_items.push_back({Target::SmartHeader, 0, 1, L"Smart playlists", wp::NavIcon::Playlist, true});
         if (m_smartExpanded) {
             if (const t_size fav = media::FavoritesPlaylist(false); fav != SIZE_MAX)
@@ -277,13 +286,10 @@ void NavPane::Rebuild() {
                     m_items.push_back({Target::Playlist, p, 2, Wide(smartName), wp::NavIcon::Playlist, false});
                 }
         }
-    }
-    // Local Music lists its categories directly (the old "Music" level is gone).
-    m_items.push_back({Target::LibraryLocal, 0, 0, L"Local Music", wp::NavIcon::Music, true});
-    if (m_localExpanded)
         for (auto kind : m_categories)
             m_items.push_back(
                 {Target::Category, static_cast<size_t>(kind), 1, CategoryLabel(kind), wp::NavIcon::Artist, false});
+    }
     m_items.push_back({Target::LibraryNetease, 0, 0, L"NetEase Cloud Music", wp::NavIcon::Library, true});
     if (m_neteaseExpanded) {
         if (m_neteaseLoggedIn) {
@@ -470,7 +476,9 @@ bool NavPane::SameSiblingGroup(size_t a, size_t b) const {
         if (pa == SIZE_MAX || pb == SIZE_MAX || pa != pb) return false;
         // Libraries with several subsections: All Music, Local Music and NetEase.
         const std::wstring group = ItemKey(m_items[pa]);
-        return group == L"all" || group == L"local" || group == L"netease";
+        if (group == L"local")  // the Smart playlists header and the categories move apart
+            return first.target == second.target;
+        return group == L"all" || group == L"netease";
     }
     if (first.level != 2 || second.level != 2) return false;
     auto parentOf = [this](size_t index) {
@@ -481,8 +489,8 @@ bool NavPane::SameSiblingGroup(size_t a, size_t b) const {
     const size_t pa = parentOf(a);
     const size_t pb = parentOf(b);
     if (pa == SIZE_MAX || pb == SIZE_MAX || m_items[pa].target != m_items[pb].target) return false;
-    // Groups whose order can be persisted: the two NetEase playlist sections, the All Music
-    // sections, and the Local Music categories.
+    // Groups whose order can be persisted: the two NetEase playlist sections, the regular
+    // playlists under All Music and the smart playlists under Local Music.
     const Target parent = m_items[pa].target;
     return parent == Target::NeteaseCreatedHeader || parent == Target::NeteaseCollectedHeader ||
            parent == Target::PlaylistsHeader || parent == Target::SmartHeader;
@@ -581,7 +589,9 @@ void NavPane::Paint() {
                                         it.target == Target::AllFavorites || it.target == Target::NeteaseLiked
                                     ? 29526
                                 : it.target == Target::Queue        ? 29513
-                                : it.target == Target::SmartHeader  ? 29572
+                                : it.target == Target::AllRecentPlayed || it.target == Target::AllMostPlayed ||
+                                          it.target == Target::SmartHeader
+                                      ? 29572
                                 : it.target == Target::Category ? CategoryIcon(static_cast<media::GroupKind>(it.playlist))
                                                                 : 0;
             bool drewCover = false;

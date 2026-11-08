@@ -7,8 +7,9 @@ Updated: 2026-11-08
 - M0 (glass window, Win7 frame/shadow/caption buttons, WMP 12 layout, transport) is done.
 - **Functional pass (M1 core) is done and tested in the dev instance** with a real library
   (E:\music\CDs added as a music folder in the dev instance only):
-  - Navigation pane: Now Playing; All Music with Favorites, playlists and smart playlists;
-    Local Music with its categories (Artist / Album / Genre); NetEase Cloud Music.
+  - Navigation pane: Now Playing; All Music with Favorites, the cross-source Recently
+    Played / Most Played lists and the playlists; Local Music with the Smart playlists
+    section and its categories; NetEase Cloud Music.
   - Virtualized list: hover/selection (Ctrl/Shift), keyboard (arrows, PgUp/PgDn, Home/End,
     Enter, Delete, Ctrl+A), double-click to play, foobar2000 context menu on right-click,
     scrollbar drag/page.
@@ -139,9 +140,9 @@ Updated: 2026-11-08
   - NeteaseCloudMusicApi Enhanced runs as a loopback helper managed by the component; QR
     login, DPAPI session, likes, created/collected/recommended playlists, playlist pages and
     lossless playback through an `ncm://song/<id>` input all work.
-  - Library tree: All Music / Local Music / NetEase Cloud Music; All Music shows Favorites
-    plus the playlists and smart playlists (both can live across sources), Local Music lists
-    its categories directly, and NetEase shows Favorites,
+  - Library tree: All Music / Local Music / NetEase Cloud Music; All Music shows Favorites,
+    Recently Played, Most Played and the regular playlists, Local Music keeps a Smart
+    playlists section and lists its categories directly, and NetEase shows Favorites,
     Created playlists, Collected playlists and Recommended. All Music > Favorites combines
     the local Favorites playlist with the NetEase liked list; the Details list is flat until
     sorted and gains a sortable Source column.
@@ -224,7 +225,7 @@ Updated: 2026-11-08
   - Expanded descriptions are capped at 260 DIP and get their own scroll area (wheel,
     arrows, thumb drag and track paging). Navigation rows can be dragged within their
     sibling group: root libraries and their subtrees, the All/Local/NetEase subsections,
-    local and smart playlists, local categories, and NetEase created/collected playlists
+    the local categories and smart playlists, and NetEase created/collected playlists
     (through /playlist/order/update). The hierarchy never changes; the static section order
     is persisted and the service order is reloaded after a playlist drag. The drag preview
     is a translucent copy of the whole row under the cursor plus an insertion line.
@@ -246,13 +247,18 @@ Updated: 2026-11-08
     Play, Play next, Add to queue, Add to playlist (the local playlists) and Add to NetEase
     playlist for the whole contents; local playlist tiles get the same queue and copy
     actions. NetEase contents are fetched on demand and become ncm:// items.
-  - Playlists and smart playlists moved from Local Music to All Music: a foobar2000
-    playlist holds local and ncm:// tracks alike, so the library-wide node is the right
-    home, while the NetEase library keeps its own cloud playlists. Local Music now lists
-    its categories directly, without the intermediate Music level; breadcrumbs, section
-    menus and drag ordering follow the new tree. Smart playlists remain local-only by
-    nature: foobar2000 auto playlists query the Media Library, which never contains
-    NetEase tracks.
+  - Playlists and smart playlists separated: a foobar2000 playlist holds local and ncm://
+    tracks alike, so regular playlists live under All Music; smart playlists are auto
+    playlists over the Media Library (which never contains NetEase tracks), so they live
+    in the Smart playlists section under Local Music. Local Music lists its categories
+    directly, without the old Music level; breadcrumbs, section menus and drag ordering
+    follow the tree, and a smart playlist's crumb starts at Local Music.
+  - All Music gained cross-source Recently Played and Most Played, built on our own store
+    because foobar2000 auto playlists cannot see NetEase tracks: each track that starts
+    playing is recorded with its display metadata, source and NetEase ids in
+    `<profile>\glasswave\play-stats.txt` (newest 2000 kept, written atomically), and the
+    two pages mix local and NetEase rows with a Source column. The lists refresh when the
+    page is opened, not live while it is on screen.
   - Not implemented yet: NetEase full-catalog search UI and a combined All Music browse
     beyond Favorites.
 

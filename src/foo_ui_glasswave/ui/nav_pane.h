@@ -8,15 +8,15 @@ namespace glasswave::ui {
 std::wstring CategoryLabel(media::GroupKind kind);
 int CategoryIcon(media::GroupKind kind);
 
-// Navigation pane: the play queue (Now Playing), All Music (Favorites, the user's playlists
-// and the smart playlists), the local Music categories (Artist / Album / Genre) and the
-// NetEase Cloud Music library.
+// Navigation pane: the play queue (Now Playing), All Music (Favorites, the cross-source
+// Recently Played / Most Played lists and the user's playlists), Local Music (the Smart
+// playlists section and its categories) and the NetEase Cloud Music library.
 class NavPane {
 public:
     // Category: a way to browse Local Music; playlist holds its media::GroupKind.
     enum class Target {
         None, Queue, PlaylistsHeader, Playlist, SmartHeader, Category,
-        LibraryAll, AllFavorites, LibraryLocal, LibraryNetease,
+        LibraryAll, AllFavorites, AllRecentPlayed, AllMostPlayed, LibraryLocal, LibraryNetease,
         NeteaseCreatedHeader, NeteaseCollectedHeader, NeteaseRemotePlaylist,
         NeteaseRecommended, NeteaseLiked, NeteaseArtists, NeteaseAlbums, NeteaseLogin
     };

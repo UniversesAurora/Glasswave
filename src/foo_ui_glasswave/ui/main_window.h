@@ -66,7 +66,7 @@ private:
         enum class NeteaseScope { Created, Collected, Recommended };
         enum class Kind {
             Playlist, AllMusic, Category, Group, Playlists, SmartPlaylists,
-            AllFavorites, NeteasePlaylists, NeteasePlaylist, NeteaseLiked,
+            AllFavorites, AllRecentPlayed, AllMostPlayed, NeteasePlaylists, NeteasePlaylist, NeteaseLiked,
             NeteaseArtists, NeteaseAlbums, NeteaseArtist, NeteaseAlbum, NeteaseArtistSongs, Search
         };
         Library library = Library::Local;

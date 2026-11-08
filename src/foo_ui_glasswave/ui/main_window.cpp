@@ -16,6 +16,7 @@
 #include "ui/win7_menu.h"
 #include "ui/i18n.h"
 #include "media/favorites.h"
+#include "media/play_stats.h"
 #include "media/special_playlists.h"
 #include "netease/provider.h"
 #include "netease/catalog.h"
@@ -113,6 +114,9 @@ cfg_var_modern::cfg_int cfg_viewCategories({0x6a1f3c5c, 0x2b7e, 0x4d90, {0x8c, 0
 // {6A1F3C5F-2B7E-4D90-8C15-3E9A7B2D4F61} .. {6A1F3C62-...}
 cfg_var_modern::cfg_int cfg_viewAllFavorites({0x6a1f3c5f, 0x2b7e, 0x4d90, {0x8c, 0x15, 0x3e, 0x9a, 0x7b, 0x2d, 0x4f, 0x61}},
                                              static_cast<int>(media::ViewStyle::Details));
+// All Music > Recently Played / Most Played: the cross-source play lists.
+cfg_var_modern::cfg_int cfg_viewPlayStats({0x6a1f3c63, 0x2b7e, 0x4d90, {0x8c, 0x15, 0x3e, 0x9a, 0x7b, 0x2d, 0x4f, 0x61}},
+                                          static_cast<int>(media::ViewStyle::Details));
 cfg_var_modern::cfg_int cfg_viewNcmPlaylists({0x6a1f3c60, 0x2b7e, 0x4d90, {0x8c, 0x15, 0x3e, 0x9a, 0x7b, 0x2d, 0x4f, 0x61}},
                                              static_cast<int>(media::ViewStyle::Icons));
 cfg_var_modern::cfg_int cfg_viewNcmSongs({0x6a1f3c61, 0x2b7e, 0x4d90, {0x8c, 0x15, 0x3e, 0x9a, 0x7b, 0x2d, 0x4f, 0x61}},
@@ -326,7 +330,8 @@ struct MainWindow::PlayCallback : play_callback_impl_base {
             window.m_shufflePass = 0;
         window.OnPlaybackStateChanged();
     }
-    void on_playback_new_track(metadb_handle_ptr) override {
+    void on_playback_new_track(metadb_handle_ptr track) override {
+        media::PlayStats::Get().Record(track);
         window.OnShuffleTrack();
         window.OnTrackChanged();
         window.OnPlaybackStateChanged();
@@ -1593,30 +1598,33 @@ std::vector<MenuAction> MainWindow::AllSectionsMenu() {
     View favorites;
     favorites.library = View::Library::All;
     favorites.kind = View::Kind::AllFavorites;
+    View recent;
+    recent.library = View::Library::All;
+    recent.kind = View::Kind::AllRecentPlayed;
+    View most;
+    most.library = View::Library::All;
+    most.kind = View::Kind::AllMostPlayed;
     View playlists;
     playlists.library = View::Library::All;
     playlists.kind = View::Kind::Playlists;
-    View smart;
-    smart.library = View::Library::All;
-    smart.kind = View::Kind::SmartPlaylists;
-    return {{L"Favorites", go(favorites)}, {L"Playlists", go(playlists)}, {L"Smart playlists", go(smart)}};
+    return {{L"Favorites", go(favorites)},
+            {L"Recently Played", go(recent)},
+            {L"Most Played", go(most)},
+            {L"Playlists", go(playlists)}};
 }
 
 std::vector<MenuAction> MainWindow::LocalSectionsMenu() {
     auto go = [this](View v) { return [this, v] { Navigate(v, true); }; };
-    std::vector<MenuAction> out;
+    View smart;
+    smart.library = View::Library::Local;
+    smart.kind = View::Kind::SmartPlaylists;
+    std::vector<MenuAction> out{{L"Smart playlists", go(smart)}};
     for (auto kind : m_nav->Categories()) {
         View v;
         v.library = View::Library::Local;
         v.kind = View::Kind::Category;
         v.group = kind;
         out.push_back({CategoryLabel(kind), go(v)});
-    }
-    if (out.empty()) {  // every category was switched off: still offer the whole library
-        View all;
-        all.library = View::Library::Local;
-        all.kind = View::Kind::AllMusic;
-        out.push_back({L"All music", go(all)});
     }
     return out;
 }
@@ -1699,14 +1707,14 @@ std::vector<MenuAction> MainWindow::PlaylistListMenu(bool smart) {
         pfc::string8 name;
         pm->playlist_get_name(i, name);
         View v;
-        v.library = View::Library::All;
+        v.library = smart ? View::Library::Local : View::Library::All;
         v.kind = View::Kind::Playlist;
         v.playlist = i;
         out.push_back({Wide(name), go(v)});
     }
     if (out.empty()) {
         View page;
-        page.library = View::Library::All;
+        page.library = smart ? View::Library::Local : View::Library::All;
         page.kind = smart ? View::Kind::SmartPlaylists : View::Kind::Playlists;
         out.push_back({smart ? L"Smart playlists" : L"Playlists", go(page)});
     }
@@ -1770,9 +1778,34 @@ std::vector<MainWindow::Crumb> MainWindow::BuildCrumbPath() {
     auto go = [this](View v) { return [this, v] { Navigate(v, true); }; };
     std::vector<Crumb> path;
     path.push_back({L"", {}, [this] { return LibraryMenu(); }});
-    // Now Playing is a root page: it mixes whatever the sources provide.
-    if (m_view.kind == View::Kind::Playlist && media::IsQueue(m_view.playlist)) {
-        path.push_back({L"Now Playing", go(m_view), {}});
+    // Playlists: the queue is a root page, smart playlists sit flat under Local Music,
+    // and the regular ones keep their section under All Music.
+    if (m_view.kind == View::Kind::Playlist) {
+        if (media::IsQueue(m_view.playlist)) {
+            path.push_back({L"Now Playing", go(m_view), {}});
+            return path;
+        }
+        const bool smart = m_view.playlist == media::FavoritesPlaylist(false) || media::IsAutoPlaylist(m_view.playlist);
+        if (smart) {
+            View home;
+            home.library = View::Library::Local;
+            home.kind = View::Kind::AllMusic;
+            path.push_back({L"Local Music", go(home), [this] { return LocalSectionsMenu(); }});
+            View section;
+            section.library = View::Library::Local;
+            section.kind = View::Kind::SmartPlaylists;
+            path.push_back({L"Smart playlists", go(section), [this] { return PlaylistListMenu(true); }});
+        } else {
+            View home;
+            home.library = View::Library::All;
+            home.kind = View::Kind::AllMusic;
+            path.push_back({L"All Music", go(home), [this] { return AllSectionsMenu(); }});
+            View section;
+            section.library = View::Library::All;
+            section.kind = View::Kind::Playlists;
+            path.push_back({L"Playlists", go(section), [this] { return PlaylistListMenu(false); }});
+        }
+        path.push_back({m_view.name, go(m_view), {}});
         return path;
     }
     switch (m_view.library) {
@@ -1783,18 +1816,12 @@ std::vector<MainWindow::Crumb> MainWindow::BuildCrumbPath() {
         path.push_back({L"All Music", go(home), [this] { return AllSectionsMenu(); }});
         if (m_view.kind == View::Kind::AllFavorites) {
             path.push_back({L"Favorites", go(m_view), {}});
+        } else if (m_view.kind == View::Kind::AllRecentPlayed) {
+            path.push_back({L"Recently Played", go(m_view), {}});
+        } else if (m_view.kind == View::Kind::AllMostPlayed) {
+            path.push_back({L"Most Played", go(m_view), {}});
         } else if (m_view.kind == View::Kind::Playlists) {
             path.push_back({L"Playlists", go(m_view), [this] { return PlaylistListMenu(false); }});
-        } else if (m_view.kind == View::Kind::SmartPlaylists) {
-            path.push_back({L"Smart playlists", go(m_view), [this] { return PlaylistListMenu(true); }});
-        } else if (m_view.kind == View::Kind::Playlist) {
-            const bool smart = m_view.playlist == media::FavoritesPlaylist(false) || media::IsAutoPlaylist(m_view.playlist);
-            View section;
-            section.library = View::Library::All;
-            section.kind = smart ? View::Kind::SmartPlaylists : View::Kind::Playlists;
-            path.push_back({smart ? L"Smart playlists" : L"Playlists", go(section),
-                            [this, smart] { return PlaylistListMenu(smart); }});
-            path.push_back({m_view.name, go(m_view), {}});
         }
         break;
     }
@@ -1803,7 +1830,9 @@ std::vector<MainWindow::Crumb> MainWindow::BuildCrumbPath() {
         home.library = View::Library::Local;
         home.kind = View::Kind::AllMusic;
         path.push_back({L"Local Music", go(home), [this] { return LocalSectionsMenu(); }});
-        if (m_view.kind == View::Kind::Category) {
+        if (m_view.kind == View::Kind::SmartPlaylists) {
+            path.push_back({L"Smart playlists", go(m_view), [this] { return PlaylistListMenu(true); }});
+        } else if (m_view.kind == View::Kind::Category) {
             path.push_back({CategoryLabel(m_view.group), go(m_view),
                             [this, kind = m_view.group] { return GroupListMenu(kind); }});
         } else if (m_view.kind == View::Kind::Group) {
@@ -2082,6 +2111,15 @@ void MainWindow::Navigate(const View& requested, bool push) {
             });
         break;
     }
+    case View::Kind::AllRecentPlayed:
+    case View::Kind::AllMostPlayed: {
+        const bool recent = view.kind == View::Kind::AllRecentPlayed;
+        auto records = recent ? media::PlayStats::Get().Recent(100) : media::PlayStats::Get().MostPlayed(100);
+        source = std::make_unique<ui::PlayStatsSource>(
+            std::move(records), recent ? L"No recently played songs." : L"No most played songs.");
+        m_nav->Select(recent ? NavPane::Target::AllRecentPlayed : NavPane::Target::AllMostPlayed, 0);
+        break;
+    }
     case View::Kind::NeteasePlaylists: {
         auto makeSource = [this, scope = view.neteaseScope](const std::vector<netease::Playlist>& playlists,
                                                              std::wstring empty) {
@@ -2343,9 +2381,9 @@ void MainWindow::Navigate(const View& requested, bool push) {
         const bool smart = view.kind == View::Kind::SmartPlaylists;
         source = std::make_unique<media::PlaylistsSource>(
             smart,
-            [this](size_t playlist) {
+            [this, smart](size_t playlist) {
                 View v;
-                v.library = View::Library::All;
+                v.library = smart ? View::Library::Local : View::Library::All;
                 v.kind = View::Kind::Playlist;
                 v.playlist = playlist;
                 Navigate(v, true);
@@ -4028,6 +4066,8 @@ cfg_var_modern::cfg_int* MainWindow::ViewStyleSetting(const View& view) {
     case View::Kind::Group: return &cfg_viewSongs;
     case View::Kind::Playlist: return &cfg_viewPlaylist;
     case View::Kind::AllFavorites: return &cfg_viewAllFavorites;
+    case View::Kind::AllRecentPlayed:
+    case View::Kind::AllMostPlayed: return &cfg_viewPlayStats;
     case View::Kind::NeteasePlaylists: return &cfg_viewNcmPlaylists;
     case View::Kind::NeteasePlaylist:
     case View::Kind::NeteaseLiked:
@@ -4251,7 +4291,9 @@ void MainWindow::OnNavItem(const NavPane::Item& item) {
     View v;
     switch (item.target) {
     case NavPane::Target::Playlist:
-        v.library = View::Library::All;
+        v.library = item.playlist == media::FavoritesPlaylist(false) || media::IsAutoPlaylist(item.playlist)
+                        ? View::Library::Local
+                        : View::Library::All;
         v.kind = View::Kind::Playlist;
         v.playlist = item.playlist;
         break;
@@ -4261,7 +4303,7 @@ void MainWindow::OnNavItem(const NavPane::Item& item) {
         v.playlist = media::QueuePlaylist(true);
         break;
     case NavPane::Target::SmartHeader:
-        v.library = View::Library::All;
+        v.library = View::Library::Local;
         v.kind = View::Kind::SmartPlaylists;
         break;
     case NavPane::Target::Category:
@@ -4279,6 +4321,14 @@ void MainWindow::OnNavItem(const NavPane::Item& item) {
     case NavPane::Target::AllFavorites:
         v.library = View::Library::All;
         v.kind = View::Kind::AllFavorites;
+        break;
+    case NavPane::Target::AllRecentPlayed:
+        v.library = View::Library::All;
+        v.kind = View::Kind::AllRecentPlayed;
+        break;
+    case NavPane::Target::AllMostPlayed:
+        v.library = View::Library::All;
+        v.kind = View::Kind::AllMostPlayed;
         break;
     case NavPane::Target::LibraryLocal:
         v.library = View::Library::Local;

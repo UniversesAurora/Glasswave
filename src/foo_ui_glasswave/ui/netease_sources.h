@@ -1,6 +1,7 @@
 #pragma once
 
 #include "media/list_sources.h"
+#include "media/play_stats.h"
 #include "netease/types.h"
 
 #include <functional>
@@ -114,6 +115,13 @@ public:
 class AllFavoritesSource : public SongTableSource {
 public:
     AllFavoritesSource(std::vector<metadb_handle_ptr> local, std::vector<netease::Song> remote);
+};
+
+// Recently Played / Most Played from every provider; the caller supplies the rows in
+// display order and the source adds the Source column like AllFavoritesSource.
+class PlayStatsSource : public SongTableSource {
+public:
+    PlayStatsSource(std::vector<media::PlayRecord> records, std::wstring emptyText);
 };
 
 // Albums as cover tiles. A non-empty hotArtist adds the synthetic Hot songs tile first;

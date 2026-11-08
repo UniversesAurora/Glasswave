@@ -99,6 +99,7 @@
     <ClCompile Include="ui\taskbar.cpp" />
     <ClCompile Include="ui\i18n.cpp" />
     <ClCompile Include="media\favorites.cpp" />
+    <ClCompile Include="media\play_stats.cpp" />
     <ClCompile Include="media\special_playlists.cpp" />
     <ClCompile Include="ui\win7_menu.cpp" />
     <ClCompile Include="ui\search_box.cpp" />
@@ -148,6 +149,7 @@
     <ClInclude Include="ui\taskbar.h" />
     <ClInclude Include="ui\i18n.h" />
     <ClInclude Include="media\favorites.h" />
+    <ClInclude Include="media\play_stats.h" />
     <ClInclude Include="media\special_playlists.h" />
     <ClInclude Include="ui\win7_menu.h" />
     <ClInclude Include="ui\search_box.h" />
