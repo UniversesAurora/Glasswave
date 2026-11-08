@@ -182,6 +182,11 @@ HttpResponse SendHttp(std::wstring_view url, const HttpOptions& options, abort_c
         received += read;
         if (options.progress) options.progress(received, total ? static_cast<long long>(total) : 0);
     }
+    // A connection dropped mid-body ends like a finished one; a truncated cover or helper
+    // download must not be kept as if it were complete.
+    if (result.error.empty() && total && received != static_cast<long long>(total))
+        result.error = L"The HTTP response ended early (" + std::to_wstring(received) + L" of " +
+                       std::to_wstring(total) + L" bytes).";
 
     return result;
 }

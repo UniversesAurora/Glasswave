@@ -34,6 +34,8 @@ public:
     bool EnsureStarted(abort_callback& abort, std::wstring* error);
 
     void Stop();
+    // Makes a start-up that is waiting for the helper give up (foobar2000 is closing).
+    void Cancel() { m_cancel = true; }
 
 private:
     ServiceManager();
@@ -50,6 +52,7 @@ private:
     ServiceState m_state = ServiceState::Stopped;
     std::wstring m_externalUrl;
     std::atomic_bool m_externalConfigured{false};
+    std::atomic_bool m_cancel{false};
     std::wstring m_lastError;
     std::string m_baseUrl;
     void* m_process = nullptr;  // HANDLE

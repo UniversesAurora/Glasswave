@@ -173,8 +173,8 @@ void CoverCache::Write(const std::wstring& url, const std::string& bytes) {
     const std::wstring hash = Hash(url);
     if (hash.empty() || !EnsureDir(m_dir)) return;
     const auto path = FileFor(hash);
-    auto part = path;
-    part += L".part";
+    auto part = path;  // per thread: two threads may fetch the same cover at once
+    part += L"." + std::to_wstring(GetCurrentThreadId()) + L".part";
     {
         std::ofstream out(part, std::ios::binary | std::ios::trunc);
         if (!out) return;
@@ -201,7 +201,7 @@ void CoverCache::Write(const std::wstring& url, const std::string& bytes) {
                   Now()};
     m_total += it->second.size;
     if (++m_inserts % 256 == 0) AgeLocked();
-    EvictLocked();
+    EvictLocked(url);
     SaveLocked();
 }
 
@@ -211,7 +211,9 @@ void CoverCache::AgeLocked() {
     for (auto& [url, entry] : m_entries) entry.hits = std::max<uint32_t>(1u, (entry.hits + 1) / 2);
 }
 
-void CoverCache::EvictLocked() {
+// Least frequently used first, the oldest among equals; never the cover just written,
+// which would otherwise always lose (it has been used once) and be fetched again.
+void CoverCache::EvictLocked(const std::wstring& keep) {
     const uint64_t limit = static_cast<uint64_t>(CoverCacheLimitMb()) * kMb;
     if (m_total <= limit || m_entries.empty()) return;
     const uint64_t target = limit * 9 / 10;
@@ -222,7 +224,8 @@ void CoverCache::EvictLocked() {
     };
     std::vector<Candidate> candidates;
     candidates.reserve(m_entries.size());
-    for (auto& [url, entry] : m_entries) candidates.push_back({url, &entry});
+    for (auto& [url, entry] : m_entries)
+        if (url != keep) candidates.push_back({url, &entry});
     std::sort(candidates.begin(), candidates.end(), [](const Candidate& a, const Candidate& b) {
         if (a.entry->hits != b.entry->hits) return a.entry->hits < b.entry->hits;
         return a.entry->lastUsed < b.entry->lastUsed;

@@ -35,7 +35,7 @@ private:
 
     void LoadLocked();
     void SaveLocked();
-    void EvictLocked();
+    void EvictLocked(const std::wstring& keep);
     void AgeLocked();
     std::filesystem::path FileFor(const std::wstring& hash) const;
 

@@ -131,6 +131,7 @@ private:
     Client m_client;
     TaskQueue m_tasks;
     std::atomic_bool m_stopping{false};
+    abort_callback_impl m_abort;  // every request of the session; signalled by Shutdown
     std::atomic_bool m_initialized{false};
 
     mutable std::mutex m_mutex;

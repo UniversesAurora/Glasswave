@@ -46,6 +46,7 @@ Session::~Session() { Shutdown(); }
 void Session::Initialize() {
     if (m_initialized.exchange(true)) return;
     m_stopping = false;
+    m_abort.reset();
     LoadSessionCookie();
     if (!CookieHasMusicU(SessionCookie())) ClearSessionCookie();
     m_service.Initialize();
@@ -66,6 +67,10 @@ void Session::Initialize() {
 void Session::Shutdown() {
     if (!m_initialized.exchange(false)) return;
     m_stopping = true;
+    // Unblock the workers first: requests in flight and a helper start-up would otherwise
+    // keep foobar2000 from closing for up to minutes.
+    m_abort.abort();
+    m_service.Cancel();
     m_tasks.Stop();
     m_service.Stop();
     std::lock_guard lock(m_mutex);
@@ -243,7 +248,7 @@ bool Session::EnsureAccount(abort_callback& abort, int64_t& userId, std::wstring
 void Session::StartService(DoneCallback done) {
     m_tasks.Post([this, done = std::move(done)] {
         if (m_stopping) return;
-        abort_callback_impl abort;
+        abort_callback& abort = m_abort;
         std::wstring error;
         const bool ok = m_service.EnsureStarted(abort, &error);
         PostMain([done = std::move(done), ok, error = std::move(error)] {
@@ -314,7 +319,7 @@ void Session::SchedulePlaylistSummaryRefresh(int64_t playlistId) {
         if (m_stopping) return;
         std::this_thread::sleep_for(std::chrono::milliseconds(700));
         if (m_stopping) return;
-        abort_callback_impl abort;
+        abort_callback& abort = m_abort;
         Playlist info;
         std::wstring error;
         if (!m_client.GetPlaylistInfo(playlistId, abort, info, error)) return;
@@ -326,7 +331,7 @@ void Session::SchedulePlaylistSummaryRefresh(int64_t playlistId) {
 void Session::RefreshAccount(DoneCallback done) {
     m_tasks.Post([this, done = std::move(done)] {
         if (m_stopping) return;
-        abort_callback_impl abort;
+        abort_callback& abort = m_abort;
         std::wstring error;
         if (!RequireLogin(error)) {
             PostMain([done = std::move(done), error] {
@@ -355,8 +360,12 @@ void Session::RefreshAccount(DoneCallback done) {
                 m_account = {};
                 m_likedPlaylist = 0;
             }
-            std::lock_guard liked(m_likedMutex);
-            m_liked.clear();
+            {
+                // Released before NotifyChanged, which takes m_mutex: Logout and Shutdown take
+                // m_mutex first, so holding both here in the other order could deadlock.
+                std::lock_guard liked(m_likedMutex);
+                m_liked.clear();
+            }
             PostMain([done = std::move(done)] {
                 if (done) done(false, L"Please sign in to NetEase Cloud Music.");
             });
@@ -424,7 +433,7 @@ void Session::RefreshAccount(DoneCallback done) {
 void Session::RefreshLikes(DoneCallback done) {
     m_tasks.Post([this, done = std::move(done)] {
         if (m_stopping) return;
-        abort_callback_impl abort;
+        abort_callback& abort = m_abort;
         std::wstring error;
         if (!RequireLogin(error)) {
             PostMain([done = std::move(done), error] {
@@ -466,7 +475,7 @@ void Session::RefreshLikes(DoneCallback done) {
 void Session::FetchMyPlaylists(PlaylistsCallback done) {
     m_tasks.Post([this, done = std::move(done)] {
         if (m_stopping) return;
-        abort_callback_impl abort;
+        abort_callback& abort = m_abort;
         std::wstring error;
         if (!RequireLogin(error)) {
             PostMain([done = std::move(done), error] {
@@ -513,7 +522,7 @@ void Session::FetchMyPlaylists(PlaylistsCallback done) {
 void Session::FetchRecommended(PlaylistsCallback done) {
     m_tasks.Post([this, done = std::move(done)] {
         if (m_stopping) return;
-        abort_callback_impl abort;
+        abort_callback& abort = m_abort;
         std::wstring error;
         if (!RequireLogin(error)) {
             PostMain([done = std::move(done), error] {
@@ -548,7 +557,7 @@ void Session::FetchRecommended(PlaylistsCallback done) {
 void Session::FetchFollowedArtists(ArtistsCallback done) {
     m_tasks.Post([this, done = std::move(done)] {
         if (m_stopping) return;
-        abort_callback_impl abort;
+        abort_callback& abort = m_abort;
         std::wstring error;
         if (!RequireLogin(error)) {
             PostMain([done = std::move(done), error] {
@@ -583,7 +592,7 @@ void Session::FetchFollowedArtists(ArtistsCallback done) {
 void Session::FetchCollectedAlbums(AlbumsCallback done) {
     m_tasks.Post([this, done = std::move(done)] {
         if (m_stopping) return;
-        abort_callback_impl abort;
+        abort_callback& abort = m_abort;
         std::wstring error;
         if (!RequireLogin(error)) {
             PostMain([done = std::move(done), error] {
@@ -618,7 +627,7 @@ void Session::FetchCollectedAlbums(AlbumsCallback done) {
 void Session::FetchCollectedAlbumsPage(int offset, int limit, AlbumsPageCallback done) {
     m_tasks.Post([this, offset, limit, done = std::move(done)] {
         if (m_stopping) return;
-        abort_callback_impl abort;
+        abort_callback& abort = m_abort;
         std::wstring error;
         if (!RequireLogin(error)) {
             PostMain([done = std::move(done), error] {
@@ -661,7 +670,7 @@ void Session::FetchCollectedAlbumsPage(int offset, int limit, AlbumsPageCallback
 void Session::FetchAlbumTracks(std::vector<Album> albums, SongsCallback done) {
     m_tasks.Post([this, albums = std::move(albums), done = std::move(done)]() mutable {
         if (m_stopping) return;
-        abort_callback_impl abort;
+        abort_callback& abort = m_abort;
         std::wstring error;
         if (!m_service.EnsureStarted(abort, &error)) {
             PostMain([done = std::move(done), error] {
@@ -675,7 +684,7 @@ void Session::FetchAlbumTracks(std::vector<Album> albums, SongsCallback done) {
             for (;;) {
                 const size_t i = next.fetch_add(1);
                 if (i >= albums.size() || m_stopping) return;
-                abort_callback_impl albumAbort;
+                abort_callback& albumAbort = m_abort;
                 Album info;
                 std::vector<Song> songs;
                 std::wstring ignored;
@@ -706,7 +715,7 @@ void Session::FetchAlbumTracks(std::vector<Album> albums, SongsCallback done) {
 void Session::FetchLiked(SongsCallback done) {
     m_tasks.Post([this, done = std::move(done)] {
         if (m_stopping) return;
-        abort_callback_impl abort;
+        abort_callback& abort = m_abort;
         std::wstring error;
         if (!RequireLogin(error)) {
             PostMain([done = std::move(done), error] {
@@ -786,9 +795,9 @@ void Session::FetchLiked(SongsCallback done) {
         }
 
         {
+            // The like state is the likelist itself, also for songs whose details failed to load.
             std::lock_guard likedLock(m_likedMutex);
-            m_liked.clear();
-            for (const auto& song : songs) m_liked.insert(song.id);
+            m_liked = std::move(liked);
         }
         {
             std::lock_guard lock(m_mutex);
@@ -804,7 +813,7 @@ void Session::FetchLiked(SongsCallback done) {
 void Session::FetchPlaylist(int64_t playlistId, DetailCallback done) {
     m_tasks.Post([this, playlistId, done = std::move(done)] {
         if (m_stopping) return;
-        abort_callback_impl abort;
+        abort_callback& abort = m_abort;
         std::wstring error;
         if (!RequireLogin(error)) {
             PostMain([done = std::move(done), error] {
@@ -840,7 +849,7 @@ void Session::FetchPlaylist(int64_t playlistId, DetailCallback done) {
 void Session::FetchArtistDetail(int64_t artistId, ArtistDetailCallback done) {
     m_tasks.Post([this, artistId, done = std::move(done)] {
         if (m_stopping) return;
-        abort_callback_impl abort;
+        abort_callback& abort = m_abort;
         std::wstring error;
         if (!m_service.EnsureStarted(abort, &error)) {
             PostMain([done = std::move(done), error] {
@@ -866,7 +875,7 @@ void Session::FetchArtistDetail(int64_t artistId, ArtistDetailCallback done) {
 void Session::FetchArtistDescription(int64_t artistId, ArtistDescriptionCallback done) {
     m_tasks.Post([this, artistId, done = std::move(done)] {
         if (m_stopping) return;
-        abort_callback_impl abort;
+        abort_callback& abort = m_abort;
         std::wstring error;
         if (!m_service.EnsureStarted(abort, &error)) {
             PostMain([done = std::move(done), error] {
@@ -890,7 +899,7 @@ void Session::FetchArtistDescription(int64_t artistId, ArtistDescriptionCallback
 void Session::FetchArtistAlbumsPage(int64_t artistId, int offset, int limit, ArtistAlbumsCallback done) {
     m_tasks.Post([this, artistId, offset, limit, done = std::move(done)] {
         if (m_stopping) return;
-        abort_callback_impl abort;
+        abort_callback& abort = m_abort;
         std::wstring error;
         if (!m_service.EnsureStarted(abort, &error)) {
             PostMain([done = std::move(done), error] {
@@ -916,7 +925,7 @@ void Session::FetchArtistAlbumsPage(int64_t artistId, int offset, int limit, Art
 void Session::FetchArtistSongsPage(int64_t artistId, int offset, int limit, SongsPageCallback done) {
     m_tasks.Post([this, artistId, offset, limit, done = std::move(done)] {
         if (m_stopping) return;
-        abort_callback_impl abort;
+        abort_callback& abort = m_abort;
         std::wstring error;
         if (!m_service.EnsureStarted(abort, &error)) {
             PostMain([done = std::move(done), error] {
@@ -942,7 +951,7 @@ void Session::FetchArtistSongsPage(int64_t artistId, int offset, int limit, Song
 void Session::FetchAlbumDetail(int64_t albumId, AlbumDetailCallback done) {
     m_tasks.Post([this, albumId, done = std::move(done)] {
         if (m_stopping) return;
-        abort_callback_impl abort;
+        abort_callback& abort = m_abort;
         std::wstring error;
         if (!m_service.EnsureStarted(abort, &error)) {
             PostMain([done = std::move(done), error] {
@@ -973,7 +982,7 @@ void Session::FetchAlbumDetail(int64_t albumId, AlbumDetailCallback done) {
 void Session::Search(std::wstring_view query, SongsCallback done) {
     m_tasks.Post([this, query = std::wstring(query), done = std::move(done)] {
         if (m_stopping) return;
-        abort_callback_impl abort;
+        abort_callback& abort = m_abort;
         std::wstring error;
         if (!m_service.EnsureStarted(abort, &error)) {
             PostMain([done = std::move(done), error] {
@@ -1010,7 +1019,7 @@ void Session::ToggleLike(int64_t songId, bool like, DoneCallback done) {
     }
     m_tasks.Post([this, songId, like, done = std::move(done)] {
         if (m_stopping) return;
-        abort_callback_impl abort;
+        abort_callback& abort = m_abort;
         std::wstring error;
         bool ok = false;
         if (m_service.EnsureStarted(abort, &error)) ok = m_client.SetLike(songId, like, abort, error);
@@ -1036,7 +1045,7 @@ void Session::SetArtistFollow(int64_t artistId, bool follow, DoneCallback done) 
     }
     m_tasks.Post([this, artistId, follow, done = std::move(done)] {
         if (m_stopping) return;
-        abort_callback_impl abort;
+        abort_callback& abort = m_abort;
         std::wstring error;
         bool ok = false;
         if (m_service.EnsureStarted(abort, &error))
@@ -1045,6 +1054,8 @@ void Session::SetArtistFollow(int64_t artistId, bool follow, DoneCallback done) 
             // Keep the followed-artists list (used by the navigation menus) in step.
             if (auto artist = Catalog::Get().FindArtist(artistId)) {
                 artist->followed = follow;
+                artist->followKnown = true;
+                Catalog::Get().Put(*artist);  // FindArtist returns a copy
                 std::lock_guard lock(m_mutex);
                 auto it = std::find_if(m_followedArtists.begin(), m_followedArtists.end(),
                                        [artistId](const Artist& a) { return a.id == artistId; });
@@ -1072,7 +1083,7 @@ void Session::AddToPlaylist(int64_t playlistId, std::vector<int64_t> songIds, Do
     }
     m_tasks.Post([this, playlistId, songIds = std::move(songIds), done = std::move(done)] {
         if (m_stopping) return;
-        abort_callback_impl abort;
+        abort_callback& abort = m_abort;
         std::wstring error;
         bool ok = false;
         if (m_service.EnsureStarted(abort, &error)) {
@@ -1104,7 +1115,7 @@ void Session::RemoveFromPlaylist(int64_t playlistId, std::vector<int64_t> songId
     }
     m_tasks.Post([this, playlistId, songIds = std::move(songIds), done = std::move(done)] {
         if (m_stopping) return;
-        abort_callback_impl abort;
+        abort_callback& abort = m_abort;
         std::wstring error;
         bool ok = false;
         if (m_service.EnsureStarted(abort, &error)) {
@@ -1131,7 +1142,7 @@ void Session::SetAlbumCollected(int64_t albumId, bool collected, DoneCallback do
     }
     m_tasks.Post([this, albumId, collected, done = std::move(done)] {
         if (m_stopping) return;
-        abort_callback_impl abort;
+        abort_callback& abort = m_abort;
         std::wstring error;
         bool ok = false;
         if (m_service.EnsureStarted(abort, &error))
@@ -1161,7 +1172,7 @@ void Session::SetPlaylistSubscribed(int64_t playlistId, bool subscribed, DoneCal
     }
     m_tasks.Post([this, playlistId, subscribed, done = std::move(done)] {
         if (m_stopping) return;
-        abort_callback_impl abort;
+        abort_callback& abort = m_abort;
         std::wstring error;
         bool ok = false;
         if (m_service.EnsureStarted(abort, &error)) {
@@ -1219,7 +1230,7 @@ void Session::CreatePlaylist(std::wstring name, CreatePlaylistCallback done) {
     }
     m_tasks.Post([this, name = std::move(name), done = std::move(done)] {
         if (m_stopping) return;
-        abort_callback_impl abort;
+        abort_callback& abort = m_abort;
         std::wstring error;
         if (!m_service.EnsureStarted(abort, &error)) {
             PostMain([done = std::move(done), error] {
@@ -1262,7 +1273,7 @@ void Session::RenamePlaylist(int64_t playlistId, std::wstring name, DoneCallback
     }
     m_tasks.Post([this, playlistId, name = std::move(name), done = std::move(done)]() mutable {
         if (m_stopping) return;
-        abort_callback_impl abort;
+        abort_callback& abort = m_abort;
         std::wstring error;
         bool ok = false;
         if (m_service.EnsureStarted(abort, &error)) {
@@ -1305,7 +1316,7 @@ void Session::DeletePlaylist(int64_t playlistId, DoneCallback done) {
     }
     m_tasks.Post([this, playlistId, done = std::move(done)] {
         if (m_stopping) return;
-        abort_callback_impl abort;
+        abort_callback& abort = m_abort;
         std::wstring error;
         bool ok = false;
         if (m_service.EnsureStarted(abort, &error)) ok = m_client.DeletePlaylist(playlistId, abort, error);
@@ -1342,7 +1353,7 @@ void Session::ReorderPlaylists(std::vector<int64_t> ids, DoneCallback done) {
     ApplyPlaylistOrder(ids);  // the navigation shows the new order immediately
     m_tasks.Post([this, ids = std::move(ids), done = std::move(done)]() mutable {
         if (m_stopping) return;
-        abort_callback_impl abort;
+        abort_callback& abort = m_abort;
         std::wstring error;
         bool ok = false;
         if (m_service.EnsureStarted(abort, &error)) {

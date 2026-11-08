@@ -295,6 +295,11 @@ void Catalog::Save() const {
                 << Clean(song.coverUrl) << '\t' << Clean(song.codec) << '\t' << Clean(artistIds) << '\t'
                 << song.albumId << '\n';
         }
+        out.close();
+        if (!out) {  // disk full or similar: keep the previous cache
+            DeleteFileW(tmp.c_str());
+            return;
+        }
     }
     MoveFileExW(tmp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
 }

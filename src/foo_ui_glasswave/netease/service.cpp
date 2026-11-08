@@ -135,6 +135,7 @@ void ServiceManager::Initialize() {
     std::lock_guard lock(m_mutex);
     m_externalUrl = NormalizeBaseUrl(GetServiceUrlOverride());
     m_externalConfigured = !m_externalUrl.empty();
+    m_cancel = false;
     if (!m_externalUrl.empty()) {
         m_state = ServiceState::External;
         m_baseUrl = Utf8(m_externalUrl);
@@ -362,8 +363,13 @@ bool ServiceManager::StartLocked(abort_callback& abort, std::wstring* error) {
     Log(L"service: started on port " + std::to_wstring(port));
 
     for (int attempt = 0; attempt < 120; ++attempt) {
-        abort_callback_impl startAbort;
-        startAbort.check();
+        abort_callback_impl startAbort;  // not the caller's: a stopped playback must not kill start-up
+        if (m_cancel) {
+            StopLocked();
+            SetErrorLocked(L"The NetEase service start was cancelled.");
+            if (error) *error = m_lastError;
+            return false;
+        }
         if (WaitForSingleObject(process.hProcess, 0) == WAIT_OBJECT_0) {
             DWORD code = 0;
             GetExitCodeProcess(process.hProcess, &code);
