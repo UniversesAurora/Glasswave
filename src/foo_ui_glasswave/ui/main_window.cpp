@@ -1292,19 +1292,21 @@ void MainWindow::UpdateNowPlayingHover(POINT pt) {
 void MainWindow::OnNowPlayingClick(int part) {
     switch (part) {
     case 1: JumpToPlaying(); break;
-    case 2: {  // the artist's page (artists are grouped by album artist)
+    case 2: {  // the playing song's artist: its own source, NetEase or the local group
         metadb_handle_ptr now;
         if (!playback_control::get()->get_now_playing(now)) break;
-        const media::Track* t = m_library.FindTrack(now);
-        const media::Group* g = t ? m_library.FindGroup(media::GroupKind::Artist, t->albumArtist) : nullptr;
-        if (!g) g = m_library.FindGroup(media::GroupKind::Artist, m_trackArtist);
-        if (!g) break;
-        View v;
-        v.kind = View::Kind::Group;
-        v.group = media::GroupKind::Artist;
-        v.key = g->key;
-        v.name = g->name;
-        Navigate(v, true);
+        metadb_handle_list items;
+        items.add_item(now);
+        auto links = BuildArtistLinks(items);
+        if (links.size() == 1) {
+            links.front().open();
+        } else if (links.size() > 1) {
+            POINT pt{m_npArtistRect.left, m_npArtistRect.bottom};
+            ClientToScreen(m_hwnd, &pt);
+            std::vector<MenuAction> actions;
+            for (auto& link : links) actions.push_back({link.name, link.open});
+            ShowActionMenu(m_hwnd, pt, actions);
+        }
         break;
     }
     case 3: ShowDeviceMenu(); break;
@@ -2029,7 +2031,7 @@ void MainWindow::PaintArtistHeader() {
     const std::wstring brief = m_artist ? m_artist->brief : std::wstring();
 
     winrt::com_ptr<IWICBitmapSource> avatar;
-    if (artistId) {
+    if (m_artist && artistId) {  // only once the profile is in the catalog, or the cache stays Missing
         const std::wstring key = L"ncm:artist:" + std::to_wstring(artistId);
         ArtCache::Get().Find(key, netease::Catalog::Get().ArtistHandle(artistId), PxI(kArtistAvatar), &avatar);
     }
@@ -2067,14 +2069,14 @@ void MainWindow::PaintArtistHeader() {
             textW = (m_layout.artistFollow.left - rect.left) / s - textX - 18;
         textW = std::max(40.0f, textW);
         auto nameLayout = MakeText(name.empty() ? Tr(L"Artist") : name, 20.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, textW, 30);
-        dc->DrawTextLayout({textX, 14}, nameLayout.get(), ink.get());
+        dc->DrawTextLayout({textX, 10}, nameLayout.get(), ink.get());
         if (!stats.empty()) {
             auto statsLayout = MakeText(stats, 12.0f, DWRITE_FONT_WEIGHT_NORMAL, textW, 18);
-            dc->DrawTextLayout({textX, 46}, statsLayout.get(), sub.get());
+            dc->DrawTextLayout({textX, 42}, statsLayout.get(), sub.get());
         }
         if (!brief.empty()) {
-            auto briefLayout = MakeText(brief, 12.0f, DWRITE_FONT_WEIGHT_NORMAL, textW, 20);
-            dc->DrawTextLayout({textX, 68}, briefLayout.get(), faint.get());
+            auto briefLayout = MakeWrappedText(brief, 12.0f, DWRITE_FONT_WEIGHT_NORMAL, textW, 32);
+            dc->DrawTextLayout({textX, 62}, briefLayout.get(), faint.get());
         }
     });
     Place(m_artistHeader, rect);  // Repaint resets the visual to its surface origin
@@ -2281,17 +2283,36 @@ void MainWindow::CreatePlaylist(bool autoPlaylist) {
 
 void MainWindow::OnAlbumLink(size_t group, size_t line) {
     const auto* groups = m_source ? m_source->Groups() : nullptr;
-    if (!groups || group >= groups->size() || line > 2) return;
+    if (!groups || group >= groups->size() || line > 3) return;
     const auto& g = (*groups)[group];
-    if (g.linkKeys[line].rfind(L"ncm:", 0) == 0) {  // NetEase album column: artist page
-        const int64_t id = _wcstoi64(g.linkKeys[line].c_str() + 4, nullptr, 10);
+    const std::wstring& key = g.linkKeys[line];
+    if (key.rfind(L"ncm:", 0) == 0) {  // NetEase album column: artist page
+        const int64_t id = _wcstoi64(key.c_str() + 4, nullptr, 10);
         if (id) OpenNeteaseArtist(id, g.lines[line]);
+        return;
+    }
+    if (key.rfind(L"local:", 0) == 0) {  // local favorites tiles: an artist name, not a model key
+        const std::wstring name = key.substr(6);
+        media::GroupKind kind = media::GroupKind::ContributingArtist;
+        if (!m_library.FindGroup(kind, name)) {
+            kind = media::GroupKind::Artist;
+            if (!m_library.FindGroup(kind, name)) return;
+        }
+        View v;
+        v.kind = View::Kind::Group;
+        v.group = kind;
+        v.key = name;
+        v.name = name;
+        Navigate(v, true);
         return;
     }
     View v;
     v.kind = View::Kind::Group;
-    v.group = line == 0 ? media::GroupKind::Album : line == 1 ? media::GroupKind::Artist : media::GroupKind::Genre;
-    v.key = g.linkKeys[line];
+    v.group = line == 0   ? media::GroupKind::Album
+              : line == 1 ? media::GroupKind::Artist
+              : line == 2 ? media::GroupKind::Genre
+                          : media::GroupKind::Year;
+    v.key = key;
     v.name = g.lines[line];
     if (!v.key.empty()) Navigate(v, true);
 }

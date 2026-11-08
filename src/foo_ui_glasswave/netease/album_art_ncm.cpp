@@ -15,6 +15,7 @@ namespace {
 
 std::wstring CoverUrl(std::wstring url) {
     if (url.empty()) return {};
+    if (url.rfind(L"http://", 0) == 0) url = L"https://" + url.substr(7);  // NCM avatars come as http
     url += url.find(L'?') == std::wstring::npos ? L"?param=500y500" : L"&param=500y500";
     return url;
 }

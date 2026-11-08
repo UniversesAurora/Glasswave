@@ -816,9 +816,11 @@ void TrackSource::SetFilter(std::wstring_view filterLower) {
         g.header = std::move(header);
         if (!bySort) {
             const Group* album = t.albumIndex < albums.size() ? &albums[t.albumIndex] : nullptr;
-            g.lines = {t.album, album ? album->secondary : t.albumArtist, t.genre, album ? album->year : t.year};
-            g.linkKeys = {album ? album->key : std::wstring(), t.hasAlbumArtist ? t.albumArtist : std::wstring(),
-                          t.genre, {}};
+            const std::wstring artist = album ? album->secondary : t.albumArtist;
+            const std::wstring year = album ? album->year : t.year;
+            g.lines = {t.album, artist, t.genre, year};
+            g.linkKeys = {album ? album->key : std::wstring(),
+                          m_model.FindGroup(GroupKind::Artist, artist) ? artist : std::wstring(), t.genre, year};
         }
         m_groups.push_back(std::move(g));
     }

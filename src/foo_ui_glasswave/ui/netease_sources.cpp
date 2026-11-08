@@ -104,6 +104,7 @@ SongTableRow MakeNeteaseRow(const netease::Song& song) {
             break;
         }
     row.favorite = netease::Provider::Get().IsLiked(song.id);
+    row.remote = true;
     return row;
 }
 
@@ -323,7 +324,13 @@ void SongTableSource::BuildGroups() {
         group.lines[0] = group.header;
         if (tiles) {
             group.lines[1] = ArtistLabel(item);
-            if (item.artistId) group.linkKeys[1] = L"ncm:" + std::to_wstring(item.artistId);
+            if (item.artistId) {
+                group.linkKeys[1] = L"ncm:" + std::to_wstring(item.artistId);
+            } else if (!item.remote && !item.artist.empty()) {  // local favorites: link the first artist
+                std::wstring first = item.artist;
+                if (const size_t end = first.find(L"; "); end != std::wstring::npos) first.resize(end);
+                group.linkKeys[1] = L"local:" + first;
+            }
         }
         m_groups.push_back(std::move(group));
     }
@@ -449,7 +456,7 @@ media::TileInfo NeteaseArtistSource::Tile(size_t row) const {
     if (row >= m_rows.size()) return tile;
     const size_t index = m_rows[row];
     if (!index) {
-        tile.icon = 29522;
+        tile.icon = 29722;  // WMP's large playlist icon, the same one the playlists page uses
         tile.lines = {Tr(L"Hot songs"), m_artistName};
         return tile;
     }

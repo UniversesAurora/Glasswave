@@ -10,6 +10,12 @@ winrt::com_ptr<IDWriteTextLayout> MakeText(std::wstring_view text, float size,
                                            DWRITE_TEXT_ALIGNMENT align = DWRITE_TEXT_ALIGNMENT_LEADING,
                                            const wchar_t* family = L"Segoe UI");
 
+// Multi-line text block: wraps at word boundaries and trims the last visible line.
+winrt::com_ptr<IDWriteTextLayout> MakeWrappedText(std::wstring_view text, float size,
+                                                  DWRITE_FONT_WEIGHT weight, float maxW, float maxH,
+                                                  DWRITE_TEXT_ALIGNMENT align = DWRITE_TEXT_ALIGNMENT_LEADING,
+                                                  const wchar_t* family = L"Segoe UI");
+
 std::wstring Wide(const char* utf8);
 std::string Utf8(std::wstring_view wide);
 
