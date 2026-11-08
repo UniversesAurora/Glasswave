@@ -641,8 +641,9 @@ void NeteaseArtistListSource::SetFilter(std::wstring_view filterLower) {
 // ---- playlists --------------------------------------------------------------------------
 
 NeteasePlaylistSource::NeteasePlaylistSource(std::vector<netease::Playlist> playlists, std::wstring emptyText,
-                                             Open open)
-    : m_playlists(std::move(playlists)), m_emptyText(std::move(emptyText)), m_open(std::move(open)) {
+                                             Open open, Menu menu)
+    : m_playlists(std::move(playlists)), m_emptyText(std::move(emptyText)), m_open(std::move(open)),
+      m_menu(std::move(menu)) {
     m_columns = {{L"Name", 0, true}, {L"Songs", 80, false, true}};
     m_selected.assign(m_playlists.size(), 0);
     SetFilter({});
@@ -659,7 +660,8 @@ media::TileInfo NeteasePlaylistSource::Tile(size_t row) const {
     if (row >= m_rows.size()) return tile;
     const auto& playlist = m_playlists[m_rows[row]];
     tile.art = netease::Catalog::Get().PlaylistHandle(playlist.id);
-    tile.lines = {playlist.name, std::to_wstring(playlist.trackCount) + L" songs", L"NetEase Cloud Music"};
+    tile.lines = {playlist.name, std::to_wstring(playlist.trackCount) + L" " + Tr(L"songs"),
+                  Tr(L"NetEase Cloud Music")};
     return tile;
 }
 
@@ -697,7 +699,11 @@ void NeteasePlaylistSource::Activate(size_t row) {
     }
 }
 
-void NeteasePlaylistSource::ContextMenu(HWND, POINT) {}
+void NeteasePlaylistSource::ContextMenu(HWND, POINT screen) {
+    if (!m_menu || m_focus >= m_rows.size()) return;
+    const auto& playlist = m_playlists[m_rows[m_focus]];
+    m_menu(screen, playlist.id, playlist.name);
+}
 
 void NeteasePlaylistSource::SetFilter(std::wstring_view filterLower) {
     m_filter.assign(filterLower);

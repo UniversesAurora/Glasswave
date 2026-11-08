@@ -767,31 +767,45 @@ bool Client::GetFollowedArtists(abort_callback& abort, std::vector<Artist>& out,
     return true;
 }
 
+bool Client::GetCollectedAlbumsPage(int offset, int limit, abort_callback& abort, std::vector<Album>& out, bool& more,
+                                    std::wstring& error) {
+    out.clear();
+    more = false;
+    json::Object body;
+    int code = 0;
+    if (!Request(L"/album/sublist",
+                 {{L"limit", std::to_wstring(limit)}, {L"offset", std::to_wstring(offset)}}, false, abort, body, code,
+                 error))
+        return false;
+    if (code == 301) {
+        error = L"Please sign in to NetEase Cloud Music.";
+        return false;
+    }
+    if (code != 200) {
+        error = MessageOf(body, code);
+        return false;
+    }
+    auto albums = json::GetArray(body, L"data");
+    if (!albums) return true;
+    for (const auto& object : json::Objects(*albums)) {
+        Album album = ParseAlbum(object);
+        if (album.id) out.push_back(std::move(album));
+    }
+    more = json::GetBool(body, L"hasMore") && !out.empty();
+    return true;
+}
+
 bool Client::GetCollectedAlbums(abort_callback& abort, std::vector<Album>& out, std::wstring& error) {
     out.clear();
     int offset = 0;
     for (int page = 0; page < 50; ++page) {
-        json::Object body;
-        int code = 0;
-        if (!Request(L"/album/sublist",
-                     {{L"limit", L"100"}, {L"offset", std::to_wstring(offset)}}, false, abort, body, code, error))
-            return false;
-        if (code == 301) {
-            error = L"Please sign in to NetEase Cloud Music.";
-            return false;
-        }
-        if (code != 200) {
-            error = MessageOf(body, code);
-            return false;
-        }
-        auto albums = json::GetArray(body, L"data");
-        if (!albums) break;
-        for (const auto& object : json::Objects(*albums)) {
-            Album album = ParseAlbum(object);
-            if (album.id) out.push_back(std::move(album));
-        }
-        if (!json::GetBool(body, L"hasMore") || albums->Size() == 0) break;
-        offset += static_cast<int>(albums->Size());
+        std::vector<Album> albums;
+        bool more = false;
+        if (!GetCollectedAlbumsPage(offset, 100, abort, albums, more, error)) return false;
+        if (albums.empty()) break;
+        out.insert(out.end(), std::make_move_iterator(albums.begin()), std::make_move_iterator(albums.end()));
+        if (!more) break;
+        offset += static_cast<int>(albums.size());
     }
     return true;
 }

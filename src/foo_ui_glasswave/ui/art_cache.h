@@ -33,6 +33,11 @@ public:
     int Subscribe(std::function<void()> callback);
     void Unsubscribe(int token);
 
+    // Drops the cached thumbnails whose key starts with `prefix` (empty: all of them) and
+    // the queued loads, then tells listeners to request them again. Used when a NetEase
+    // cover URL changed server-side, e.g. after a playlist edit. Main thread only.
+    void Invalidate(std::wstring_view prefix);
+
 private:
     ArtCache();
     void Worker();
@@ -42,22 +47,30 @@ private:
         State state = State::Pending;
         winrt::com_ptr<IWICBitmapSource> bitmap;
         uint64_t used = 0;
+        uint64_t epoch = 0;  // a load started for an older epoch must not fill this entry
     };
     struct Request {
         std::wstring key;
         metadb_handle_ptr track;
         int sizePx = 0;
+        uint64_t epoch = 0;
+    };
+    struct Done {
+        std::wstring key;
+        winrt::com_ptr<IWICBitmapSource> bitmap;
+        uint64_t epoch = 0;
     };
 
     std::map<std::wstring, Entry> m_entries;  // main thread
     uint64_t m_clock = 0;
+    uint64_t m_epoch = 0;
     std::map<int, std::function<void()>> m_listeners;
     int m_nextToken = 1;
 
     std::mutex m_mutex;  // guards m_queue, m_done, m_quit
     std::condition_variable m_wake;
     std::deque<Request> m_queue;  // newest first: what was just scrolled into view loads first
-    std::vector<std::pair<std::wstring, winrt::com_ptr<IWICBitmapSource>>> m_done;
+    std::vector<Done> m_done;
     bool m_quit = false;
     std::vector<std::thread> m_threads;
     abort_callback_impl m_abort;

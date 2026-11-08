@@ -94,6 +94,7 @@
     <ClCompile Include="ui\list_view.cpp" />
     <ClCompile Include="ui\nav_pane.cpp" />
     <ClCompile Include="ui\netease_login.cpp" />
+    <ClCompile Include="ui\text_prompt.cpp" />
     <ClCompile Include="ui\netease_sources.cpp" />
     <ClCompile Include="ui\taskbar.cpp" />
     <ClCompile Include="ui\i18n.cpp" />
@@ -142,6 +143,7 @@
     <ClInclude Include="ui\list_view.h" />
     <ClInclude Include="ui\nav_pane.h" />
     <ClInclude Include="ui\netease_login.h" />
+    <ClInclude Include="ui\text_prompt.h" />
     <ClInclude Include="ui\netease_sources.h" />
     <ClInclude Include="ui\taskbar.h" />
     <ClInclude Include="ui\i18n.h" />

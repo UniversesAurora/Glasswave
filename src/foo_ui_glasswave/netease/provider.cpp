@@ -554,6 +554,49 @@ void Provider::FetchCollectedAlbums(AlbumsCallback done) {
     });
 }
 
+void Provider::FetchCollectedAlbumsPage(int offset, int limit, AlbumsPageCallback done) {
+    m_tasks.Post([this, offset, limit, done = std::move(done)] {
+        if (m_stopping) return;
+        abort_callback_impl abort;
+        std::wstring error;
+        if (!RequireLogin(error)) {
+            PostMain([done = std::move(done), error] {
+                if (done) done({}, false, ErrorOf(error));
+            });
+            return;
+        }
+        if (!m_service.EnsureStarted(abort, &error)) {
+            PostMain([done = std::move(done), error] {
+                if (done) done({}, false, ErrorOf(error));
+            });
+            return;
+        }
+        std::vector<Album> albums;
+        bool more = false;
+        if (!m_client.GetCollectedAlbumsPage(offset, limit, abort, albums, more, error)) {
+            PostMain([done = std::move(done), error] {
+                if (done) done({}, false, ErrorOf(error));
+            });
+            return;
+        }
+        Catalog::Get().Put(albums);
+        {
+            // Merge the page into the account cache so the breadcrumb menus and the album
+            // page's collect state see everything the user has browsed, including albums
+            // collected in the official client after the last full refresh.
+            std::lock_guard lock(m_mutex);
+            for (const auto& album : albums) {
+                if (std::none_of(m_collectedAlbums.begin(), m_collectedAlbums.end(),
+                                 [&album](const Album& saved) { return saved.id == album.id; }))
+                    m_collectedAlbums.push_back(album);
+            }
+        }
+        PostMain([done = std::move(done), albums = std::move(albums), more]() mutable {
+            if (done) done(std::move(albums), more, {});
+        });
+    });
+}
+
 void Provider::FetchAlbumTracks(std::vector<Album> albums, SongsCallback done) {
     m_tasks.Post([this, albums = std::move(albums), done = std::move(done)]() mutable {
         if (m_stopping) return;

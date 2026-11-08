@@ -49,9 +49,10 @@ ArtCache::State ArtCache::Find(const std::wstring& key, const metadb_handle_ptr&
     auto [it, inserted] = m_entries.try_emplace(cacheKey);
     it->second.used = ++m_clock;
     if (inserted) {
+        it->second.epoch = ++m_epoch;
         {
             std::lock_guard lock(m_mutex);
-            m_queue.push_front({cacheKey, track, sizePx});
+            m_queue.push_front({cacheKey, track, sizePx, it->second.epoch});
         }
         m_wake.notify_one();
         // Keep memory bounded: drop the least recently used finished thumbnails.
@@ -75,6 +76,27 @@ int ArtCache::Subscribe(std::function<void()> callback) {
 }
 
 void ArtCache::Unsubscribe(int token) { m_listeners.erase(token); }
+
+void ArtCache::Invalidate(std::wstring_view prefix) {
+    for (auto it = m_entries.begin(); it != m_entries.end();) {
+        if (it->first.compare(0, prefix.size(), prefix) == 0)
+            it = m_entries.erase(it);
+        else
+            ++it;
+    }
+    {
+        std::lock_guard lock(m_mutex);
+        auto matches = [prefix](const std::wstring& key) { return key.compare(0, prefix.size(), prefix) == 0; };
+        m_queue.erase(std::remove_if(m_queue.begin(), m_queue.end(),
+                                     [&](const Request& request) { return matches(request.key); }),
+                      m_queue.end());
+        m_done.erase(std::remove_if(m_done.begin(), m_done.end(),
+                                    [&](const Done& done) { return matches(done.key); }),
+                     m_done.end());
+    }
+    auto listeners = m_listeners;  // a callback may unsubscribe
+    for (auto& [token, cb] : listeners) cb();
+}
 
 void ArtCache::Worker() {
     // WIC objects are created on this thread; the decoded bitmaps own their pixels.
@@ -107,7 +129,7 @@ void ArtCache::Worker() {
             std::lock_guard lock(m_mutex);
             if (m_quit) break;
             first = m_done.empty();
-            m_done.emplace_back(std::move(req.key), std::move(bitmap));
+            m_done.push_back({std::move(req.key), std::move(bitmap), req.epoch});
         }
         if (first) fb2k::inMainThread([] {
                 if (g_cache) g_cache->Delivered();
@@ -117,14 +139,15 @@ void ArtCache::Worker() {
 }
 
 void ArtCache::Delivered() {
-    std::vector<std::pair<std::wstring, winrt::com_ptr<IWICBitmapSource>>> done;
+    std::vector<Done> done;
     {
         std::lock_guard lock(m_mutex);
         done.swap(m_done);
     }
-    for (auto& [key, bitmap] : done) {
+    for (auto& [key, bitmap, epoch] : done) {
         auto it = m_entries.find(key);
-        if (it == m_entries.end()) continue;  // evicted meanwhile
+        if (it == m_entries.end()) continue;  // evicted or invalidated meanwhile
+        if (it->second.epoch != epoch) continue;  // a newer load for this key is in flight
         it->second.state = bitmap ? State::Ready : State::Missing;
         it->second.bitmap = std::move(bitmap);
     }

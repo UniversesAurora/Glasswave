@@ -49,7 +49,7 @@ private:
         RECT caption{}, client{}, clientEdge{}, navBar{}, cmdBar{}, content{}, transport{};
         RECT capMin{}, capMax{}, capClose{}, icon{}, title{};
         RECT back{}, forward{}, breadcrumb{}, navGroove{};
-        RECT organize{}, addFiles{}, addFolder{}, newPlaylist{}, search{}, viewOptions{};
+        RECT organize{}, addFiles{}, addFolder{}, newPlaylist{}, search{}, viewOptions{}, refresh{};
         RECT navPane{}, list{};
         RECT detailHeader{}, detailAction{};  // NetEase detail pages: artist, album, playlist
         RECT detailBriefToggle{};
@@ -141,19 +141,22 @@ private:
     void ShowNavCustomizeMenu(POINT screen);
     void SetNavCategories(std::vector<media::GroupKind> kinds);
     void ShowNeteaseLogin();
+    void CreateNeteasePlaylist();
+    void ShowNeteaseNavMenu(NavPane::Target target, POINT screen);
     std::vector<metadb_handle_ptr> LocalFavoriteHandles() const;
     void ShowNeteaseSongs(const View& view, std::vector<netease::Song> songs, std::wstring error);
     void ShowNeteasePlaylists(const View& view, std::vector<netease::Playlist> playlists, std::wstring error);
+    void RefreshNeteaseNavPlaylists();
     void ShowNeteaseArtistDetail(const View& view, netease::Artist artist, std::wstring error);
     void ContinueArtistLoad();
     void LoadArtistAlbumPage();
     void LoadArtistTrackPage();
     void LoadHotSongsPage();
-    void LoadCollectedAlbumPage();
+    void LoadCollectedMetaPage();
+    void LoadCollectedTrackPage();
+    void ContinueCollectedLoad();
     void OnListNearEnd();
-    void EnsureCollectedAlbums();
     void ShowNeteaseArtists(const View& view, std::vector<netease::Artist> artists, std::wstring error);
-    void ShowNeteaseAlbums(const View& view, std::vector<netease::Album> albums, std::wstring error);
     void OpenNeteasePlaylist(int64_t id, std::wstring name, View::NeteaseScope scope);
     void OpenNeteaseArtist(int64_t id, std::wstring name);
     void OpenNeteaseAlbum(int64_t id, std::wstring name, std::wstring parentId = {}, std::wstring parentName = {});
@@ -184,6 +187,7 @@ private:
     std::vector<ContextAction> BuildContextActions(metadb_handle_list_cref items);
     void ShowArtistPageMenu(POINT screen, bool hotSongs, int64_t albumId, std::wstring name);
     void ShowArtistTileMenu(POINT screen, int64_t artistId, std::wstring name);
+    void ShowPlaylistTileMenu(POINT screen, int64_t playlistId, std::wstring name, View::NeteaseScope scope);
     void ShowAlbumGridMenu(POINT screen, int64_t albumId, std::wstring name);
     int ViewStyles() const;  // view options the current source offers
     void OnNavItem(const NavPane::Item& item);
@@ -227,6 +231,7 @@ private:
     void ShowDeviceMenu();
     void UpdateFavoriteState();  // taskbar Favorite button for the playing song
     void ApplyLanguage(Language language);
+    void RefreshCurrentPage();  // art + account lists + the current page re-read from the service
     void SetVolumeFromX(int x);
     float VolumeThumbX() const;  // centre of the volume thumb in client pixels
     void ShowVolumeTip(float thumbX);  // Win7 tooltip bubble with the volume while dragging
@@ -303,13 +308,17 @@ private:
     bool m_hotSongsMore = true;
     bool m_hotSongsLoading = false;
     bool m_startHotSongs = false;
-    std::vector<netease::Album> m_collectedAlbums;  // snapshot for the collected-albums page
+    std::vector<netease::Album> m_collectedAlbums;  // metadata pages loaded for the collected-albums page
     std::vector<netease::Song> m_collectedSongs;
-    size_t m_collectedAlbumOffset = 0;
-    bool m_collectedAlbumsLoading = false;
+    size_t m_collectedMetaOffset = 0;
+    bool m_collectedMetaMore = true;
+    bool m_collectedMetaLoading = false;
+    size_t m_collectedTracksLoaded = 0;
+    bool m_collectedTracksLoading = false;
     bool m_startAlbumPage = false;  // start the first page once Navigate has set the view
+    bool m_forcePageRefresh = false;  // the next Navigate re-reads the current page from the service
     bool m_detailActionPending = false;
-    int m_artistArtToken = 0;
+    int m_detailArtToken = 0;
     winrt::com_ptr<IWICBitmapSource> m_icon, m_art;
 
     std::vector<std::unique_ptr<Widget>> m_widgets;

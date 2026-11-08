@@ -208,7 +208,9 @@ private:
 // NetEase playlists as WMP-style tiles or a Details list of name / song count.
 class NeteasePlaylistSource : public media::ListSource {public:
     using Open = std::function<void(int64_t playlistId, std::wstring name)>;
-    NeteasePlaylistSource(std::vector<netease::Playlist> playlists, std::wstring emptyText, Open open);
+    using Menu = std::function<void(POINT screen, int64_t playlistId, std::wstring name)>;
+    NeteasePlaylistSource(std::vector<netease::Playlist> playlists, std::wstring emptyText, Open open,
+                          Menu menu = {});
 
     const std::vector<media::Column>& Columns() const override { return m_columns; }
     std::wstring ColumnSetKey() const override { return L"netease-playlists"; }
@@ -244,6 +246,7 @@ private:
     std::wstring m_filter;
     std::vector<media::Column> m_columns;
     Open m_open;
+    Menu m_menu;
     media::ViewStyle m_style = media::ViewStyle::Icons;
 };
 

@@ -181,9 +181,27 @@ Updated: 2026-11-08
     never reorders the album groups. Icon views no longer draw a column header. The
     maximum scroll position aligns the last line with the bottom of the list instead of
     letting the transport band cut it.
-  - Not implemented yet: NetEase full-catalog search UI, adding songs to NetEase playlists,
-    a combined All Music browse beyond Favorites, and an album view reached from anywhere
-    other than an artist page or the collected albums page.
+  - The detail band is shared by artist, album and playlist pages: cover or avatar, name,
+    counts/creator, a three-line description with Show more / Show less, and the page's
+    action button (Follow, or Collect/Collected). Album pages now carry the album
+    introduction and collect state; playlist pages carry the creator, description and
+    subscribe state. The actions are also on the header's and the empty list's context
+    menus. Playlist tiles and navigation rows can be collected or uncollected, and the
+    Created playlists node's menu creates a NetEase playlist through a small name prompt.
+  - Collected albums: the Icon grid reads `/album/sublist` 100 albums per page and appends
+    the next page near the end of the list; Expanded tile reads the same metadata pages and
+    loads their tracks 12 albums at a time. Entering the Artists, Albums, Created/Collected
+    playlists sections re-reads the first page, so items added in the official client show
+    up without a restart. The command bar has a Refresh button (F5) that drops the decoded
+    NetEase covers, refreshes the account lists and re-reads the current page.
+  - Playlist covers follow song edits: after adding or removing songs the provider fetches
+    one lightweight playlist summary (cache-busted), updates the catalog and the cached
+    lists, and the window drops the playlist thumbnails so the regenerated cover loads.
+  - Expanded tile collects an album's songs into one column on every song table, ordered by
+    the album's first appearance; this also applies to local playlists (only the displayed
+    order changes). Details keeps the view's own order.
+  - Not implemented yet: NetEase full-catalog search UI, a combined All Music browse beyond
+    Favorites, and playlist rename/delete.
 
 ## Next
 
