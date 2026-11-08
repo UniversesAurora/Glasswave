@@ -64,6 +64,8 @@ public:
     void ContextMenu(HWND owner, POINT screen) override;
     metadb_handle_list SelectedItems() const override;
     void SetFilter(std::wstring_view filterLower) override;
+    // Appends rows (the next album page) without moving existing rows or clearing selection.
+    void Append(std::vector<SongTableRow> rows);
 
 protected:
     SongTableSource(std::vector<SongTableRow> rows, bool showSource, std::wstring emptyText, std::wstring columnKey);
@@ -72,6 +74,7 @@ private:
     void RebuildVisible();
     void BuildGroups();
     void ApplySort();
+    void SortOrder();
     std::pair<std::wstring, std::wstring> GroupInfo(size_t row) const;
 
     std::vector<SongTableRow> m_all;
@@ -96,6 +99,7 @@ private:
 class NeteaseSongSource : public SongTableSource {
 public:
     NeteaseSongSource(std::vector<netease::Song> songs, std::wstring emptyText);
+    void AppendSongs(const std::vector<netease::Song>& songs);
 };
 
 // Favorites from every provider: local Favorites and the NetEase liked list, with a

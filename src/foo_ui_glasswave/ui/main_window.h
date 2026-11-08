@@ -146,8 +146,10 @@ private:
     void ShowNeteaseArtist(const View& view, netease::Artist artist, std::vector<netease::Album> albums,
                            std::wstring error);
     void ShowNeteaseArtistHeader(const View& view, netease::Artist artist);
-    void ShowNeteaseArtistSongs(const View& view, std::vector<netease::Song> songs, std::wstring error);
     void LoadNeteaseArtistSongs(const View& view);
+    void LoadAlbumPage(bool collected);
+    void OnListNearEnd();
+    void EnsureCollectedAlbums();
     void ShowNeteaseArtists(const View& view, std::vector<netease::Artist> artists, std::wstring error);
     void ShowNeteaseAlbums(const View& view, std::vector<netease::Album> albums, std::wstring error);
     void OpenNeteasePlaylist(int64_t id, std::wstring name, View::NeteaseScope scope);
@@ -264,6 +266,13 @@ private:
     std::vector<netease::Album> m_artistAlbums;  // its albums, kept for the view-style switch
     std::vector<netease::Song> m_artistSongs;    // expanded-tile contents, cached per artist
     std::wstring m_artistSongsId;
+    size_t m_artistAlbumOffset = 0;  // next album not yet loaded into m_artistSongs
+    bool m_artistAlbumsLoading = false;
+    std::vector<netease::Album> m_collectedAlbums;  // snapshot for the collected-albums page
+    std::vector<netease::Song> m_collectedSongs;
+    size_t m_collectedAlbumOffset = 0;
+    bool m_collectedAlbumsLoading = false;
+    bool m_startAlbumPage = false;  // start the first page once Navigate has set the view
     bool m_followPending = false;
     int m_artistArtToken = 0;
     winrt::com_ptr<IWICBitmapSource> m_icon, m_art;

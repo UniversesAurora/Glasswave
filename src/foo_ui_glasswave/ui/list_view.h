@@ -43,6 +43,8 @@ public:
 
     // A link in the album column was clicked: group index and line (0 album, 1 artist, 2 genre).
     std::function<void(size_t group, size_t line)> onLink;
+    // The visible bottom has reached the last lines (used to load the next album page).
+    std::function<void()> onNearEnd;
 
 private:
     enum class Mode { Plain, Grouped, Tiles };
@@ -104,6 +106,7 @@ private:
     size_t VisibleLines() const;
     size_t MaxTop() const;
     void ScrollTo(size_t top);
+    void CheckNearEnd();
     void MoveFocus(size_t row, bool ctrl, bool shift);
     void PaintHeader();
     void PaintRows();

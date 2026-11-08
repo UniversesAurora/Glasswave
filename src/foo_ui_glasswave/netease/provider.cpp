@@ -562,43 +562,6 @@ void Provider::FetchAlbumTracks(std::vector<Album> albums, SongsCallback done) {
     });
 }
 
-void Provider::FetchCollectedAlbumSongs(SongsCallback done) {
-    m_tasks.Post([this, done = std::move(done)] {
-        if (m_stopping) return;
-        abort_callback_impl abort;
-        std::wstring error;
-        if (!RequireLogin(error)) {
-            PostMain([done = std::move(done), error] {
-                if (done) done({}, ErrorOf(error));
-            });
-            return;
-        }
-        if (!m_service.EnsureStarted(abort, &error)) {
-            PostMain([done = std::move(done), error] {
-                if (done) done({}, ErrorOf(error));
-            });
-            return;
-        }
-        std::vector<Album> albums;
-        {
-            std::lock_guard lock(m_mutex);
-            albums = m_collectedAlbums;
-        }
-        if (albums.empty()) {
-            if (!m_client.GetCollectedAlbums(abort, albums, error)) {
-                PostMain([done = std::move(done), error] {
-                    if (done) done({}, ErrorOf(error));
-                });
-                return;
-            }
-            Catalog::Get().Put(albums);
-            std::lock_guard lock(m_mutex);
-            m_collectedAlbums = albums;
-        }
-        FetchAlbumTracks(std::move(albums), std::move(done));
-    });
-}
-
 void Provider::FetchLiked(SongsCallback done) {
     m_tasks.Post([this, done = std::move(done)] {
         if (m_stopping) return;

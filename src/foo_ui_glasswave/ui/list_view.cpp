@@ -183,7 +183,9 @@ ListView::~ListView() {
 int ListView::RowHeightPx() const {
     return static_cast<int>(std::lround((ArtColumnVisible() ? kArtRowHeight : kRowHeight) * m_scale));
 }
-int ListView::HeaderHeightPx() const { return static_cast<int>(std::lround(kHeaderHeight * m_scale)); }
+int ListView::HeaderHeightPx() const {
+    return m_mode == Mode::Tiles ? 0 : static_cast<int>(std::lround(kHeaderHeight * m_scale));
+}
 int ListView::ScrollWidthPx() const { return static_cast<int>(std::lround(kScrollWidth * m_scale)); }
 
 bool ListView::ArtColumnVisible() const {
@@ -499,6 +501,7 @@ void ListView::Refresh() {
     PaintHeader();
     PaintRows();
     PaintScrollBar();
+    CheckNearEnd();
 }
 
 void ListView::ScrollTo(size_t top) {
@@ -507,6 +510,14 @@ void ListView::ScrollTo(size_t top) {
     m_top = top;
     PaintRows();
     PaintScrollBar();
+    CheckNearEnd();
+}
+
+void ListView::CheckNearEnd() {
+    if (!onNearEnd || !m_source || m_source->Count() == 0) return;
+    const size_t lines = LineCount();
+    if (lines == 0) return;
+    if (m_top + VisibleLines() + 3 >= lines) onNearEnd();
 }
 
 void ListView::EnsureVisible(size_t row) {
@@ -542,6 +553,11 @@ void ListView::EnsureVisible(size_t row) {
 // ---- Painting -------------------------------------------------------------------------------
 
 void ListView::PaintHeader() {
+    if (m_mode == Mode::Tiles) {  // icon views have no column header
+        m_header.IsVisible(false);
+        return;
+    }
+    m_header.IsVisible(true);
     auto& host = gfx::CompositionHost::Get();
     const int w = std::max<int>(m_bounds.right - m_bounds.left, 1), h = HeaderHeightPx();
     const float s = m_scale;

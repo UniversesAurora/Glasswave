@@ -60,7 +60,6 @@ public:
     void FetchRecommended(PlaylistsCallback done);
     void FetchFollowedArtists(ArtistsCallback done);
     void FetchCollectedAlbums(AlbumsCallback done);
-    void FetchCollectedAlbumSongs(SongsCallback done);
     void FetchLiked(SongsCallback done);
     void FetchPlaylist(int64_t playlistId, DetailCallback done);
     void FetchArtist(int64_t artistId, std::function<void(Artist artist)> header, ArtistCallback done);

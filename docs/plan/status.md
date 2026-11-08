@@ -161,16 +161,19 @@ Updated: 2026-11-08
     labelled Local Music, and the Chinese terminology follows WMP (艺术家 / 唱片集). The
     account refresh prefetches followed artists, collected albums and recommended
     playlists so the menus are populated.
-  - The collected albums page offers Icon and Expanded tile. Expanded fetches the saved
-    albums' tracks (six workers, every album) and lists them grouped by album, like a
-    playlist's expanded tile; the choice is remembered per view.
-  - The artist page offers the same two layouts: its Expanded tile loads the artist's
-    album tracks (six workers, every album) and caches them per artist, so switching back
-    and forth is instant afterwards. The artist header appears as soon as the profile
-    request returns, while the album list (one 1000-album request) is still loading.
-    Browse pages offer only their real layouts in the view menu, with no grayed entries.
-    The maximum scroll position aligns the last line with the bottom of the list instead
-    of letting the transport band cut it.
+  - The collected albums page offers Icon and Expanded tile. Expanded loads the saved
+    albums' tracks in pages of 12 as the list nears its end (six workers) and lists them
+    grouped by album, like a playlist's expanded tile; the choice is remembered per view.
+    Icon views no longer draw a column header (it did not line up with the tiles).
+  - The artist page offers the same two layouts: its Expanded tile pages through the
+    artist's album tracks (12 albums per page, six workers) and caches what is loaded per
+    artist, so switching back and forth keeps the pages already fetched. The artist header
+    appears as soon as the profile request returns, while the album list (one 1000-album
+    request) is still loading. Browse pages offer only their real layouts in the view
+    menu, with no grayed entries. In an expanded album view, sorting applies inside each
+    album only and never reorders the album groups, so the order stays stable while pages
+    load. The maximum scroll position aligns the last line with the bottom of the list
+    instead of letting the transport band cut it.
   - Not implemented yet: NetEase full-catalog search UI, adding songs to NetEase playlists,
     a combined All Music browse beyond Favorites, and an album view reached from anywhere
     other than an artist page or the collected albums page.

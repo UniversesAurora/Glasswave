@@ -62,6 +62,7 @@ constexpr float kSplitArrow = 16, kViewOptionsSplit = 26;
 
 // NetEase artist page header: a fixed band above the tile grid (new UI, no Win7 measurement).
 constexpr float kArtistHeaderHeight = 104, kArtistAvatar = 80, kArtistFollowWidth = 88, kArtistFollowHeight = 26;
+constexpr size_t kAlbumPageSize = 12;  // albums loaded per page in expanded album views
 
 
 // {0C9E7B42-1F3A-4D5E-8B6C-7A2F9E1D4C83}
@@ -525,6 +526,7 @@ void MainWindow::InitComposition() {
     SetArtistLinkProvider([this](metadb_handle_list_cref items) { return BuildArtistLinks(items); });
     m_list = std::make_unique<ListView>(m_contentLayer);
     m_list->onLink = [this](size_t group, size_t line) { OnAlbumLink(group, line); };
+    m_list->onNearEnd = [this] { OnListNearEnd(); };
     m_search = std::make_unique<SearchBox>(m_contentLayer);
     m_search->onChange = [this](const std::wstring& text) {
         m_filter = media::Lower(text);
@@ -1905,6 +1907,8 @@ void MainWindow::Navigate(const View& requested, bool push) {
         m_artistAlbums.clear();
         m_artistSongs.clear();
         m_artistSongsId.clear();
+        m_artistAlbumOffset = 0;
+        m_artistAlbumsLoading = false;
         m_artistHeaderSize = {};  // repaint the band with the new artist's placeholder
         m_followPending = false;
     }
@@ -2011,12 +2015,30 @@ void MainWindow::Navigate(const View& requested, bool push) {
         auto* style = ViewStyleSetting(view);
         const bool expanded = style && static_cast<media::ViewStyle>(style->get()) == media::ViewStyle::Tiles;
         if (expanded) {  // the saved albums' songs, grouped by album like a playlist
-            source = std::make_unique<ui::NeteaseSongSource>(std::vector<netease::Song>{}, L"Loading album songs...");
-            const View requestedView = view;
-            netease::Provider::Get().FetchCollectedAlbumSongs(
-                [this, requestedView](std::vector<netease::Song> songs, std::wstring error) {
-                    ShowNeteaseSongs(requestedView, std::move(songs), std::move(error));
-                });
+            EnsureCollectedAlbums();
+            if (m_collectedAlbums.empty() && netease::Provider::Get().CollectedAlbums().empty()) {
+                source = std::make_unique<ui::NeteaseSongSource>(std::vector<netease::Song>{}, L"Loading albums...");
+                const View requestedView = view;
+                netease::Provider::Get().FetchCollectedAlbums(
+                    [this, requestedView](std::vector<netease::Album> albums, std::wstring) {
+                        if (m_view.kind != requestedView.kind || m_view.library != requestedView.library) return;
+                        m_collectedAlbums = std::move(albums);
+                        m_collectedSongs.clear();
+                        m_collectedAlbumOffset = 0;
+                        m_collectedAlbumsLoading = false;
+                        LoadAlbumPage(true);
+                    });
+                break;
+            }
+            if (m_collectedSongs.empty()) {
+                m_collectedAlbumOffset = 0;
+                m_collectedAlbumsLoading = false;
+                source = std::make_unique<ui::NeteaseSongSource>(std::vector<netease::Song>{},
+                                                                 L"Loading album songs...");
+                m_startAlbumPage = true;
+            } else {
+                source = std::make_unique<ui::NeteaseSongSource>(m_collectedSongs, L"No songs.");
+            }
             break;
         }
         const auto cached = netease::Provider::Get().CollectedAlbums();
@@ -2058,13 +2080,13 @@ void MainWindow::Navigate(const View& requested, bool push) {
             if (m_artistSongsId == view.remoteId && !m_artistSongs.empty()) {
                 source = std::make_unique<ui::NeteaseSongSource>(m_artistSongs, L"No songs.");
             } else {
+                m_artistSongs.clear();
+                m_artistSongsId = view.remoteId;
+                m_artistAlbumOffset = 0;
+                m_artistAlbumsLoading = false;
                 source = std::make_unique<ui::NeteaseSongSource>(std::vector<netease::Song>{},
                                                                  L"Loading album songs...");
-                const View requestedView = view;
-                netease::Provider::Get().FetchAlbumTracks(
-                    m_artistAlbums, [this, requestedView](std::vector<netease::Song> songs, std::wstring error) {
-                        ShowNeteaseArtistSongs(requestedView, std::move(songs), std::move(error));
-                    });
+                m_startAlbumPage = true;
             }
             break;
         }
@@ -2177,6 +2199,10 @@ void MainWindow::Navigate(const View& requested, bool push) {
     m_source = std::move(source);
     m_list->SetSource(m_source.get(), !sameView);
     m_view = view;
+    if (m_startAlbumPage) {
+        m_startAlbumPage = false;
+        LoadAlbumPage(m_view.kind == View::Kind::NeteaseAlbums);
+    }
 
     if (push && !sameView) {
         if (!m_history.empty()) m_history.resize(m_historyPos + 1);
@@ -2317,6 +2343,8 @@ void MainWindow::ShowNeteaseArtist(const View& view, netease::Artist artist, std
     m_artistAlbums = albums;
     m_artistSongs.clear();
     m_artistSongsId.clear();
+    m_artistAlbumOffset = 0;
+    m_artistAlbumsLoading = false;
     m_followPending = false;
     auto* style = ViewStyleSetting(view);
     if (style && static_cast<media::ViewStyle>(style->get()) == media::ViewStyle::Tiles) {
@@ -2359,29 +2387,77 @@ void MainWindow::ShowNeteaseArtistHeader(const View& view, netease::Artist artis
 
 void MainWindow::LoadNeteaseArtistSongs(const View& view) {
     if (m_artistAlbums.empty()) return;
+    m_artistSongs.clear();
+    m_artistSongsId = view.remoteId;
+    m_artistAlbumOffset = 0;
+    m_artistAlbumsLoading = false;
     m_source = std::make_unique<ui::NeteaseSongSource>(std::vector<netease::Song>{}, L"Loading album songs...");
+    if (auto* style = ViewStyleSetting(view)) m_source->SetViewStyle(static_cast<media::ViewStyle>(style->get()));
     m_list->SetSource(m_source.get(), false);
-    const View requestedView = view;
-    netease::Provider::Get().FetchAlbumTracks(
-        m_artistAlbums, [this, requestedView](std::vector<netease::Song> songs, std::wstring error) {
-            ShowNeteaseArtistSongs(requestedView, std::move(songs), std::move(error));
-        });
+    LoadAlbumPage(false);
 }
 
-void MainWindow::ShowNeteaseArtistSongs(const View& view, std::vector<netease::Song> songs, std::wstring error) {
-    if (m_view.kind != view.kind || m_view.library != view.library || m_view.remoteId != view.remoteId) return;
-    if (error.empty()) {
-        m_artistSongs = songs;
-        m_artistSongsId = view.remoteId;
-    }
-    auto source = std::make_unique<ui::NeteaseSongSource>(
-        std::move(songs), error.empty() ? L"No songs." : std::move(error));
-    if (auto* style = ViewStyleSetting(view)) source->SetViewStyle(static_cast<media::ViewStyle>(style->get()));
-    if (!m_filter.empty()) source->SetFilter(m_filter);
-    m_source = std::move(source);
-    m_list->SetSource(m_source.get(), false);
-    RepaintBreadcrumb();
-    RepaintArtistHeader();
+void MainWindow::EnsureCollectedAlbums() {
+    const auto latest = netease::Provider::Get().CollectedAlbums();
+    bool same = latest.size() == m_collectedAlbums.size();
+    for (size_t i = 0; same && i < latest.size(); ++i) same = latest[i].id == m_collectedAlbums[i].id;
+    if (same) return;
+    m_collectedAlbums = latest;
+    m_collectedSongs.clear();
+    m_collectedAlbumOffset = 0;
+    m_collectedAlbumsLoading = false;
+}
+
+void MainWindow::OnListNearEnd() {
+    if (!m_source || m_source->GetViewStyle() != media::ViewStyle::Tiles) return;
+    if (m_view.kind == View::Kind::NeteaseArtist)
+        LoadAlbumPage(false);
+    else if (m_view.kind == View::Kind::NeteaseAlbums)
+        LoadAlbumPage(true);
+}
+
+void MainWindow::LoadAlbumPage(bool collected) {
+    auto& albums = collected ? m_collectedAlbums : m_artistAlbums;
+    auto& offset = collected ? m_collectedAlbumOffset : m_artistAlbumOffset;
+    auto& loading = collected ? m_collectedAlbumsLoading : m_artistAlbumsLoading;
+    if (loading || offset >= albums.size()) return;
+    const size_t first = offset, last = std::min(first + kAlbumPageSize, albums.size());
+    loading = true;
+    std::vector<netease::Album> page(albums.begin() + static_cast<std::ptrdiff_t>(first),
+                                     albums.begin() + static_cast<std::ptrdiff_t>(last));
+    const std::wstring artistId = collected ? std::wstring() : m_view.remoteId;
+    netease::Provider::Get().FetchAlbumTracks(
+        std::move(page),
+        [this, collected, first, last, artistId](std::vector<netease::Song> tracks, std::wstring error) {
+            auto& songs = collected ? m_collectedSongs : m_artistSongs;
+            auto& offset = collected ? m_collectedAlbumOffset : m_artistAlbumOffset;
+            auto& loading = collected ? m_collectedAlbumsLoading : m_artistAlbumsLoading;
+            loading = false;
+            const bool expanded = m_source && dynamic_cast<ui::NeteaseSongSource*>(m_source.get()) != nullptr;
+            const bool current = expanded && (collected ? m_view.kind == View::Kind::NeteaseAlbums
+                                                        : m_view.kind == View::Kind::NeteaseArtist &&
+                                                              m_view.remoteId == artistId);
+            if (!current) return;
+            offset = last;
+            if (first == 0) {
+                songs.insert(songs.end(), tracks.begin(), tracks.end());
+                auto source = std::make_unique<ui::NeteaseSongSource>(
+                    songs, error.empty() ? L"No songs." : std::move(error));
+                if (auto* style = ViewStyleSetting(m_view))
+                    source->SetViewStyle(static_cast<media::ViewStyle>(style->get()));
+                if (!m_filter.empty()) source->SetFilter(m_filter);
+                m_source = std::move(source);
+                m_list->SetSource(m_source.get(), false);
+                RepaintBreadcrumb();
+                return;
+            }
+            if (!tracks.empty()) {
+                songs.insert(songs.end(), tracks.begin(), tracks.end());
+                if (auto* source = dynamic_cast<ui::NeteaseSongSource*>(m_source.get()))
+                    source->AppendSongs(tracks);
+            }
+            m_list->Refresh();  // still near the end: fetch the next page
+        });
 }
 
 void MainWindow::ShowNeteaseArtists(const View& view, std::vector<netease::Artist> artists, std::wstring error) {

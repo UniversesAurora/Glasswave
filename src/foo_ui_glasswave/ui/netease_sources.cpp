@@ -239,7 +239,7 @@ std::pair<std::wstring, std::wstring> SongTableSource::GroupInfo(size_t row) con
     }
 }
 
-void SongTableSource::ApplySort() {
+void SongTableSource::SortOrder() {
     m_order.resize(m_all.size());
     for (size_t i = 0; i < m_order.size(); ++i) m_order[i] = i;
     if (m_sortColumn != SIZE_MAX && m_sortColumn < m_fields.size()) {
@@ -268,18 +268,30 @@ void SongTableSource::ApplySort() {
             }
         };
         std::stable_sort(m_order.begin(), m_order.end(), [&](size_t a, size_t b) {
-            if (tiles) {  // expanded tile keeps albums together; the sort orders rows inside one
-                const int c = CompareText(AlbumLabel(m_all[a]), AlbumLabel(m_all[b]));
-                if (c) return desc ? c > 0 : c < 0;
-                if (m_all[a].albumKey != m_all[b].albumKey) return m_all[a].albumKey < m_all[b].albumKey;
+            if (tiles) {
+                // Albums keep the order they were added in; only rows inside one album sort.
+                if (m_all[a].albumKey != m_all[b].albumKey) return a < b;
+                const int c = CompareText(key(a), key(b));
+                return c ? (desc ? c > 0 : c < 0) : a < b;
             }
             const int c = CompareText(key(a), key(b));
-            if (!tiles) return desc ? c > 0 : c < 0;
-            return c ? (desc ? c > 0 : c < 0) : a < b;
+            return desc ? c > 0 : c < 0;
         });
     }
+}
+
+void SongTableSource::ApplySort() {
+    SortOrder();
     m_selected.assign(m_all.size(), 0);
     m_focus = SIZE_MAX;
+    RebuildVisible();
+}
+
+void SongTableSource::Append(std::vector<SongTableRow> rows) {
+    if (rows.empty()) return;
+    m_all.insert(m_all.end(), std::make_move_iterator(rows.begin()), std::make_move_iterator(rows.end()));
+    m_selected.resize(m_all.size(), 0);
+    SortOrder();
     RebuildVisible();
 }
 
@@ -424,6 +436,8 @@ void SongTableSource::SetFilter(std::wstring_view filterLower) {
 
 NeteaseSongSource::NeteaseSongSource(std::vector<netease::Song> songs, std::wstring emptyText)
     : SongTableSource(NeteaseRows(songs), false, std::move(emptyText), L"netease-songs") {}
+
+void NeteaseSongSource::AppendSongs(const std::vector<netease::Song>& songs) { Append(NeteaseRows(songs)); }
 
 AllFavoritesSource::AllFavoritesSource(std::vector<metadb_handle_ptr> local, std::vector<netease::Song> remote)
     : SongTableSource(FavoriteRows(local, remote), true, L"No favorites.", L"all-favorites") {}
