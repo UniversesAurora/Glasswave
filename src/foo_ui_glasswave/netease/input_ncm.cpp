@@ -3,6 +3,7 @@
 #include "netease/config.h"
 #include "netease/handle.h"
 #include "netease/log.h"
+#include "netease/profile.h"
 #include "netease/provider.h"
 
 #include <SDK/input_impl.h>
@@ -42,6 +43,34 @@ std::string ExtensionFor(const SongUrl& url) {
     if (url.level == L"lossless" || url.level == L"hires") return "flac";
     return "mp3";
 }
+
+class NcmHttpFile : public file {
+public:
+    NcmHttpFile(file::ptr inner, std::string contentType)
+        : m_inner(std::move(inner)), m_contentType(std::move(contentType)) {}
+
+    t_size read(void* buffer, t_size bytes, abort_callback& abort) override {
+        return m_inner->read(buffer, bytes, abort);
+    }
+    void write(const void* buffer, t_size bytes, abort_callback& abort) override {
+        m_inner->write(buffer, bytes, abort);
+    }
+    t_filesize get_size(abort_callback& abort) override { return m_inner->get_size(abort); }
+    t_filesize get_position(abort_callback& abort) override { return m_inner->get_position(abort); }
+    void resize(t_filesize size, abort_callback& abort) override { m_inner->resize(size, abort); }
+    void seek(t_filesize position, abort_callback& abort) override { m_inner->seek(position, abort); }
+    bool can_seek() override { return m_inner->can_seek(); }
+    bool get_content_type(pfc::string_base& out) override {
+        out = m_contentType.c_str();
+        return true;
+    }
+    void reopen(abort_callback& abort) override { m_inner->reopen(abort); }
+    bool is_remote() override { return m_inner->is_remote(); }
+
+private:
+    file::ptr m_inner;
+    std::string m_contentType;
+};
 
 }  // namespace
 
@@ -103,42 +132,23 @@ public:
             throw exception_io_data(Utf8(error.empty() ? L"No playable source for this song." : error).c_str());
         if (resolved.trial)
             Log(L"input: playing a free trial for song " + std::to_wstring(m_id));
-        const std::string url = Utf8(resolved.url);
         const std::string extension = ExtensionFor(resolved);
-        const std::wstring diagnostics = L"input: song " + std::to_wstring(m_id) + L", level " + resolved.level +
-                                         L", type " + resolved.type + L", ext " + Wide(extension.c_str());
-        Log(diagnostics);
-        const size_t query = url.find('?');
-        const std::string path = query == std::string::npos ? url : url.substr(0, query);
-        const bool extensionMatches =
-            path.size() > extension.size() && path[path.size() - extension.size() - 1] == '.' &&
-            _stricmp(path.substr(path.size() - extension.size()).c_str(), extension.c_str()) == 0;
-
-        bool opened = false;
-        if (extensionMatches) {
-            try {
-                // The CDN URL already has the right extension; let the core HTTP reader and
-                // FLAC/MP3 decoder handle it directly.
-                input_entry::g_open_for_decoding(m_decoder, nullptr, url.c_str(), p_abort, true);
-                opened = true;
-            } catch (const exception_aborted&) {
-                throw;
-            } catch (const std::exception& e) {
-                Log(L"input: direct URL open failed: " + Wide(e.what()));
-            }
-        }
-        if (!opened) {
-            auto request = http_client::get()->create_request("GET");
-            request->add_header("User-Agent",
-                                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
-                                "Glasswave/0.1");
-            request->add_header("Referer", "https://music.163.com/");
-            file::ptr stream = request->run(url.c_str(), p_abort);
-            const std::string fakePath = "ncm://decode/" + std::to_string(m_id) + "." + extension;
-            input_entry::g_open_for_decoding(m_decoder, stream, fakePath.c_str(), p_abort, true);
-        }
+        Log(L"input: song " + std::to_wstring(m_id) + L", level " + resolved.level + L", type " + resolved.type +
+            L", ext " + Wide(extension.c_str()));
+        auto request = http_client::get()->create_request("GET");
+        request->add_header("User-Agent",
+                            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
+                            "Glasswave/0.1");
+        request->add_header("Referer", "https://music.163.com/");
+        file::ptr inner = request->run(Utf8(resolved.url).c_str(), p_abort);
+        const std::string contentType =
+            extension == "flac" ? "audio/flac" : extension == "m4a" ? "audio/mp4" : "audio/mpeg";
+        file::ptr typed;
+        typed ^= fb2k::service_new<NcmHttpFile>(inner, contentType);
+        const std::string fakePath = "ncm://decode/" + std::to_string(m_id) + "." + extension;
+        input_entry::g_open_for_decoding(m_decoder, typed, fakePath.c_str(), p_abort, true);
         m_decoder->initialize(0, p_flags, p_abort);
-        Log(L"input: opened song " + std::to_wstring(m_id) + L" as " + Wide(extension.c_str()));
+        Log(L"input: opened song " + std::to_wstring(m_id) + L" as stream " + Wide(contentType.c_str()));
     }
 
     bool decode_run(audio_chunk& p_chunk, abort_callback& p_abort) {
