@@ -262,8 +262,8 @@ Updated: 2026-11-08
     two pages mix local and NetEase rows with a Source column. The lists refresh when the
     page is opened, not live while it is on screen.
   - Every song list — the shared song tables, the local library and playlists — offers a
-    Play count column fed by our cross-source play history: hidden by default under
-    Choose columns, visible by default on Most Played. The local sources read the store
+    Count column fed by our cross-source play history: hidden by default under Choose
+    columns, visible by default on Most Played. The local sources read the store
     while painting instead of foobar2000's %play_count%, so the column works without
     Playback Statistics and also counts NetEase rows inside playlists. A track that
     starts while a list is on screen updates its count immediately; the row order changes
@@ -276,6 +276,11 @@ Updated: 2026-11-08
     queue is empty. Removing from Recently Played clears the last-played time (the song
     stays in Most Played), and removing from Most Played resets the count (the song stays
     in Recently Played); both rebuild the page and keep the scroll anchor.
+  - Right-clicking the empty area of any list page offers Select all. Now Playing also
+    offers Clear Now Playing, and the two play-history pages offer Clear Recently Played /
+    Clear Most Played; clearing the queue stops playback when the queue supplied the
+    playing song, and the list clears reset the same fields as the per-song removals.
+    Regular playlists offer no clear action.
   - Menu check marks are now drawn as vectors (shape and colours sampled from Aero IMAGE
     976) instead of scaling the 16 px theme bitmap, so column and sort checks stay crisp
     at 200 % like the submenu arrow and radio bullet.
