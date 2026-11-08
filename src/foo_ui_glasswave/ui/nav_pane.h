@@ -44,6 +44,10 @@ public:
     // The Music categories shown (WMP's "Customize navigation pane"), in order.
     void SetCategories(std::vector<media::GroupKind> kinds);
     const std::vector<media::GroupKind>& Categories() const { return m_categories; }
+    // Where the Smart playlists section sits among the categories: 0 = above all of them,
+    // Categories().size() = below all of them.
+    void SetSmartPosition(int position);
+    int SmartPosition() const { return m_smartAt; }
     void SetBounds(const RECT& px, float scale);
     void Select(Target target, size_t playlist, int64_t remoteId = 0);
     // Selection is blue while the pane has the focus, grey otherwise (Win7 tree view).
@@ -89,6 +93,7 @@ private:
     size_t m_hotExpander = SIZE_MAX;  // item whose expander is under the mouse
     bool m_focused = false;
     std::vector<media::GroupKind> m_categories{media::GroupKind::Artist, media::GroupKind::Album, media::GroupKind::Genre};
+    int m_smartAt = 0;
     size_t m_top = 0;
     int m_artToken = 0;
     MoveCallback m_move;

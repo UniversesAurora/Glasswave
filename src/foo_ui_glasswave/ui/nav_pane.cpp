@@ -212,7 +212,8 @@ void NavPane::ApplyStaticOrder() {
             if (item.level == 1) children.push_back({ItemKey(item), children.size(), {}});
             if (!children.empty()) children.back().items.push_back(std::move(item));
         }
-        auto childOrder = m_staticOrder.find(rootKey);
+        // Local's children follow the category order and SmartPosition; never re-sort them here.
+        auto childOrder = rootKey == L"local" ? m_staticOrder.end() : m_staticOrder.find(rootKey);
         if (childOrder != m_staticOrder.end()) sortBlocks(children, childOrder->second);
         for (auto& child : children)
             for (auto& item : child.items) ordered.push_back(std::move(item));
@@ -271,24 +272,32 @@ void NavPane::Rebuild() {
             }
         }
     }
-    // Local Music: the Smart playlists section (they only see the local library) and the
-    // categories directly, without the old Music level.
+    // Local Music: the Smart playlists section and the categories directly, without the old
+    // Music level. The section sits at m_smartAt among the categories and can be dragged.
     m_items.push_back({Target::LibraryLocal, 0, 0, L"Local Music", wp::NavIcon::Music, true});
     if (m_localExpanded) {
-        m_items.push_back({Target::SmartHeader, 0, 1, L"Smart playlists", wp::NavIcon::Playlist, true});
-        if (m_smartExpanded) {
-            if (const t_size fav = media::FavoritesPlaylist(false); fav != SIZE_MAX)
-                m_items.push_back({Target::Playlist, fav, 2, L"Favorites", wp::NavIcon::Playlist, false});
-            pfc::string8 smartName;  // every auto playlist, presets and the user's own
-            for (t_size p = 0, n = pm->get_playlist_count(); p < n; ++p)
-                if (media::IsAutoPlaylist(p)) {
-                    pm->playlist_get_name(p, smartName);
-                    m_items.push_back({Target::Playlist, p, 2, Wide(smartName), wp::NavIcon::Playlist, false});
+        const int count = static_cast<int>(m_categories.size());
+        const int at = std::clamp(m_smartAt, 0, count);
+        for (int i = 0; i <= count; ++i) {
+            if (i == at) {
+                m_items.push_back({Target::SmartHeader, 0, 1, L"Smart playlists", wp::NavIcon::Playlist, true});
+                if (m_smartExpanded) {
+                    if (const t_size fav = media::FavoritesPlaylist(false); fav != SIZE_MAX)
+                        m_items.push_back({Target::Playlist, fav, 2, L"Favorites", wp::NavIcon::Playlist, false});
+                    pfc::string8 smartName;  // every auto playlist, presets and the user's own
+                    for (t_size p = 0, n = pm->get_playlist_count(); p < n; ++p)
+                        if (media::IsAutoPlaylist(p)) {
+                            pm->playlist_get_name(p, smartName);
+                            m_items.push_back({Target::Playlist, p, 2, Wide(smartName), wp::NavIcon::Playlist, false});
+                        }
                 }
+            }
+            if (i < count) {
+                const auto kind = m_categories[static_cast<size_t>(i)];
+                m_items.push_back(
+                    {Target::Category, static_cast<size_t>(kind), 1, CategoryLabel(kind), wp::NavIcon::Artist, false});
+            }
         }
-        for (auto kind : m_categories)
-            m_items.push_back(
-                {Target::Category, static_cast<size_t>(kind), 1, CategoryLabel(kind), wp::NavIcon::Artist, false});
     }
     m_items.push_back({Target::LibraryNetease, 0, 0, L"NetEase Cloud Music", wp::NavIcon::Library, true});
     if (m_neteaseExpanded) {
@@ -348,6 +357,15 @@ void NavPane::SetBounds(const RECT& px, float scale) {
 
 void NavPane::SetCategories(std::vector<media::GroupKind> kinds) {
     m_categories = std::move(kinds);
+    m_smartAt = std::clamp(m_smartAt, 0, static_cast<int>(m_categories.size()));
+    Rebuild();
+}
+
+void NavPane::SetSmartPosition(int position) {
+    position = std::clamp(position, 0, static_cast<int>(m_categories.size()));
+    if (position == m_smartAt) return;
+    m_smartAt = position;
+    m_staticOrder.erase(L"local");  // the categories and this position define the order now
     Rebuild();
 }
 
@@ -476,8 +494,9 @@ bool NavPane::SameSiblingGroup(size_t a, size_t b) const {
         if (pa == SIZE_MAX || pb == SIZE_MAX || pa != pb) return false;
         // Libraries with several subsections: All Music, Local Music and NetEase.
         const std::wstring group = ItemKey(m_items[pa]);
-        if (group == L"local")  // the Smart playlists header and the categories move apart
-            return first.target == second.target;
+        if (group == L"local")  // the Smart playlists section interleaves with the categories
+            return (first.target == Target::Category || first.target == Target::SmartHeader) &&
+                   (second.target == Target::Category || second.target == Target::SmartHeader);
         return group == L"all" || group == L"netease";
     }
     if (first.level != 2 || second.level != 2) return false;

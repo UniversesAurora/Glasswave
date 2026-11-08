@@ -141,6 +141,7 @@ private:
     static cfg_var_modern::cfg_int* ViewStyleSetting(const View& view);
     void ShowNavCustomizeMenu(POINT screen);
     void SetNavCategories(std::vector<media::GroupKind> kinds);
+    void SetNavSmartPosition(int position);
     void ShowNeteaseLogin();
     void CreateNeteasePlaylist();
     void ShowNeteaseNavMenu(NavPane::Target target, POINT screen);

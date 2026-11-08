@@ -135,6 +135,9 @@ cfg_var_modern::cfg_string cfg_navCategories({0x6a1f3c5d, 0x2b7e, 0x4d90, {0x8c,
 // {6A1F3C5E-2B7E-4D90-8C15-3E9A7B2D4F61}
 cfg_var_modern::cfg_string cfg_navOrder({0x6a1f3c5e, 0x2b7e, 0x4d90, {0x8c, 0x15, 0x3e, 0x9a, 0x7b, 0x2d, 0x4f, 0x61}},
                                         "");
+// Where the Smart playlists section sits among the Local Music categories (0 = first).
+// {6A1F3C64-2B7E-4D90-8C15-3E9A7B2D4F61}
+cfg_var_modern::cfg_int cfg_navSmartAt({0x6a1f3c64, 0x2b7e, 0x4d90, {0x8c, 0x15, 0x3e, 0x9a, 0x7b, 0x2d, 0x4f, 0x61}}, 0);
 
 std::vector<media::GroupKind> LoadNavCategories() {
     std::vector<media::GroupKind> out;
@@ -554,6 +557,7 @@ void MainWindow::InitComposition() {
     });
     m_nav = std::make_unique<NavPane>(m_contentLayer);
     m_nav->SetCategories(LoadNavCategories());
+    m_nav->SetSmartPosition(static_cast<int>(cfg_navSmartAt.get()));
     m_nav->SetNeteaseState(netease::Provider::Get().LoggedIn(), netease::Provider::Get().CurrentAccount().nickname);
     m_nav->SetMoveCallback([this](const NavPane::Item& dragged, const NavPane::Item& target, bool after) {
         OnNavMove(dragged, target, after);
@@ -4397,6 +4401,28 @@ void MainWindow::OnNavItem(const NavPane::Item& item) {
 }
 
 void MainWindow::OnNavMove(const NavPane::Item& dragged, const NavPane::Item& target, bool after) {
+    if (dragged.target == NavPane::Target::SmartHeader && target.target == NavPane::Target::Category) {
+        const auto kinds = m_nav->Categories();
+        const auto it = std::find(kinds.begin(), kinds.end(), static_cast<media::GroupKind>(target.playlist));
+        if (it == kinds.end()) return;
+        SetNavSmartPosition(static_cast<int>(it - kinds.begin()) + (after ? 1 : 0));
+        return;
+    }
+    if (dragged.target == NavPane::Target::Category && target.target == NavPane::Target::SmartHeader) {
+        auto kinds = m_nav->Categories();
+        const auto it = std::find(kinds.begin(), kinds.end(), static_cast<media::GroupKind>(dragged.playlist));
+        if (it == kinds.end()) return;
+        const auto kind = *it;
+        int at = m_nav->SmartPosition();
+        if (static_cast<int>(it - kinds.begin()) < at) --at;  // removing it shifts the boundary
+        kinds.erase(it);
+        at = std::clamp(at, 0, static_cast<int>(kinds.size()));
+        kinds.insert(kinds.begin() + at, kind);
+        SetNavCategories(std::move(kinds));
+        // Above the header row keeps the category before the section, below puts it after.
+        SetNavSmartPosition(at + (after ? 0 : 1));
+        return;
+    }
     if (dragged.target == NavPane::Target::Category && target.target == NavPane::Target::Category) {
         auto kinds = m_nav->Categories();
         const auto kind = static_cast<media::GroupKind>(dragged.playlist);
@@ -4559,6 +4585,14 @@ void MainWindow::SetNavCategories(std::vector<media::GroupKind> kinds) {
     for (auto k : kinds) digits += static_cast<char>('0' + static_cast<int>(k));
     cfg_navCategories.set(digits.c_str());
     m_nav->SetCategories(std::move(kinds));
+    cfg_navSmartAt.set(m_nav->SmartPosition());  // clamped when a category disappeared
+    RepaintBreadcrumb();
+}
+
+void MainWindow::SetNavSmartPosition(int position) {
+    position = std::clamp(position, 0, static_cast<int>(m_nav->Categories().size()));
+    cfg_navSmartAt.set(position);
+    m_nav->SetSmartPosition(position);
     RepaintBreadcrumb();
 }
 
