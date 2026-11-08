@@ -11,6 +11,9 @@ enum class Quality { Auto, Lossless, Hires, Exhigh, Standard };
 Quality GetQuality();
 void SetQuality(Quality quality);
 
+// Total size allowed for downloaded album covers, in MB.
+int CoverCacheLimitMb();
+
 // Non-empty: use an externally managed NeteaseCloudMusicApi service instead of our
 // downloaded helper process.
 std::wstring GetServiceUrlOverride();

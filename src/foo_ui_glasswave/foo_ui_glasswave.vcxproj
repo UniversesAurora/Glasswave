@@ -115,6 +115,7 @@
     <ClCompile Include="netease\catalog.cpp" />
     <ClCompile Include="netease\client.cpp" />
     <ClCompile Include="netease\cookie.cpp" />
+    <ClCompile Include="netease\cover_cache.cpp" />
     <ClCompile Include="netease\handle.cpp" />
     <ClCompile Include="netease\http.cpp" />
     <ClCompile Include="netease\input_ncm.cpp" />
@@ -162,6 +163,7 @@
     <ClInclude Include="netease\catalog.h" />
     <ClInclude Include="netease\client.h" />
     <ClInclude Include="netease\cookie.h" />
+    <ClInclude Include="netease\cover_cache.h" />
     <ClInclude Include="netease\handle.h" />
     <ClInclude Include="netease\http.h" />
     <ClInclude Include="netease\json.h" />

@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "netease/catalog.h"
+#include "netease/cover_cache.h"
 #include "netease/handle.h"
 #include "netease/http.h"
 #include "netease/log.h"
@@ -7,9 +8,6 @@
 #include "netease/provider.h"
 
 #include <SDK/album_art_helpers.h>
-
-#include <filesystem>
-#include <fstream>
 
 namespace glasswave::netease {
 
@@ -23,32 +21,6 @@ std::wstring CoverUrl(std::wstring url) {
 
 std::wstring Wide(const char* text) {
     return text ? pfc::stringcvt::string_wide_from_utf8(text).get_ptr() : std::wstring();
-}
-
-std::filesystem::path CacheFile(const std::wstring& url) {
-    const std::wstring key = url + std::to_wstring(std::hash<std::wstring>{}(url));
-    const auto dir = CoverDir();
-    if (dir.empty()) return {};
-    return dir / (std::to_wstring(std::hash<std::wstring>{}(key)) + L".img");
-}
-
-bool ReadCache(const std::filesystem::path& path, std::vector<BYTE>& bytes) {
-    std::ifstream in(path, std::ios::binary);
-    if (!in) return false;
-    bytes.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
-    return !bytes.empty();
-}
-
-void WriteCache(const std::filesystem::path& path, const std::string& bytes) {
-    if (!EnsureDir(path.parent_path())) return;
-    auto tmp = path;
-    tmp += L".tmp";
-    {
-        std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
-        if (!out) return;
-        out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
-    }
-    MoveFileExW(tmp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
 }
 
 }  // namespace
@@ -102,9 +74,8 @@ public:
         }
         Log(L"art: query " + Wide(m_path.c_str()));
 
-        const auto cache = CacheFile(url);
-        std::vector<BYTE> bytes;
-        if (!cache.empty() && ReadCache(cache, bytes))
+        std::vector<unsigned char> bytes;
+        if (CoverCache::Get().Read(url, bytes))
             return album_art_data_impl::g_create(bytes.data(), bytes.size());
 
         HttpOptions options;
@@ -120,7 +91,7 @@ public:
             Log(L"art: cover download failed");
             throw exception_album_art_not_found();
         }
-        if (!cache.empty()) WriteCache(cache, response.body);
+        CoverCache::Get().Write(url, response.body);
         return album_art_data_impl::g_create(response.body.data(), response.body.size());
     }
 
