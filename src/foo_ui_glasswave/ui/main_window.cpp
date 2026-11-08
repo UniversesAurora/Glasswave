@@ -65,6 +65,9 @@ cfg_var_modern::cfg_int cfg_viewArtists({0x6a1f3c5a, 0x2b7e, 0x4d90, {0x8c, 0x15
                                         static_cast<int>(media::ViewStyle::Tiles));
 cfg_var_modern::cfg_int cfg_viewGenres({0x6a1f3c5b, 0x2b7e, 0x4d90, {0x8c, 0x15, 0x3e, 0x9a, 0x7b, 0x2d, 0x4f, 0x61}},
                                        static_cast<int>(media::ViewStyle::Tiles));
+// Playlists: Details (WMP's default for a playlist) or Expanded tile.
+cfg_var_modern::cfg_int cfg_viewPlaylist({0x6a1f3c5e, 0x2b7e, 0x4d90, {0x8c, 0x15, 0x3e, 0x9a, 0x7b, 0x2d, 0x4f, 0x61}},
+                                         static_cast<int>(media::ViewStyle::Details));
 // The other Music categories (Year, Rating, Composer, ...) share one view option.
 cfg_var_modern::cfg_int cfg_viewCategories({0x6a1f3c5c, 0x2b7e, 0x4d90, {0x8c, 0x15, 0x3e, 0x9a, 0x7b, 0x2d, 0x4f, 0x61}},
                                            static_cast<int>(media::ViewStyle::Tiles));
@@ -1643,6 +1646,7 @@ cfg_var_modern::cfg_int* MainWindow::ViewStyleSetting(const View& view) {
     switch (view.kind) {
     case View::Kind::AllMusic:
     case View::Kind::Group: return &cfg_viewSongs;
+    case View::Kind::Playlist: return &cfg_viewPlaylist;
     case View::Kind::Category:
         switch (view.group) {
         case media::GroupKind::Album: return &cfg_viewAlbums;

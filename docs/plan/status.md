@@ -87,6 +87,10 @@ Updated: 2026-11-08
   `on_playlist_locked` (each auto playlist arrives as a lock). wmploc has no 192 px auto
   playlist icon (29572 stops at 32 px; 29772 does not exist), smart lists use 29722.
   translate-deepseek.ps1 also scans `k...[] = {L"..."}` label tables and ternaries.
+- Playlists offer Expanded tile (album column over runs of consecutive songs from one album;
+  the playlist order is kept) besides Details; the choice is saved. New "Album art" column
+  (Apple Music style cover per row, row height stays WMP's 22 DIP): on by default in
+  playlist Details, hidden in library Details (album headers already show the cover).
 
 ## Next
 

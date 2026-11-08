@@ -14,6 +14,10 @@ struct Column {
     const char* format = nullptr;  // titleformat for columns read straight from the track
 };
 
+// Cover thumbnail column (Apple Music style); the list draws the row's front cover in it.
+inline constexpr const char* kArtFormat = "<art>";
+Column ArtColumn(bool hidden);
+
 // WMP 12 details view grouped by album: a header line, then the tracks next to an
 // album column showing the cover and up to four lines of album information.
 struct RowGroup {
@@ -102,6 +106,13 @@ public:
     std::wstring Cell(size_t row, size_t column) const override;
     std::wstring EmptyText() const override;
     bool IsPlaying(size_t row) const override;
+    // Expanded tile: runs of consecutive songs from one album share an album column.
+    const std::vector<RowGroup>* Groups() const override {
+        return m_style == ViewStyle::Tiles ? &m_groups : nullptr;
+    }
+    bool SupportsViewStyle(ViewStyle s) const override { return s != ViewStyle::Icons; }
+    ViewStyle GetViewStyle() const override { return m_style; }
+    void SetViewStyle(ViewStyle style) override;
     bool IsSelected(size_t row) const override;
     void SelectOnly(size_t row) override;
     void Toggle(size_t row) override;
@@ -118,13 +129,18 @@ public:
     metadb_handle_list SelectedItems() const override;
     void SetFilter(std::wstring_view filterLower) override;
     // Sorting reorders the foobar2000 playlist itself (undoable), as WMP 12 does.
-    bool CanSort(size_t column) const override { return column > 0 && column < m_columns.size(); }
+    bool CanSort(size_t column) const override;
     void Sort(size_t column, bool descending) override;
     size_t SortColumn() const override { return m_sortColumn; }
     bool SortDescending() const override { return m_sortDescending; }
 
 private:
+    void BuildGroups();
+
     size_t m_playlist;
+    ViewStyle m_style = ViewStyle::Details;
+    std::vector<int> m_fields;  // what each column shows
+    std::vector<RowGroup> m_groups;
     size_t m_sortColumn = SIZE_MAX;
     bool m_sortDescending = false;
     metadb_handle_list m_unsorted;  // playlist order before the first sort

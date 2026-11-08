@@ -54,6 +54,8 @@ void RangeSelect(size_t count, size_t a, size_t b, bool keepOthers, IsSel, SetSe
 
 void PlayItems(const metadb_handle_list& items, size_t start) { PlayQueue(items, start); }
 
+Column ArtColumn(bool hidden) { return {L"Album art", 30, false, false, hidden, kArtFormat}; }
+
 // ---- PlaylistsSource --------------------------------------------------------------------
 
 PlaylistsSource::PlaylistsSource(bool smart, Open open, Menu menu)
@@ -145,18 +147,51 @@ void PlaylistsSource::SetFilter(std::wstring_view filterLower) {
 
 // ---- PlaylistSource ---------------------------------------------------------------------
 
-PlaylistSource::PlaylistSource(size_t playlist) : m_playlist(playlist) {
-    m_columns = {{L"#", 34, false, true}, {L"Title", 0, true}, {L"Contributing artist", 170},
-                 {L"Album", 170},         {L"Length", 56, false, true},
-                 {L"Genre", 110, false, false, true, "[%genre%]"},
-                 {L"Release year", 80, false, false, true, "[$year(%date%)]"}};
-    m_scripts = {nullptr, Compile("$if2(%title%,%filename%)"), Compile("[%artist%]"), Compile("[%album%]"),
-                 Compile("[%length%]"), Compile("[%genre%]"), Compile("[$year(%date%)]")};
+namespace {
+enum PlaylistField { kPlAlbumColumn, kPlNumber, kPlArt, kPlTitle, kPlArtist, kPlAlbum, kPlLength, kPlFormat };
+}
+
+PlaylistSource::PlaylistSource(size_t playlist) : m_playlist(playlist) { SetViewStyle(ViewStyle::Details); }
+
+void PlaylistSource::SetViewStyle(ViewStyle style) {
+    m_style = style == ViewStyle::Tiles ? ViewStyle::Tiles : ViewStyle::Details;
+    if (m_style == ViewStyle::Tiles) {  // like the library's Expanded tile
+        m_columns = {{L"Album", 200},
+                     {L"#", 34, false, true},
+                     {L"Title", 0, true},
+                     {L"Length", 56, false, true},
+                     {L"Contributing artist", 190},
+                     {L"Genre", 110, false, false, false, "[%genre%]"},
+                     {L"Release year", 80, false, false, true, "[$year(%date%)]"}};
+        m_fields = {kPlAlbumColumn, kPlNumber, kPlTitle, kPlLength, kPlArtist, kPlFormat, kPlFormat};
+    } else {
+        m_columns = {{L"#", 34, false, true},
+                     ArtColumn(false),
+                     {L"Title", 0, true},
+                     {L"Contributing artist", 170},
+                     {L"Album", 170},
+                     {L"Length", 56, false, true},
+                     {L"Genre", 110, false, false, true, "[%genre%]"},
+                     {L"Release year", 80, false, false, true, "[$year(%date%)]"}};
+        m_fields = {kPlNumber, kPlArt, kPlTitle, kPlArtist, kPlAlbum, kPlLength, kPlFormat, kPlFormat};
+    }
     for (auto& extra : ExtraColumns()) {
-        m_scripts.push_back(Compile(extra.format));
+        m_fields.push_back(kPlFormat);
         m_columns.push_back(std::move(extra));
     }
+    static const char* const kScripts[] = {nullptr, nullptr, nullptr, "$if2(%title%,%filename%)", "[%artist%]",
+                                           "[%album%]", "[%length%]", nullptr};
+    m_scripts.clear();
+    for (size_t c = 0; c < m_columns.size(); ++c) {
+        const char* f = m_fields[c] == kPlFormat ? m_columns[c].format : kScripts[m_fields[c]];
+        m_scripts.push_back(f ? Compile(f) : titleformat_object::ptr());
+    }
+    m_sortColumn = SIZE_MAX;
     Rebuild();
+}
+
+bool PlaylistSource::CanSort(size_t column) const {
+    return column < m_fields.size() && m_fields[column] != kPlNumber && m_fields[column] != kPlArt;
 }
 
 void PlaylistSource::Rebuild() {
@@ -166,6 +201,7 @@ void PlaylistSource::Rebuild() {
     if (m_filter.empty()) {
         m_rows.resize(n);
         for (size_t i = 0; i < n; ++i) m_rows[i] = i;
+        BuildGroups();
         return;
     }
     auto script = Compile("[%artist% ][%album artist% ][%album% ][%title% ][%genre%]");
@@ -181,6 +217,52 @@ void PlaylistSource::Rebuild() {
         }
         if (MatchesFilter(Lower(text), m_filter)) m_rows.push_back(i);
     }
+    BuildGroups();
+}
+
+void PlaylistSource::BuildGroups() {
+    m_groups.clear();
+    if (m_style != ViewStyle::Tiles) return;
+    // A playlist keeps its own order, so an album column covers consecutive songs only.
+    auto pm = playlist_manager::get();
+    static const auto script = Compile(
+        "[%album%]\x1f$if2(%album artist%,%artist%)\x1f[%genre%]\x1f[$year(%date%)]\x1f[%album artist%]");
+    pfc::string8 buf;
+    std::wstring last;
+    for (size_t r = 0; r < m_rows.size(); ++r) {
+        pm->playlist_item_format_title(m_playlist, m_rows[r], nullptr, buf, script, nullptr,
+                                       playback_control::display_level_none);
+        std::wstring fields = ui::Wide(buf);
+        std::array<std::wstring, 5> f;
+        size_t k = 0;
+        for (size_t from = 0; k < f.size(); ++k) {
+            const size_t to = fields.find(L'\x1f', from);
+            f[k] = fields.substr(from, to == std::wstring::npos ? std::wstring::npos : to - from);
+            if (to == std::wstring::npos) break;
+            from = to + 1;
+        }
+        const metadb_handle_ptr item = pm->playlist_get_item_handle(m_playlist, m_rows[r]);
+        if (const RepairedText* fix = CueCatalog::Get().Repair(item)) {
+            if (!fix->album.empty()) f[0] = fix->album;
+            if (!fix->albumArtist.empty()) f[1] = f[4] = fix->albumArtist;
+        }
+        // Same album and album artist as the row above: one more song in that group.
+        const std::wstring key = f[0] + L'\x1f' + f[1];
+        if (!m_groups.empty() && !f[0].empty() && key == last) {
+            ++m_groups.back().count;
+            continue;
+        }
+        last = key;
+        RowGroup g;
+        g.first = r;
+        g.count = 1;
+        g.art = item;
+        g.header = f[1];
+        g.lines = {f[0].empty() ? ui::Tr(L"Unknown Album") : f[0], f[1], f[2], f[3]};
+        // Album artist and genre open their library views (keys are the names there).
+        g.linkKeys = {std::wstring(), f[4], f[2], std::wstring()};
+        m_groups.push_back(std::move(g));
+    }
 }
 
 void PlaylistSource::SetFilter(std::wstring_view filterLower) {
@@ -190,11 +272,13 @@ void PlaylistSource::SetFilter(std::wstring_view filterLower) {
 
 std::wstring PlaylistSource::Cell(size_t row, size_t column) const {
     const size_t item = m_rows[row];
-    if (column == 0) return std::to_wstring(item + 1);
-    if (column >= 1 && column <= 3) {  // title / artist / album from a mis-decoded cue sheet
+    const int field = column < m_fields.size() ? m_fields[column] : -1;
+    if (field == kPlNumber) return std::to_wstring(item + 1);
+    if (field == kPlAlbumColumn || field == kPlArt || field < 0) return {};  // drawn by the list
+    if (field == kPlTitle || field == kPlArtist || field == kPlAlbum) {  // from a mis-decoded cue sheet
         auto pm = playlist_manager::get();
         if (const RepairedText* r = CueCatalog::Get().Repair(pm->playlist_get_item_handle(m_playlist, item))) {
-            const std::wstring& v = column == 1 ? r->title : column == 2 ? r->artist : r->album;
+            const std::wstring& v = field == kPlTitle ? r->title : field == kPlArtist ? r->artist : r->album;
             if (!v.empty()) return v;
         }
     }
@@ -232,12 +316,15 @@ void PlaylistSource::Sort(size_t column, bool descending) {
     if (m_sortColumn == SIZE_MAX) pm->playlist_get_all_items(m_playlist, m_unsorted);
     std::vector<std::wstring> keys(n);
     pfc::string8 buf;
-    // Sort lengths by duration, everything else by its text.
-    titleformat_object::ptr script = column == 4 ? Compile("%length_seconds_fp%") : m_scripts[column];
+    // Sort lengths by duration, the album column by album, everything else by its text.
+    const bool byLength = m_fields[column] == kPlLength;
+    titleformat_object::ptr script = byLength                             ? Compile("%length_seconds_fp%")
+                                     : m_fields[column] == kPlAlbumColumn ? Compile("[%album%]")
+                                                                          : m_scripts[column];
     for (t_size i = 0; i < n; ++i) {
         pm->playlist_item_format_title(m_playlist, i, nullptr, buf, script, nullptr, playback_control::display_level_none);
         keys[i] = ui::Wide(buf);
-        if (column == 4) {  // zero-pad so the text compare orders numbers
+        if (byLength) {  // zero-pad so the text compare orders numbers
             const double v = _wtof(keys[i].c_str());
             wchar_t pad[32];
             swprintf_s(pad, L"%012.3f", v);
@@ -386,7 +473,7 @@ TrackSource::TrackSource(const LibraryModel& model, std::vector<size_t> tracks, 
 }
 
 namespace {
-enum Field { kAlbumColumn, kNumber, kTitle, kLength, kArtist, kAlbum, kGenre, kYear, kFormat };
+enum Field { kAlbumColumn, kNumber, kTitle, kLength, kArtist, kAlbum, kGenre, kYear, kFormat, kArt };
 }
 
 void TrackSource::SetViewStyle(ViewStyle style) {
@@ -403,9 +490,10 @@ void TrackSource::SetViewStyle(ViewStyle style) {
                      {L"Release year", 80, false, false, true}};
         m_fields = {kAlbumColumn, kNumber, kTitle, kLength, kArtist, kGenre, kYear};
     } else {
-        m_columns = {{L"#", 34, false, true}, {L"Title", 0, true},  {L"Length", 56, false, true},
+        // The album headers already show the album, so the cover column starts hidden.
+        m_columns = {{L"#", 34, false, true}, ArtColumn(true), {L"Title", 0, true},  {L"Length", 56, false, true},
                      {L"Contributing artist", 170}, {L"Album", 170}, {L"Genre", 110}, {L"Release year", 80}};
-        m_fields = {kNumber, kTitle, kLength, kArtist, kAlbum, kGenre, kYear};
+        m_fields = {kNumber, kArt, kTitle, kLength, kArtist, kAlbum, kGenre, kYear};
     }
     m_scripts.assign(m_columns.size(), nullptr);
     for (auto& extra : ExtraColumns()) {
@@ -417,7 +505,7 @@ void TrackSource::SetViewStyle(ViewStyle style) {
     if (!m_libraryOrder.empty()) ApplySort();
 }
 
-bool TrackSource::CanSort(size_t column) const { return column < m_fields.size(); }
+bool TrackSource::CanSort(size_t column) const { return column < m_fields.size() && m_fields[column] != kArt; }
 
 void TrackSource::Sort(size_t column, bool descending) {
     m_sortColumn = CanSort(column) ? column : SIZE_MAX;

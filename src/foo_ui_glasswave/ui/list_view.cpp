@@ -41,11 +41,12 @@ cfg_var_modern::cfg_string cfg_columns({0x5e8b2c47, 0x9a1d, 0x4f63, {0xb0, 0xe2,
                                        "");
 
 // Columns drawn as controls instead of text.
-enum class CellKind { Text, Rating, Favorite };
+enum class CellKind { Text, Rating, Favorite, Art };
 CellKind KindOf(const media::Column& c) {
     if (!c.format) return CellKind::Text;
     if (std::strcmp(c.format, "[%rating%]") == 0) return CellKind::Rating;
     if (std::strcmp(c.format, "<favorite>") == 0) return CellKind::Favorite;
+    if (std::strcmp(c.format, media::kArtFormat) == 0) return CellKind::Art;
     return CellKind::Text;
 }
 constexpr float kStar = 13;  // STARS.PNG cell width (13x16)
@@ -469,8 +470,9 @@ void ListView::PaintHeader() {
             if (art) cell(x, x + c.w, state);
             else if (state) wp::RowPlate(dc, {x, 1, x + c.w, size.height - 1}, wp::RowState::Hot, true);
             const auto& col = srcCols[c.src];
-            Text(dc, Tr(col.title), {x + kCellPad, 0, x + c.w - kCellPad, size.height}, 0x4C607A,
-                 col.rightAlign ? DWRITE_TEXT_ALIGNMENT_TRAILING : DWRITE_TEXT_ALIGNMENT_LEADING);
+            if (KindOf(col) != CellKind::Art)  // the cover column has no title, only covers
+                Text(dc, Tr(col.title), {x + kCellPad, 0, x + c.w - kCellPad, size.height}, 0x4C607A,
+                     col.rightAlign ? DWRITE_TEXT_ALIGNMENT_TRAILING : DWRITE_TEXT_ALIGNMENT_LEADING);
             if (!art) wp::HeaderSeparator(dc, x + c.w, size.height);
             if (c.src == m_source->SortColumn()) {  // sort chevron at the top center, as in Win7
                 winrt::com_ptr<ID2D1Factory> factory;
@@ -620,6 +622,12 @@ void ListView::PaintCells(ID2D1DeviceContext* dc, size_t row, float y, float row
                                          D2D1::RectU(cell * 13, 0, cell * 13 + 13, 16), {sx, sy, sx + kStar, sy + 16});
             }
             if (drawn) continue;
+        } else if (kind == CellKind::Art) {
+            // The song's front cover, as tall as the row allows, centred in the column.
+            const float side = rowH - 4, ax = std::round((c.x + (c.w - side) / 2) * m_scale) / m_scale;
+            if (const metadb_handle_ptr item = m_source->Item(row); item.is_valid())
+                DrawArt(dc, item, {ax, y + 2, ax + side, y + 2 + side});
+            continue;
         } else if (kind == CellKind::Favorite) {
             // No heart in WMP's art: a gold star (5530) when the song is in Favorites, its
             // outline (5531) on the hovered row, else the empty one (5533).
