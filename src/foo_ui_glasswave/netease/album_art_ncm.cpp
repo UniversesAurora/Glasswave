@@ -53,9 +53,11 @@ void WriteCache(const std::filesystem::path& path, const std::string& bytes) {
 
 }  // namespace
 
-class NcmArtInstance : public album_art_extractor_instance {
+class NcmArtInstance : public album_art_extractor_instance_v2 {
 public:
     explicit NcmArtInstance(std::string path) : m_path(std::move(path)) {}
+
+    album_art_path_list::ptr query_paths(const GUID&, abort_callback&) override { return nullptr; }
 
     album_art_data_ptr query(const GUID& what, abort_callback& abort) override {
         if (what != album_art_ids::cover_front) throw exception_album_art_not_found();
@@ -140,5 +142,31 @@ public:
 };
 
 static service_factory_single_t<NcmArtExtractor> g_ncm_art;
+
+// Some art-manager paths never reach a registered extractor; this fallback handles the
+// online lookup when the local/default sources have nothing.
+class NcmArtFallback : public album_art_fallback {
+public:
+    album_art_extractor_instance_v2::ptr open(metadb_handle_list_cref items,
+                                               pfc::list_base_const_t<GUID> const& ids,
+                                               abort_callback& abort) override {
+        (void)ids;
+        (void)abort;
+        for (t_size i = 0; i < items.get_count(); ++i) {
+            const char* path = items[i].is_valid() ? items[i]->get_path() : nullptr;
+            bool playlist = false;
+            int64_t id = 0;
+            if (ParseCoverPath(path, playlist, id) || ParseSongPath(path, id)) {
+                Log(L"art: fallback for " + Wide(path ? path : ""));
+                album_art_extractor_instance_v2::ptr instance;
+                instance ^= fb2k::service_new<NcmArtInstance>(std::string(path ? path : ""));
+                return instance;
+            }
+        }
+        return nullptr;
+    }
+};
+
+static service_factory_single_t<NcmArtFallback> g_ncm_art_fallback;
 
 }  // namespace glasswave::netease
