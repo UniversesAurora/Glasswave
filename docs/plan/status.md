@@ -7,7 +7,8 @@ Updated: 2026-11-08
 - M0 (glass window, Win7 frame/shadow/caption buttons, WMP 12 layout, transport) is done.
 - **Functional pass (M1 core) is done and tested in the dev instance** with a real library
   (E:\music\CDs added as a music folder in the dev instance only):
-  - Navigation pane: foobar2000 playlists; Music -> All music / Artist / Album / Genre.
+  - Navigation pane: Now Playing; All Music with Favorites, playlists and smart playlists;
+    Local Music with its categories (Artist / Album / Genre); NetEase Cloud Music.
   - Virtualized list: hover/selection (Ctrl/Shift), keyboard (arrows, PgUp/PgDn, Home/End,
     Enter, Delete, Ctrl+A), double-click to play, foobar2000 context menu on right-click,
     scrollbar drag/page.
@@ -138,7 +139,9 @@ Updated: 2026-11-08
   - NeteaseCloudMusicApi Enhanced runs as a loopback helper managed by the component; QR
     login, DPAPI session, likes, created/collected/recommended playlists, playlist pages and
     lossless playback through an `ncm://song/<id>` input all work.
-  - Library tree: All Music / Local Music / NetEase Cloud Music; NetEase shows Favorites,
+  - Library tree: All Music / Local Music / NetEase Cloud Music; All Music shows Favorites
+    plus the playlists and smart playlists (both can live across sources), Local Music lists
+    its categories directly, and NetEase shows Favorites,
     Created playlists, Collected playlists and Recommended. All Music > Favorites combines
     the local Favorites playlist with the NetEase liked list; the Details list is flat until
     sorted and gains a sortable Source column.
@@ -220,11 +223,11 @@ Updated: 2026-11-08
     visually identical instead of flashing.
   - Expanded descriptions are capped at 260 DIP and get their own scroll area (wheel,
     arrows, thumb drag and track paging). Navigation rows can be dragged within their
-    sibling group: root libraries and their subtrees, the Local/NetEase subsections, local
-    and smart playlists, Music categories, and NetEase created/collected playlists (through
-    /playlist/order/update). The hierarchy never changes; the static section order is
-    persisted and the service order is reloaded after a playlist drag. The drag preview is
-    a translucent copy of the whole row under the cursor plus an insertion line.
+    sibling group: root libraries and their subtrees, the All/Local/NetEase subsections,
+    local and smart playlists, local categories, and NetEase created/collected playlists
+    (through /playlist/order/update). The hierarchy never changes; the static section order
+    is persisted and the service order is reloaded after a playlist drag. The drag preview
+    is a translucent copy of the whole row under the cursor plus an insertion line.
   - The list and description scrollbars use the original Aero parts from aero.msstyles:
     track 728, arrow plates 717, glyphs 718/719/720 by DPI, thumb 733 and gripper
     724/725/726. The track, plate and thumb only exist at 96 dpi; they are nine-gridded
@@ -243,6 +246,13 @@ Updated: 2026-11-08
     Play, Play next, Add to queue, Add to playlist (the local playlists) and Add to NetEase
     playlist for the whole contents; local playlist tiles get the same queue and copy
     actions. NetEase contents are fetched on demand and become ncm:// items.
+  - Playlists and smart playlists moved from Local Music to All Music: a foobar2000
+    playlist holds local and ncm:// tracks alike, so the library-wide node is the right
+    home, while the NetEase library keeps its own cloud playlists. Local Music now lists
+    its categories directly, without the intermediate Music level; breadcrumbs, section
+    menus and drag ordering follow the new tree. Smart playlists remain local-only by
+    nature: foobar2000 auto playlists query the Media Library, which never contains
+    NetEase tracks.
   - Not implemented yet: NetEase full-catalog search UI and a combined All Music browse
     beyond Favorites.
 

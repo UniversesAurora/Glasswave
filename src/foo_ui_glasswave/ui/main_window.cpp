@@ -1490,6 +1490,7 @@ void MainWindow::JumpToPlaying() {
         t_size playlist = SIZE_MAX, index = SIZE_MAX;
         if (!playlist_manager::get()->get_playing_item_location(&playlist, &index)) return;
         View v;
+        v.library = View::Library::All;
         v.kind = View::Kind::Playlist;
         v.playlist = playlist;
         Navigate(v, true);
@@ -1592,18 +1593,32 @@ std::vector<MenuAction> MainWindow::AllSectionsMenu() {
     View favorites;
     favorites.library = View::Library::All;
     favorites.kind = View::Kind::AllFavorites;
-    return {{L"Favorites", go(favorites)}};
+    View playlists;
+    playlists.library = View::Library::All;
+    playlists.kind = View::Kind::Playlists;
+    View smart;
+    smart.library = View::Library::All;
+    smart.kind = View::Kind::SmartPlaylists;
+    return {{L"Favorites", go(favorites)}, {L"Playlists", go(playlists)}, {L"Smart playlists", go(smart)}};
 }
 
 std::vector<MenuAction> MainWindow::LocalSectionsMenu() {
     auto go = [this](View v) { return [this, v] { Navigate(v, true); }; };
-    View playlists;
-    playlists.kind = View::Kind::Playlists;
-    View smart;
-    smart.kind = View::Kind::SmartPlaylists;
-    View music;
-    music.kind = View::Kind::AllMusic;
-    return {{L"Playlists", go(playlists)}, {L"Smart playlists", go(smart)}, {L"Music", go(music)}};
+    std::vector<MenuAction> out;
+    for (auto kind : m_nav->Categories()) {
+        View v;
+        v.library = View::Library::Local;
+        v.kind = View::Kind::Category;
+        v.group = kind;
+        out.push_back({CategoryLabel(kind), go(v)});
+    }
+    if (out.empty()) {  // every category was switched off: still offer the whole library
+        View all;
+        all.library = View::Library::Local;
+        all.kind = View::Kind::AllMusic;
+        out.push_back({L"All music", go(all)});
+    }
+    return out;
 }
 
 std::vector<MenuAction> MainWindow::NeteaseSectionsMenu() {
@@ -1684,29 +1699,16 @@ std::vector<MenuAction> MainWindow::PlaylistListMenu(bool smart) {
         pfc::string8 name;
         pm->playlist_get_name(i, name);
         View v;
+        v.library = View::Library::All;
         v.kind = View::Kind::Playlist;
         v.playlist = i;
         out.push_back({Wide(name), go(v)});
     }
     if (out.empty()) {
         View page;
+        page.library = View::Library::All;
         page.kind = smart ? View::Kind::SmartPlaylists : View::Kind::Playlists;
         out.push_back({smart ? L"Smart playlists" : L"Playlists", go(page)});
-    }
-    return out;
-}
-
-std::vector<MenuAction> MainWindow::MusicMenu() {
-    auto go = [this](View v) { return [this, v] { Navigate(v, true); }; };
-    View all;
-    all.library = View::Library::Local;
-    all.kind = View::Kind::AllMusic;
-    std::vector<MenuAction> out{{L"All music", go(all)}};
-    for (auto kind : m_nav->Categories()) {
-        View v;
-        v.kind = View::Kind::Category;
-        v.group = kind;
-        out.push_back({CategoryLabel(kind), go(v)});
     }
     return out;
 }
@@ -1768,22 +1770,19 @@ std::vector<MainWindow::Crumb> MainWindow::BuildCrumbPath() {
     auto go = [this](View v) { return [this, v] { Navigate(v, true); }; };
     std::vector<Crumb> path;
     path.push_back({L"", {}, [this] { return LibraryMenu(); }});
+    // Now Playing is a root page: it mixes whatever the sources provide.
+    if (m_view.kind == View::Kind::Playlist && media::IsQueue(m_view.playlist)) {
+        path.push_back({L"Now Playing", go(m_view), {}});
+        return path;
+    }
     switch (m_view.library) {
     case View::Library::All: {
         View home;
         home.library = View::Library::All;
         home.kind = View::Kind::AllMusic;
         path.push_back({L"All Music", go(home), [this] { return AllSectionsMenu(); }});
-        if (m_view.kind == View::Kind::AllFavorites) path.push_back({L"Favorites", go(m_view), {}});
-        break;
-    }
-    case View::Library::Local: {
-        View home;
-        home.library = View::Library::Local;
-        home.kind = View::Kind::AllMusic;
-        path.push_back({L"Local Music", go(home), [this] { return LocalSectionsMenu(); }});
-        if (m_view.kind == View::Kind::Playlist && media::IsQueue(m_view.playlist)) {
-            path.push_back({L"Now Playing", go(m_view), {}});
+        if (m_view.kind == View::Kind::AllFavorites) {
+            path.push_back({L"Favorites", go(m_view), {}});
         } else if (m_view.kind == View::Kind::Playlists) {
             path.push_back({L"Playlists", go(m_view), [this] { return PlaylistListMenu(false); }});
         } else if (m_view.kind == View::Kind::SmartPlaylists) {
@@ -1791,27 +1790,30 @@ std::vector<MainWindow::Crumb> MainWindow::BuildCrumbPath() {
         } else if (m_view.kind == View::Kind::Playlist) {
             const bool smart = m_view.playlist == media::FavoritesPlaylist(false) || media::IsAutoPlaylist(m_view.playlist);
             View section;
+            section.library = View::Library::All;
             section.kind = smart ? View::Kind::SmartPlaylists : View::Kind::Playlists;
             path.push_back({smart ? L"Smart playlists" : L"Playlists", go(section),
                             [this, smart] { return PlaylistListMenu(smart); }});
             path.push_back({m_view.name, go(m_view), {}});
-        } else {
-            View music;
-            music.kind = View::Kind::AllMusic;
-            path.push_back({L"Music", go(music), [this] { return MusicMenu(); }});
-            if (m_view.kind == View::Kind::AllMusic) {
-                path.push_back({L"All music", go(m_view), {}});
-            } else if (m_view.kind == View::Kind::Category) {
-                path.push_back({CategoryLabel(m_view.group), go(m_view),
-                                [this, kind = m_view.group] { return GroupListMenu(kind); }});
-            } else if (m_view.kind == View::Kind::Group) {
-                View category;
-                category.kind = View::Kind::Category;
-                category.group = m_view.group;
-                path.push_back({CategoryLabel(m_view.group), go(category),
-                                [this, kind = m_view.group] { return GroupListMenu(kind); }});
-                path.push_back({m_view.name, go(m_view), {}});
-            }
+        }
+        break;
+    }
+    case View::Library::Local: {
+        View home;
+        home.library = View::Library::Local;
+        home.kind = View::Kind::AllMusic;
+        path.push_back({L"Local Music", go(home), [this] { return LocalSectionsMenu(); }});
+        if (m_view.kind == View::Kind::Category) {
+            path.push_back({CategoryLabel(m_view.group), go(m_view),
+                            [this, kind = m_view.group] { return GroupListMenu(kind); }});
+        } else if (m_view.kind == View::Kind::Group) {
+            View category;
+            category.library = View::Library::Local;
+            category.kind = View::Kind::Category;
+            category.group = m_view.group;
+            path.push_back({CategoryLabel(m_view.group), go(category),
+                            [this, kind = m_view.group] { return GroupListMenu(kind); }});
+            path.push_back({m_view.name, go(m_view), {}});
         }
         break;
     }
@@ -2333,7 +2335,7 @@ void MainWindow::Navigate(const View& requested, bool push) {
         source = std::make_unique<media::TrackSource>(
             m_library, std::move(all),
             L"Your library is empty. Use Organize ▸ Manage music library to add your music folders.");
-        m_nav->Select(view.library == View::Library::All ? NavPane::Target::LibraryAll : NavPane::Target::Music, 0);
+        m_nav->Select(view.library == View::Library::All ? NavPane::Target::LibraryAll : NavPane::Target::LibraryLocal, 0);
         break;
     }
     case View::Kind::Playlists:         // WMP's Playlists page: every playlist as an icon
@@ -2343,6 +2345,7 @@ void MainWindow::Navigate(const View& requested, bool push) {
             smart,
             [this](size_t playlist) {
                 View v;
+                v.library = View::Library::All;
                 v.kind = View::Kind::Playlist;
                 v.playlist = playlist;
                 Navigate(v, true);
@@ -4123,6 +4126,7 @@ void MainWindow::CreatePlaylist(bool autoPlaylist) {
     if (p == SIZE_MAX) return;
     pm->set_active_playlist(p);
     View v;
+    v.library = View::Library::All;
     v.kind = View::Kind::Playlist;
     v.playlist = p;
     Navigate(v, true);
@@ -4246,18 +4250,28 @@ void MainWindow::GoForward() {
 void MainWindow::OnNavItem(const NavPane::Item& item) {
     View v;
     switch (item.target) {
-    case NavPane::Target::Playlist: v.kind = View::Kind::Playlist; v.playlist = item.playlist; break;
+    case NavPane::Target::Playlist:
+        v.library = View::Library::All;
+        v.kind = View::Kind::Playlist;
+        v.playlist = item.playlist;
+        break;
     case NavPane::Target::Queue:
+        v.library = View::Library::All;
         v.kind = View::Kind::Playlist;
         v.playlist = media::QueuePlaylist(true);
         break;
-    case NavPane::Target::SmartHeader: v.kind = View::Kind::SmartPlaylists; break;
-    case NavPane::Target::Music: v.kind = View::Kind::AllMusic; break;
+    case NavPane::Target::SmartHeader:
+        v.library = View::Library::All;
+        v.kind = View::Kind::SmartPlaylists;
+        break;
     case NavPane::Target::Category:
         v.kind = View::Kind::Category;
         v.group = static_cast<media::GroupKind>(item.playlist);
         break;
-    case NavPane::Target::PlaylistsHeader: v.kind = View::Kind::Playlists; break;  // WMP's Playlists page
+    case NavPane::Target::PlaylistsHeader:
+        v.library = View::Library::All;
+        v.kind = View::Kind::Playlists;  // WMP's Playlists page
+        break;
     case NavPane::Target::LibraryAll:
         v.library = View::Library::All;
         v.kind = View::Kind::AllMusic;
@@ -4266,7 +4280,10 @@ void MainWindow::OnNavItem(const NavPane::Item& item) {
         v.library = View::Library::All;
         v.kind = View::Kind::AllFavorites;
         break;
-    case NavPane::Target::LibraryLocal: v.kind = View::Kind::AllMusic; break;
+    case NavPane::Target::LibraryLocal:
+        v.library = View::Library::Local;
+        v.kind = View::Kind::AllMusic;
+        break;
     case NavPane::Target::LibraryNetease:
         v.library = View::Library::Netease;
         v.kind = View::Kind::NeteasePlaylists;
@@ -4454,7 +4471,7 @@ void MainWindow::ShowOrganizeMenu() {
     SetHoverWidget(nullptr);  // the menu loop swallowed the mouse leave
 }
 
-// WMP: right-click Music > Customize navigation pane picks the categories listed under it.
+// WMP: right-click Local Music > Customize navigation pane picks the categories listed under it.
 void MainWindow::ShowNavCustomizeMenu(POINT screen) {
     std::vector<MenuAction> categories;
     const auto shown = m_nav->Categories();
@@ -4480,6 +4497,7 @@ void MainWindow::ShowNavCustomizeMenu(POINT screen) {
                                                 media::GroupKind::Genre});
                           }});
     View all;
+    all.library = View::Library::Local;
     all.kind = View::Kind::AllMusic;
     std::vector<MenuAction> actions{{L"Open", [this, all] { Navigate(all, true); }},
                                     {L"Customize navigation pane", {}, std::move(categories)}};
@@ -4565,6 +4583,7 @@ std::vector<MenuAction> MainWindow::AddPlaylistActions() {
         if (p == SIZE_MAX) return;
         m_nav->Rebuild();
         View v;
+        v.library = View::Library::All;
         v.kind = View::Kind::Playlist;
         v.playlist = p;
         Navigate(v, true);
@@ -5112,6 +5131,7 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
         View start;
         const t_size active = playlist_manager::get()->get_active_playlist();
         if (active != SIZE_MAX) {
+            start.library = View::Library::All;
             start.kind = View::Kind::Playlist;
             start.playlist = active;
         }
@@ -5548,7 +5568,7 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
         ClientToScreen(hwnd, &screen);
         if (m_nav->HitTest(pt)) {
             const NavPane::Item* item = m_nav->ItemAt(pt);
-            if (item && (item->target == NavPane::Target::Music || item->target == NavPane::Target::Category)) {
+            if (item && (item->target == NavPane::Target::LibraryLocal || item->target == NavPane::Target::Category)) {
                 ShowNavCustomizeMenu(screen);
                 return 0;
             }

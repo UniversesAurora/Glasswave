@@ -110,7 +110,6 @@ std::wstring NavPane::ItemKey(const Item& item) {
     case Target::AllFavorites: return L"favorites";
     case Target::PlaylistsHeader: return L"playlists";
     case Target::SmartHeader: return L"smart";
-    case Target::Music: return L"music";
     case Target::NeteaseLiked: return L"liked";
     case Target::NeteaseArtists: return L"artists";
     case Target::NeteaseAlbums: return L"albums";
@@ -225,16 +224,16 @@ bool NavPane::ApplyStaticMove(const Item& dragged, const Item& target, bool afte
     const std::wstring to = ItemKey(target);
     if (from.empty() || to.empty() || from == to) return false;
     auto& order = m_staticOrder[group];
-    if (order.empty()) {  // first move: take the current visible order of the group
-        for (size_t i = 0; i < m_items.size(); ++i) {
-            const Item& item = m_items[i];
-            const bool inGroup = group == L"root" ? item.level == 0
-                                                  : item.level == 1 && GroupKeyOf(i) == group;
-            if (!inGroup) continue;
-            const std::wstring key = ItemKey(item);
-            if (!key.empty() && std::find(order.begin(), order.end(), key) == order.end())
-                order.push_back(key);
-        }
+    // Take the current visible order of any sibling not in the stored one yet: a group can
+    // gain members (the playlists moved under All Music) after its order was first saved.
+    for (size_t i = 0; i < m_items.size(); ++i) {
+        const Item& item = m_items[i];
+        const bool inGroup = group == L"root" ? item.level == 0
+                                              : item.level == 1 && GroupKeyOf(i) == group;
+        if (!inGroup) continue;
+        const std::wstring key = ItemKey(item);
+        if (!key.empty() && std::find(order.begin(), order.end(), key) == order.end())
+            order.push_back(key);
     }
     auto fromIt = std::find(order.begin(), order.end(), from);
     if (fromIt == order.end()) return false;
@@ -253,11 +252,11 @@ void NavPane::Rebuild() {
     auto pm = playlist_manager::get();
     // The play queue on top, like the "Up Next" / "Playing" list of current players.
     m_items.push_back({Target::Queue, media::QueuePlaylist(false), 0, L"Now Playing", wp::NavIcon::NowPlaying, false});
+    // Playlists hold local and NetEase tracks alike, so they belong to All Music; the NetEase
+    // library shows its own cloud playlists below.
     m_items.push_back({Target::LibraryAll, 0, 0, L"All Music", wp::NavIcon::Library, true});
-    if (m_allExpanded)
+    if (m_allExpanded) {
         m_items.push_back({Target::AllFavorites, 0, 1, L"Favorites", wp::NavIcon::Playlist, false});
-    m_items.push_back({Target::LibraryLocal, 0, 0, L"Local Music", wp::NavIcon::Music, true});
-    if (m_localExpanded) {
         m_items.push_back({Target::PlaylistsHeader, 0, 1, L"Playlists", wp::NavIcon::Playlist, true});
         if (m_playlistsExpanded) {
             pfc::string8 name;
@@ -278,12 +277,13 @@ void NavPane::Rebuild() {
                     m_items.push_back({Target::Playlist, p, 2, Wide(smartName), wp::NavIcon::Playlist, false});
                 }
         }
-        m_items.push_back({Target::Music, 0, 1, L"Music", wp::NavIcon::Music, true});
-        if (m_musicExpanded)
-            for (auto kind : m_categories)
-                m_items.push_back(
-                    {Target::Category, static_cast<size_t>(kind), 2, CategoryLabel(kind), wp::NavIcon::Artist, false});
     }
+    // Local Music lists its categories directly (the old "Music" level is gone).
+    m_items.push_back({Target::LibraryLocal, 0, 0, L"Local Music", wp::NavIcon::Music, true});
+    if (m_localExpanded)
+        for (auto kind : m_categories)
+            m_items.push_back(
+                {Target::Category, static_cast<size_t>(kind), 1, CategoryLabel(kind), wp::NavIcon::Artist, false});
     m_items.push_back({Target::LibraryNetease, 0, 0, L"NetEase Cloud Music", wp::NavIcon::Library, true});
     if (m_neteaseExpanded) {
         if (m_neteaseLoggedIn) {
@@ -378,7 +378,6 @@ const NavPane::Item* NavPane::OnLButtonDown(POINT pt) {
     if (item->expandable && x < 16 + item->level * kIndent) {
         if (item->target == Target::PlaylistsHeader) m_playlistsExpanded = !m_playlistsExpanded;
         if (item->target == Target::SmartHeader) m_smartExpanded = !m_smartExpanded;
-        if (item->target == Target::Music) m_musicExpanded = !m_musicExpanded;
         if (item->target == Target::LibraryAll) m_allExpanded = !m_allExpanded;
         if (item->target == Target::LibraryLocal) m_localExpanded = !m_localExpanded;
         if (item->target == Target::LibraryNetease) m_neteaseExpanded = !m_neteaseExpanded;
@@ -443,15 +442,14 @@ bool NavPane::MovableItem(size_t index) const {
     if (item.level == 0) return !ItemKey(item).empty();
     if (item.level == 1) {
         const std::wstring group = GroupKeyOf(index);
-        return group == L"local" || group == L"netease";
+        return group == L"all" || group == L"local" || group == L"netease";
     }
     if (item.level != 2) return false;
     for (size_t i = index; i > 0; --i) {
         if (m_items[i - 1].level >= 2) continue;
         const Target parent = m_items[i - 1].target;
         return parent == Target::NeteaseCreatedHeader || parent == Target::NeteaseCollectedHeader ||
-               parent == Target::Music || parent == Target::PlaylistsHeader ||
-               parent == Target::SmartHeader;
+               parent == Target::PlaylistsHeader || parent == Target::SmartHeader;
     }
     return false;
 }
@@ -470,9 +468,9 @@ bool NavPane::SameSiblingGroup(size_t a, size_t b) const {
         const size_t pa = parentOf(a);
         const size_t pb = parentOf(b);
         if (pa == SIZE_MAX || pb == SIZE_MAX || pa != pb) return false;
-        // The All Music section has a single child; Local and NetEase have several.
+        // Libraries with several subsections: All Music, Local Music and NetEase.
         const std::wstring group = ItemKey(m_items[pa]);
-        return group == L"local" || group == L"netease";
+        return group == L"all" || group == L"local" || group == L"netease";
     }
     if (first.level != 2 || second.level != 2) return false;
     auto parentOf = [this](size_t index) {
@@ -483,12 +481,11 @@ bool NavPane::SameSiblingGroup(size_t a, size_t b) const {
     const size_t pa = parentOf(a);
     const size_t pb = parentOf(b);
     if (pa == SIZE_MAX || pb == SIZE_MAX || m_items[pa].target != m_items[pb].target) return false;
-    // Groups whose order can be persisted: the two NetEase playlist sections, the local
-    // playlists and smart playlists, and the Music categories.
+    // Groups whose order can be persisted: the two NetEase playlist sections, the All Music
+    // sections, and the Local Music categories.
     const Target parent = m_items[pa].target;
     return parent == Target::NeteaseCreatedHeader || parent == Target::NeteaseCollectedHeader ||
-           parent == Target::Music || parent == Target::PlaylistsHeader ||
-           parent == Target::SmartHeader;
+           parent == Target::PlaylistsHeader || parent == Target::SmartHeader;
 }
 
 void NavPane::UpdateDropTarget(POINT pt) {
@@ -627,7 +624,6 @@ void NavPane::Paint() {
             if (it.expandable) {
                 const bool expanded = it.target == Target::PlaylistsHeader ? m_playlistsExpanded
                                       : it.target == Target::SmartHeader   ? m_smartExpanded
-                                      : it.target == Target::Music         ? m_musicExpanded
                                       : it.target == Target::LibraryAll    ? m_allExpanded
                                       : it.target == Target::LibraryLocal  ? m_localExpanded
                                       : it.target == Target::LibraryNetease ? m_neteaseExpanded

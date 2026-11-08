@@ -8,13 +8,14 @@ namespace glasswave::ui {
 std::wstring CategoryLabel(media::GroupKind kind);
 int CategoryIcon(media::GroupKind kind);
 
-// Navigation pane: the play queue (Now Playing), the user's playlists, smart playlists
-// (Favorites and foobar2000 auto playlists) and Music (Artist / Album / Genre).
+// Navigation pane: the play queue (Now Playing), All Music (Favorites, the user's playlists
+// and the smart playlists), the local Music categories (Artist / Album / Genre) and the
+// NetEase Cloud Music library.
 class NavPane {
 public:
-    // Category: a way to browse Music; playlist holds its media::GroupKind.
+    // Category: a way to browse Local Music; playlist holds its media::GroupKind.
     enum class Target {
-        None, Queue, PlaylistsHeader, Playlist, SmartHeader, Music, Category,
+        None, Queue, PlaylistsHeader, Playlist, SmartHeader, Category,
         LibraryAll, AllFavorites, LibraryLocal, LibraryNetease,
         NeteaseCreatedHeader, NeteaseCollectedHeader, NeteaseRemotePlaylist,
         NeteaseRecommended, NeteaseLiked, NeteaseArtists, NeteaseAlbums, NeteaseLogin
@@ -76,12 +77,12 @@ private:
     winrt::Windows::UI::Composition::SpriteVisual m_visual{nullptr};
     std::vector<Item> m_items;
     bool m_allExpanded = true, m_localExpanded = true, m_neteaseExpanded = true;
-    bool m_playlistsExpanded = true, m_smartExpanded = true, m_musicExpanded = true;
+    bool m_playlistsExpanded = true, m_smartExpanded = true;
     bool m_neteaseLoggedIn = false;
     std::wstring m_neteaseName;
     std::vector<RemotePlaylist> m_createdPlaylists, m_collectedPlaylists;
     bool m_createdExpanded = true, m_collectedExpanded = true;
-    Target m_selTarget = Target::Music;
+    Target m_selTarget = Target::LibraryLocal;
     size_t m_selPlaylist = 0;
     int64_t m_selRemoteId = 0;
     size_t m_hot = SIZE_MAX;

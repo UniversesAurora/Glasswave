@@ -103,7 +103,6 @@ private:
     std::vector<MenuAction> LocalSectionsMenu();
     std::vector<MenuAction> NeteaseSectionsMenu();
     std::vector<MenuAction> PlaylistListMenu(bool smart);
-    std::vector<MenuAction> MusicMenu();
     std::vector<MenuAction> GroupListMenu(media::GroupKind kind);
     std::vector<MenuAction> NeteaseScopeMenu(View::NeteaseScope scope);
     std::vector<MenuAction> FollowedArtistsMenu();
