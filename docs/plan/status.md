@@ -165,6 +165,9 @@ Updated: 2026-11-08
     albums' tracks in pages of 12 as the list nears its end (six workers) and lists them
     grouped by album, like a playlist's expanded tile; the choice is remembered per view.
     Icon views no longer draw a column header (it did not line up with the tiles).
+  - Hot songs are regrouped by album: each album's heat is the sum of its songs' positions
+    in the popularity list, albums are ordered by that heat and songs keep their order
+    inside one album. Album names in NetEase song tiles link to the album page.
   - The artist page offers Icon and Expanded tile. Album metadata is fetched 24 albums at
     a time; the Icon grid appends the next page as the list nears its end. Expanded tile
     loads 12 albums' tracks per page (six workers per track page) and appends them without

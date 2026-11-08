@@ -2280,6 +2280,44 @@ std::vector<metadb_handle_ptr> MainWindow::LocalFavoriteHandles() const {
     return handles;
 }
 
+namespace {
+
+// Hot songs arrive in popularity order. Group them by album, rank the albums by the summed
+// popularity of their songs, and keep each album's songs in their original order, so one
+// album appears once and the hottest albums come first.
+void OrderHotSongsByAlbum(std::vector<netease::Song>& songs) {
+    if (songs.size() < 2) return;
+    struct AlbumGroup {
+        std::vector<netease::Song> songs;
+        double heat = 0;
+        size_t bestRank = SIZE_MAX;
+    };
+    std::map<std::wstring, AlbumGroup> groups;
+    const double count = static_cast<double>(songs.size());
+    for (size_t i = 0; i < songs.size(); ++i) {
+        auto& song = songs[i];
+        const std::wstring key = song.albumId ? L"id:" + std::to_wstring(song.albumId)
+                                              : L"name:" + song.album + L"\x1f" + song.albumArtist;
+        auto& group = groups[key];
+        if (group.songs.empty()) group.bestRank = i;
+        group.heat += count - static_cast<double>(i);
+        group.songs.push_back(std::move(song));
+    }
+    std::vector<AlbumGroup> ordered;
+    ordered.reserve(groups.size());
+    for (auto& entry : groups) ordered.push_back(std::move(entry.second));
+    std::stable_sort(ordered.begin(), ordered.end(), [](const AlbumGroup& a, const AlbumGroup& b) {
+        if (a.heat != b.heat) return a.heat > b.heat;
+        return a.bestRank < b.bestRank;
+    });
+    songs.clear();
+    songs.reserve(static_cast<size_t>(count));
+    for (auto& group : ordered)
+        for (auto& song : group.songs) songs.push_back(std::move(song));
+}
+
+}  // namespace
+
 void MainWindow::ShowNeteaseSongs(const View& view, std::vector<netease::Song> songs, std::wstring error) {
     if (m_view.kind != view.kind || m_view.library != view.library || m_view.remoteId != view.remoteId) return;
     if (view.kind == View::Kind::AllFavorites) {
@@ -2291,6 +2329,7 @@ void MainWindow::ShowNeteaseSongs(const View& view, std::vector<netease::Song> s
         m_list->SetSource(m_source.get(), false);
         return;
     }
+    if (view.kind == View::Kind::NeteaseArtistSongs) OrderHotSongsByAlbum(songs);
     auto source = std::make_unique<ui::NeteaseSongSource>(
         std::move(songs), error.empty() ? L"No songs." : std::move(error));
     m_source = std::move(source);
@@ -2932,6 +2971,33 @@ void MainWindow::OnAlbumLink(size_t group, size_t line) {
     if (!groups || group >= groups->size() || line > 3) return;
     const auto& g = (*groups)[group];
     const std::wstring& key = g.linkKeys[line];
+    auto openLocalAlbum = [this, &g](const std::wstring& albumName) {
+        const media::Group* found = nullptr;
+        for (const auto& album : m_library.Groups(media::GroupKind::Album)) {
+            if (album.name != albumName) continue;
+            if (!found) found = &album;
+            if (!g.lines[1].empty() && album.secondary == g.lines[1]) {
+                found = &album;
+                break;
+            }
+        }
+        if (!found) return;
+        View v;
+        v.kind = View::Kind::Group;
+        v.group = media::GroupKind::Album;
+        v.key = found->key;
+        v.name = found->name;
+        Navigate(v, true);
+    };
+    if (key.rfind(L"ncmalbum:", 0) == 0) {
+        const int64_t id = _wcstoi64(key.c_str() + 9, nullptr, 10);
+        if (id) OpenNeteaseAlbum(id, g.lines[0]);
+        return;
+    }
+    if (key.rfind(L"localalbum:", 0) == 0) {
+        openLocalAlbum(key.substr(11));
+        return;
+    }
     if (key.rfind(L"ncm:", 0) == 0) {  // NetEase album column: artist page
         const int64_t id = _wcstoi64(key.c_str() + 4, nullptr, 10);
         if (id) OpenNeteaseArtist(id, g.lines[line]);
@@ -2981,28 +3047,16 @@ void MainWindow::OnAlbumLink(size_t group, size_t line) {
         }
         return;
     }
+    if (line == 0) {  // playlist album headers carry the album name, not the model's key
+        openLocalAlbum(g.lines[0]);
+        return;
+    }
     View v;
     v.kind = View::Kind::Group;
-    if (line == 0) {  // playlist album headers carry the album name, not the model's key
-        const media::Group* found = nullptr;
-        for (const auto& album : m_library.Groups(media::GroupKind::Album)) {
-            if (album.name != g.lines[0]) continue;
-            if (!found) found = &album;
-            if (!g.lines[1].empty() && album.secondary == g.lines[1]) {
-                found = &album;
-                break;
-            }
-        }
-        if (!found) return;
-        v.group = media::GroupKind::Album;
-        v.key = found->key;
-        v.name = found->name;
-    } else {
-        v.group = line == 1 ? media::GroupKind::Artist : line == 2 ? media::GroupKind::Genre : media::GroupKind::Year;
-        v.key = key;
-        v.name = g.lines[line];
-        if (v.key.empty()) return;
-    }
+    v.group = line == 1 ? media::GroupKind::Artist : line == 2 ? media::GroupKind::Genre : media::GroupKind::Year;
+    v.key = key;
+    v.name = g.lines[line];
+    if (v.key.empty()) return;
     Navigate(v, true);
 }
 

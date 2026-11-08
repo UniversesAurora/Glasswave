@@ -98,6 +98,7 @@ SongTableRow MakeNeteaseRow(const netease::Song& song) {
     row.albumKey = song.albumId ? std::to_wstring(song.albumId) : L"t:" + std::to_wstring(song.id);
     row.artKey = L"ncm:" + std::to_wstring(song.albumId ? song.albumId : song.id);
     row.search = Lower(row.title) + L"\n" + Lower(row.artist) + L"\n" + Lower(row.album);
+    row.albumId = song.albumId;
     for (const auto& ref : song.artistRefs)
         if (ref.id) {
             row.artistId = ref.id;
@@ -335,6 +336,10 @@ void SongTableSource::BuildGroups() {
         group.header = std::move(header);
         group.lines[0] = group.header;
         if (tiles) {
+            if (item.albumId)
+                group.linkKeys[0] = L"ncmalbum:" + std::to_wstring(item.albumId);
+            else if (!item.remote && !item.album.empty())
+                group.linkKeys[0] = L"localalbum:" + item.album;
             group.lines[1] = ArtistLabel(item);
             if (item.artistId) {
                 group.linkKeys[1] = L"ncm:" + std::to_wstring(item.artistId);
