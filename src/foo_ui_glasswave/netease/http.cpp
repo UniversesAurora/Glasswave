@@ -59,6 +59,10 @@ HttpResponse SendHttp(std::wstring_view url, const HttpOptions& options, abort_c
 
     URL_COMPONENTS parts{};
     parts.dwStructSize = sizeof(parts);
+    parts.dwSchemeLength = static_cast<DWORD>(-1);
+    parts.dwHostNameLength = static_cast<DWORD>(-1);
+    parts.dwUrlPathLength = static_cast<DWORD>(-1);
+    parts.dwExtraInfoLength = static_cast<DWORD>(-1);
     if (!WinHttpCrackUrl(urlCopy.c_str(), 0, 0, &parts)) {
         result.error = L"Invalid URL: " + Win32Error(GetLastError());
         return result;

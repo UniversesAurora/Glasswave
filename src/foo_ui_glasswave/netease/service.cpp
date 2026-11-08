@@ -134,6 +134,7 @@ ServiceManager::~ServiceManager() { Stop(); }
 void ServiceManager::Initialize() {
     std::lock_guard lock(m_mutex);
     m_externalUrl = NormalizeBaseUrl(GetServiceUrlOverride());
+    m_externalConfigured = !m_externalUrl.empty();
     if (!m_externalUrl.empty()) {
         m_state = ServiceState::External;
         m_baseUrl = Utf8(m_externalUrl);
@@ -158,8 +159,9 @@ bool ServiceManager::IsInstalled() const {
 }
 
 bool ServiceManager::Available() const {
-    std::lock_guard lock(m_mutex);
-    return !m_externalUrl.empty() || IsInstalled();
+    // Must not take m_mutex: a worker can hold it while probing the helper for up to
+    // 30 seconds, and the login window calls this on the main thread.
+    return m_externalConfigured.load() || IsInstalled();
 }
 
 std::wstring ServiceManager::ExePath() const {
@@ -363,6 +365,7 @@ bool ServiceManager::StartLocked(abort_callback& abort, std::wstring* error) {
         if (WaitForSingleObject(process.hProcess, 0) == WAIT_OBJECT_0) {
             DWORD code = 0;
             GetExitCodeProcess(process.hProcess, &code);
+            Log(L"service: helper exited during start-up, code " + std::to_wstring(code));
             StopLocked();
             SetErrorLocked(L"The NetEase service exited during start-up (code " + std::to_wstring(code) + L").");
             if (error) *error = m_lastError;
@@ -378,6 +381,10 @@ bool ServiceManager::StartLocked(abort_callback& abort, std::wstring* error) {
             m_lastError.clear();
             Log(L"service: ready");
             return true;
+        }
+        if (attempt == 0 || attempt == 20 || attempt == 60 || attempt == 119) {
+            Log(L"service: probe " + std::to_wstring(attempt) + L" failed: " +
+                (response.error.empty() ? L"no HTTP response" : response.error));
         }
         Sleep(250);
     }

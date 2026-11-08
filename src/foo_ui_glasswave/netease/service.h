@@ -1,6 +1,8 @@
 #pragma once
 
+#include <atomic>
 #include <functional>
+#include <mutex>
 #include <string>
 #include <string_view>
 
@@ -47,6 +49,7 @@ private:
     mutable std::mutex m_mutex;
     ServiceState m_state = ServiceState::Stopped;
     std::wstring m_externalUrl;
+    std::atomic_bool m_externalConfigured{false};
     std::wstring m_lastError;
     std::string m_baseUrl;
     void* m_process = nullptr;  // HANDLE
