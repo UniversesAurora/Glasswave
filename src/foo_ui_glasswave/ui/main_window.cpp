@@ -154,6 +154,16 @@ D2D1_COLOR_F Hex(uint32_t rgb, float a = 1.0f) {
     return D2D1::ColorF(((rgb >> 16) & 0xFF) / 255.0f, ((rgb >> 8) & 0xFF) / 255.0f, (rgb & 0xFF) / 255.0f, a);
 }
 
+// Cover URLs from different endpoints often differ only in their ?param= size suffix; the
+// image itself is the same. Compare the part that identifies it.
+bool SameCoverUrl(std::wstring_view a, std::wstring_view b) {
+    const auto base = [](std::wstring_view url) {
+        const size_t query = url.find(L'?');
+        return url.substr(0, query);
+    };
+    return base(a) == base(b);
+}
+
 wuc::CompositionNineGridBrush NineGrid(int wPx, int hPx, float scale, float insetPx, bool hollow,
                                        const std::function<void(ID2D1DeviceContext*)>& painter) {
     auto& host = gfx::CompositionHost::Get();
@@ -2231,9 +2241,10 @@ void MainWindow::Navigate(const View& requested, bool push) {
         }
         m_detailHeaderSize = {};  // repaint the band for this page, not the previous one
         if (auto cached = netease::Catalog::Get().FindPlaylist(id)) m_playlistDetail = std::move(*cached);
+        const std::wstring previousCover = m_playlistDetail ? m_playlistDetail->coverUrl : std::wstring();
         const View requestedView = view;
         netease::Provider::Get().FetchPlaylist(
-            id, [this, requestedView](netease::PlaylistDetail detail, std::wstring error) {
+            id, [this, requestedView, previousCover](netease::PlaylistDetail detail, std::wstring error) {
                 if (m_view.kind != requestedView.kind || m_view.library != requestedView.library ||
                     m_view.remoteId != requestedView.remoteId)
                     return;
@@ -2245,7 +2256,8 @@ void MainWindow::Navigate(const View& requested, bool push) {
                             m_history[m_historyPos].remoteId == requestedView.remoteId)
                             m_history[m_historyPos].name = m_view.name;
                     }
-                    ArtCache::Get().Invalidate(L"ncm:playlist:" + std::to_wstring(m_playlistDetail->id));
+                    if (!SameCoverUrl(previousCover, m_playlistDetail->coverUrl))
+                        ArtCache::Get().Invalidate(L"ncm:playlist:" + std::to_wstring(m_playlistDetail->id));
                 }
                 ShowNeteaseSongs(requestedView, std::move(detail.songs), std::move(error));
                 RepaintBreadcrumb();
@@ -2399,10 +2411,9 @@ void MainWindow::Navigate(const View& requested, bool push) {
                             m_history[m_historyPos].remoteId == requestedView.remoteId)
                             m_history[m_historyPos].name = m_view.name;
                     }
-                    // Only a different URL needs a reload; the grid tile already decoded this
-                    // cover and the list rows reuse it. An empty previous URL means a
-                    // placeholder may have been cached as missing before the detail arrived.
-                    if (previousCover != m_albumDetail->coverUrl)
+                    // Only a different image needs a reload; URLs that differ only by their
+                    // size suffix are the same cover the grid already decoded.
+                    if (!SameCoverUrl(previousCover, m_albumDetail->coverUrl))
                         ArtCache::Get().Invalidate(L"ncm:album:" + std::to_wstring(m_albumDetail->id));
                 }
                 ShowNeteaseSongs(requestedView, std::move(songs), std::move(error));

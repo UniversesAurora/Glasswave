@@ -53,31 +53,49 @@ ArtCache::State ArtCache::Find(const std::wstring& key, const metadb_handle_ptr&
 
     // The same picture is requested at several sizes (grid tile, detail header, list
     // column). Reuse a finished larger thumbnail instead of decoding it again; the list
-    // scales it into its smaller box.
+    // scales it into its smaller box. A stale larger thumbnail is still shown at once
+    // (the cover did not change or the new one is still loading) while this size reloads.
     if (m_entries.find(cacheKey) == m_entries.end()) {
         const size_t bar = cacheKey.rfind(L'|');
         if (bar != std::wstring::npos) {
             const std::wstring prefix = cacheKey.substr(0, bar + 1);
-            const Entry* best = nullptr;
-            int bestSize = 0;
-            for (const auto& [candidate, candidateEntry] : m_entries) {
-                if (candidateEntry.state != State::Ready || candidateEntry.stale || !candidateEntry.bitmap)
-                    continue;
-                if (candidate.size() <= prefix.size() || candidate.compare(0, prefix.size(), prefix) != 0)
-                    continue;
-                const int candidateSize = _wtoi(candidate.c_str() + prefix.size());
-                if (candidateSize < sizePx || (best && candidateSize >= bestSize)) continue;
-                best = &candidateEntry;
-                bestSize = candidateSize;
-            }
+            auto pick = [&](bool allowStale) -> const Entry* {
+                const Entry* found = nullptr;
+                int foundSize = 0;
+                for (const auto& [candidate, candidateEntry] : m_entries) {
+                    if (candidateEntry.state != State::Ready || !candidateEntry.bitmap) continue;
+                    if (candidateEntry.stale && !allowStale) continue;
+                    if (candidate.size() <= prefix.size() || candidate.compare(0, prefix.size(), prefix) != 0)
+                        continue;
+                    const int candidateSize = _wtoi(candidate.c_str() + prefix.size());
+                    if (candidateSize < sizePx) continue;
+                    if (!found || candidateSize < foundSize) {
+                        found = &candidateEntry;
+                        foundSize = candidateSize;
+                    }
+                }
+                return found;
+            };
+            const Entry* best = pick(false);  // a fresh thumbnail wins over a stale one
+            if (!best) best = pick(true);
             if (best) {
                 Entry& alias = m_entries[cacheKey];
                 alias.state = State::Ready;
                 alias.bitmap = best->bitmap;
                 alias.used = ++m_clock;
                 alias.content = best->content;
+                if (best->stale) {
+                    alias.stale = true;
+                    alias.epoch = ++m_epoch;
+                    alias.reloading = true;
+                    {
+                        std::lock_guard lock(m_mutex);
+                        m_queue.push_front({cacheKey, track, sizePx, alias.epoch});
+                    }
+                    m_wake.notify_one();
+                }
                 *out = alias.bitmap;
-                return State::Ready;
+                return alias.bitmap ? State::Ready : State::Pending;
             }
         }
     }
