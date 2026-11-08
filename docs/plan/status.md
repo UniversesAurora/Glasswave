@@ -316,6 +316,14 @@ Updated: 2026-11-08
     shown at once while the requested size reloads. Album and playlist detail covers only
     invalidate when the image URL changes (the `?param=` size suffix is ignored), so the
     grid tile's decode stays usable by the song rows.
+  - The window remembers the page that was open when it closed, plus that page's top row,
+    and restores both on the next start. A local playlist is matched by name first (so
+    reordering playlists does not open the wrong one) with the saved index as fallback.
+    Without a saved page it still starts on foobar2000's active playlist.
+  - Covers live in two caches: the in-memory decoded-thumbnail cache (600 entries, LRU,
+    gone on restart) and the NetEase disk cache (`<profile>\glasswave\netease\cache\covers`,
+    default 256 MB, no time expiry; evicted only when over budget, by LFU with last use as
+    the tie-breaker). Downloaded covers therefore survive restarts.
   - NetEase's personal radar (私人雷达) is marked specialType 100 in /user/playlist.
     It is now kept in the account lists, so collecting it from Recommended makes it appear
     under Collected playlists and survive account refreshes; the interested page still
