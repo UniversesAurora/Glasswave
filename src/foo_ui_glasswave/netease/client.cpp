@@ -82,6 +82,9 @@ Album ParseAlbum(const json::Object& object) {
                                      json::GetString(object, L"coverImgUrl", json::GetString(object, L"blurPicUrl")));
     album.trackCount = json::GetInt(object, L"size", json::GetInt(object, L"trackCount"));
     album.publishTime = json::GetInt64(object, L"publishTime");
+    album.artistRefs = ArtistRefs(object);
+    album.description = json::GetString(object, L"description");
+    album.company = json::GetString(object, L"company");
     if (album.name.empty()) album.name = L"Unknown";
     return album;
 }
@@ -200,8 +203,11 @@ Playlist ParsePlaylist(const json::Object& object) {
     playlist.coverUrl = json::GetString(object, L"coverImgUrl", json::GetString(object, L"picUrl"));
     playlist.trackCount = json::GetInt(object, L"trackCount");
     playlist.subscribed = json::GetBool(object, L"subscribed");
-    if (auto creator = json::GetObject(object, L"creator"))
+    playlist.description = json::GetString(object, L"description");
+    if (auto creator = json::GetObject(object, L"creator")) {
         playlist.creatorId = json::GetInt64(*creator, L"userId");
+        playlist.creatorName = json::GetString(*creator, L"nickname");
+    }
     if (playlist.name.empty()) playlist.name = L"Unknown";
     return playlist;
 }
@@ -457,6 +463,29 @@ bool Client::GetPlaylist(int64_t playlistId, abort_callback& abort, PlaylistDeta
         auto it = songs.find(id);
         if (it != songs.end()) out.songs.push_back(it->second);
     }
+    return true;
+}
+
+bool Client::GetPlaylistInfo(int64_t playlistId, abort_callback& abort, Playlist& out, std::wstring& error) {
+    json::Object body;
+    int code = 0;
+    if (!Request(L"/playlist/detail",
+                 {{L"id", std::to_wstring(playlistId)},
+                  {L"n", L"1"},
+                  {L"_t", std::to_wstring(GetTickCount64())}},
+                 false, abort, body, code, error))
+        return false;
+    if (code != 200) {
+        error = MessageOf(body, code);
+        return false;
+    }
+    auto playlist = json::GetObject(body, L"playlist");
+    if (!playlist) {
+        error = L"The playlist response has no playlist object.";
+        return false;
+    }
+    out = ParsePlaylist(*playlist);
+    out.id = out.id ? out.id : playlistId;
     return true;
 }
 
@@ -845,6 +874,25 @@ bool Client::SetAlbumCollect(int64_t albumId, bool collect, abort_callback& abor
     int code = 0;
     if (!Request(L"/album/sub", {{L"id", std::to_wstring(albumId)}, {L"t", collect ? L"1" : L"0"}}, true, abort,
                  body, code, error))
+        return false;
+    if (code == 301) {
+        error = L"Please sign in to NetEase Cloud Music.";
+        return false;
+    }
+    if (code != 200) {
+        error = MessageOf(body, code);
+        return false;
+    }
+    return true;
+}
+
+bool Client::SetPlaylistSubscribed(int64_t playlistId, bool subscribed, abort_callback& abort,
+                                   std::wstring& error) {
+    json::Object body;
+    int code = 0;
+    if (!Request(L"/playlist/subscribe",
+                 {{L"id", std::to_wstring(playlistId)}, {L"t", subscribed ? L"1" : L"0"}}, true, abort, body,
+                 code, error))
         return false;
     if (code == 301) {
         error = L"Please sign in to NetEase Cloud Music.";

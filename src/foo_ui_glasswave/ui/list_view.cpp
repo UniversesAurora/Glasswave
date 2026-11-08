@@ -1371,6 +1371,10 @@ void ListView::OnRButtonUp(HWND owner, POINT pt) {
     }
     POINT screen = pt;
     ClientToScreen(owner, &screen);
+    if ((hit.part == Part::Empty || hit.part == Part::None) && onEmptyContext) {
+        onEmptyContext(screen);
+        return;
+    }
     m_source->ContextMenu(owner, screen);
     Refresh();
 }

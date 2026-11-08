@@ -37,6 +37,8 @@ struct Playlist {
     std::wstring coverUrl;
     int trackCount = 0;
     int64_t creatorId = 0;
+    std::wstring creatorName;
+    std::wstring description;
     bool subscribed = false;
 };
 
@@ -59,6 +61,9 @@ struct Album {
     std::wstring coverUrl;
     int trackCount = 0;
     int64_t publishTime = 0;  // epoch milliseconds
+    std::vector<ArtistRef> artistRefs;
+    std::wstring description;
+    std::wstring company;
 };
 
 struct Account {

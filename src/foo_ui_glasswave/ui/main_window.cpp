@@ -1,6 +1,7 @@
 #include "pch.h"
 #include <filesystem>
 #include <fstream>
+#include <ctime>
 #include <cwchar>
 #include <cwctype>
 #include "ui/main_window.h"
@@ -54,16 +55,34 @@ enum WidgetId {
     kCapMin = 1, kCapMax, kCapClose,
     kBack, kForward, kOrganize, kAddFiles, kAddFolder, kNewPlaylist,
     kSeek, kShuffle, kRepeat, kStop, kPrev, kNext, kPlay, kMute, kVolume, kViewOptions,
-    kArtistFollow, kArtistBriefToggle,
+    kDetailAction, kDetailBriefToggle, kRefresh,
 };
 bool IsCaptionWidget(int id) { return id >= kCapMin && id <= kCapClose; }
 
 // Split buttons: arrow half width, and the view options button's icon half (DIP).
 constexpr float kSplitArrow = 16, kViewOptionsSplit = 26;
 
-// NetEase artist page header: a fixed band above the tile grid (new UI, no Win7 measurement).
-constexpr float kArtistHeaderHeight = 104, kArtistAvatar = 80, kArtistFollowWidth = 88, kArtistFollowHeight = 26;
+// NetEase detail page header: a fixed band above the list (new UI, no Win7 measurement).
+constexpr float kDetailHeaderHeight = 104, kDetailArt = 80, kDetailActionWidth = 88, kDetailActionHeight = 26;
 constexpr size_t kAlbumPageSize = 12;  // albums loaded per page in expanded album views
+
+std::wstring YearText(int64_t publishTimeMs) {
+    if (publishTimeMs <= 0) return {};
+    const time_t seconds = static_cast<time_t>(publishTimeMs / 1000);
+    std::tm local{};
+    if (localtime_s(&local, &seconds) != 0) return {};
+    return std::to_wstring(local.tm_year + 1900);
+}
+
+std::wstring JoinedArtists(const std::vector<netease::ArtistRef>& refs) {
+    std::wstring out;
+    for (const auto& ref : refs) {
+        if (ref.name.empty()) continue;
+        if (!out.empty()) out += L"; ";
+        out += ref.name;
+    }
+    return out;
+}
 
 
 // {0C9E7B42-1F3A-4D5E-8B6C-7A2F9E1D4C83}
@@ -514,11 +533,11 @@ void MainWindow::InitComposition() {
     m_divider.IsVisible(!m_win7Art);  // part of the original capsule bitmap
     m_cluster.IsVisible(m_win7Art);
 
-    m_artistHeader = comp.CreateSpriteVisual();
-    m_artistHeader.IsVisible(false);
-    m_contentLayer.Children().InsertAtTop(m_artistHeader);
+    m_detailHeader = comp.CreateSpriteVisual();
+    m_detailHeader.IsVisible(false);
+    m_contentLayer.Children().InsertAtTop(m_detailHeader);
     m_artistArtToken = ArtCache::Get().Subscribe([this] {
-        if (m_view.kind == View::Kind::NeteaseArtist) PaintArtistHeader();
+        if (m_view.kind == View::Kind::NeteaseArtist) PaintDetailHeader();
     });
     m_nav = std::make_unique<NavPane>(m_contentLayer);
     m_nav->SetCategories(LoadNavCategories());
@@ -529,6 +548,7 @@ void MainWindow::InitComposition() {
     m_list = std::make_unique<ListView>(m_contentLayer);
     m_list->onLink = [this](size_t group, size_t line) { OnAlbumLink(group, line); };
     m_list->onNearEnd = [this] { OnListNearEnd(); };
+    m_list->onEmptyContext = [this](POINT screen) { ShowPageContextMenu(screen); };
     m_search = std::make_unique<SearchBox>(m_contentLayer);
     m_search->onChange = [this](const std::wstring& text) {
         m_filter = media::Lower(text);
@@ -631,32 +651,31 @@ void MainWindow::CreateWidgets() {
             CreatePlaylist(false);
     };
 
-    // NetEase artist page: Follow / Following, centered in the button.
-    add(kArtistFollow, [this](auto* dc, D2D1_SIZE_F s, Layer l) {
-        const bool followed = m_artist && m_artist->followed;
-        const std::wstring label = Tr(followed ? L"Following" : L"Follow");
+    // NetEase detail page: Follow / Following or Collect / Collected, centered in the button.
+    add(kDetailAction, [this](auto* dc, D2D1_SIZE_F s, Layer l) {
+        const std::wstring label = m_detail.actionLabel.empty() ? Tr(L"Collect") : m_detail.actionLabel;
         wp::CommandButton(dc, s, l, L"", false);  // plate only
         auto layout =
             MakeText(label, 12.0f, DWRITE_FONT_WEIGHT_NORMAL, s.width, s.height, DWRITE_TEXT_ALIGNMENT_CENTER);
         com_ptr<ID2D1SolidColorBrush> ink;
         dc->CreateSolidColorBrush(Hex(0x1E395B), ink.put());
         dc->DrawTextLayout({0, 0}, layout.get(), ink.get());
-    }, {})->onClick = [this] { ToggleArtistFollow(); };
-    if (Widget* follow = WidgetById(kArtistFollow))
-        follow->enabled = [this] { return m_artist && m_artist->followKnown && !m_followPending; };
+    }, {})->onClick = [this] { OnDetailAction(); };
+    if (Widget* action = WidgetById(kDetailAction))
+        action->enabled = [this] { return m_detail.actionKnown && !m_detailActionPending; };
 
-    // The artist description's Show more / Show less link.
-    add(kArtistBriefToggle, [this](auto* dc, D2D1_SIZE_F s, Layer l) {
-        const std::wstring label = Tr(m_artistBriefExpanded ? L"Show less" : L"Show more");
+    // The description's Show more / Show less link.
+    add(kDetailBriefToggle, [this](auto* dc, D2D1_SIZE_F s, Layer l) {
+        const std::wstring label = Tr(m_detailBriefExpanded ? L"Show less" : L"Show more");
         auto layout = MakeText(label, 12.0f, DWRITE_FONT_WEIGHT_NORMAL, s.width, s.height);
         layout->SetUnderline(TRUE, DWRITE_TEXT_RANGE{0, static_cast<UINT32>(label.size())});
         com_ptr<ID2D1SolidColorBrush> ink;
         dc->CreateSolidColorBrush(Hex(l == Layer::Normal ? 0x0066CC : 0x1E5BA8), ink.put());
         dc->DrawTextLayout({0, 0}, layout.get(), ink.get());
     }, {})->onClick = [this] {
-        m_artistBriefExpanded = !m_artistBriefExpanded;
+        m_detailBriefExpanded = !m_detailBriefExpanded;
         RepaintBreadcrumb();
-        RepaintArtistHeader();
+        RepaintDetailHeader();
     };
 
     // Seek bar (the band's top rule, as in WMP 12)
@@ -836,25 +855,26 @@ void MainWindow::UpdateLayout() {
         L.viewOptions = {};
     }
 
-    // Content: navigation pane + list (the artist header sits above the list only)
+    // Content: navigation pane + list (a detail band sits above artist, album and playlist pages)
     L.navPane = {L.content.left, L.content.top, L.content.left + PxI(kNavPaneWidth), L.content.bottom - PxI(8)};
     L.list = {L.navPane.right, L.content.top, L.content.right, L.content.bottom};
-    L.artistHeader = {};
-    L.artistFollow = {};
-    L.artistBriefToggle = {};
-    m_artistBriefOverflow = false;
-    if (m_view.kind == View::Kind::NeteaseArtist) {
-        L.artistHeader = {L.navPane.right, L.content.top, L.content.right,
-                          std::min<LONG>(L.content.top + PxI(kArtistHeaderHeight), L.content.bottom)};
-        if (m_artist && m_artist->followKnown) {
-            const int right = L.artistHeader.right - PxI(18);
-            L.artistFollow = {right - PxI(kArtistFollowWidth), L.artistHeader.top + PxI(22), right,
-                              L.artistHeader.top + PxI(22 + kArtistFollowHeight)};
+    L.detailHeader = {};
+    L.detailAction = {};
+    L.detailBriefToggle = {};
+    m_detailBriefOverflow = false;
+    m_detail = BuildDetailHeader();
+    if (m_detail.visible) {
+        L.detailHeader = {L.navPane.right, L.content.top, L.content.right,
+                          std::min<LONG>(L.content.top + PxI(kDetailHeaderHeight), L.content.bottom)};
+        if (m_detail.actionKnown) {
+            const int right = L.detailHeader.right - PxI(18);
+            L.detailAction = {right - PxI(kDetailActionWidth), L.detailHeader.top + PxI(22), right,
+                              L.detailHeader.top + PxI(22 + kDetailActionHeight)};
         }
         // The description is limited to three lines until expanded; the link sits below it.
-        if (m_artist && !m_artist->brief.empty()) {
-            auto full = MakeWrappedText(m_artist->brief, 12.0f, DWRITE_FONT_WEIGHT_NORMAL,
-                                        ArtistHeaderTextWidth(), 4000.0f);
+        if (!m_detail.brief.empty()) {
+            auto full = MakeWrappedText(m_detail.brief, 12.0f, DWRITE_FONT_WEIGHT_NORMAL,
+                                        DetailHeaderTextWidth(), 4000.0f);
             DWRITE_TEXT_METRICS metrics{};
             full->GetMetrics(&metrics);
             const float fullHeight = metrics.height;
@@ -863,25 +883,25 @@ void MainWindow::UpdateLayout() {
             const float briefLimit = std::max(48.0f, bandSpace - 62 - 12 - 18 - 8);
             const float collapsed = std::min(fullHeight, 48.0f);
             const float expandedShown = std::min(fullHeight, briefLimit);
-            m_artistBriefOverflow = fullHeight > collapsed + 1.0f;
-            const float used = m_artistBriefExpanded ? expandedShown : collapsed;
+            m_detailBriefOverflow = fullHeight > collapsed + 1.0f;
+            const float used = m_detailBriefExpanded ? expandedShown : collapsed;
             float needed = 62 + used + 12;
-            if (m_artistBriefOverflow) needed += 18;
-            if (m_artistBriefExpanded) needed += 6;  // pixel rounding must not clip the last line
-            L.artistHeader.bottom =
-                std::min<LONG>(L.content.top + std::max<int>(PxI(kArtistHeaderHeight), PxI(needed)), L.content.bottom);
-            if (m_artistBriefOverflow) {
-                const std::wstring label = Tr(m_artistBriefExpanded ? L"Show less" : L"Show more");
+            if (m_detailBriefOverflow) needed += 18;
+            if (m_detailBriefExpanded) needed += 6;  // pixel rounding must not clip the last line
+            L.detailHeader.bottom =
+                std::min<LONG>(L.content.top + std::max<int>(PxI(kDetailHeaderHeight), PxI(needed)), L.content.bottom);
+            if (m_detailBriefOverflow) {
+                const std::wstring label = Tr(m_detailBriefExpanded ? L"Show less" : L"Show more");
                 auto link = MakeText(label, 12.0f, DWRITE_FONT_WEIGHT_NORMAL, 200.0f, 18.0f);
                 DWRITE_TEXT_METRICS linkMetrics{};
                 link->GetMetrics(&linkMetrics);
-                const int linkX = L.artistHeader.left + PxI(18 + kArtistAvatar + 18);
-                const int y = L.artistHeader.top + PxI(62 + used + 2);
+                const int linkX = L.detailHeader.left + PxI(18 + kDetailArt + 18);
+                const int y = L.detailHeader.top + PxI(62 + used + 2);
                 const int w = PxI(std::ceil(linkMetrics.widthIncludingTrailingWhitespace) + 4.0f);
-                L.artistBriefToggle = {linkX, y, linkX + w, y + PxI(18)};
+                L.detailBriefToggle = {linkX, y, linkX + w, y + PxI(18)};
             }
         }
-        L.list.top = L.artistHeader.bottom;
+        L.list.top = L.detailHeader.bottom;
     }
 
     // Transport band: seek rule on top, capsule centered on the orb below it.
@@ -969,15 +989,15 @@ void MainWindow::UpdateLayout() {
     Place(m_cmdBar, L.cmdBar);
     Place(m_contentTop, {L.content.left, L.content.top, L.content.right, L.content.top + PxI(14)});
     Place(m_libraryBg, L.list);
-    if (m_artistHeader) {
-        const bool show = m_view.kind == View::Kind::NeteaseArtist && L.artistHeader.right > L.artistHeader.left;
-        m_artistHeader.IsVisible(show);
+    if (m_detailHeader) {
+        const bool show = m_detail.visible && L.detailHeader.right > L.detailHeader.left;
+        m_detailHeader.IsVisible(show);
         if (show) {
-            const SIZE size{L.artistHeader.right - L.artistHeader.left, L.artistHeader.bottom - L.artistHeader.top};
-            if (m_artistHeaderSize.cx != size.cx || m_artistHeaderSize.cy != size.cy)
-                PaintArtistHeader();  // a new surface size: repaint and re-place
+            const SIZE size{L.detailHeader.right - L.detailHeader.left, L.detailHeader.bottom - L.detailHeader.top};
+            if (m_detailHeaderSize.cx != size.cx || m_detailHeaderSize.cy != size.cy)
+                PaintDetailHeader();  // a new surface size: repaint and re-place
             else
-                Place(m_artistHeader, L.artistHeader);
+                Place(m_detailHeader, L.detailHeader);
         }
     }
     Place(m_transportBand, L.transport);
@@ -1022,8 +1042,8 @@ void MainWindow::UpdateLayout() {
         case kAddFolder: r = &L.addFolder; break;
         case kNewPlaylist: r = &L.newPlaylist; break;
         case kViewOptions: r = &L.viewOptions; break;
-        case kArtistFollow: r = &L.artistFollow; break;
-        case kArtistBriefToggle: r = &L.artistBriefToggle; break;
+        case kDetailAction: r = &L.detailAction; break;
+        case kDetailBriefToggle: r = &L.detailBriefToggle; break;
         case kSeek: r = &L.seek; break;
         case kShuffle: r = &L.shuffle; break;
         case kRepeat: r = &L.repeat; break;
@@ -1951,9 +1971,9 @@ void MainWindow::Navigate(const View& requested, bool push) {
         m_artistSongsId.clear();
         m_artistAlbumOffset = 0;
         m_artistAlbumsLoading = false;
-        m_artistHeaderSize = {};  // repaint the band with the new artist's placeholder
-        m_followPending = false;
-        m_artistBriefExpanded = false;
+        m_detailHeaderSize = {};  // repaint the band with the new artist's placeholder
+        m_detailActionPending = false;
+        m_detailBriefExpanded = false;
     }
     switch (view.kind) {
     case View::Kind::NeteaseLiked: {
@@ -2021,10 +2041,29 @@ void MainWindow::Navigate(const View& requested, bool push) {
         source = std::make_unique<ui::NeteaseSongSource>(std::vector<netease::Song>{}, L"Loading playlist...");
         const int64_t id = static_cast<int64_t>(_wcstoi64(view.remoteId.c_str(), nullptr, 10));
         m_nav->Select(NavPane::Target::NeteaseRemotePlaylist, 0, id);
+        m_detailActionPending = false;
+        const bool sameDetail = m_playlistDetail && m_playlistDetail->id == id;
+        m_playlistDetail.reset();
+        if (!sameDetail) m_detailBriefExpanded = false;
+        if (auto cached = netease::Catalog::Get().FindPlaylist(id)) m_playlistDetail = std::move(*cached);
         const View requestedView = view;
         netease::Provider::Get().FetchPlaylist(
             id, [this, requestedView](netease::PlaylistDetail detail, std::wstring error) {
+                if (m_view.kind != requestedView.kind || m_view.library != requestedView.library ||
+                    m_view.remoteId != requestedView.remoteId)
+                    return;
+                if (detail.info.id) {
+                    m_playlistDetail = std::move(detail.info);
+                    if (!m_playlistDetail->name.empty()) {
+                        m_view.name = m_playlistDetail->name;
+                        if (m_historyPos < m_history.size() &&
+                            m_history[m_historyPos].remoteId == requestedView.remoteId)
+                            m_history[m_historyPos].name = m_view.name;
+                    }
+                }
                 ShowNeteaseSongs(requestedView, std::move(detail.songs), std::move(error));
+                RepaintBreadcrumb();
+                RepaintDetailHeader();
             });
         break;
     }
@@ -2159,10 +2198,29 @@ void MainWindow::Navigate(const View& requested, bool push) {
         source = std::make_unique<ui::NeteaseSongSource>(std::vector<netease::Song>{}, L"Loading album...");
         m_nav->Select(NavPane::Target::None, 0);
         const int64_t id = static_cast<int64_t>(_wcstoi64(view.remoteId.c_str(), nullptr, 10));
+        m_detailActionPending = false;
+        const bool sameDetail = m_albumDetail && m_albumDetail->id == id;
+        m_albumDetail.reset();
+        if (!sameDetail) m_detailBriefExpanded = false;
+        if (auto cached = netease::Catalog::Get().FindAlbum(id)) m_albumDetail = std::move(*cached);
         const View requestedView = view;
-        netease::Provider::Get().FetchAlbumSongs(
-            id, [this, requestedView](std::vector<netease::Song> songs, std::wstring error) {
+        netease::Provider::Get().FetchAlbumDetail(
+            id, [this, requestedView](netease::Album album, std::vector<netease::Song> songs, std::wstring error) {
+                if (m_view.kind != requestedView.kind || m_view.library != requestedView.library ||
+                    m_view.remoteId != requestedView.remoteId)
+                    return;
+                if (album.id) {
+                    m_albumDetail = std::move(album);
+                    if (!m_albumDetail->name.empty()) {
+                        m_view.name = m_albumDetail->name;
+                        if (m_historyPos < m_history.size() &&
+                            m_history[m_historyPos].remoteId == requestedView.remoteId)
+                            m_history[m_historyPos].name = m_view.name;
+                    }
+                }
                 ShowNeteaseSongs(requestedView, std::move(songs), std::move(error));
+                RepaintBreadcrumb();
+                RepaintDetailHeader();
             });
         break;
     }
@@ -2391,7 +2449,7 @@ void MainWindow::ShowNeteaseArtistDetail(const View& view, netease::Artist artis
             std::vector<netease::Song>{}, error.empty() ? L"Cannot load this artist." : std::move(error));
         m_list->SetSource(m_source.get(), false);
         RepaintBreadcrumb();
-        RepaintArtistHeader();
+        RepaintDetailHeader();
         return;
     }
     if (artist.name.empty()) artist.name = view.name;
@@ -2410,7 +2468,7 @@ void MainWindow::ShowNeteaseArtistDetail(const View& view, netease::Artist artis
             m_artist->followKnown = true;
             break;
         }
-    m_followPending = false;
+    m_detailActionPending = false;
     // The profile's briefDesc is only a summary; the full article comes from /artist/desc.
     const int64_t artistId = m_artist->id;
     netease::Provider::Get().FetchArtistDescription(
@@ -2420,10 +2478,10 @@ void MainWindow::ShowNeteaseArtistDetail(const View& view, netease::Artist artis
             if (text.empty()) return;
             m_artist->brief = text;
             RepaintBreadcrumb();
-            RepaintArtistHeader();
+            RepaintDetailHeader();
         });
     RepaintBreadcrumb();
-    RepaintArtistHeader();
+    RepaintDetailHeader();
     ContinueArtistLoad();
 }
 
@@ -2465,7 +2523,7 @@ void MainWindow::LoadArtistAlbumPage() {
                     }
                 m_artist->followed = followedNow;
                 m_artist->followKnown = true;
-                RepaintArtistHeader();
+                RepaintDetailHeader();
             }
             if (albums.empty()) {
                 m_artistAlbumsMore = false;  // no progress: stop instead of looping
@@ -2678,37 +2736,146 @@ void MainWindow::ShowNeteaseAlbums(const View& view, std::vector<netease::Album>
     RepaintBreadcrumb();
 }
 
-void MainWindow::PaintArtistHeader() {
-    if (!m_artistHeader) return;
-    const RECT rect = m_layout.artistHeader;
+MainWindow::DetailHeader MainWindow::BuildDetailHeader() const {
+    DetailHeader d;
+    switch (m_view.kind) {
+    case View::Kind::NeteaseArtist: {
+        d.visible = true;
+        d.artIsArtist = true;
+        d.title = m_artist && !m_artist->name.empty() ? m_artist->name : m_view.name;
+        if (d.title.empty()) d.title = Tr(L"Artist");
+        if (m_artist) {
+            auto add = [&d](int count, const wchar_t* unit) {
+                if (count <= 0) return;
+                if (!d.subtitle.empty()) d.subtitle += L" · ";
+                d.subtitle += std::to_wstring(count) + L" " + Tr(unit);
+            };
+            add(m_artist->albumCount, L"albums");
+            add(m_artist->songCount, L"songs");
+        }
+        d.brief = m_artist ? m_artist->brief : std::wstring();
+        const int64_t id = m_artist ? m_artist->id
+                                    : static_cast<int64_t>(_wcstoi64(m_view.remoteId.c_str(), nullptr, 10));
+        if (id) {
+            d.artKey = L"ncm:artist:" + std::to_wstring(id);
+            d.artTrack = netease::Catalog::Get().ArtistHandle(id);
+        }
+        if (m_artist && m_artist->followKnown) {
+            d.action = DetailHeader::Action::Follow;
+            d.actionKnown = true;
+            d.actionOn = m_artist->followed;
+            d.actionLabel = Tr(m_artist->followed ? L"Following" : L"Follow");
+        }
+        break;
+    }
+    case View::Kind::NeteaseAlbum: {
+        const int64_t id = static_cast<int64_t>(_wcstoi64(m_view.remoteId.c_str(), nullptr, 10));
+        if (!id) break;
+        d.visible = true;
+        std::optional<netease::Album> cached;
+        const netease::Album* album = m_albumDetail && m_albumDetail->id == id ? &*m_albumDetail : nullptr;
+        if (!album) {
+            if (auto found = netease::Catalog::Get().FindAlbum(id)) {
+                cached = std::move(*found);
+                album = &*cached;
+            }
+        }
+        d.title = album && !album->name.empty() ? album->name : m_view.name;
+        if (d.title.empty()) d.title = Tr(L"Album");
+        if (album) {
+            auto part = [&d](const std::wstring& text) {
+                if (text.empty()) return;
+                if (!d.subtitle.empty()) d.subtitle += L" · ";
+                d.subtitle += text;
+            };
+            part(JoinedArtists(album->artistRefs));
+            part(YearText(album->publishTime));
+            if (album->trackCount > 0)
+                part(std::to_wstring(album->trackCount) + L" " + Tr(L"songs"));
+            d.brief = album->description;
+        }
+        d.artKey = L"ncm:album:" + std::to_wstring(id);
+        d.artTrack = netease::Catalog::Get().AlbumHandle(id);
+        if (netease::Provider::Get().LoggedIn()) {
+            bool collected = false;
+            for (const auto& saved : netease::Provider::Get().CollectedAlbums())
+                if (saved.id == id) {
+                    collected = true;
+                    break;
+                }
+            d.action = DetailHeader::Action::Collect;
+            d.actionKnown = true;
+            d.actionOn = collected;
+            d.actionLabel = Tr(collected ? L"Collected" : L"Collect");
+        }
+        break;
+    }
+    case View::Kind::NeteasePlaylist: {
+        const int64_t id = static_cast<int64_t>(_wcstoi64(m_view.remoteId.c_str(), nullptr, 10));
+        if (!id) break;
+        d.visible = true;
+        std::optional<netease::Playlist> cached;
+        const netease::Playlist* playlist = m_playlistDetail && m_playlistDetail->id == id ? &*m_playlistDetail : nullptr;
+        if (!playlist) {
+            if (auto found = netease::Catalog::Get().FindPlaylist(id)) {
+                cached = std::move(*found);
+                playlist = &*cached;
+            }
+        }
+        d.title = playlist && !playlist->name.empty() ? playlist->name : m_view.name;
+        if (d.title.empty()) d.title = Tr(L"Playlist");
+        if (playlist) {
+            auto part = [&d](const std::wstring& text) {
+                if (text.empty()) return;
+                if (!d.subtitle.empty()) d.subtitle += L" · ";
+                d.subtitle += text;
+            };
+            part(playlist->creatorName);
+            if (playlist->trackCount > 0) part(std::to_wstring(playlist->trackCount) + L" " + Tr(L"songs"));
+            d.brief = playlist->description;
+        }
+        d.artKey = L"ncm:playlist:" + std::to_wstring(id);
+        d.artTrack = netease::Catalog::Get().PlaylistHandle(id);
+        const auto scope = netease::Provider::Get().FindPlaylistScope(id);
+        const auto account = netease::Provider::Get().CurrentAccount();
+        const bool own = scope == netease::Provider::PlaylistScope::Created ||
+                         (playlist && account.userId && playlist->creatorId == account.userId);
+        if (!own && netease::Provider::Get().LoggedIn()) {
+            bool collected = scope == netease::Provider::PlaylistScope::Collected || (playlist && playlist->subscribed);
+            if (!collected) {
+                for (const auto& saved : netease::Provider::Get().CollectedPlaylists())
+                    if (saved.id == id) {
+                        collected = true;
+                        break;
+                    }
+            }
+            d.action = DetailHeader::Action::Collect;
+            d.actionKnown = true;
+            d.actionOn = collected;
+            d.actionLabel = Tr(collected ? L"Collected" : L"Collect");
+        }
+        break;
+    }
+    default:
+        break;
+    }
+    return d;
+}
+
+void MainWindow::PaintDetailHeader() {
+    if (!m_detailHeader || !m_detail.visible) return;
+    const RECT rect = m_layout.detailHeader;
     const int w = rect.right - rect.left, h = rect.bottom - rect.top;
     if (w <= 0 || h <= 0) return;
-    m_artistHeaderSize = {w, h};
+    m_detailHeaderSize = {w, h};
 
-    const int64_t artistId = m_artist ? m_artist->id
-                                      : static_cast<int64_t>(_wcstoi64(m_view.remoteId.c_str(), nullptr, 10));
-    const std::wstring name = m_artist && !m_artist->name.empty() ? m_artist->name : m_view.name;
-    std::wstring stats;
-    if (m_artist) {
-        auto add = [&](int count, const wchar_t* unit) {
-            if (count <= 0) return;
-            if (!stats.empty()) stats += L" · ";
-            stats += std::to_wstring(count) + L" " + Tr(unit);
-        };
-        add(m_artist->albumCount, L"albums");
-        add(m_artist->songCount, L"songs");
-    }
-    const std::wstring brief = m_artist ? m_artist->brief : std::wstring();
-
-    winrt::com_ptr<IWICBitmapSource> avatar;
-    if (m_artist && artistId) {  // only once the profile is in the catalog, or the cache stays Missing
-        const std::wstring key = L"ncm:artist:" + std::to_wstring(artistId);
-        ArtCache::Get().Find(key, netease::Catalog::Get().ArtistHandle(artistId), PxI(kArtistAvatar), &avatar);
-    }
+    winrt::com_ptr<IWICBitmapSource> art;
+    if (!m_detail.artKey.empty() && m_detail.artTrack.is_valid())
+        ArtCache::Get().Find(m_detail.artKey, m_detail.artTrack, PxI(kDetailArt), &art);
 
     auto& host = gfx::CompositionHost::Get();
     const float s = m_scale;
-    host.Repaint(m_artistHeader, w, h, s, [&](ID2D1DeviceContext* dc) {
+    host.Repaint(m_detailHeader, w, h, s, [&](ID2D1DeviceContext* dc) {
         const float W = w / s, H = h / s;
         const float px = LinePx() / s;
         dc->FillRectangle({-1, 0, W + 1, H}, VGrad(dc, 0, H, {{0.0f, 0xF6FBFF}, {1.0f, 0xEBF3FC}}).get());
@@ -2716,16 +2883,17 @@ void MainWindow::PaintArtistHeader() {
         dc->CreateSolidColorBrush(Hex(0xC3CCCF), rule.put());
         dc->FillRectangle({0, H - px, W, H}, rule.get());
 
-        const float pad = 18, side = kArtistAvatar;
-        const float ax = pad, ay = 14;  // the avatar stays at the top-left of the band
-        if (avatar) {
+        const float pad = 18, side = kDetailArt;
+        const float ax = pad, ay = 14;  // the artwork stays at the top-left of the band
+        if (art) {
             winrt::com_ptr<ID2D1Bitmap> bitmap;
-            if (SUCCEEDED(dc->CreateBitmapFromWicBitmap(avatar.get(), nullptr, bitmap.put())))
+            if (SUCCEEDED(dc->CreateBitmapFromWicBitmap(art.get(), nullptr, bitmap.put())))
                 dc->DrawBitmap(bitmap.get(), D2D1::RectF(ax, ay, ax + side, ay + side), 1.0f,
                                D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
         } else {
             wp::RowPlate(dc, {ax, ay, ax + side, ay + side}, wp::RowState::Normal, false);
-            wp::NavGlyph(dc, {ax + side / 2, ay + side / 2}, wp::NavIcon::Artist);
+            wp::NavGlyph(dc, {ax + side / 2, ay + side / 2},
+                         m_detail.artIsArtist ? wp::NavIcon::Artist : wp::NavIcon::Album);
         }
         com_ptr<ID2D1SolidColorBrush> edge;
         dc->CreateSolidColorBrush(Hex(0x9AA7B8), edge.put());
@@ -2736,58 +2904,111 @@ void MainWindow::PaintArtistHeader() {
         dc->CreateSolidColorBrush(Hex(0x3E5878), sub.put());
         dc->CreateSolidColorBrush(Hex(0x6B7B8E), faint.put());
         const float textX = ax + side + 18;
-        const float textW = ArtistHeaderTextWidth();
-        auto nameLayout = MakeText(name.empty() ? Tr(L"Artist") : name, 20.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, textW, 30);
+        const float textW = DetailHeaderTextWidth();
+        auto nameLayout = MakeText(m_detail.title, 20.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, textW, 30);
         dc->DrawTextLayout({textX, 10}, nameLayout.get(), ink.get());
-        if (!stats.empty()) {
-            auto statsLayout = MakeText(stats, 12.0f, DWRITE_FONT_WEIGHT_NORMAL, textW, 18);
+        if (!m_detail.subtitle.empty()) {
+            auto statsLayout = MakeText(m_detail.subtitle, 12.0f, DWRITE_FONT_WEIGHT_NORMAL, textW, 18);
             dc->DrawTextLayout({textX, 42}, statsLayout.get(), sub.get());
         }
-        if (!brief.empty()) {
+        if (!m_detail.brief.empty()) {
             const float limit = std::max(24.0f, H - 62 - 12 - 18);  // leave room for the link
-            const float maxH = m_artistBriefExpanded ? limit : std::min(48.0f, limit);
-            auto briefLayout = MakeWrappedText(brief, 12.0f, DWRITE_FONT_WEIGHT_NORMAL, textW, maxH);
+            const float maxH = m_detailBriefExpanded ? limit : std::min(48.0f, limit);
+            auto briefLayout = MakeWrappedText(m_detail.brief, 12.0f, DWRITE_FONT_WEIGHT_NORMAL, textW, maxH);
             dc->DrawTextLayout({textX, 62}, briefLayout.get(), faint.get());
         }
     });
-    Place(m_artistHeader, rect);  // Repaint resets the visual to its surface origin
+    Place(m_detailHeader, rect);  // Repaint resets the visual to its surface origin
 }
 
-void MainWindow::RepaintArtistHeader() {
-    if (!m_artistHeader || m_view.kind != View::Kind::NeteaseArtist) return;
-    PaintArtistHeader();
-    if (Widget* follow = WidgetById(kArtistFollow)) follow->Invalidate();
-    if (Widget* brief = WidgetById(kArtistBriefToggle)) brief->Invalidate();
+void MainWindow::RepaintDetailHeader() {
+    if (!m_detailHeader) return;
+    m_detail = BuildDetailHeader();
+    if (!m_detail.visible) return;
+    PaintDetailHeader();
+    if (Widget* action = WidgetById(kDetailAction)) action->Invalidate();
+    if (Widget* brief = WidgetById(kDetailBriefToggle)) brief->Invalidate();
 }
 
-float MainWindow::ArtistHeaderTextWidth() const {
+float MainWindow::DetailHeaderTextWidth() const {
     const Layout& L = m_layout;
     const float s = m_scale;
-    const float textX = 18 + kArtistAvatar + 18;
-    const float right = (m_artist && m_artist->followKnown)
-                            ? (L.artistFollow.left - L.artistHeader.left) / s - 18.0f
-                            : (L.artistHeader.right - L.artistHeader.left) / s - 18.0f;
+    const float textX = 18 + kDetailArt + 18;
+    const float right = m_detail.actionKnown ? (L.detailAction.left - L.detailHeader.left) / s - 18.0f
+                                            : (L.detailHeader.right - L.detailHeader.left) / s - 18.0f;
     return std::max(120.0f, right - textX);
 }
 
+void MainWindow::OnDetailAction() {
+    switch (m_view.kind) {
+    case View::Kind::NeteaseArtist: ToggleArtistFollow(); break;
+    case View::Kind::NeteaseAlbum: ToggleAlbumCollected(); break;
+    case View::Kind::NeteasePlaylist: TogglePlaylistSubscribed(); break;
+    default: break;
+    }
+}
+
 void MainWindow::ToggleArtistFollow() {
-    if (!m_artist || !m_artist->followKnown || m_followPending) return;
+    if (!m_artist || !m_artist->followKnown || m_detailActionPending) return;
     if (!netease::Provider::Get().LoggedIn()) {
         ShowNeteaseLogin();
         return;
     }
     const bool next = !m_artist->followed;
     m_artist->followed = next;
-    m_followPending = true;
-    RepaintArtistHeader();
+    m_detailActionPending = true;
+    RepaintDetailHeader();
     const int64_t id = m_artist->id;
     netease::Provider::Get().SetArtistFollow(id, next, [this, id, next](bool ok, std::wstring error) {
         (void)error;
-        m_followPending = false;
+        m_detailActionPending = false;
         if (m_view.kind == View::Kind::NeteaseArtist && m_artist && m_artist->id == id) {
             if (!ok) m_artist->followed = !next;
-            RepaintArtistHeader();
+            RepaintDetailHeader();
         }
+    });
+}
+
+void MainWindow::ToggleAlbumCollected() {
+    if (m_detailActionPending) return;
+    if (!netease::Provider::Get().LoggedIn()) {
+        ShowNeteaseLogin();
+        return;
+    }
+    const int64_t id = static_cast<int64_t>(_wcstoi64(m_view.remoteId.c_str(), nullptr, 10));
+    if (!id) return;
+    bool collected = false;
+    for (const auto& album : netease::Provider::Get().CollectedAlbums())
+        if (album.id == id) {
+            collected = true;
+            break;
+        }
+    m_detailActionPending = true;
+    netease::Provider::Get().SetAlbumCollected(id, !collected, [this, id](bool ok, std::wstring error) {
+        (void)error;
+        m_detailActionPending = false;
+        if (ok && m_view.kind == View::Kind::NeteaseAlbum && m_view.remoteId == std::to_wstring(id))
+            RepaintDetailHeader();
+    });
+}
+
+void MainWindow::TogglePlaylistSubscribed() {
+    if (m_detailActionPending) return;
+    if (!netease::Provider::Get().LoggedIn()) {
+        ShowNeteaseLogin();
+        return;
+    }
+    const int64_t id = static_cast<int64_t>(_wcstoi64(m_view.remoteId.c_str(), nullptr, 10));
+    if (!id) return;
+    bool collected = netease::Provider::Get().FindPlaylistScope(id) ==
+                     netease::Provider::PlaylistScope::Collected;
+    if (m_playlistDetail && m_playlistDetail->id == id && m_playlistDetail->subscribed) collected = true;
+    m_detailActionPending = true;
+    netease::Provider::Get().SetPlaylistSubscribed(id, !collected, [this, id](bool ok, std::wstring error) {
+        (void)error;
+        m_detailActionPending = false;
+        if (ok && m_view.kind == View::Kind::NeteasePlaylist && m_view.remoteId == std::to_wstring(id))
+            RepaintDetailHeader();
     });
 }
 
@@ -2930,6 +3151,61 @@ std::vector<ContextAction> MainWindow::BuildContextActions(metadb_handle_list_cr
                            }});
     }
     return actions;
+}
+
+void MainWindow::ShowPageContextMenu(POINT screen) {
+    std::vector<MenuAction> actions;
+    switch (m_view.kind) {
+    case View::Kind::NeteaseArtist:
+        ShowArtistPageMenu(screen, false, 0, {});
+        return;
+    case View::Kind::NeteaseAlbum: {
+        const int64_t id = static_cast<int64_t>(_wcstoi64(m_view.remoteId.c_str(), nullptr, 10));
+        if (!id || !netease::Provider::Get().LoggedIn()) return;
+        bool collected = false;
+        for (const auto& album : netease::Provider::Get().CollectedAlbums())
+            if (album.id == id) {
+                collected = true;
+                break;
+            }
+        actions.push_back({collected ? L"Uncollect album" : L"Collect album", [id, collected] {
+                               netease::Provider::Get().SetAlbumCollected(id, !collected);
+                           }});
+        break;
+    }
+    case View::Kind::NeteasePlaylist: {
+        const int64_t id = static_cast<int64_t>(_wcstoi64(m_view.remoteId.c_str(), nullptr, 10));
+        if (!id || !netease::Provider::Get().LoggedIn()) return;
+        const auto scope = netease::Provider::Get().FindPlaylistScope(id);
+        const auto account = netease::Provider::Get().CurrentAccount();
+        const bool own = scope == netease::Provider::PlaylistScope::Created ||
+                         (m_playlistDetail && account.userId && m_playlistDetail->creatorId == account.userId);
+        if (own) return;
+        bool collected = scope == netease::Provider::PlaylistScope::Collected ||
+                         (m_playlistDetail && m_playlistDetail->subscribed);
+        actions.push_back({collected ? L"Uncollect playlist" : L"Collect playlist", [id, collected] {
+                               netease::Provider::Get().SetPlaylistSubscribed(id, !collected);
+                           }});
+        break;
+    }
+    case View::Kind::NeteaseArtistSongs: {
+        const int64_t id = static_cast<int64_t>(_wcstoi64(m_view.remoteId.c_str(), nullptr, 10));
+        if (!id || !netease::Provider::Get().LoggedIn()) return;
+        bool followed = false;
+        for (const auto& artist : netease::Provider::Get().FollowedArtists())
+            if (artist.id == id) {
+                followed = true;
+                break;
+            }
+        actions.push_back({followed ? L"Unfollow artist" : L"Follow artist", [id, followed] {
+                               netease::Provider::Get().SetArtistFollow(id, !followed);
+                           }});
+        break;
+    }
+    default:
+        return;
+    }
+    if (!actions.empty()) ShowActionMenu(m_hwnd, screen, actions);
 }
 
 void MainWindow::ShowArtistPageMenu(POINT screen, bool hotSongs, int64_t albumId, std::wstring name) {
@@ -4357,8 +4633,8 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
             ShowPlaylistMenu(playlistMenu ? item->playlist : SIZE_MAX, screen);
             return 0;
         }
-        if (m_view.kind == View::Kind::NeteaseArtist && PtInRect(&m_layout.artistHeader, pt)) {
-            ShowArtistPageMenu(screen, false, 0, {});
+        if (PtInRect(&m_layout.detailHeader, pt) && m_detail.visible) {
+            ShowPageContextMenu(screen);
             return 0;
         }
         if (pt.y >= m_layout.client.top) {

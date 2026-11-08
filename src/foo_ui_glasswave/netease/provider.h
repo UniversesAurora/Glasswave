@@ -53,6 +53,9 @@ public:
         std::function<void(std::wstring brief, std::wstring full, std::wstring error)>;
     using ArtistAlbumsCallback =
         std::function<void(std::vector<Album> albums, bool more, bool followedKnown, bool followed, std::wstring error)>;
+    using AlbumDetailCallback =
+        std::function<void(Album album, std::vector<Song> songs, std::wstring error)>;
+    using CreatePlaylistCallback = std::function<void(bool ok, int64_t id, std::wstring error)>;
 
     void StartService(DoneCallback done = {});
     void RefreshAccount(DoneCallback done = {});
@@ -67,7 +70,7 @@ public:
     void FetchArtistDescription(int64_t artistId, ArtistDescriptionCallback done);
     void FetchArtistAlbumsPage(int64_t artistId, int offset, int limit, ArtistAlbumsCallback done);
     void FetchArtistSongsPage(int64_t artistId, int offset, int limit, SongsPageCallback done);
-    void FetchAlbumSongs(int64_t albumId, SongsCallback done);
+    void FetchAlbumDetail(int64_t albumId, AlbumDetailCallback done);
     void FetchAlbumTracks(std::vector<Album> albums, SongsCallback done);
     void Search(std::wstring_view query, SongsCallback done);
     void ToggleLike(int64_t songId, bool like, DoneCallback done = {});
@@ -75,6 +78,8 @@ public:
     void AddToPlaylist(int64_t playlistId, std::vector<int64_t> songIds, DoneCallback done = {});
     void RemoveFromPlaylist(int64_t playlistId, std::vector<int64_t> songIds, DoneCallback done = {});
     void SetAlbumCollected(int64_t albumId, bool collected, DoneCallback done = {});
+    void SetPlaylistSubscribed(int64_t playlistId, bool subscribed, DoneCallback done = {});
+    void CreatePlaylist(std::wstring name, CreatePlaylistCallback done);
 
     void OnLoginCookie(std::wstring cookie, DoneCallback done = {});
     void Logout();
@@ -90,6 +95,11 @@ private:
     bool RequireLogin(std::wstring& error) const;
     bool EnsureAccount(abort_callback& abort, int64_t& userId, std::wstring& error);
     void SetAccountLocked(const Account& account);
+    // Updates the catalog and the cached playlists with a fresh summary (cover, name,
+    // count). Worker thread; the caller posts NotifyChanged afterwards.
+    void ApplyPlaylistInfo(const Playlist& info);
+    // Re-reads the user's playlists after a create/delete so the navigation lists stay exact.
+    bool ReloadUserPlaylists(abort_callback& abort, int64_t userId, std::wstring& error);
 
     ServiceManager& m_service;
     Client m_client;

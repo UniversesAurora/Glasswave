@@ -45,6 +45,8 @@ public:
     std::function<void(size_t group, size_t line)> onLink;
     // The visible bottom has reached the last lines (used to load the next album page).
     std::function<void()> onNearEnd;
+    // Right-click on empty space: the page's own actions (follow, collect, ...).
+    std::function<void(POINT screen)> onEmptyContext;
 
 private:
     enum class Mode { Plain, Grouped, Tiles };

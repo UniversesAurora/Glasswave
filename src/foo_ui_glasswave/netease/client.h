@@ -52,6 +52,10 @@ public:
     bool UserPlaylists(int64_t userId, abort_callback& abort, std::vector<Playlist>& out, int64_t& likedPlaylist,
                        std::wstring& error);
     bool GetPlaylist(int64_t playlistId, abort_callback& abort, PlaylistDetail& out, std::wstring& error);
+    // The playlist's metadata only (name, cover, description, counts); also bypasses the
+    // helper's GET cache so a cover that changed after an edit is seen immediately.
+    bool GetPlaylistInfo(int64_t playlistId, abort_callback& abort, Playlist& out, std::wstring& error);
+    bool SetPlaylistSubscribed(int64_t playlistId, bool subscribed, abort_callback& abort, std::wstring& error);
     bool RecommendPlaylists(abort_callback& abort, std::vector<Playlist>& out, std::wstring& error);
     bool SearchSongs(std::wstring_view query, int limit, int offset, abort_callback& abort, std::vector<Song>& out,
                      std::wstring& error);

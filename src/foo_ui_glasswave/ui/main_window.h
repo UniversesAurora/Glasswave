@@ -51,8 +51,8 @@ private:
         RECT back{}, forward{}, breadcrumb{}, navGroove{};
         RECT organize{}, addFiles{}, addFolder{}, newPlaylist{}, search{}, viewOptions{};
         RECT navPane{}, list{};
-        RECT artistHeader{}, artistFollow{};  // NetEase artist pages
-        RECT artistBriefToggle{};
+        RECT detailHeader{}, detailAction{};  // NetEase detail pages: artist, album, playlist
+        RECT detailBriefToggle{};
         RECT seek{}, capsule{}, divider{}, shuffle{}, repeat{}, stop{}, prev{}, next{}, play{}, mute{}, volume{};
         RECT nowPlaying{}, time{}, stream{};
         POINT cluster{};  // origin of the WMP 12 transport cluster bitmap
@@ -158,10 +158,27 @@ private:
     void OpenNeteaseArtist(int64_t id, std::wstring name);
     void OpenNeteaseAlbum(int64_t id, std::wstring name, std::wstring parentId = {}, std::wstring parentName = {});
     void OpenNeteaseArtistSongs(int64_t artistId, std::wstring name);
-    void PaintArtistHeader();
-    void RepaintArtistHeader();
-    float ArtistHeaderTextWidth() const;  // DIP available for the name, stats and description
+    struct DetailHeader {
+        enum class Action { None, Follow, Collect };
+        bool visible = false;
+        std::wstring title, subtitle, brief;
+        std::wstring artKey;
+        metadb_handle_ptr artTrack;
+        bool artIsArtist = false;
+        Action action = Action::None;
+        bool actionKnown = false;
+        bool actionOn = false;
+        std::wstring actionLabel;
+    };
+    DetailHeader BuildDetailHeader() const;
+    void PaintDetailHeader();
+    void RepaintDetailHeader();
+    float DetailHeaderTextWidth() const;  // DIP available for the name, stats and description
+    void OnDetailAction();
     void ToggleArtistFollow();
+    void ToggleAlbumCollected();
+    void TogglePlaylistSubscribed();
+    void ShowPageContextMenu(POINT screen);  // actions for the page itself (no selected item)
     // Context-menu "Go to artist" destinations for the first item (NetEase or local).
     std::vector<ArtistLink> BuildArtistLinks(metadb_handle_list_cref items);
     std::vector<ContextAction> BuildContextActions(metadb_handle_list_cref items);
@@ -266,14 +283,17 @@ private:
     winrt::Windows::UI::Composition::SpriteVisual m_title{nullptr};
     winrt::Windows::UI::Composition::SpriteVisual m_nowPlaying{nullptr};
     winrt::Windows::UI::Composition::SpriteVisual m_breadcrumb{nullptr};
-    winrt::Windows::UI::Composition::SpriteVisual m_artistHeader{nullptr};
-    SIZE m_artistHeaderSize{};
-    std::optional<netease::Artist> m_artist;  // the NetEase artist page on screen
+    winrt::Windows::UI::Composition::SpriteVisual m_detailHeader{nullptr};
+    SIZE m_detailHeaderSize{};
+    DetailHeader m_detail;                       // rebuilt by UpdateLayout for the current page
+    std::optional<netease::Artist> m_artist;     // the NetEase artist page on screen
+    std::optional<netease::Album> m_albumDetail; // the NetEase album page on screen
+    std::optional<netease::Playlist> m_playlistDetail;  // the NetEase playlist page on screen
     std::vector<netease::Album> m_artistAlbums;  // its albums, kept for the view-style switch
     std::vector<netease::Song> m_artistSongs;    // expanded-tile contents, cached per artist
     std::wstring m_artistSongsId;
-    bool m_artistBriefExpanded = false;
-    bool m_artistBriefOverflow = false;
+    bool m_detailBriefExpanded = false;
+    bool m_detailBriefOverflow = false;
     size_t m_artistAlbumOffset = 0;     // API offset for the next album metadata page
     size_t m_artistTracksLoaded = 0;    // albums whose tracks are in m_artistSongs
     bool m_artistAlbumsMore = true;
@@ -288,7 +308,7 @@ private:
     size_t m_collectedAlbumOffset = 0;
     bool m_collectedAlbumsLoading = false;
     bool m_startAlbumPage = false;  // start the first page once Navigate has set the view
-    bool m_followPending = false;
+    bool m_detailActionPending = false;
     int m_artistArtToken = 0;
     winrt::com_ptr<IWICBitmapSource> m_icon, m_art;
 

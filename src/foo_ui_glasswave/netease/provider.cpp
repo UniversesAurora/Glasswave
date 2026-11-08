@@ -225,6 +225,43 @@ void Provider::StartService(DoneCallback done) {
     });
 }
 
+bool Provider::ReloadUserPlaylists(abort_callback& abort, int64_t userId, std::wstring& error) {
+    std::vector<Playlist> playlists;
+    int64_t likedPlaylist = 0;
+    if (!m_client.UserPlaylists(userId, abort, playlists, likedPlaylist, error)) return false;
+    for (const auto& playlist : playlists) Catalog::Get().Put(playlist);
+    std::vector<Playlist> created, collected;
+    for (auto& playlist : playlists)
+        (playlist.creatorId == userId ? created : collected).push_back(std::move(playlist));
+    std::lock_guard lock(m_mutex);
+    m_createdPlaylists = std::move(created);
+    m_collectedPlaylists = std::move(collected);
+    m_likedPlaylist = likedPlaylist;
+    return true;
+}
+
+void Provider::ApplyPlaylistInfo(const Playlist& info) {
+    if (!info.id) return;
+    Catalog::Get().Put(info);
+    std::lock_guard lock(m_mutex);
+    auto update = [&info](std::vector<Playlist>& list) {
+        for (auto& playlist : list) {
+            if (playlist.id != info.id) continue;
+            playlist.name = info.name;
+            playlist.coverUrl = info.coverUrl;
+            playlist.trackCount = info.trackCount;
+            playlist.creatorId = info.creatorId;
+            playlist.creatorName = info.creatorName;
+            playlist.description = info.description;
+            playlist.subscribed = info.subscribed;
+            return;
+        }
+    };
+    update(m_createdPlaylists);
+    update(m_collectedPlaylists);
+    update(m_recommendedPlaylists);
+}
+
 void Provider::RefreshAccount(DoneCallback done) {
     m_tasks.Post([this, done = std::move(done)] {
         if (m_stopping) return;
@@ -775,14 +812,14 @@ void Provider::FetchArtistSongsPage(int64_t artistId, int offset, int limit, Son
     });
 }
 
-void Provider::FetchAlbumSongs(int64_t albumId, SongsCallback done) {
+void Provider::FetchAlbumDetail(int64_t albumId, AlbumDetailCallback done) {
     m_tasks.Post([this, albumId, done = std::move(done)] {
         if (m_stopping) return;
         abort_callback_impl abort;
         std::wstring error;
         if (!m_service.EnsureStarted(abort, &error)) {
             PostMain([done = std::move(done), error] {
-                if (done) done({}, ErrorOf(error));
+                if (done) done({}, {}, ErrorOf(error));
             });
             return;
         }
@@ -790,14 +827,14 @@ void Provider::FetchAlbumSongs(int64_t albumId, SongsCallback done) {
         std::vector<Song> songs;
         if (!m_client.GetAlbum(albumId, abort, info, songs, error)) {
             PostMain([done = std::move(done), error] {
-                if (done) done({}, ErrorOf(error));
+                if (done) done({}, {}, ErrorOf(error));
             });
             return;
         }
         Catalog::Get().Put(info);
-        PostMain([done = std::move(done), songs = std::move(songs)]() mutable {
+        PostMain([done = std::move(done), info, songs = std::move(songs)]() mutable {
             Catalog::Get().PutAndHint(songs);
-            if (done) done(std::move(songs), {});
+            if (done) done(info, std::move(songs), {});
         });
     });
 }
@@ -907,10 +944,20 @@ void Provider::AddToPlaylist(int64_t playlistId, std::vector<int64_t> songIds, D
         abort_callback_impl abort;
         std::wstring error;
         bool ok = false;
-        if (m_service.EnsureStarted(abort, &error)) ok = m_client.AddToPlaylist(playlistId, songIds, abort, error);
+        if (m_service.EnsureStarted(abort, &error)) {
+            ok = m_client.AddToPlaylist(playlistId, songIds, abort, error);
+            if (ok) {
+                // The server regenerates the playlist cover and count after an edit; one
+                // lightweight summary request keeps our tiles and navigation in step.
+                Playlist info;
+                std::wstring infoError;
+                if (m_client.GetPlaylistInfo(playlistId, abort, info, infoError)) ApplyPlaylistInfo(info);
+            }
+        }
         PostMain([done = std::move(done), ok, error] {
             if (done) done(ok, ok ? std::wstring() : ErrorOf(error));
         });
+        if (ok) NotifyChanged();
     });
 }
 
@@ -929,11 +976,18 @@ void Provider::RemoveFromPlaylist(int64_t playlistId, std::vector<int64_t> songI
         abort_callback_impl abort;
         std::wstring error;
         bool ok = false;
-        if (m_service.EnsureStarted(abort, &error))
+        if (m_service.EnsureStarted(abort, &error)) {
             ok = m_client.RemoveFromPlaylist(playlistId, songIds, abort, error);
+            if (ok) {
+                Playlist info;
+                std::wstring infoError;
+                if (m_client.GetPlaylistInfo(playlistId, abort, info, infoError)) ApplyPlaylistInfo(info);
+            }
+        }
         PostMain([done = std::move(done), ok, error] {
             if (done) done(ok, ok ? std::wstring() : ErrorOf(error));
         });
+        if (ok) NotifyChanged();
     });
 }
 
@@ -963,6 +1017,104 @@ void Provider::SetAlbumCollected(int64_t albumId, bool collected, DoneCallback d
         PostMain([done = std::move(done), ok, error] {
             if (done) done(ok, ok ? std::wstring() : ErrorOf(error));
         });
+        if (ok) NotifyChanged();
+    });
+}
+
+void Provider::SetPlaylistSubscribed(int64_t playlistId, bool subscribed, DoneCallback done) {
+    std::wstring loginError;
+    if (!RequireLogin(loginError)) {
+        if (done) done(false, loginError);
+        return;
+    }
+    m_tasks.Post([this, playlistId, subscribed, done = std::move(done)] {
+        if (m_stopping) return;
+        abort_callback_impl abort;
+        std::wstring error;
+        bool ok = false;
+        if (m_service.EnsureStarted(abort, &error)) {
+            ok = m_client.SetPlaylistSubscribed(playlistId, subscribed, abort, error);
+            if (ok) {
+                Playlist info;
+                std::wstring infoError;
+                if (m_client.GetPlaylistInfo(playlistId, abort, info, infoError)) {
+                    info.subscribed = subscribed;
+                    ApplyPlaylistInfo(info);
+                }
+                int64_t userId = 0;
+                {
+                    std::lock_guard lock(m_mutex);
+                    userId = m_account.userId;
+                }
+                Playlist known;
+                {
+                    std::lock_guard lock(m_mutex);
+                    for (const auto& playlist : m_collectedPlaylists)
+                        if (playlist.id == playlistId) known = playlist;
+                    if (!known.id)
+                        for (const auto& playlist : m_recommendedPlaylists)
+                            if (playlist.id == playlistId) known = playlist;
+                }
+                if (!known.id) known = Catalog::Get().FindPlaylist(playlistId).value_or(Playlist{});
+                known.id = known.id ? known.id : playlistId;
+                known.subscribed = subscribed;
+                Catalog::Get().Put(known);
+                std::lock_guard lock(m_mutex);
+                auto it = std::find_if(m_collectedPlaylists.begin(), m_collectedPlaylists.end(),
+                                       [playlistId](const Playlist& playlist) { return playlist.id == playlistId; });
+                if (subscribed && it == m_collectedPlaylists.end() && known.creatorId != userId)
+                    m_collectedPlaylists.push_back(known);
+                else if (!subscribed && it != m_collectedPlaylists.end())
+                    m_collectedPlaylists.erase(it);
+            }
+        }
+        PostMain([done = std::move(done), ok, error] {
+            if (done) done(ok, ok ? std::wstring() : ErrorOf(error));
+        });
+        if (ok) NotifyChanged();
+    });
+}
+
+void Provider::CreatePlaylist(std::wstring name, CreatePlaylistCallback done) {
+    if (name.empty()) {
+        if (done) done(false, 0, L"The playlist name is empty.");
+        return;
+    }
+    std::wstring loginError;
+    if (!RequireLogin(loginError)) {
+        if (done) done(false, 0, loginError);
+        return;
+    }
+    m_tasks.Post([this, name = std::move(name), done = std::move(done)] {
+        if (m_stopping) return;
+        abort_callback_impl abort;
+        std::wstring error;
+        if (!m_service.EnsureStarted(abort, &error)) {
+            PostMain([done = std::move(done), error] {
+                if (done) done(false, 0, ErrorOf(error));
+            });
+            return;
+        }
+        int64_t userId = 0;
+        if (!EnsureAccount(abort, userId, error)) {
+            PostMain([done = std::move(done), error] {
+                if (done) done(false, 0, ErrorOf(error));
+            });
+            return;
+        }
+        int64_t id = 0;
+        if (!m_client.CreatePlaylist(name, abort, id, error)) {
+            PostMain([done = std::move(done), error] {
+                if (done) done(false, 0, ErrorOf(error));
+            });
+            return;
+        }
+        std::wstring listError;
+        ReloadUserPlaylists(abort, userId, listError);  // a failed reload must not hide the created playlist
+        PostMain([done = std::move(done), id] {
+            if (done) done(true, id, {});
+        });
+        NotifyChanged();
     });
 }
 
