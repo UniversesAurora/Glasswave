@@ -1,6 +1,7 @@
 #include "pch.h"
 #include <filesystem>
 #include <fstream>
+#include <cstring>
 #include <ctime>
 #include <cwchar>
 #include <cwctype>
@@ -335,6 +336,7 @@ struct MainWindow::PlayCallback : play_callback_impl_base {
     }
     void on_playback_new_track(metadb_handle_ptr track) override {
         media::PlayStats::Get().Record(track);
+        window.RefreshPlayCounts();
         window.OnShuffleTrack();
         window.OnTrackChanged();
         window.OnPlaybackStateChanged();
@@ -1591,9 +1593,7 @@ std::vector<MenuAction> MainWindow::LibraryMenu() {
     local.kind = View::Kind::AllMusic;
     View netease;
     netease.library = View::Library::Netease;
-    netease.kind = View::Kind::NeteasePlaylists;
-    netease.neteaseScope = View::NeteaseScope::Created;
-    netease.scopeKnown = true;
+    netease.kind = View::Kind::NeteaseLiked;
     return {{L"All Music", go(all)}, {L"Local Music", go(local)}, {L"NetEase Cloud Music", go(netease)}};
 }
 
@@ -1861,9 +1861,7 @@ std::vector<MainWindow::Crumb> MainWindow::BuildCrumbPath() {
     case View::Library::Netease: {
         View home;
         home.library = View::Library::Netease;
-        home.kind = View::Kind::NeteasePlaylists;
-        home.neteaseScope = View::NeteaseScope::Created;
-        home.scopeKnown = true;
+        home.kind = View::Kind::NeteaseLiked;
         path.push_back({L"NetEase Cloud Music", go(home), [this] { return NeteaseSectionsMenu(); }});
         switch (m_view.kind) {
         case View::Kind::NeteaseLiked:
@@ -3456,6 +3454,15 @@ std::vector<ArtistLink> MainWindow::BuildArtistLinks(metadb_handle_list_cref ite
 std::vector<ContextAction> MainWindow::BuildContextActions(metadb_handle_list_cref items) {
     std::vector<ContextAction> actions;
     if (items.get_count() == 0) return actions;
+    metadb_handle_list selected;
+    selected.add_items(items);
+    if (m_view.kind == View::Kind::Playlist && media::IsQueue(m_view.playlist)) {
+        actions.push_back({L"Remove from Now Playing", [this, selected] { RemoveFromNowPlaying(selected); }});
+    } else if (m_view.kind == View::Kind::AllRecentPlayed) {
+        actions.push_back({L"Remove from Recently Played", [this, selected] { ForgetPlayStats(selected, true); }});
+    } else if (m_view.kind == View::Kind::AllMostPlayed) {
+        actions.push_back({L"Remove from Most Played", [this, selected] { ForgetPlayStats(selected, false); }});
+    }
     const metadb_handle_ptr& first = items[0];
     int64_t firstSong = 0;
     if (first.is_valid() && netease::ParseSongPath(first->get_path(), firstSong)) {
@@ -3578,8 +3585,62 @@ std::vector<ContextAction> MainWindow::BuildContextActions(metadb_handle_list_cr
     return actions;
 }
 
-std::vector<std::pair<int64_t, std::wstring>> MainWindow::LocalPlaylistTargets(size_t exclude) {
+void MainWindow::RemoveFromNowPlaying(metadb_handle_list_cref items) {
+    const t_size queue = media::QueuePlaylist(false);
+    if (queue == SIZE_MAX || items.get_count() == 0) return;
     auto pm = playlist_manager::get();
+    const t_size count = pm->playlist_get_item_count(queue);
+    if (!count) return;
+    metadb_handle_list all;
+    pm->playlist_get_all_items(queue, all);
+    auto same = [](const metadb_handle_ptr& a, const metadb_handle_ptr& b) {
+        return a.is_valid() && b.is_valid() && std::strcmp(a->get_path(), b->get_path()) == 0 &&
+               a->get_subsong_index() == b->get_subsong_index();
+    };
+    t_size playingPlaylist = SIZE_MAX, playingIndex = SIZE_MAX;
+    const bool playing = pm->get_playing_item_location(&playingPlaylist, &playingIndex);
+    bool removesPlaying = false;
+    pfc::bit_array_bittable mask(count);
+    for (t_size i = 0; i < count; ++i)
+        for (t_size j = 0; j < items.get_count(); ++j) {
+            if (!same(all[i], items[j])) continue;
+            mask.set(i, true);
+            if (playing && playingPlaylist == queue && playingIndex == i) removesPlaying = true;
+            break;
+        }
+    pm->playlist_undo_backup(queue);
+    pm->playlist_remove_items(queue, mask);
+    if (!removesPlaying) return;
+    // Removing the playing song continues with the one that moved into its place;
+    // when the queue is empty, playback stops.
+    const t_size remaining = pm->playlist_get_item_count(queue);
+    if (!remaining) {
+        playback_control::get()->stop();
+        return;
+    }
+    const t_size next = std::min<t_size>(playingIndex, remaining - 1);
+    pm->playlist_set_focus_item(queue, next);
+    pm->playlist_execute_default_action(queue, next);
+}
+
+void MainWindow::ForgetPlayStats(metadb_handle_list_cref items, bool recent) {
+    if (recent) media::PlayStats::Get().ForgetRecent(items);
+    else media::PlayStats::Get().ClearCounts(items);
+    const size_t top = m_list ? m_list->TopRow() : SIZE_MAX;
+    Navigate(m_view, false);
+    if (m_list && top != SIZE_MAX && m_source && m_source->Count())
+        m_list->ScrollToRow(std::min(top, m_source->Count() - 1));
+}
+
+void MainWindow::RefreshPlayCounts() {
+    if (!m_list) return;
+    if (auto* source = dynamic_cast<ui::SongTableSource*>(m_source.get())) {
+        source->RefreshPlayCounts();
+        m_list->Refresh();
+    }
+}
+
+std::vector<std::pair<int64_t, std::wstring>> MainWindow::LocalPlaylistTargets(size_t exclude) {    auto pm = playlist_manager::get();
     std::vector<std::pair<int64_t, std::wstring>> out;
     for (t_size p = 0; p < pm->get_playlist_count(); ++p) {
         if (p == exclude || media::IsQueue(p) || media::IsAutoPlaylist(p)) continue;
@@ -4348,8 +4409,7 @@ void MainWindow::OnNavItem(const NavPane::Item& item) {
         break;
     case NavPane::Target::LibraryNetease:
         v.library = View::Library::Netease;
-        v.kind = View::Kind::NeteasePlaylists;
-        v.neteaseScope = View::NeteaseScope::Created;
+        v.kind = View::Kind::NeteaseLiked;
         break;
     case NavPane::Target::NeteaseCreatedHeader:
         v.library = View::Library::Netease;

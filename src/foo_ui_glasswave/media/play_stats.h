@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace glasswave::media {
@@ -31,6 +32,10 @@ public:
     void Record(const metadb_handle_ptr& track);  // a track started playing
     // The stored count of this track (0 when it has never been recorded).
     uint32_t CountFor(const metadb_handle_ptr& track);
+    // Drops the last-played time (the track leaves Recently Played) but keeps the count.
+    void ForgetRecent(metadb_handle_list_cref items);
+    // Resets the count (the track leaves Most Played) but keeps the last-played time.
+    void ClearCounts(metadb_handle_list_cref items);
     std::vector<PlayRecord> Recent(size_t limit);
     std::vector<PlayRecord> MostPlayed(size_t limit);
 
@@ -38,8 +43,10 @@ private:
     void Load();
     void Save() const;
     void Prune();
+    void RebuildIndex();
 
     std::vector<PlayRecord> m_records;
+    std::unordered_map<std::string, size_t> m_index;
     bool m_loaded = false;
 };
 

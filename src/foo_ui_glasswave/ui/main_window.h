@@ -199,6 +199,9 @@ private:
     // Context-menu "Go to artist" destinations for the first item (NetEase or local).
     std::vector<ArtistLink> BuildArtistLinks(metadb_handle_list_cref items);
     std::vector<ContextAction> BuildContextActions(metadb_handle_list_cref items);
+    void RemoveFromNowPlaying(metadb_handle_list_cref items);
+    void ForgetPlayStats(metadb_handle_list_cref items, bool recent);
+    void RefreshPlayCounts();  // after a track starts, updates the visible count column
     // Whole playlist/album contents: play, play next, enqueue, copy to a local playlist or
     // add to a NetEase playlist.
     enum class BulkAction { Play, PlayNext, Enqueue, LocalPlaylist, NeteasePlaylist };

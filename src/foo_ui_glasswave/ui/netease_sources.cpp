@@ -259,6 +259,10 @@ void SongTableSource::ShowPlayCount() {
     SetViewStyle(m_style);
 }
 
+void SongTableSource::RefreshPlayCounts() {
+    for (auto& row : m_all) row.playCount = media::PlayStats::Get().CountFor(row.handle);
+}
+
 std::pair<std::wstring, std::wstring> SongTableSource::GroupInfo(size_t row) const {
     if (m_sortColumn >= m_fields.size()) return {L"", L""};
     const SongTableRow& item = m_all[row];

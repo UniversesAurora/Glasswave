@@ -144,6 +144,7 @@ void PlayStats::Load() {
         m_records.push_back(std::move(record));
     }
     Prune();
+    RebuildIndex();
 }
 
 void PlayStats::Save() const {
@@ -175,6 +176,11 @@ void PlayStats::Prune() {
                     m_records.begin() + static_cast<std::ptrdiff_t>(m_records.size() - kMaxRecords));
 }
 
+void PlayStats::RebuildIndex() {
+    m_index.clear();
+    for (size_t i = 0; i < m_records.size(); ++i) m_index[m_records[i].key] = i;
+}
+
 void PlayStats::Record(const metadb_handle_ptr& track) {
     if (!track.is_valid()) return;
     if (!m_loaded) Load();
@@ -183,12 +189,9 @@ void PlayStats::Record(const metadb_handle_ptr& track) {
     int64_t songId = 0;
     if (!RecordKey(track, key, path, remote, songId)) return;
     PlayRecord* record = nullptr;
-    for (auto& entry : m_records)
-        if (entry.key == key) {
-            record = &entry;
-            break;
-        }
+    if (auto it = m_index.find(key); it != m_index.end()) record = &m_records[it->second];
     if (!record) {
+        m_index[key] = m_records.size();
         m_records.push_back({});
         record = &m_records.back();
         record->key = key;
@@ -221,7 +224,9 @@ void PlayStats::Record(const metadb_handle_ptr& track) {
     }
     ++record->count;
     record->lastPlayed = static_cast<int64_t>(time(nullptr));
+    const size_t before = m_records.size();
     Prune();
+    if (m_records.size() != before) RebuildIndex();
     Save();
 }
 
@@ -232,13 +237,58 @@ uint32_t PlayStats::CountFor(const metadb_handle_ptr& track) {
     bool remote = false;
     int64_t songId = 0;
     if (!RecordKey(track, key, path, remote, songId)) return 0;
-    for (const auto& record : m_records)
-        if (record.key == key) return record.count;
-    return 0;
+    auto it = m_index.find(key);
+    return it != m_index.end() ? m_records[it->second].count : 0;
 }
 
-std::vector<PlayRecord> PlayStats::Recent(size_t limit) {    if (!m_loaded) Load();
-    std::vector<PlayRecord> out = m_records;
+void PlayStats::ForgetRecent(metadb_handle_list_cref items) {
+    if (!m_loaded) Load();
+    bool changed = false;
+    for (size_t i = 0; i < items.get_count(); ++i) {
+        const metadb_handle_ptr& track = items[i];
+        if (!track.is_valid()) continue;
+        std::string key, path;
+        bool remote = false;
+        int64_t songId = 0;
+        if (!RecordKey(track, key, path, remote, songId)) continue;
+        auto it = m_index.find(key);
+        if (it == m_index.end()) continue;
+        PlayRecord& record = m_records[it->second];
+        if (record.lastPlayed) {
+            record.lastPlayed = 0;
+            changed = true;
+        }
+    }
+    if (changed) Save();
+}
+
+void PlayStats::ClearCounts(metadb_handle_list_cref items) {
+    if (!m_loaded) Load();
+    bool changed = false;
+    for (size_t i = 0; i < items.get_count(); ++i) {
+        const metadb_handle_ptr& track = items[i];
+        if (!track.is_valid()) continue;
+        std::string key, path;
+        bool remote = false;
+        int64_t songId = 0;
+        if (!RecordKey(track, key, path, remote, songId)) continue;
+        auto it = m_index.find(key);
+        if (it == m_index.end()) continue;
+        PlayRecord& record = m_records[it->second];
+        if (record.count) {
+            record.count = 0;
+            changed = true;
+        }
+    }
+    if (changed) Save();
+}
+
+std::vector<PlayRecord> PlayStats::Recent(size_t limit) {
+    if (!m_loaded) Load();
+    std::vector<PlayRecord> out;
+    out.reserve(m_records.size());
+    for (const auto& record : m_records)
+        if (record.lastPlayed > 0) out.push_back(record);  // ForgetRecent clears this
     std::sort(out.begin(), out.end(), [](const PlayRecord& a, const PlayRecord& b) {
         return a.lastPlayed != b.lastPlayed ? a.lastPlayed > b.lastPlayed : a.count > b.count;
     });
@@ -248,7 +298,10 @@ std::vector<PlayRecord> PlayStats::Recent(size_t limit) {    if (!m_loaded) Load
 
 std::vector<PlayRecord> PlayStats::MostPlayed(size_t limit) {
     if (!m_loaded) Load();
-    std::vector<PlayRecord> out = m_records;
+    std::vector<PlayRecord> out;
+    out.reserve(m_records.size());
+    for (const auto& record : m_records)
+        if (record.count > 0) out.push_back(record);  // ClearCounts zeroes this
     std::sort(out.begin(), out.end(), [](const PlayRecord& a, const PlayRecord& b) {
         return a.count != b.count ? a.count > b.count : a.lastPlayed > b.lastPlayed;
     });

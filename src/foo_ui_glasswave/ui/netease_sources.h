@@ -70,6 +70,8 @@ public:
     void SetFilter(std::wstring_view filterLower) override;
     // Appends rows (the next album page) without moving existing rows or clearing selection.
     void Append(std::vector<SongTableRow> rows);
+    // Re-reads the play counts (a track started while this list is on screen).
+    void RefreshPlayCounts();
 
 protected:
     // Removes rows (a playlist edit) and returns how many disappeared.
