@@ -621,10 +621,16 @@ void MainWindow::CreateWidgets() {
             CreatePlaylist(false);
     };
 
-    // NetEase artist page: Follow / Following, right-aligned in the header band.
+    // NetEase artist page: Follow / Following, centered in the button.
     add(kArtistFollow, [this](auto* dc, D2D1_SIZE_F s, Layer l) {
         const bool followed = m_artist && m_artist->followed;
-        wp::CommandButton(dc, s, l, Tr(followed ? L"Following" : L"Follow"), false);
+        const std::wstring label = Tr(followed ? L"Following" : L"Follow");
+        wp::CommandButton(dc, s, l, L"", false);  // plate only
+        auto layout =
+            MakeText(label, 12.0f, DWRITE_FONT_WEIGHT_NORMAL, s.width, s.height, DWRITE_TEXT_ALIGNMENT_CENTER);
+        com_ptr<ID2D1SolidColorBrush> ink;
+        dc->CreateSolidColorBrush(Hex(0x1E395B), ink.put());
+        dc->DrawTextLayout({0, 0}, layout.get(), ink.get());
     }, {})->onClick = [this] { ToggleArtistFollow(); };
     if (Widget* follow = WidgetById(kArtistFollow))
         follow->enabled = [this] { return m_artist && m_artist->followKnown && !m_followPending; };
@@ -814,12 +820,21 @@ void MainWindow::UpdateLayout() {
     if (m_view.kind == View::Kind::NeteaseArtist) {
         L.artistHeader = {L.navPane.right, L.content.top, L.content.right,
                           std::min<LONG>(L.content.top + PxI(kArtistHeaderHeight), L.content.bottom)};
-        L.list.top = L.artistHeader.bottom;
         if (m_artist && m_artist->followKnown) {
             const int right = L.artistHeader.right - PxI(18);
             L.artistFollow = {right - PxI(kArtistFollowWidth), L.artistHeader.top + PxI(22), right,
                               L.artistHeader.top + PxI(22 + kArtistFollowHeight)};
         }
+        // The description grows the band instead of being ellipsized.
+        if (m_artist && !m_artist->brief.empty()) {
+            auto layout = MakeWrappedText(m_artist->brief, 12.0f, DWRITE_FONT_WEIGHT_NORMAL, ArtistHeaderTextWidth(), 1000.0f);
+            DWRITE_TEXT_METRICS metrics{};
+            layout->GetMetrics(&metrics);
+            const float needed = 62 + metrics.height + 14;
+            L.artistHeader.bottom =
+                std::min<LONG>(L.content.top + std::max<int>(PxI(kArtistHeaderHeight), PxI(needed)), L.content.bottom);
+        }
+        L.list.top = L.artistHeader.bottom;
     }
 
     // Transport band: seek rule on top, capsule centered on the orb below it.
@@ -2064,10 +2079,7 @@ void MainWindow::PaintArtistHeader() {
         dc->CreateSolidColorBrush(Hex(0x3E5878), sub.put());
         dc->CreateSolidColorBrush(Hex(0x6B7B8E), faint.put());
         const float textX = ax + side + 18;
-        float textW = W - textX - 18;
-        if (m_layout.artistFollow.right > m_layout.artistFollow.left)
-            textW = (m_layout.artistFollow.left - rect.left) / s - textX - 18;
-        textW = std::max(40.0f, textW);
+        const float textW = ArtistHeaderTextWidth();
         auto nameLayout = MakeText(name.empty() ? Tr(L"Artist") : name, 20.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, textW, 30);
         dc->DrawTextLayout({textX, 10}, nameLayout.get(), ink.get());
         if (!stats.empty()) {
@@ -2075,7 +2087,8 @@ void MainWindow::PaintArtistHeader() {
             dc->DrawTextLayout({textX, 42}, statsLayout.get(), sub.get());
         }
         if (!brief.empty()) {
-            auto briefLayout = MakeWrappedText(brief, 12.0f, DWRITE_FONT_WEIGHT_NORMAL, textW, 32);
+            auto briefLayout = MakeWrappedText(brief, 12.0f, DWRITE_FONT_WEIGHT_NORMAL, textW,
+                                               std::max(24.0f, H - 62 - 12));
             dc->DrawTextLayout({textX, 62}, briefLayout.get(), faint.get());
         }
     });
@@ -2086,6 +2099,16 @@ void MainWindow::RepaintArtistHeader() {
     if (!m_artistHeader || m_view.kind != View::Kind::NeteaseArtist) return;
     PaintArtistHeader();
     if (Widget* follow = WidgetById(kArtistFollow)) follow->Invalidate();
+}
+
+float MainWindow::ArtistHeaderTextWidth() const {
+    const Layout& L = m_layout;
+    const float s = m_scale;
+    const float textX = 18 + kArtistAvatar + 18;
+    const float right = (m_artist && m_artist->followKnown)
+                            ? (L.artistFollow.left - L.artistHeader.left) / s - 18.0f
+                            : (L.artistHeader.right - L.artistHeader.left) / s - 18.0f;
+    return std::max(120.0f, right - textX);
 }
 
 void MainWindow::ToggleArtistFollow() {

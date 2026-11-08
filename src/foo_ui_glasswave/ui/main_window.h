@@ -133,6 +133,7 @@ private:
     void OpenNeteaseArtistSongs(int64_t artistId, std::wstring name);
     void PaintArtistHeader();
     void RepaintArtistHeader();
+    float ArtistHeaderTextWidth() const;  // DIP available for the name, stats and description
     void ToggleArtistFollow();
     // Context-menu "Go to artist" destinations for the first item (NetEase or local).
     std::vector<ArtistLink> BuildArtistLinks(metadb_handle_list_cref items);
