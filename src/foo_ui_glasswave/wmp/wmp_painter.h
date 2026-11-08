@@ -25,7 +25,10 @@ void ScrollBar(ID2D1DeviceContext* dc, D2D1_SIZE_F size, float thumbTop, float t
 // Toolbar text button ("Organize", "Create playlist") with optional drop-down arrow.
 void CommandButton(ID2D1DeviceContext* dc, D2D1_SIZE_F size, Layer layer, std::wstring_view text, bool dropDown);
 
-// View options button content: an icon for the current view style and a drop-down arrow.
+// Plates and arrow of a WMP 12 split button (main part [0, splitX), arrow part after it);
+// part is the half under the mouse (0 main, 1 arrow). False without the WMP art.
+bool SplitButtonPlate(ID2D1DeviceContext* dc, D2D1_SIZE_F size, Layer layer, float splitX, int part, bool menuOpen);
+// View options icon (original strip 331) for the current view style, centred in size.
 void ViewOptionsGlyph(ID2D1DeviceContext* dc, D2D1_SIZE_F size, media::ViewStyle style);
 
 // Explorer-style round back/forward button.

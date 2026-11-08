@@ -314,6 +314,34 @@ void PlayingMarker(ID2D1DeviceContext* dc, D2D1_POINT_2F c, bool paused) {
     }
 }
 
+bool SplitButtonPlate(ID2D1DeviceContext* dc, D2D1_SIZE_F size, Layer layer, float splitX, int part, bool menuOpen) {
+    // WMP 12 split button: WMP_BREADCRUMB_MAINBUTTON (left part, open right edge) and
+    // _SPLITBUTTON (right part), states empty / hot / pressed / grey. The part under the mouse
+    // is hot and the other grey; pressed shows the pressed part and the other grey.
+    using win7::Module;
+    if (!win7::Resources::Get().Has(Module::Wmploc, L"WMP_BREADCRUMB_MAINBUTTON.PNG")) return false;
+    int mainState = 0, splitState = 0;
+    if (layer == Layer::Hover) {
+        mainState = part == 0 ? 1 : 3;
+        splitState = part == 0 ? 3 : 1;
+    } else if (layer == Layer::Pressed) {
+        const bool arrow = menuOpen || part == 1;
+        mainState = arrow ? 3 : 2;
+        splitState = arrow ? 2 : 3;
+    }
+    const float h = Snap(dc, size.height), x = Snap(dc, splitX), w = Snap(dc, size.width);
+    if (mainState)
+        win7::DrawNineGrid(dc, Module::Wmploc, L"WMP_BREADCRUMB_MAINBUTTON.PNG",
+                           {16.0f * mainState, 0, 16.0f * mainState + 16, 22}, {3, 3, 3, 3}, {0, 0, x, h});
+    if (splitState)
+        win7::DrawNineGrid(dc, Module::Wmploc, L"WMP_BREADCRUMB_SPLITBUTTON.PNG",
+                           {10.0f * splitState, 0, 10.0f * splitState + 10, 22}, {3, 3, 3, 3}, {x, 0, w, h});
+    // The arrow (first cell of WW_SPLIT, 1:1) centred in the right part.
+    const float ax = Snap(dc, (x + w) / 2 - 7), ay = Snap(dc, h / 2 - 10);
+    win7::DrawPartTo(dc, Module::Wmploc, L"WW_SPLIT.PNG", D2D1::RectU(0, 0, 14, 20), {ax, ay, ax + 14, ay + 20});
+    return true;
+}
+
 void ViewOptionsGlyph(ID2D1DeviceContext* dc, D2D1_SIZE_F size, media::ViewStyle style) {
     // Original icons: wmploc strip 331, 16x16 slots 55 details / 56 expanded tile / 57 icon.
     {

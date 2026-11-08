@@ -42,9 +42,11 @@ enum WidgetId {
     kCapMin = 1, kCapMax, kCapClose,
     kBack, kForward, kOrganize, kAddFiles, kAddFolder, kNewPlaylist,
     kSeek, kShuffle, kRepeat, kStop, kPrev, kNext, kPlay, kMute, kVolume, kViewOptions,
-    kViewOptionsArrow, kNewPlaylistArrow,
 };
 bool IsCaptionWidget(int id) { return id >= kCapMin && id <= kCapClose; }
+
+// Split buttons: arrow half width, and the view options button's icon half (DIP).
+constexpr float kSplitArrow = 16, kViewOptionsSplit = 26;
 
 
 // {0C9E7B42-1F3A-4D5E-8B6C-7A2F9E1D4C83}
@@ -529,24 +531,32 @@ void MainWindow::CreateWidgets() {
         ->onClick = [] { standard_commands::main_add_files(); };
     add(kAddFolder, [](auto* dc, D2D1_SIZE_F s, Layer l) { wp::CommandButton(dc, s, l, L"Add folder", false); }, {})
         ->onClick = [] { standard_commands::main_add_directory(); };
-    // View options split button: the icon steps to the next view, the arrow lists them all.
+    // Split buttons (WMP 12): one control; the main part acts at once, the arrow part opens a
+    // menu. m_splitPart says which half the mouse is over.
     add(kViewOptions, [this](auto* dc, D2D1_SIZE_F s, Layer l) {
-        wp::CommandButton(dc, s, l, L"", false);
-        wp::ViewOptionsGlyph(dc, s, m_source ? m_source->GetViewStyle() : media::ViewStyle::Details);
-    }, {})->onClick = [this] { CycleViewStyle(); };
-    add(kViewOptionsArrow, [](auto* dc, D2D1_SIZE_F s, Layer l) { wp::CommandButton(dc, s, l, L"", true); }, {})
-        ->onClick = [this] { RunSplitMenu(kViewOptionsArrow, [this] { ShowViewMenu(); }); };
-    add(kNewPlaylist, [](auto* dc, D2D1_SIZE_F s, Layer l) { wp::CommandButton(dc, s, l, L"Create playlist", false); }, {})
-        ->onClick = [this] { CreatePlaylist(false); };
-    add(kNewPlaylistArrow, [](auto* dc, D2D1_SIZE_F s, Layer l) { wp::CommandButton(dc, s, l, L"", true); }, {})
-        ->onClick = [this] {
-              RunSplitMenu(kNewPlaylistArrow, [this] {
-                  POINT pt{m_layout.newPlaylist.left, m_layout.newPlaylist.bottom};
-                  ClientToScreen(m_hwnd, &pt);
-                  ShowActionMenu(m_hwnd, pt, {{L"Create playlist", [this] { CreatePlaylist(false); }},
-                                              {L"Create auto playlist", [this] { CreatePlaylist(true); }}});
-              });
-          };
+        const float split = kViewOptionsSplit;
+        if (!wp::SplitButtonPlate(dc, s, l, split, m_splitPart, m_splitMenu == kViewOptions))
+            wp::CommandButton(dc, s, l, L"", true);
+        wp::ViewOptionsGlyph(dc, {split, s.height}, m_source ? m_source->GetViewStyle() : media::ViewStyle::Details);
+    }, {})->onClick = [this] {
+        if (m_splitPart == 1) RunSplitMenu(kViewOptions, [this] { ShowViewMenu(); });
+        else CycleViewStyle();
+    };
+    add(kNewPlaylist, [this](auto* dc, D2D1_SIZE_F s, Layer l) {
+        if (!wp::SplitButtonPlate(dc, s, l, m_newPlaylistSplit, m_splitPart, m_splitMenu == kNewPlaylist))
+            wp::CommandButton(dc, s, l, L"", true);
+        wp::CommandButton(dc, {m_newPlaylistSplit, s.height}, Layer::Normal, L"Create playlist", false);  // text only
+    }, {})->onClick = [this] {
+        if (m_splitPart == 1)
+            RunSplitMenu(kNewPlaylist, [this] {
+                POINT pt{m_layout.newPlaylist.left, m_layout.newPlaylist.bottom};
+                ClientToScreen(m_hwnd, &pt);
+                ShowActionMenu(m_hwnd, pt, {{L"Create playlist", [this] { CreatePlaylist(false); }},
+                                            {L"Create auto playlist", [this] { CreatePlaylist(true); }}});
+            });
+        else
+            CreatePlaylist(false);
+    };
 
     // Seek bar (the band's top rule, as in WMP 12)
     add(kSeek, [this](auto* dc, D2D1_SIZE_F s, Layer l) {
@@ -714,17 +724,15 @@ void MainWindow::UpdateLayout() {
     L.addFiles = button(fit(L"Add files", false));
     L.addFolder = button(fit(L"Add folder", false));
     // Split buttons (WMP 12): the main part acts at once, the arrow part opens a menu.
-    L.newPlaylist = button(fit(L"Create playlist", false));
-    x -= PxI(2);
-    L.newPlaylistArrow = button(16);
+    m_newPlaylistSplit = fit(L"Create playlist", false);
+    L.newPlaylist = button(m_newPlaylistSplit + kSplitArrow);
     L.search = {L.client.right - PxI(8) - PxI(230), cbcy - PxI(11), L.client.right - PxI(8), cbcy + PxI(11)};
     // View options (WMP: icon / expanded tile / details) left of the search box, library only.
     if (m_source && ViewStyles() > 1) {
         const int right = L.search.left - PxI(8);
-        L.viewOptionsArrow = {right - PxI(14), cbcy - PxI(11), right, cbcy + PxI(11)};
-        L.viewOptions = {L.viewOptionsArrow.left - PxI(26), cbcy - PxI(11), L.viewOptionsArrow.left, cbcy + PxI(11)};
+        L.viewOptions = {right - PxI(kViewOptionsSplit + kSplitArrow), cbcy - PxI(11), right, cbcy + PxI(11)};
     } else {
-        L.viewOptions = L.viewOptionsArrow = {};
+        L.viewOptions = {};
     }
 
     // Content: navigation pane + list
@@ -858,8 +866,6 @@ void MainWindow::UpdateLayout() {
         case kAddFolder: r = &L.addFolder; break;
         case kNewPlaylist: r = &L.newPlaylist; break;
         case kViewOptions: r = &L.viewOptions; break;
-        case kViewOptionsArrow: r = &L.viewOptionsArrow; break;
-        case kNewPlaylistArrow: r = &L.newPlaylistArrow; break;
         case kSeek: r = &L.seek; break;
         case kShuffle: r = &L.shuffle; break;
         case kRepeat: r = &L.repeat; break;
@@ -2103,43 +2109,42 @@ LRESULT MainWindow::HitTest(POINT pt) const {
     return HTCLIENT;
 }
 
-// The two halves of a split button light up together, as in WMP 12.
-Widget* MainWindow::SplitPartner(const Widget* w) const {
-    if (!w) return nullptr;
-    switch (w->Id()) {
-    case kNewPlaylist: return WidgetById(kNewPlaylistArrow);
-    case kNewPlaylistArrow: return WidgetById(kNewPlaylist);
-    case kViewOptions: return WidgetById(kViewOptionsArrow);
-    case kViewOptionsArrow: return WidgetById(kViewOptions);
-    default: return nullptr;
-    }
-}
-
 void MainWindow::SetHoverWidget(Widget* w) {
     if (w == m_hover) return;
-    Widget* oldPartner = SplitPartner(m_hover);
-    Widget* newPartner = SplitPartner(w);
-    if (m_hover && m_hover != newPartner) m_hover->SetHover(false);
-    if (oldPartner && oldPartner != w) oldPartner->SetHover(false);
+    if (m_hover) m_hover->SetHover(false);
     m_hover = w;
     if (m_hover) m_hover->SetHover(true);
-    if (newPartner) newPartner->SetHover(true);
 }
 
-void MainWindow::RunSplitMenu(int arrowId, const std::function<void()>& menu) {
-    // While the menu is up: the arrow pressed, the main part hot (WMP 12); then both clear,
-    // the next mouse move restores whatever is under the pointer.
-    Widget* arrow = WidgetById(arrowId);
-    Widget* main = SplitPartner(arrow);
-    if (main) main->SetHover(true);
-    if (arrow) arrow->SetPressed(true);
+bool MainWindow::IsSplit(const Widget* w) const { return w && (w->Id() == kNewPlaylist || w->Id() == kViewOptions); }
+
+void MainWindow::UpdateSplitPart(POINT pt) {
+    // Which half of the hovered split button the mouse is over; the plates repaint on change.
+    Widget* w = m_pressed ? m_pressed : m_hover;
+    if (!IsSplit(w)) return;
+    const float split = w->Id() == kNewPlaylist ? m_newPlaylistSplit : kViewOptionsSplit;
+    const int part = pt.x - w->Bounds().left >= PxI(split) ? 1 : 0;
+    if (part == m_splitPart || m_pressed) return;  // keep the pressed half while held
+    m_splitPart = part;
+    w->Invalidate();
+}
+
+void MainWindow::RunSplitMenu(int id, const std::function<void()>& menu) {
+    // While the menu is up the arrow half looks pressed and the main half grey (WMP 12).
+    Widget* w = WidgetById(id);
+    m_splitMenu = id;
+    if (w) {
+        w->Invalidate();
+        w->SetPressed(true);
+    }
     menu();
-    if (arrow) arrow->SetPressed(false);
-    SetHoverWidget(nullptr);
-    if (main) main->SetHover(false);
-    if (arrow) arrow->SetHover(false);
+    m_splitMenu = 0;
+    if (w) {
+        w->SetPressed(false);
+        w->Invalidate();
+    }
+    SetHoverWidget(nullptr);  // the menu loop swallowed the mouse leave
 }
-
 void MainWindow::OnActivate(bool active) {
     if (m_active == active) return;
     m_active = active;
@@ -2391,6 +2396,7 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
             }
         } else {
             SetHoverWidget(WidgetAt(pt));
+            UpdateSplitPart(pt);
             m_list->OnMouseMove(pt);
             m_nav->OnMouseMove(pt);
             UpdateCrumbHover(pt);

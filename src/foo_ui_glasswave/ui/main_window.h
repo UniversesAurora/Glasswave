@@ -42,8 +42,7 @@ private:
         RECT caption{}, client{}, clientEdge{}, navBar{}, cmdBar{}, content{}, transport{};
         RECT capMin{}, capMax{}, capClose{}, icon{}, title{};
         RECT back{}, forward{}, breadcrumb{}, navGroove{};
-        RECT organize{}, addFiles{}, addFolder{}, newPlaylist{}, newPlaylistArrow{}, search{}, viewOptions{},
-            viewOptionsArrow{};
+        RECT organize{}, addFiles{}, addFolder{}, newPlaylist{}, search{}, viewOptions{};
         RECT navPane{}, list{};
         RECT seek{}, capsule{}, divider{}, shuffle{}, repeat{}, stop{}, prev{}, next{}, play{}, mute{}, volume{};
         RECT nowPlaying{}, time{}, stream{};
@@ -108,8 +107,12 @@ private:
     Widget* WidgetAt(POINT clientPt) const;
     Widget* WidgetById(int id) const;
     void SetHoverWidget(Widget* w);
-    Widget* SplitPartner(const Widget* w) const;
-    void RunSplitMenu(int arrowId, const std::function<void()>& menu);
+    bool IsSplit(const Widget* w) const;
+    void UpdateSplitPart(POINT pt);
+    void RunSplitMenu(int id, const std::function<void()>& menu);
+    int m_splitPart = 0;            // half of the hovered split button: 0 main, 1 arrow
+    int m_splitMenu = 0;            // split button whose menu is open
+    float m_newPlaylistSplit = 90;  // DIP, width of Create playlist's main half
     void OnActivate(bool active);
     void PaintSideHighlights();
     // Now playing details in the transport band: title and artist are links, a synced
