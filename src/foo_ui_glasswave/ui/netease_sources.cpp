@@ -99,6 +99,7 @@ SongTableRow MakeNeteaseRow(const netease::Song& song) {
     row.artKey = L"ncm:" + std::to_wstring(song.albumId ? song.albumId : song.id);
     row.search = Lower(row.title) + L"\n" + Lower(row.artist) + L"\n" + Lower(row.album);
     row.albumId = song.albumId;
+    row.popularity = song.popularity;
     for (const auto& ref : song.artistRefs)
         if (ref.id) {
             row.artistId = ref.id;
@@ -277,7 +278,8 @@ void SongTableSource::SortOrder() {
         const double count = static_cast<double>(m_all.size());
         for (size_t i = 0; i < m_all.size(); ++i) {
             const std::wstring& album = m_all[i].albumKey;
-            heat[album] += count - static_cast<double>(i);
+            // Prefer the API's pop score; fall back to the rank in the list.
+            heat[album] += m_all[i].popularity > 0 ? m_all[i].popularity : count - static_cast<double>(i);
             auto it = bestRank.find(album);
             if (it == bestRank.end() || i < it->second) bestRank[album] = i;
         }

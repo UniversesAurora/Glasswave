@@ -21,6 +21,7 @@ struct SongTableRow {
     std::wstring search;    // lower-cased title/artist/album for filtering
     int64_t artistId = 0;   // first artist, for the album column's artist link
     int64_t albumId = 0;    // for the album column's album link
+    int popularity = 0;     // NetEase pop score, used for album heat
     bool favorite = false;
     bool remote = false;
 };

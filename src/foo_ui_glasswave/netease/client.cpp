@@ -157,6 +157,7 @@ Song ParseSong(const json::Object& object) {
     song.albumArtist = song.artists.empty() ? std::wstring() : song.artists.front();
     song.durationMs = json::GetInt(object, L"dt", json::GetInt(object, L"duration", 0));
     song.fee = json::GetInt(object, L"fee");
+    song.popularity = json::GetInt(object, L"pop");
 
     if (auto album = json::GetObject(object, L"al")) {
         song.album = json::GetString(*album, L"name");
@@ -655,17 +656,24 @@ bool Client::GetArtistAlbumsPage(int64_t artistId, int offset, int limit, abort_
     return true;
 }
 
-bool Client::GetArtistTopSongs(int64_t artistId, abort_callback& abort, std::vector<Song>& out,
-                               std::wstring& error) {
+bool Client::GetArtistSongsPage(int64_t artistId, int offset, int limit, std::wstring_view order,
+                                abort_callback& abort, std::vector<Song>& out, bool* more, std::wstring& error) {
     out.clear();
+    if (more) *more = false;
     json::Object body;
     int code = 0;
-    if (!Request(L"/artist/top/song", {{L"id", std::to_wstring(artistId)}}, false, abort, body, code, error))
+    if (!Request(L"/artist/songs",
+                 {{L"id", std::to_wstring(artistId)},
+                  {L"limit", std::to_wstring(limit)},
+                  {L"offset", std::to_wstring(offset)},
+                  {L"order", std::wstring(order)}},
+                 false, abort, body, code, error))
         return false;
     if (code != 200) {
         error = MessageOf(body, code);
         return false;
     }
+    if (more) *more = json::GetBool(body, L"more");
     if (auto songs = json::GetArray(body, L"songs")) {
         for (const auto& object : json::Objects(*songs)) {
             Song song = ParseSong(object);

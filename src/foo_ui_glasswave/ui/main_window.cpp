@@ -2160,12 +2160,10 @@ void MainWindow::Navigate(const View& requested, bool push) {
     case View::Kind::NeteaseArtistSongs: {
         source = std::make_unique<ui::NeteaseSongSource>(std::vector<netease::Song>{}, L"Loading hot songs...");
         m_nav->Select(NavPane::Target::None, 0);
-        const int64_t id = static_cast<int64_t>(_wcstoi64(view.remoteId.c_str(), nullptr, 10));
-        const View requestedView = view;
-        netease::Provider::Get().FetchArtistTopSongs(
-            id, [this, requestedView](std::vector<netease::Song> songs, std::wstring error) {
-                ShowNeteaseSongs(requestedView, std::move(songs), std::move(error));
-            });
+        m_hotSongsOffset = 0;
+        m_hotSongsMore = true;
+        m_hotSongsLoading = false;
+        m_startHotSongs = true;
         break;
     }
     case View::Kind::Playlist: {
@@ -2250,6 +2248,10 @@ void MainWindow::Navigate(const View& requested, bool push) {
         else if (m_view.kind == View::Kind::NeteaseAlbums)
             LoadCollectedAlbumPage();
     }
+    if (m_startHotSongs) {
+        m_startHotSongs = false;
+        if (m_view.kind == View::Kind::NeteaseArtistSongs) LoadHotSongsPage();
+    }
 
     if (push && !sameView) {
         if (!m_history.empty()) m_history.resize(m_historyPos + 1);
@@ -2291,9 +2293,8 @@ void MainWindow::ShowNeteaseSongs(const View& view, std::vector<netease::Song> s
         m_list->SetSource(m_source.get(), false);
         return;
     }
-    const bool hotSongs = view.kind == View::Kind::NeteaseArtistSongs;
     auto source = std::make_unique<ui::NeteaseSongSource>(
-        std::move(songs), error.empty() ? L"No songs." : std::move(error), hotSongs);
+        std::move(songs), error.empty() ? L"No songs." : std::move(error));
     m_source = std::move(source);
     if (auto* style = ViewStyleSetting(view);
         style && m_source->SupportsViewStyle(static_cast<media::ViewStyle>(style->get())))
@@ -2561,7 +2562,43 @@ void MainWindow::OnListNearEnd() {
     } else if (m_view.kind == View::Kind::NeteaseAlbums && m_source &&
                m_source->GetViewStyle() == media::ViewStyle::Tiles) {
         LoadCollectedAlbumPage();
+    } else if (m_view.kind == View::Kind::NeteaseArtistSongs) {
+        LoadHotSongsPage();
     }
+}
+
+void MainWindow::LoadHotSongsPage() {
+    if (m_hotSongsLoading || !m_hotSongsMore) return;
+    const int64_t artistId = static_cast<int64_t>(_wcstoi64(m_view.remoteId.c_str(), nullptr, 10));
+    if (!artistId) return;
+    const int offset = static_cast<int>(m_hotSongsOffset);
+    m_hotSongsLoading = true;
+    const View requestedView = m_view;
+    netease::Provider::Get().FetchArtistSongsPage(
+        artistId, offset, 100,
+        [this, requestedView, offset](std::vector<netease::Song> songs, bool more, std::wstring error) {
+            m_hotSongsLoading = false;
+            if (m_view.kind != requestedView.kind || m_view.library != requestedView.library ||
+                m_view.remoteId != requestedView.remoteId)
+                return;
+            m_hotSongsOffset = static_cast<size_t>(offset) + songs.size();
+            m_hotSongsMore = more && !songs.empty();  // no progress: stop instead of looping
+            if (offset == 0) {
+                auto source = std::make_unique<ui::NeteaseSongSource>(
+                    std::move(songs), error.empty() ? L"No songs." : std::move(error), true);
+                if (auto* style = ViewStyleSetting(m_view))
+                    source->SetViewStyle(static_cast<media::ViewStyle>(style->get()));
+                if (!m_filter.empty()) source->SetFilter(m_filter);
+                m_source = std::move(source);
+                m_list->SetSource(m_source.get(), false);
+            } else if (!songs.empty()) {
+                if (auto* source = dynamic_cast<ui::NeteaseSongSource*>(m_source.get())) {
+                    source->AppendSongs(songs);
+                    m_list->Refresh();  // appending recomputes the album heat order
+                }
+            }
+            RepaintBreadcrumb();
+        });
 }
 
 void MainWindow::LoadCollectedAlbumPage() {

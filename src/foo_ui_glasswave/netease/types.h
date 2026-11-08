@@ -23,6 +23,7 @@ struct Song {
     std::wstring coverUrl;
     int durationMs = 0;
     int fee = 0;
+    int popularity = 0;  // NetEase pop score when the endpoint reports one
     std::wstring codec;
     int bitrate = 0;
     int sampleRate = 0;

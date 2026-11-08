@@ -749,27 +749,28 @@ void Provider::FetchArtistAlbumsPage(int64_t artistId, int offset, int limit, Ar
     });
 }
 
-void Provider::FetchArtistTopSongs(int64_t artistId, SongsCallback done) {
-    m_tasks.Post([this, artistId, done = std::move(done)] {
+void Provider::FetchArtistSongsPage(int64_t artistId, int offset, int limit, SongsPageCallback done) {
+    m_tasks.Post([this, artistId, offset, limit, done = std::move(done)] {
         if (m_stopping) return;
         abort_callback_impl abort;
         std::wstring error;
         if (!m_service.EnsureStarted(abort, &error)) {
             PostMain([done = std::move(done), error] {
-                if (done) done({}, ErrorOf(error));
+                if (done) done({}, false, ErrorOf(error));
             });
             return;
         }
         std::vector<Song> songs;
-        if (!m_client.GetArtistTopSongs(artistId, abort, songs, error)) {
+        bool more = false;
+        if (!m_client.GetArtistSongsPage(artistId, offset, limit, L"hot", abort, songs, &more, error)) {
             PostMain([done = std::move(done), error] {
-                if (done) done({}, ErrorOf(error));
+                if (done) done({}, false, ErrorOf(error));
             });
             return;
         }
-        PostMain([done = std::move(done), songs = std::move(songs)]() mutable {
+        PostMain([done = std::move(done), songs = std::move(songs), more]() mutable {
             Catalog::Get().PutAndHint(songs);
-            if (done) done(std::move(songs), {});
+            if (done) done(std::move(songs), more, {});
         });
     });
 }

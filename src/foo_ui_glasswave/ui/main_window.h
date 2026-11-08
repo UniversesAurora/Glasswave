@@ -148,6 +148,7 @@ private:
     void ContinueArtistLoad();
     void LoadArtistAlbumPage();
     void LoadArtistTrackPage();
+    void LoadHotSongsPage();
     void LoadCollectedAlbumPage();
     void OnListNearEnd();
     void EnsureCollectedAlbums();
@@ -274,6 +275,10 @@ private:
     bool m_artistAlbumsMore = true;
     bool m_artistAlbumsLoading = false;
     bool m_artistTracksLoading = false;
+    size_t m_hotSongsOffset = 0;  // hot songs loaded so far
+    bool m_hotSongsMore = true;
+    bool m_hotSongsLoading = false;
+    bool m_startHotSongs = false;
     std::vector<netease::Album> m_collectedAlbums;  // snapshot for the collected-albums page
     std::vector<netease::Song> m_collectedSongs;
     size_t m_collectedAlbumOffset = 0;
