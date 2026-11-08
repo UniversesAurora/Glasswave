@@ -3048,10 +3048,13 @@ void MainWindow::TogglePlaylistSubscribed() {
                      netease::Provider::PlaylistScope::Collected;
     if (m_playlistDetail && m_playlistDetail->id == id && m_playlistDetail->subscribed) collected = true;
     m_detailActionPending = true;
-    netease::Provider::Get().SetPlaylistSubscribed(id, !collected, [this, id](bool ok, std::wstring error) {
+    const bool next = !collected;
+    netease::Provider::Get().SetPlaylistSubscribed(id, next, [this, id, next](bool ok, std::wstring error) {
         (void)error;
         m_detailActionPending = false;
-        if (ok && m_view.kind == View::Kind::NeteasePlaylist && m_view.remoteId == std::to_wstring(id))
+        if (!ok) return;
+        if (m_playlistDetail && m_playlistDetail->id == id) m_playlistDetail->subscribed = next;
+        if (m_view.kind == View::Kind::NeteasePlaylist && m_view.remoteId == std::to_wstring(id))
             RepaintDetailHeader();
     });
 }
