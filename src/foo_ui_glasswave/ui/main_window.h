@@ -156,6 +156,7 @@ private:
     bool m_trackingNc = false, m_trackingClient = false;
     Layout m_layout;
     aero::ShadowFrame m_shadow;
+    std::unique_ptr<class Taskbar> m_taskbar;
 
     // Composition visual tree
     winrt::Windows::UI::Composition::Desktop::DesktopWindowTarget m_target{nullptr};

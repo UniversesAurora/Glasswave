@@ -10,6 +10,7 @@
 #include "media/source_identity.h"
 #include "ui/main_menu.h"
 #include "ui/shell_glue.h"
+#include "ui/taskbar.h"
 #include "ui/text.h"
 #include "wmp/wmp_painter.h"
 #include "wmp/wmp_transport.h"
@@ -1677,6 +1678,7 @@ void MainWindow::OnPlaybackStateChanged() {
     m_paused = paused;
     for (int id : {kPlay, kStop, kPrev, kNext})
         if (auto* w = WidgetById(id)) w->Invalidate();
+    if (m_taskbar) m_taskbar->SetPlayState(playing, paused);
     if (m_list) m_list->Refresh();  // playing marker
 }
 
@@ -2036,6 +2038,7 @@ void MainWindow::PaintSideHighlights() {
 
 LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
     const HWND hwnd = m_hwnd;
+    if (m_taskbar && m_taskbar->OnMessage(msg, wp, lp)) return 0;
     switch (msg) {
     case WM_CREATE: {
         m_scale = GetDpiForWindow(hwnd) / 96.0f;
@@ -2043,6 +2046,8 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
         CreateWidgets();
         RepaintScaleDependent();
         m_shadow.Create(hwnd);
+        m_taskbar = std::make_unique<Taskbar>(hwnd);
+        Taskbar::SetupJumpList();
         m_library.Reload();
         m_playCallback = std::make_unique<PlayCallback>(*this);
         m_playlistCallback = std::make_unique<PlaylistCallback>(*this);

@@ -237,6 +237,12 @@ HICON Resources::Icon(Module module, int id, int size) const {
     return static_cast<HICON>(LoadImageW(mod, MAKEINTRESOURCEW(id), IMAGE_ICON, size, size, LR_DEFAULTCOLOR));
 }
 
+HBITMAP Resources::DibBitmap(Module module, int id) const {
+    HMODULE mod = Handle(module);
+    if (!mod) return nullptr;
+    return static_cast<HBITMAP>(LoadImageW(mod, MAKEINTRESOURCEW(id), IMAGE_BITMAP, 0, 0, LR_CREATEDIBSECTION));
+}
+
 bool DrawPartTo(ID2D1DeviceContext* dc, Module module, const std::wstring& name, D2D1_RECT_U src, D2D1_RECT_F dst,
                 float opacity) {
     ID2D1Bitmap* piece = Resources::Get().Piece(dc, module, name, src);

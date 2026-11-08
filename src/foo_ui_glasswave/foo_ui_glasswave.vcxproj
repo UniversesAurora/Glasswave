@@ -93,6 +93,7 @@
     <ClCompile Include="ui\text.cpp" />
     <ClCompile Include="ui\list_view.cpp" />
     <ClCompile Include="ui\nav_pane.cpp" />
+    <ClCompile Include="ui\taskbar.cpp" />
     <ClCompile Include="ui\search_box.cpp" />
     <ClCompile Include="ui\shell_glue.cpp" />
     <ClCompile Include="wmp\wmp_painter.cpp" />
@@ -119,6 +120,7 @@
     <ClInclude Include="ui\text.h" />
     <ClInclude Include="ui\list_view.h" />
     <ClInclude Include="ui\nav_pane.h" />
+    <ClInclude Include="ui\taskbar.h" />
     <ClInclude Include="ui\search_box.h" />
     <ClInclude Include="ui\shell_glue.h" />
     <ClInclude Include="wmp\wmp_painter.h" />
