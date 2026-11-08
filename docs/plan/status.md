@@ -165,12 +165,11 @@ Updated: 2026-11-08
     albums' tracks in pages of 12 as the list nears its end (six workers) and lists them
     grouped by album, like a playlist's expanded tile; the choice is remembered per view.
     Icon views no longer draw a column header (it did not line up with the tiles).
-  - Hot songs are regrouped by album in Expanded tile: each album's heat is the sum of
-    its songs' NetEase pop scores (falling back to list position), albums are ordered by
-    that heat and songs keep their order inside one album. The list pages through
-    /artist/songs?order=hot 100 songs at a time as it nears the end; appending a page
-    re-ranks the albums while Details keeps the raw popularity order. Album names in
-    NetEase song tiles link to the album page.
+  - Hot songs are regrouped by album in Expanded tile, ordered by each album's hottest
+    song: the album containing the #1 song comes first, and extra songs in an album never
+    move it, so the order stays stable while /artist/songs?order=hot pages in 100 songs at
+    a time. Details keeps the raw popularity order. Album names in NetEase song tiles link
+    to the album page.
   - The artist page offers Icon and Expanded tile. Album metadata is fetched 24 albums at
     a time; the Icon grid appends the next page as the list nears its end. Expanded tile
     loads 12 albums' tracks per page (six workers per track page) and appends them without

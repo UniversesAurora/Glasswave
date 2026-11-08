@@ -272,27 +272,21 @@ void SongTableSource::SortOrder() {
         default: return std::wstring();
         }
     };
-    std::map<std::wstring, double> heat;
     std::map<std::wstring, size_t> bestRank;
     if (heatOrder) {
-        const double count = static_cast<double>(m_all.size());
         for (size_t i = 0; i < m_all.size(); ++i) {
-            const std::wstring& album = m_all[i].albumKey;
-            // Prefer the API's pop score; fall back to the rank in the list.
-            heat[album] += m_all[i].popularity > 0 ? m_all[i].popularity : count - static_cast<double>(i);
-            auto it = bestRank.find(album);
-            if (it == bestRank.end() || i < it->second) bestRank[album] = i;
+            auto it = bestRank.find(m_all[i].albumKey);
+            if (it == bestRank.end() || i < it->second) bestRank[m_all[i].albumKey] = i;
         }
     }
     std::stable_sort(m_order.begin(), m_order.end(), [&](size_t a, size_t b) {
         if (heatOrder) {
             const std::wstring& ka = m_all[a].albumKey;
             const std::wstring& kb = m_all[b].albumKey;
-            if (ka != kb) {
-                const double ha = heat[ka], hb = heat[kb];
-                if (ha != hb) return ha > hb;
-                return bestRank[ka] < bestRank[kb];
-            }
+            // The album of the hottest song comes first; its remaining songs do not move
+            // it. Later pages can only add albums with worse best ranks, so the order is
+            // stable while the list is paged in.
+            if (ka != kb) return bestRank[ka] < bestRank[kb];
         } else if (tiles && m_all[a].albumKey != m_all[b].albumKey) {
             return a < b;  // albums keep the order they were added in
         }
