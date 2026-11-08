@@ -36,7 +36,12 @@ public:
     // Drops the cached thumbnails whose key starts with `prefix` (empty: all of them) and
     // the queued loads, then tells listeners to request them again. Used when a NetEase
     // cover URL changed server-side, e.g. after a playlist edit. Main thread only.
+    // The old bitmap stays available while the new one loads, so covers never blank out.
     void Invalidate(std::wstring_view prefix);
+
+    // Bumps whenever a new thumbnail for this key has been decoded; callers that keep their
+    // own D2D bitmap can compare it and replace the bitmap only when it really changed.
+    uint64_t Version(const std::wstring& key, const metadb_handle_ptr& track, int sizePx) const;
 
 private:
     ArtCache();
@@ -47,7 +52,10 @@ private:
         State state = State::Pending;
         winrt::com_ptr<IWICBitmapSource> bitmap;
         uint64_t used = 0;
-        uint64_t epoch = 0;  // a load started for an older epoch must not fill this entry
+        uint64_t epoch = 0;   // a load started for an older epoch must not fill this entry
+        uint64_t content = 0; // bumped when a new bitmap is decoded (see Version)
+        bool stale = false;   // invalidated: keep showing the old bitmap while it reloads
+        bool reloading = false;
     };
     struct Request {
         std::wstring key;

@@ -2410,11 +2410,9 @@ void MainWindow::ShowNeteasePlaylists(const View& view, std::vector<netease::Pla
     m_list->SetSource(m_source.get(), false);
     if (error.empty()) {
         // The section fetch is authoritative: a playlist edited elsewhere can have a new
-        // cover URL, so neither the art cache nor the list's bitmap copy may keep the old
-        // one.
+        // cover URL. The art cache keeps the old bitmap while the new one loads.
         ArtCache::Get().Invalidate(L"ncm:playlist:");
         ArtCache::Get().Invalidate(L"ncm://cover/playlist/");
-        m_list->InvalidateArt();
     }
     RefreshNeteaseNavPlaylists();
 }
@@ -3520,11 +3518,10 @@ void MainWindow::ShowNeteaseNavMenu(NavPane::Target target, POINT screen) {
 
 void MainWindow::OnNeteaseLoginChanged() {
     // Playlist covers change when their songs change; the summary fetched after an edit
-    // updates the catalog, and dropping both the decoded art and the list's bitmap copy
-    // makes the new URLs load in the navigation and the tile pages.
+    // updates the catalog. The art cache keeps the old bitmap until the replacement loads,
+    // so nothing blanks out.
     ArtCache::Get().Invalidate(L"ncm:playlist:");
     ArtCache::Get().Invalidate(L"ncm://cover/playlist/");
-    if (m_list && m_view.kind == View::Kind::NeteasePlaylists) m_list->InvalidateArt();
     RefreshNeteaseNavPlaylists();
     m_nav->SetNeteaseState(netease::Provider::Get().LoggedIn(), netease::Provider::Get().CurrentAccount().nickname);
     UpdateFavoriteState();
@@ -3541,7 +3538,6 @@ void MainWindow::OnNeteaseLoginChanged() {
 void MainWindow::RefreshCurrentPage() {
     if (!CanRefreshPage()) return;
     ArtCache::Get().Invalidate(L"");
-    if (m_list) m_list->InvalidateArt();
     m_forcePageRefresh = true;
     if (m_view.library == View::Library::Netease || m_view.kind == View::Kind::AllFavorites) {
         // The account lists feed the navigation and the section pages; refresh them too, and
@@ -3553,9 +3549,7 @@ void MainWindow::RefreshCurrentPage() {
                 m_skipStateNavigate = false;
                 return;
             }
-            if (!ArtCache::Existing()) return;
-            ArtCache::Get().Invalidate(L"");
-            if (m_list) m_list->InvalidateArt();
+            if (ArtCache::Existing()) ArtCache::Get().Invalidate(L"");
         });
     }
     Navigate(m_view, false);
@@ -3572,7 +3566,6 @@ bool MainWindow::CanRefreshPage() const {
 void MainWindow::OnNeteaseLibraryChanged() {
     ArtCache::Get().Invalidate(L"ncm:playlist:");
     ArtCache::Get().Invalidate(L"ncm://cover/playlist/");
-    if (m_list && m_view.kind == View::Kind::NeteasePlaylists) m_list->InvalidateArt();
     RefreshNeteaseNavPlaylists();
     if (m_view.kind == View::Kind::NeteasePlaylist) {
         // The summary or a rename updated the catalog; keep the open band in step without

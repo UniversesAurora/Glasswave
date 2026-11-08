@@ -214,6 +214,10 @@ Updated: 2026-11-08
     inserted at the top of the cached lists, matching the service order. After a removal a
     single delayed summary read catches the server's regenerated cover and count without
     reloading the page.
+  - Refreshing no longer blanks covers: invalidating an entry keeps its previous bitmap
+    visible while the replacement loads, and a version counter lets the list swap in the
+    new bitmap only once it has been decoded. Images that did not change therefore stay
+    visually identical instead of flashing.
   - Not implemented yet: NetEase full-catalog search UI and a combined All Music browse
     beyond Favorites.
 

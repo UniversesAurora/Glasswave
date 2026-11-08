@@ -554,11 +554,6 @@ void ListView::EnsureVisible(size_t row) {
         ScrollTo(last - v + 1);
 }
 
-void ListView::InvalidateArt() {
-    m_artBitmaps.clear();
-    PaintRows();
-}
-
 size_t ListView::TopRow() const {
     if (!m_source || m_source->Count() == 0) return SIZE_MAX;
     switch (m_mode) {
@@ -956,32 +951,42 @@ void ListView::DrawArt(ID2D1DeviceContext* dc, const std::wstring& key, const me
     }
     cacheKey += L'|' + std::to_wstring(sizePx);
 
+    auto& artCache = ArtCache::Get();
+    const uint64_t version = artCache.Version(key, track, sizePx);
     winrt::com_ptr<ID2D1Bitmap> bmp;
-    if (auto it = m_artBitmaps.find(cacheKey); it != m_artBitmaps.end()) {
-        it->second.used = ++m_artClock;
-        bmp = it->second.bitmap;
-    }
     winrt::com_ptr<IWICBitmapSource> src;
     UINT sw = 0, sh = 0;
-    if (bmp) {
-        const D2D1_SIZE_F sz = bmp->GetSize();
-        sw = static_cast<UINT>(sz.width);
-        sh = static_cast<UINT>(sz.height);
+    auto cached = m_artBitmaps.find(cacheKey);
+    if (cached != m_artBitmaps.end() && cached->second.version == version) {
+        cached->second.used = ++m_artClock;
+        bmp = cached->second.bitmap;
     } else {
-        const auto state = ArtCache::Get().Find(key, track, sizePx, &src);
-        if (state == ArtCache::State::Pending) return;  // painted when it arrives
+        const auto state = artCache.Find(key, track, sizePx, &src);
         if (src) {
             src->GetSize(&sw, &sh);
             if (SUCCEEDED(dc->CreateBitmapFromWicBitmap(src.get(), nullptr, bmp.put()))) {
-                m_artBitmaps[cacheKey] = {bmp, ++m_artClock};
+                m_artBitmaps[cacheKey] = {bmp, ++m_artClock, version};
                 if (m_artBitmaps.size() > kMaxArtBitmaps) {
                     auto oldest = m_artBitmaps.begin();
                     for (auto it = m_artBitmaps.begin(); it != m_artBitmaps.end(); ++it)
                         if (it->second.used < oldest->second.used) oldest = it;
                     m_artBitmaps.erase(oldest);
                 }
+            } else {
+                bmp = nullptr;
             }
         }
+        if (!bmp && cached != m_artBitmaps.end()) {
+            // The invalidation keeps the previous cover; draw it until the new one decodes.
+            bmp = cached->second.bitmap;
+        } else if (!bmp) {
+            if (state == ArtCache::State::Pending) return;  // painted when it arrives
+        }
+    }
+    if (bmp) {
+        const D2D1_SIZE_F sz = bmp->GetSize();
+        sw = static_cast<UINT>(sz.width);
+        sh = static_cast<UINT>(sz.height);
     }
 
     D2D1_RECT_F dst = box;

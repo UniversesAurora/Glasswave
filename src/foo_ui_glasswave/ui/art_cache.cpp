@@ -8,6 +8,16 @@ namespace {
 std::unique_ptr<ArtCache> g_cache;
 constexpr size_t kMaxEntries = 600;  // thumbnails kept (about 90 KB each at 150 px)
 constexpr int kWorkers = 3;          // covers of the visible albums load in parallel
+
+std::wstring CacheKeyFor(const std::wstring& key, const metadb_handle_ptr& track, int sizePx) {
+    std::wstring cacheKey = key;
+    if (cacheKey.empty()) {
+        cacheKey = pfc::stringcvt::string_wide_from_utf8(track->get_path()).get_ptr();
+        cacheKey += L'|' + std::to_wstring(track->get_subsong_index());
+    }
+    cacheKey += L'|' + std::to_wstring(sizePx);
+    return cacheKey;
+}
 }  // namespace
 
 ArtCache& ArtCache::Get() {
@@ -39,20 +49,16 @@ ArtCache::State ArtCache::Find(const std::wstring& key, const metadb_handle_ptr&
                                winrt::com_ptr<IWICBitmapSource>* out) {
     *out = nullptr;
     if (!track.is_valid()) return State::Missing;
-    std::wstring cacheKey = key;
-    if (cacheKey.empty()) {
-        cacheKey = pfc::stringcvt::string_wide_from_utf8(track->get_path()).get_ptr();
-        cacheKey += L'|' + std::to_wstring(track->get_subsong_index());
-    }
-    cacheKey += L'|' + std::to_wstring(sizePx);
+    const std::wstring cacheKey = CacheKeyFor(key, track, sizePx);
 
     auto [it, inserted] = m_entries.try_emplace(cacheKey);
-    it->second.used = ++m_clock;
+    Entry& entry = it->second;
+    entry.used = ++m_clock;
     if (inserted) {
-        it->second.epoch = ++m_epoch;
+        entry.epoch = ++m_epoch;
         {
             std::lock_guard lock(m_mutex);
-            m_queue.push_front({cacheKey, track, sizePx, it->second.epoch});
+            m_queue.push_front({cacheKey, track, sizePx, entry.epoch});
         }
         m_wake.notify_one();
         // Keep memory bounded: drop the least recently used finished thumbnails.
@@ -66,8 +72,23 @@ ArtCache::State ArtCache::Find(const std::wstring& key, const metadb_handle_ptr&
         }
         return State::Pending;
     }
-    *out = it->second.bitmap;
-    return it->second.state;
+    if (entry.stale) {
+        // Keep showing the old bitmap until the replacement is ready; enqueue the reload
+        // once. A cover that did not change simply decodes the same image again.
+        if (!entry.reloading) {
+            entry.epoch = ++m_epoch;
+            entry.reloading = true;
+            {
+                std::lock_guard lock(m_mutex);
+                m_queue.push_front({cacheKey, track, sizePx, entry.epoch});
+            }
+            m_wake.notify_one();
+        }
+        *out = entry.bitmap;
+        return entry.bitmap ? State::Ready : State::Pending;
+    }
+    *out = entry.bitmap;
+    return entry.state;
 }
 
 int ArtCache::Subscribe(std::function<void()> callback) {
@@ -78,11 +99,14 @@ int ArtCache::Subscribe(std::function<void()> callback) {
 void ArtCache::Unsubscribe(int token) { m_listeners.erase(token); }
 
 void ArtCache::Invalidate(std::wstring_view prefix) {
-    for (auto it = m_entries.begin(); it != m_entries.end();) {
-        if (it->first.compare(0, prefix.size(), prefix) == 0)
-            it = m_entries.erase(it);
-        else
-            ++it;
+    for (auto& [key, entry] : m_entries) {
+        if (key.compare(0, prefix.size(), prefix) != 0) continue;
+        // Keep the old bitmap: callers draw it while the new one loads. The content bump
+        // makes caches that hold their own D2D bitmap re-query this entry.
+        entry.stale = true;
+        entry.reloading = false;
+        entry.epoch = ++m_epoch;
+        ++entry.content;
     }
     {
         std::lock_guard lock(m_mutex);
@@ -96,6 +120,12 @@ void ArtCache::Invalidate(std::wstring_view prefix) {
     }
     auto listeners = m_listeners;  // a callback may unsubscribe
     for (auto& [token, cb] : listeners) cb();
+}
+
+uint64_t ArtCache::Version(const std::wstring& key, const metadb_handle_ptr& track, int sizePx) const {
+    if (!track.is_valid()) return 0;
+    const auto it = m_entries.find(CacheKeyFor(key, track, sizePx));
+    return it == m_entries.end() ? 0 : it->second.content;
 }
 
 void ArtCache::Worker() {
@@ -146,10 +176,19 @@ void ArtCache::Delivered() {
     }
     for (auto& [key, bitmap, epoch] : done) {
         auto it = m_entries.find(key);
-        if (it == m_entries.end()) continue;  // evicted or invalidated meanwhile
-        if (it->second.epoch != epoch) continue;  // a newer load for this key is in flight
-        it->second.state = bitmap ? State::Ready : State::Missing;
-        it->second.bitmap = std::move(bitmap);
+        if (it == m_entries.end()) continue;  // evicted meanwhile
+        Entry& entry = it->second;
+        if (entry.epoch != epoch) continue;  // a newer load for this key is in flight
+        entry.reloading = false;
+        entry.stale = false;
+        if (bitmap) {
+            entry.bitmap = std::move(bitmap);
+            entry.state = State::Ready;
+            ++entry.content;  // a newer image: caches holding the old bitmap re-query
+        } else if (!entry.bitmap) {
+            entry.state = State::Missing;
+        }
+        // No new image but an old one is still here (a transient failure): keep showing it.
     }
     if (done.empty()) return;
     auto listeners = m_listeners;  // a callback may unsubscribe
