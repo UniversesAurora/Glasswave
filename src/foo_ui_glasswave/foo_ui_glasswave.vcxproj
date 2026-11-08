@@ -114,6 +114,7 @@
     <ClCompile Include="netease\json.cpp" />
     <ClCompile Include="netease\log.cpp" />
     <ClCompile Include="netease\profile.cpp" />
+    <ClCompile Include="netease\service.cpp" />
     <ClCompile Include="netease\task_queue.cpp" />
   </ItemGroup>
   <ItemGroup>
@@ -153,6 +154,7 @@
     <ClInclude Include="netease\json.h" />
     <ClInclude Include="netease\log.h" />
     <ClInclude Include="netease\profile.h" />
+    <ClInclude Include="netease\service.h" />
     <ClInclude Include="netease\task_queue.h" />
     <ClInclude Include="netease\types.h" />
   </ItemGroup>
