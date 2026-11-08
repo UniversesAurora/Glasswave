@@ -312,7 +312,8 @@ Updated: 2026-11-08
     album key, NetEase rows inside local playlists use the NetEase album key, and the local
     rows of Favorites / play history dedupe by album. ArtCache also reuses a finished larger
     decode when a smaller size is requested, so a cover already shown by a grid or header
-    does not load again for a list column.
+    does not load again for a list column. The album detail only invalidates its cover when
+    the URL actually changed, keeping the grid tile's decode usable by the song rows.
   - NetEase's personal radar (私人雷达) is marked specialType 100 in /user/playlist.
     It is now kept in the account lists, so collecting it from Recommended makes it appear
     under Collected playlists and survive account refreshes; the interested page still
