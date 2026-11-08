@@ -224,7 +224,7 @@ void SongTableSource::SetViewStyle(media::ViewStyle style) {
         m_columns.push_back({L"Source", 140});
         m_fields.push_back(kSource);
     }
-    m_columns.push_back({L"Play count", 70, false, true, !m_showPlayCount});
+    m_columns.push_back({L"Count", 70, false, true, !m_showPlayCount});
     m_fields.push_back(kPlayCount);
     m_columns.push_back({L"Favorite", 58, false, false, false, "<favorite>"});
     m_fields.push_back(kFavorite);

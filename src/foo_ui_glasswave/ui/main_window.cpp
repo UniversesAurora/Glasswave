@@ -3634,6 +3634,18 @@ void MainWindow::RemoveFromNowPlaying(metadb_handle_list_cref items) {
     pm->playlist_execute_default_action(queue, next);
 }
 
+void MainWindow::ClearNowPlaying() {
+    const t_size queue = media::QueuePlaylist(false);
+    if (queue == SIZE_MAX) return;
+    auto pm = playlist_manager::get();
+    t_size playingPlaylist = SIZE_MAX, playingIndex = SIZE_MAX;
+    const bool playing =
+        pm->get_playing_item_location(&playingPlaylist, &playingIndex) && playingPlaylist == queue;
+    pm->playlist_undo_backup(queue);
+    pm->playlist_clear(queue);
+    if (playing) playback_control::get()->stop();
+}
+
 void MainWindow::ForgetPlayStats(metadb_handle_list_cref items, bool recent) {
     if (recent) media::PlayStats::Get().ForgetRecent(items);
     else media::PlayStats::Get().ClearCounts(items);
@@ -3641,6 +3653,13 @@ void MainWindow::ForgetPlayStats(metadb_handle_list_cref items, bool recent) {
     Navigate(m_view, false);
     if (m_list && top != SIZE_MAX && m_source && m_source->Count())
         m_list->ScrollToRow(std::min(top, m_source->Count() - 1));
+}
+
+void MainWindow::ClearPlayStats(bool recent) {
+    if (recent) media::PlayStats::Get().ForgetAllRecent();
+    else media::PlayStats::Get().ClearAllCounts();
+    if (m_view.kind == View::Kind::AllRecentPlayed || m_view.kind == View::Kind::AllMostPlayed)
+        Navigate(m_view, false);
 }
 
 void MainWindow::RefreshPlayCounts() {
@@ -3735,6 +3754,12 @@ void MainWindow::RunNeteaseAlbumBulk(int64_t id, BulkAction action, int64_t targ
 
 void MainWindow::ShowPageContextMenu(POINT screen) {
     std::vector<MenuAction> actions;
+    if (m_source && m_source->Count()) {  // every list page can take the whole selection
+        actions.push_back({L"Select all", [this] {
+                               m_source->SelectAll();
+                               m_list->Refresh();
+                           }});
+    }
     switch (m_view.kind) {
     case View::Kind::NeteaseArtist:
         ShowArtistPageMenu(screen, false, 0, {});
@@ -3823,8 +3848,22 @@ void MainWindow::ShowPageContextMenu(POINT screen) {
                            }});
         break;
     }
+    case View::Kind::Playlist:
+        if (media::IsQueue(m_view.playlist)) {
+            if (!actions.empty()) actions.push_back({L"", nullptr});
+            actions.push_back({L"Clear Now Playing", [this] { ClearNowPlaying(); }});
+        }
+        break;
+    case View::Kind::AllRecentPlayed:
+        if (!actions.empty()) actions.push_back({L"", nullptr});
+        actions.push_back({L"Clear Recently Played", [this] { ClearPlayStats(true); }});
+        break;
+    case View::Kind::AllMostPlayed:
+        if (!actions.empty()) actions.push_back({L"", nullptr});
+        actions.push_back({L"Clear Most Played", [this] { ClearPlayStats(false); }});
+        break;
     default:
-        if (!CanRefreshPage()) return;
+        if (!CanRefreshPage()) break;
         if (m_view.kind == View::Kind::NeteasePlaylists &&
             m_view.neteaseScope == View::NeteaseScope::Created)
             actions.push_back({L"New NetEase playlist", [this] { CreateNeteasePlaylist(); }});
@@ -4685,11 +4724,7 @@ void MainWindow::ShowPlaylistMenu(size_t playlist, POINT screen) {
                                    p->playlist_execute_default_action(playlist, focus == SIZE_MAX ? 0 : focus);
                            }});
         if (media::IsQueue(playlist))
-            actions.push_back({TrMenu(L"Clear Now Playing"), [playlist] {
-                                   auto p = playlist_manager::get();
-                                   p->playlist_undo_backup(playlist);
-                                   p->playlist_clear(playlist);
-                               }});
+            actions.push_back({TrMenu(L"Clear Now Playing"), [this] { ClearNowPlaying(); }});
         else {
             auto contents = [playlist] {
                 metadb_handle_list items;

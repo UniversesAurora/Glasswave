@@ -533,8 +533,12 @@ void RunPlaylistContextMenu(HWND owner, POINT pt) {
     DestroyMenu(menu);
     if (cmd == kClearQueue) {
         if (queue) {
+            t_size playingPlaylist = SIZE_MAX, playingIndex = SIZE_MAX;
+            const bool playing =
+                pm->get_playing_item_location(&playingPlaylist, &playingIndex) && playingPlaylist == playlist;
             pm->playlist_undo_backup(playlist);
             pm->playlist_clear(playlist);
+            if (playing) playback_control::get()->stop();
         }
         return;
     }

@@ -287,6 +287,28 @@ void PlayStats::ClearCounts(metadb_handle_list_cref items) {
     if (changed) Save();
 }
 
+void PlayStats::ForgetAllRecent() {
+    if (!m_loaded) Load();
+    bool changed = false;
+    for (auto& record : m_records)
+        if (record.lastPlayed) {
+            record.lastPlayed = 0;
+            changed = true;
+        }
+    if (changed) Save();
+}
+
+void PlayStats::ClearAllCounts() {
+    if (!m_loaded) Load();
+    bool changed = false;
+    for (auto& record : m_records)
+        if (record.count) {
+            record.count = 0;
+            changed = true;
+        }
+    if (changed) Save();
+}
+
 std::vector<PlayRecord> PlayStats::Recent(size_t limit) {
     if (!m_loaded) Load();
     std::vector<PlayRecord> out;

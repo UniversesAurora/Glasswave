@@ -34,7 +34,7 @@ std::vector<Column> ExtraColumns() {
         {L"Composer", 150, false, false, true, "[%composer%]"},
         {L"Rating", 80, false, false, false, "[%rating%]"},  // drawn as WMP stars
         {L"Favorite", 58, false, false, false, "<favorite>"},  // toggles the Favorites playlist
-        {L"Play count", 70, false, true, true, "<playcount>"},
+        {L"Count", 70, false, true, true, "<playcount>"},
         {L"Bit rate", 70, false, true, true, "[%bitrate% kbps]"},
         {L"Type", 60, false, false, true, "[%codec%]"},
         {L"Size", 70, false, true, true, "[%filesize_natural%]"},

@@ -36,6 +36,8 @@ public:
     void ForgetRecent(metadb_handle_list_cref items);
     // Resets the count (the track leaves Most Played) but keeps the last-played time.
     void ClearCounts(metadb_handle_list_cref items);
+    void ForgetAllRecent();  // clears the whole Recently Played list
+    void ClearAllCounts();   // clears the whole Most Played list
     std::vector<PlayRecord> Recent(size_t limit);
     std::vector<PlayRecord> MostPlayed(size_t limit);
 
