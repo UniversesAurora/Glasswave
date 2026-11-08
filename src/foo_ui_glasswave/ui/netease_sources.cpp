@@ -147,12 +147,11 @@ std::vector<SongTableRow> FavoriteRows(const std::vector<metadb_handle_ptr>& loc
 }  // namespace
 
 SongTableSource::SongTableSource(std::vector<SongTableRow> rows, bool showSource, std::wstring emptyText,
-                                 std::wstring columnKey, bool albumHeatOrder)
+                                 std::wstring columnKey)
     : m_all(std::move(rows)),
       m_emptyText(std::move(emptyText)),
       m_columnKey(std::move(columnKey)),
-      m_showSource(showSource),
-      m_albumHeatOrder(albumHeatOrder) {
+      m_showSource(showSource) {
     m_order.resize(m_all.size());
     for (size_t i = 0; i < m_order.size(); ++i) m_order[i] = i;
     SetViewStyle(media::ViewStyle::Details);
@@ -245,10 +244,12 @@ std::pair<std::wstring, std::wstring> SongTableSource::GroupInfo(size_t row) con
 void SongTableSource::SortOrder() {
     m_order.resize(m_all.size());
     for (size_t i = 0; i < m_order.size(); ++i) m_order[i] = i;
-    const bool tiles = m_style == media::ViewStyle::Tiles;
-    const bool heatOrder = tiles && m_albumHeatOrder;
+    // Details keeps exactly the order the view was built with (a playlist's order, search
+    // relevance, a hot-song chart). Expanded tile always collects an album's songs into one
+    // column, ordered by where the album first appears, so interleaved playlist entries do
+    // not split the album into several columns and the order stays fixed while pages load.
+    if (m_style != media::ViewStyle::Tiles) return;
     const bool columnSort = m_sortColumn != SIZE_MAX && m_sortColumn < m_fields.size();
-    if (!heatOrder && !columnSort) return;
     const bool desc = m_sortDescending;
     const int field = columnSort ? m_fields[m_sortColumn] : -1;
     auto key = [&](size_t index) {
@@ -272,27 +273,14 @@ void SongTableSource::SortOrder() {
         default: return std::wstring();
         }
     };
-    std::map<std::wstring, size_t> bestRank;
-    if (heatOrder) {
-        for (size_t i = 0; i < m_all.size(); ++i) {
-            auto it = bestRank.find(m_all[i].albumKey);
-            if (it == bestRank.end() || i < it->second) bestRank[m_all[i].albumKey] = i;
-        }
-    }
+    std::map<std::wstring, size_t> albumRank;
+    for (size_t i = 0; i < m_all.size(); ++i) albumRank.emplace(m_all[i].albumKey, i);
     std::stable_sort(m_order.begin(), m_order.end(), [&](size_t a, size_t b) {
-        if (heatOrder) {
-            const std::wstring& ka = m_all[a].albumKey;
-            const std::wstring& kb = m_all[b].albumKey;
-            // The album of the hottest song comes first; its remaining songs do not move
-            // it. Later pages can only add albums with worse best ranks, so the order is
-            // stable while the list is paged in.
-            if (ka != kb) return bestRank[ka] < bestRank[kb];
-        } else if (tiles && m_all[a].albumKey != m_all[b].albumKey) {
-            return a < b;  // albums keep the order they were added in
-        }
+        const std::wstring& ka = m_all[a].albumKey;
+        const std::wstring& kb = m_all[b].albumKey;
+        if (ka != kb) return albumRank[ka] < albumRank[kb];
         if (columnSort) {
             const int c = CompareText(key(a), key(b));
-            if (!tiles) return desc ? c > 0 : c < 0;
             if (c) return desc ? c > 0 : c < 0;
         }
         return a < b;
@@ -457,8 +445,8 @@ void SongTableSource::SetFilter(std::wstring_view filterLower) {
     RebuildVisible();
 }
 
-NeteaseSongSource::NeteaseSongSource(std::vector<netease::Song> songs, std::wstring emptyText, bool albumHeatOrder)
-    : SongTableSource(NeteaseRows(songs), false, std::move(emptyText), L"netease-songs", albumHeatOrder) {}
+NeteaseSongSource::NeteaseSongSource(std::vector<netease::Song> songs, std::wstring emptyText)
+    : SongTableSource(NeteaseRows(songs), false, std::move(emptyText), L"netease-songs") {}
 
 void NeteaseSongSource::AppendSongs(const std::vector<netease::Song>& songs) { Append(NeteaseRows(songs)); }
 

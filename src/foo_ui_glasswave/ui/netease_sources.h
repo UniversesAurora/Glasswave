@@ -70,10 +70,9 @@ public:
     void Append(std::vector<SongTableRow> rows);
 
 protected:
-    // albumHeatOrder: Expanded tile places albums by the summed popularity of their songs
-    // while the Details order stays exactly as given.
-    SongTableSource(std::vector<SongTableRow> rows, bool showSource, std::wstring emptyText, std::wstring columnKey,
-                    bool albumHeatOrder = false);
+    // Expanded tile always groups an album's songs into one column, in first-appearance order.
+    SongTableSource(std::vector<SongTableRow> rows, bool showSource, std::wstring emptyText,
+                    std::wstring columnKey);
 
 private:
     void RebuildVisible();
@@ -98,13 +97,12 @@ private:
     bool m_sortDescending = false;
     bool m_showSource = false;
     bool m_grouping = true;
-    bool m_albumHeatOrder = false;
 };
 
 // NetEase songs in a table (liked list, playlist, search results).
 class NeteaseSongSource : public SongTableSource {
 public:
-    NeteaseSongSource(std::vector<netease::Song> songs, std::wstring emptyText, bool albumHeatOrder = false);
+    NeteaseSongSource(std::vector<netease::Song> songs, std::wstring emptyText);
     void AppendSongs(const std::vector<netease::Song>& songs);
 };
 

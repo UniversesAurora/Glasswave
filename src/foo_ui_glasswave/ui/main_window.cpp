@@ -2596,7 +2596,7 @@ void MainWindow::LoadHotSongsPage() {
             m_hotSongsMore = more && !songs.empty();  // no progress: stop instead of looping
             if (offset == 0) {
                 auto source = std::make_unique<ui::NeteaseSongSource>(
-                    std::move(songs), error.empty() ? L"No songs." : std::move(error), true);
+                    std::move(songs), error.empty() ? L"No songs." : std::move(error));
                 if (auto* style = ViewStyleSetting(m_view))
                     source->SetViewStyle(static_cast<media::ViewStyle>(style->get()));
                 if (!m_filter.empty()) source->SetFilter(m_filter);
