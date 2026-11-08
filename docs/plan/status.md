@@ -239,6 +239,10 @@ Updated: 2026-11-08
     then 50 ms), in both the list and the expanded description bar. The locally generated
     arrow-glyph upscales are installed in the dev profile; the thumb-gripper upscales were
     rejected by the owner and are not installed. The upscaler stays optional.
+  - Right-clicking a NetEase playlist or album (tile, page header or empty list) offers
+    Play, Play next, Add to queue, Add to playlist (the local playlists) and Add to NetEase
+    playlist for the whole contents; local playlist tiles get the same queue and copy
+    actions. NetEase contents are fetched on demand and become ncm:// items.
   - Not implemented yet: NetEase full-catalog search UI and a combined All Music browse
     beyond Favorites.
 

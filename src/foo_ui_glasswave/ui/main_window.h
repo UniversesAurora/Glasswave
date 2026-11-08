@@ -199,6 +199,15 @@ private:
     // Context-menu "Go to artist" destinations for the first item (NetEase or local).
     std::vector<ArtistLink> BuildArtistLinks(metadb_handle_list_cref items);
     std::vector<ContextAction> BuildContextActions(metadb_handle_list_cref items);
+    // Whole playlist/album contents: play, play next, enqueue, copy to a local playlist or
+    // add to a NetEase playlist.
+    enum class BulkAction { Play, PlayNext, Enqueue, LocalPlaylist, NeteasePlaylist };
+    void AddBulkMenuItems(std::vector<MenuAction>& actions, bool netease,
+                          std::function<void(BulkAction, int64_t)> run);
+    std::vector<std::pair<int64_t, std::wstring>> LocalPlaylistTargets(size_t exclude = SIZE_MAX);
+    void ApplyBulkSongs(const std::vector<netease::Song>& songs, BulkAction action, int64_t target);
+    void RunNeteasePlaylistBulk(int64_t id, BulkAction action, int64_t target);
+    void RunNeteaseAlbumBulk(int64_t id, BulkAction action, int64_t target);
     void ShowArtistPageMenu(POINT screen, bool hotSongs, int64_t albumId, std::wstring name);
     void ShowArtistTileMenu(POINT screen, int64_t artistId, std::wstring name);
     void ShowPlaylistTileMenu(POINT screen, int64_t playlistId, std::wstring name, View::NeteaseScope scope);
