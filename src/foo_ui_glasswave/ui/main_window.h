@@ -145,6 +145,9 @@ private:
     void ShowNeteasePlaylists(const View& view, std::vector<netease::Playlist> playlists, std::wstring error);
     void ShowNeteaseArtist(const View& view, netease::Artist artist, std::vector<netease::Album> albums,
                            std::wstring error);
+    void ShowNeteaseArtistHeader(const View& view, netease::Artist artist);
+    void ShowNeteaseArtistSongs(const View& view, std::vector<netease::Song> songs, std::wstring error);
+    void LoadNeteaseArtistSongs(const View& view);
     void ShowNeteaseArtists(const View& view, std::vector<netease::Artist> artists, std::wstring error);
     void ShowNeteaseAlbums(const View& view, std::vector<netease::Album> albums, std::wstring error);
     void OpenNeteasePlaylist(int64_t id, std::wstring name, View::NeteaseScope scope);
@@ -258,6 +261,9 @@ private:
     winrt::Windows::UI::Composition::SpriteVisual m_artistHeader{nullptr};
     SIZE m_artistHeaderSize{};
     std::optional<netease::Artist> m_artist;  // the NetEase artist page on screen
+    std::vector<netease::Album> m_artistAlbums;  // its albums, kept for the view-style switch
+    std::vector<netease::Song> m_artistSongs;    // expanded-tile contents, cached per artist
+    std::wstring m_artistSongsId;
     bool m_followPending = false;
     int m_artistArtToken = 0;
     winrt::com_ptr<IWICBitmapSource> m_icon, m_art;

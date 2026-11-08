@@ -63,9 +63,10 @@ public:
     void FetchCollectedAlbumSongs(SongsCallback done);
     void FetchLiked(SongsCallback done);
     void FetchPlaylist(int64_t playlistId, DetailCallback done);
-    void FetchArtist(int64_t artistId, ArtistCallback done);
+    void FetchArtist(int64_t artistId, std::function<void(Artist artist)> header, ArtistCallback done);
     void FetchArtistTopSongs(int64_t artistId, SongsCallback done);
     void FetchAlbumSongs(int64_t albumId, SongsCallback done);
+    void FetchAlbumTracks(std::vector<Album> albums, SongsCallback done);
     void Search(std::wstring_view query, SongsCallback done);
     void ToggleLike(int64_t songId, bool like, DoneCallback done = {});
     void SetArtistFollow(int64_t artistId, bool follow, DoneCallback done = {});

@@ -607,7 +607,7 @@ bool Client::GetArtistAlbums(int64_t artistId, abort_callback& abort, std::vecto
         int code = 0;
         if (!Request(L"/artist/album",
                      {{L"id", std::to_wstring(artistId)},
-                      {L"limit", L"100"},
+                      {L"limit", L"1000"},
                       {L"offset", std::to_wstring(offset)}},
                      false, abort, body, code, error))
             return false;

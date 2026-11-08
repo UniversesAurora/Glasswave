@@ -95,6 +95,9 @@ cfg_var_modern::cfg_int cfg_viewNcmSongs({0x6a1f3c61, 0x2b7e, 0x4d90, {0x8c, 0x1
 // Collected albums: cover tiles, or the saved albums' songs grouped by album.
 cfg_var_modern::cfg_int cfg_viewNcmAlbums({0x6a1f3c62, 0x2b7e, 0x4d90, {0x8c, 0x15, 0x3e, 0x9a, 0x7b, 0x2d, 0x4f, 0x61}},
                                           static_cast<int>(media::ViewStyle::Icons));
+// Artist page: album tiles, or all album songs grouped by album.
+cfg_var_modern::cfg_int cfg_viewNcmArtist({0x6a1f3c63, 0x2b7e, 0x4d90, {0x8c, 0x15, 0x3e, 0x9a, 0x7b, 0x2d, 0x4f, 0x61}},
+                                          static_cast<int>(media::ViewStyle::Icons));
 // Music categories shown in the navigation pane, in order: media::GroupKind values as digits.
 // {6A1F3C5D-2B7E-4D90-8C15-3E9A7B2D4F61}
 cfg_var_modern::cfg_string cfg_navCategories({0x6a1f3c5d, 0x2b7e, 0x4d90, {0x8c, 0x15, 0x3e, 0x9a, 0x7b, 0x2d, 0x4f, 0x61}},
@@ -1899,6 +1902,9 @@ void MainWindow::Navigate(const View& requested, bool push) {
     if (view.kind == View::Kind::Playlist && view.playlist >= pm->get_playlist_count()) view.kind = View::Kind::AllMusic;
     if (view.kind != View::Kind::NeteaseArtist || view.remoteId != m_view.remoteId) {
         m_artist.reset();
+        m_artistAlbums.clear();
+        m_artistSongs.clear();
+        m_artistSongsId.clear();
         m_artistHeaderSize = {};  // repaint the band with the new artist's placeholder
         m_followPending = false;
     }
@@ -2027,12 +2033,49 @@ void MainWindow::Navigate(const View& requested, bool push) {
         break;
     }
     case View::Kind::NeteaseArtist: {
-        source = std::make_unique<ui::NeteaseSongSource>(std::vector<netease::Song>{}, L"Loading artist...");
         m_nav->Select(NavPane::Target::None, 0);
         const int64_t id = static_cast<int64_t>(_wcstoi64(view.remoteId.c_str(), nullptr, 10));
+        auto* style = ViewStyleSetting(view);
+        const bool expanded = style && static_cast<media::ViewStyle>(style->get()) == media::ViewStyle::Tiles;
+        const bool cached = m_artist && m_artist->id == id && !m_artistAlbums.empty();
+        auto makeGrid = [this, id] {
+            return std::make_unique<ui::NeteaseAlbumGridSource>(
+                m_artist ? m_artist->name : std::wstring(), m_artistAlbums, L"No albums.",
+                [this, id](bool hotSongs, int64_t albumId, std::wstring name) {
+                    if (hotSongs)
+                        OpenNeteaseArtistSongs(id, std::move(name));
+                    else
+                        OpenNeteaseAlbum(albumId, std::move(name), std::to_wstring(id),
+                                         m_artist ? m_artist->name : std::wstring());
+                },
+                true);
+        };
+        if (cached && !expanded) {
+            source = makeGrid();
+            break;
+        }
+        if (cached) {
+            if (m_artistSongsId == view.remoteId && !m_artistSongs.empty()) {
+                source = std::make_unique<ui::NeteaseSongSource>(m_artistSongs, L"No songs.");
+            } else {
+                source = std::make_unique<ui::NeteaseSongSource>(std::vector<netease::Song>{},
+                                                                 L"Loading album songs...");
+                const View requestedView = view;
+                netease::Provider::Get().FetchAlbumTracks(
+                    m_artistAlbums, [this, requestedView](std::vector<netease::Song> songs, std::wstring error) {
+                        ShowNeteaseArtistSongs(requestedView, std::move(songs), std::move(error));
+                    });
+            }
+            break;
+        }
+        source = std::make_unique<ui::NeteaseSongSource>(std::vector<netease::Song>{}, L"Loading artist...");
         const View requestedView = view;
         netease::Provider::Get().FetchArtist(
-            id, [this, requestedView](netease::Provider::ArtistPage page, std::wstring error) {
+            id,
+            [this, requestedView](netease::Artist artist) {
+                ShowNeteaseArtistHeader(requestedView, std::move(artist));
+            },
+            [this, requestedView](netease::Provider::ArtistPage page, std::wstring error) {
                 ShowNeteaseArtist(requestedView, std::move(page.info), std::move(page.albums), std::move(error));
             });
         break;
@@ -2260,6 +2303,9 @@ void MainWindow::ShowNeteaseArtist(const View& view, netease::Artist artist, std
     }
     if (!artist.id) {  // the profile request failed: show the message in the list
         m_artist.reset();
+        m_artistAlbums.clear();
+        m_artistSongs.clear();
+        m_artistSongsId.clear();
         m_source = std::make_unique<ui::NeteaseSongSource>(
             std::vector<netease::Song>{}, error.empty() ? L"Cannot load this artist." : std::move(error));
         m_list->SetSource(m_source.get(), false);
@@ -2268,7 +2314,17 @@ void MainWindow::ShowNeteaseArtist(const View& view, netease::Artist artist, std
         return;
     }
     m_artist = artist;
+    m_artistAlbums = albums;
+    m_artistSongs.clear();
+    m_artistSongsId.clear();
     m_followPending = false;
+    auto* style = ViewStyleSetting(view);
+    if (style && static_cast<media::ViewStyle>(style->get()) == media::ViewStyle::Tiles) {
+        LoadNeteaseArtistSongs(view);
+        RepaintBreadcrumb();
+        RepaintArtistHeader();
+        return;
+    }
     const int64_t artistId = artist.id;
     const std::wstring artistName = artist.name;
     auto source = std::make_unique<ui::NeteaseAlbumGridSource>(
@@ -2278,7 +2334,49 @@ void MainWindow::ShowNeteaseArtist(const View& view, netease::Artist artist, std
                 OpenNeteaseArtistSongs(artistId, std::move(name));
             else
                 OpenNeteaseAlbum(id, std::move(name), std::to_wstring(artistId), artistName);
+        },
+        true);
+    if (!m_filter.empty()) source->SetFilter(m_filter);
+    m_source = std::move(source);
+    m_list->SetSource(m_source.get(), false);
+    RepaintBreadcrumb();
+    RepaintArtistHeader();
+}
+
+void MainWindow::ShowNeteaseArtistHeader(const View& view, netease::Artist artist) {
+    if (m_view.kind != view.kind || m_view.library != view.library || m_view.remoteId != view.remoteId) return;
+    if (artist.name.empty()) artist.name = view.name;
+    if (!artist.name.empty()) {
+        m_view.name = artist.name;
+        if (m_historyPos < m_history.size() && m_history[m_historyPos].kind == View::Kind::NeteaseArtist &&
+            m_history[m_historyPos].remoteId == view.remoteId)
+            m_history[m_historyPos].name = artist.name;
+    }
+    m_artist = std::move(artist);
+    RepaintBreadcrumb();
+    RepaintArtistHeader();
+}
+
+void MainWindow::LoadNeteaseArtistSongs(const View& view) {
+    if (m_artistAlbums.empty()) return;
+    m_source = std::make_unique<ui::NeteaseSongSource>(std::vector<netease::Song>{}, L"Loading album songs...");
+    m_list->SetSource(m_source.get(), false);
+    const View requestedView = view;
+    netease::Provider::Get().FetchAlbumTracks(
+        m_artistAlbums, [this, requestedView](std::vector<netease::Song> songs, std::wstring error) {
+            ShowNeteaseArtistSongs(requestedView, std::move(songs), std::move(error));
         });
+}
+
+void MainWindow::ShowNeteaseArtistSongs(const View& view, std::vector<netease::Song> songs, std::wstring error) {
+    if (m_view.kind != view.kind || m_view.library != view.library || m_view.remoteId != view.remoteId) return;
+    if (error.empty()) {
+        m_artistSongs = songs;
+        m_artistSongsId = view.remoteId;
+    }
+    auto source = std::make_unique<ui::NeteaseSongSource>(
+        std::move(songs), error.empty() ? L"No songs." : std::move(error));
+    if (auto* style = ViewStyleSetting(view)) source->SetViewStyle(static_cast<media::ViewStyle>(style->get()));
     if (!m_filter.empty()) source->SetFilter(m_filter);
     m_source = std::move(source);
     m_list->SetSource(m_source.get(), false);
@@ -2502,7 +2600,7 @@ cfg_var_modern::cfg_int* MainWindow::ViewStyleSetting(const View& view) {
     case View::Kind::NeteaseAlbum:
     case View::Kind::NeteaseArtistSongs:
     case View::Kind::Search: return &cfg_viewNcmSongs;
-    case View::Kind::NeteaseArtist:
+    case View::Kind::NeteaseArtist: return &cfg_viewNcmArtist;
     case View::Kind::NeteaseArtists: return nullptr;
     case View::Kind::NeteaseAlbums: return &cfg_viewNcmAlbums;
     case View::Kind::Category:
@@ -2529,11 +2627,11 @@ void MainWindow::ShowViewMenu() {
     const std::pair<media::ViewStyle, const wchar_t*> items[] = {
         {media::ViewStyle::Icons, L"&Icon"}, {media::ViewStyle::Tiles, L"&Expanded tile"},
         {media::ViewStyle::Details, L"&Details"}};
-    const bool albumsPage = m_view.kind == View::Kind::NeteaseAlbums;
+    const bool browse = m_view.kind == View::Kind::NeteaseArtist || m_view.kind == View::Kind::NeteaseAlbums;
     for (const auto& [style, label] : items) {
+        if (browse && style == media::ViewStyle::Details) continue;  // not an album-browsing layout
         UINT flags = MF_STRING;
-        if (albumsPage ? style == media::ViewStyle::Details : !m_source->SupportsViewStyle(style))
-            flags |= MF_GRAYED;
+        if (!browse && !m_source->SupportsViewStyle(style)) flags |= MF_GRAYED;
         AppendMenuW(menu, flags, static_cast<UINT_PTR>(style) + 1, label);
     }
     // WMP 12: each view with its icon (strip 331 slots 57 icon, 56 expanded tile, 55 details),
@@ -2553,9 +2651,10 @@ void MainWindow::ShowViewMenu() {
 }
 
 void MainWindow::ApplyViewStyle(media::ViewStyle style) {
-    // The collected-albums page swaps between the album grid and a song list grouped by
-    // album, so it rebuilds the view instead of restyling the current source.
-    if (m_view.kind == View::Kind::NeteaseAlbums) {
+    // The artist and collected-albums pages swap between cover tiles and a song list
+    // grouped by album, so they rebuild the view instead of restyling the current source.
+    const bool browse = m_view.kind == View::Kind::NeteaseArtist || m_view.kind == View::Kind::NeteaseAlbums;
+    if (browse) {
         if (style == media::ViewStyle::Details) return;
         if (auto* setting = ViewStyleSetting(m_view)) setting->set(static_cast<int>(style));
         Navigate(m_view, false);
@@ -2572,7 +2671,7 @@ void MainWindow::CycleViewStyle() {
     // WMP 12: clicking the view icon steps Icon -> Expanded tile -> Details -> Icon,
     // skipping styles the current view does not offer.
     if (!m_source) return;
-    if (m_view.kind == View::Kind::NeteaseAlbums) {
+    if (m_view.kind == View::Kind::NeteaseArtist || m_view.kind == View::Kind::NeteaseAlbums) {
         const bool expanded = m_source->GetViewStyle() == media::ViewStyle::Tiles;
         ApplyViewStyle(expanded ? media::ViewStyle::Icons : media::ViewStyle::Tiles);
         return;

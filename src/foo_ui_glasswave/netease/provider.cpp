@@ -517,6 +517,52 @@ void Provider::FetchCollectedAlbums(AlbumsCallback done) {
     });
 }
 
+void Provider::FetchAlbumTracks(std::vector<Album> albums, SongsCallback done) {
+    m_tasks.Post([this, albums = std::move(albums), done = std::move(done)]() mutable {
+        if (m_stopping) return;
+        abort_callback_impl abort;
+        std::wstring error;
+        if (!m_service.EnsureStarted(abort, &error)) {
+            PostMain([done = std::move(done), error] {
+                if (done) done({}, ErrorOf(error));
+            });
+            return;
+        }
+        if (albums.size() > 120) albums.resize(120);  // a browse page, not the whole library
+        std::vector<std::vector<Song>> tracks(albums.size());
+        std::atomic<size_t> next{0};
+        auto fetch = [this, &albums, &tracks, &next] {
+            for (;;) {
+                const size_t i = next.fetch_add(1);
+                if (i >= albums.size() || m_stopping) return;
+                abort_callback_impl albumAbort;
+                Album info;
+                std::vector<Song> songs;
+                std::wstring ignored;
+                if (m_client.GetAlbum(albums[i].id, albumAbort, info, songs, ignored))
+                    tracks[i] = std::move(songs);
+            }
+        };
+        std::vector<std::thread> threads;
+        const size_t count = std::min<size_t>(4, albums.size());
+        for (size_t t = 0; t < count; ++t) threads.emplace_back(fetch);
+        for (auto& thread : threads) thread.join();
+        if (m_stopping) return;
+        std::vector<Song> all;
+        for (auto& list : tracks) all.insert(all.end(), list.begin(), list.end());
+        if (all.empty()) {
+            PostMain([done = std::move(done)] {
+                if (done) done({}, L"No songs in the selected albums.");
+            });
+            return;
+        }
+        PostMain([done = std::move(done), all = std::move(all)]() mutable {
+            Catalog::Get().PutAndHint(all);
+            if (done) done(std::move(all), {});
+        });
+    });
+}
+
 void Provider::FetchCollectedAlbumSongs(SongsCallback done) {
     m_tasks.Post([this, done = std::move(done)] {
         if (m_stopping) return;
@@ -550,38 +596,7 @@ void Provider::FetchCollectedAlbumSongs(SongsCallback done) {
             std::lock_guard lock(m_mutex);
             m_collectedAlbums = albums;
         }
-        if (albums.size() > 120) albums.resize(120);  // a browse page, not the whole library
-        std::vector<std::vector<Song>> tracks(albums.size());
-        std::atomic<size_t> next{0};
-        auto fetch = [this, &albums, &tracks, &next] {
-            for (;;) {
-                const size_t i = next.fetch_add(1);
-                if (i >= albums.size() || m_stopping) return;
-                abort_callback_impl albumAbort;
-                Album info;
-                std::vector<Song> songs;
-                std::wstring ignored;
-                if (m_client.GetAlbum(albums[i].id, albumAbort, info, songs, ignored))
-                    tracks[i] = std::move(songs);
-            }
-        };
-        std::vector<std::thread> threads;
-        const size_t count = std::min<size_t>(4, albums.size());
-        for (size_t t = 0; t < count; ++t) threads.emplace_back(fetch);
-        for (auto& thread : threads) thread.join();
-        if (m_stopping) return;
-        std::vector<Song> all;
-        for (auto& list : tracks) all.insert(all.end(), list.begin(), list.end());
-        if (all.empty()) {
-            PostMain([done = std::move(done)] {
-                if (done) done({}, L"No songs in the collected albums.");
-            });
-            return;
-        }
-        PostMain([done = std::move(done), all = std::move(all)]() mutable {
-            Catalog::Get().PutAndHint(all);
-            if (done) done(std::move(all), {});
-        });
+        FetchAlbumTracks(std::move(albums), std::move(done));
     });
 }
 
@@ -696,8 +711,8 @@ void Provider::FetchPlaylist(int64_t playlistId, DetailCallback done) {
     });
 }
 
-void Provider::FetchArtist(int64_t artistId, ArtistCallback done) {
-    m_tasks.Post([this, artistId, done = std::move(done)] {
+void Provider::FetchArtist(int64_t artistId, std::function<void(Artist artist)> header, ArtistCallback done) {
+    m_tasks.Post([this, artistId, header = std::move(header), done = std::move(done)] {
         if (m_stopping) return;
         abort_callback_impl abort;
         std::wstring error;
@@ -714,6 +729,9 @@ void Provider::FetchArtist(int64_t artistId, ArtistCallback done) {
             });
             return;
         }
+        // Show the profile while the album list is still loading.
+        if (header)
+            PostMain([header = std::move(header), info = page.info] { header(info); });
         std::wstring albumError;
         bool followed = false;
         if (m_client.GetArtistAlbums(artistId, abort, page.albums, &followed, albumError)) {
