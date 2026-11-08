@@ -271,6 +271,11 @@ Updated: 2026-11-08
   - Mixed-source lists show a Source column: All Music > Favorites and the two play-history
     pages already had one; the queue and every playlist now label each row Local Music or
     NetEase Cloud Music as well, and the column sorts by source.
+  - NetEase's personal radar (私人雷达) is marked specialType 100 in /user/playlist.
+    It is now kept in the account lists, so collecting it from Recommended makes it appear
+    under Collected playlists and survive account refreshes; the interested page still
+    shows the service's daily title and cover. specialType 5 (the liked songs playlist) is
+    still kept apart, and the other special types (yearly reviews, ...) stay excluded.
   - Clicking the NetEase Cloud Music library row (and its breadcrumb) opens the liked
     Favorites page instead of the Created playlists section.
   - The Now Playing, Recently Played and Most Played pages add removal actions to the
