@@ -101,6 +101,7 @@
     <ClCompile Include="ui\song_actions.cpp" />
     <ClCompile Include="ui\view.cpp" />
     <ClCompile Include="app\settings.cpp" />
+    <ClCompile Include="ui\settings_page.cpp" />
     <ClCompile Include="stream\provider.cpp" />
     <ClCompile Include="netease\stream_provider.cpp" />
     <ClCompile Include="ui\taskbar.cpp" />
@@ -159,6 +160,7 @@
     <ClInclude Include="ui\page.h" />
     <ClInclude Include="ui\view.h" />
     <ClInclude Include="app\settings.h" />
+    <ClInclude Include="app\setting_fields.h" />
     <ClInclude Include="stream\model.h" />
     <ClInclude Include="stream\provider.h" />
     <ClInclude Include="netease\stream_provider.h" />

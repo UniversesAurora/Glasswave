@@ -5,6 +5,9 @@
 // use it directly. Provider-specific settings live with their provider (netease/config.h).
 namespace glasswave::settings {
 
+// Posted to the main window after the preferences page applied changes.
+inline constexpr UINT kChangedMessage = WM_APP + 0x31;
+
 struct Range {
     int min, max, defaultValue;
 };

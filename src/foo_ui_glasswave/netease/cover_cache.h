@@ -19,6 +19,13 @@ public:
 
     bool Read(const std::wstring& url, std::vector<unsigned char>& bytes);
     void Write(const std::wstring& url, const std::string& bytes);
+    struct Usage {
+        uint64_t bytes = 0;
+        size_t files = 0;
+    };
+    Usage CurrentUsage();
+    void Clear();     // removes every cached cover
+    void Trim();      // applies a lowered size limit now
 
 private:
     CoverCache();

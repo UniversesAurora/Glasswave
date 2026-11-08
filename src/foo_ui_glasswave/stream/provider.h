@@ -1,5 +1,6 @@
 #pragma once
 
+#include "app/setting_fields.h"
 #include "stream/model.h"
 
 #include <functional>
@@ -70,6 +71,8 @@ public:
     // Display name, untranslated (the UI passes it through Tr).
     virtual std::wstring Name() const = 0;
     virtual Features Offers() const = 0;
+    // The provider's own rows on the preferences page (quality, caches, account, ...).
+    virtual std::vector<settings::Field> SettingFields() { return {}; }
 
     // ---- account ---------------------------------------------------------------------
     virtual bool SignedIn() const = 0;

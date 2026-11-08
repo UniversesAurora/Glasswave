@@ -1,8 +1,11 @@
 #include "pch.h"
 #include "netease/stream_provider.h"
 #include "netease/catalog.h"
+#include "netease/config.h"
+#include "netease/cover_cache.h"
 #include "netease/handle.h"
 #include "netease/session.h"
+#include "ui/i18n.h"
 #include "ui/netease_login.h"
 
 #include <ctime>
@@ -193,6 +196,79 @@ stream::Provider::Features StreamProvider::Offers() const {
     f.favorites = f.followArtists = f.saveAlbums = f.savePlaylists = f.editPlaylists = true;
     f.reorderPlaylists = f.recommended = f.artistTopTracks = true;
     return f;
+}
+
+std::vector<settings::Field> StreamProvider::SettingFields() {
+    using Field = settings::Field;
+    std::vector<Field> fields;
+    Field account;
+    account.kind = Field::Kind::Note;
+    account.label = L"Account";
+    account.note = [this] { return SignedIn() ? AccountName() : std::wstring(L"Not signed in"); };
+    fields.push_back(std::move(account));
+
+    Field signIn;
+    signIn.kind = Field::Kind::Button;
+    signIn.label = L"Sign in...";
+    signIn.press = [this](HWND owner) { SignIn(owner); };
+    fields.push_back(std::move(signIn));
+
+    Field signOut;
+    signOut.kind = Field::Kind::Button;
+    signOut.label = L"Sign out";
+    signOut.press = [this](HWND) {
+        if (SignedIn()) SignOut();
+    };
+    fields.push_back(std::move(signOut));
+
+    // The order of Quality's values.
+    Field quality;
+    quality.kind = Field::Kind::Choice;
+    quality.label = L"Audio quality";
+    quality.choices = {L"Best available", L"Lossless", L"Hi-Res", L"Very high (320 kbps)", L"Standard"};
+    quality.defaultValue = static_cast<int>(Quality::Auto);
+    quality.get = [] { return static_cast<int>(GetQuality()); };
+    quality.set = [](int value) { SetQuality(static_cast<Quality>(value)); };
+    fields.push_back(std::move(quality));
+
+    Field cacheSize;
+    cacheSize.label = L"Cover disk cache";
+    cacheSize.unit = L"MB";
+    cacheSize.min = kCoverCacheMinMb;
+    cacheSize.max = kCoverCacheMaxMb;
+    cacheSize.defaultValue = kCoverCacheDefaultMb;
+    cacheSize.get = [] { return CoverCacheLimitMb(); };
+    cacheSize.set = [](int mb) {
+        SetCoverCacheLimitMb(mb);
+        CoverCache::Get().Trim();
+    };
+    fields.push_back(std::move(cacheSize));
+
+    Field usage;
+    usage.kind = Field::Kind::Note;
+    usage.label = L"Cover disk cache in use";
+    usage.note = [] {
+        const auto use = CoverCache::Get().CurrentUsage();
+        wchar_t text[64];
+        swprintf_s(text, L"%.1f MB, %zu ", static_cast<double>(use.bytes) / (1024.0 * 1024.0), use.files);
+        return text + ui::Tr(L"covers");
+    };
+    fields.push_back(std::move(usage));
+
+    Field clear;
+    clear.kind = Field::Kind::Button;
+    clear.label = L"Clear cover disk cache";
+    clear.press = [](HWND) { CoverCache::Get().Clear(); };
+    fields.push_back(std::move(clear));
+
+    Field service;
+    service.kind = Field::Kind::Text;
+    service.label = L"Service address (empty: built-in)";
+    service.restart = true;
+    service.getText = [] { return GetServiceUrlOverride(); };
+    service.setText = [](const std::wstring& url) { SetServiceUrlOverride(url); };
+    fields.push_back(std::move(service));
+    return fields;
 }
 
 bool StreamProvider::SignedIn() const { return Ncm().LoggedIn(); }

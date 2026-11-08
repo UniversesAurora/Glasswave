@@ -16,6 +16,7 @@ public:
     std::wstring_view Key() const override { return L"ncm"; }
     std::wstring Name() const override { return L"NetEase Cloud Music"; }
     Features Offers() const override;
+    std::vector<settings::Field> SettingFields() override;
 
     bool SignedIn() const override;
     std::wstring AccountName() const override;

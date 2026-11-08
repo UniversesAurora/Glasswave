@@ -3937,6 +3937,12 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
     }
 
+    case settings::kChangedMessage:  // Preferences > Display > Glasswave applied something
+        ApplyLanguage(CurrentLanguageSetting());
+        if (m_view.kind == View::Kind::AllRecentPlayed || m_view.kind == View::Kind::AllMostPlayed)
+            Navigate(m_view, false);
+        return 0;
+
     case WM_TIMER:
         if (wp == kLibraryTimer) {
             KillTimer(hwnd, kLibraryTimer);

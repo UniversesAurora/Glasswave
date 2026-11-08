@@ -205,6 +205,29 @@ void CoverCache::Write(const std::wstring& url, const std::string& bytes) {
     SaveLocked();
 }
 
+CoverCache::Usage CoverCache::CurrentUsage() {
+    std::lock_guard lock(m_mutex);
+    if (!m_loaded) LoadLocked();
+    return {m_total, m_entries.size()};
+}
+
+void CoverCache::Clear() {
+    std::lock_guard lock(m_mutex);
+    if (!m_loaded) LoadLocked();
+    std::error_code ec;
+    for (const auto& [url, entry] : m_entries) std::filesystem::remove(FileFor(entry.file), ec);
+    m_entries.clear();
+    m_total = 0;
+    SaveLocked();
+}
+
+void CoverCache::Trim() {
+    std::lock_guard lock(m_mutex);
+    if (!m_loaded) LoadLocked();
+    EvictLocked({});
+    SaveLocked();
+}
+
 void CoverCache::AgeLocked() {
     // Keep the cache responsive to new listening habits instead of letting historical
     // popularity pin an entry forever.
