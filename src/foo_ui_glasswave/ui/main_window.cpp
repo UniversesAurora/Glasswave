@@ -1326,6 +1326,24 @@ void MainWindow::RepaintBreadcrumb() {
 
 void MainWindow::BuildCrumbs() {
     auto go = [this](View v) { return [this, v] { Navigate(v, true); }; };
+    // Names are laid out after the crumb list is built; early provider branches must call
+    // this too, or every crumb keeps x0 = split = x1 = 0 and they draw on top of each other.
+    auto layoutCrumbs = [this] {
+        float x = 0;
+        for (auto& c : m_crumbs) {
+            c.x0 = x;
+            if (!c.text.empty()) {
+                auto t = MakeText(Tr(c.text), 12.0f, DWRITE_FONT_WEIGHT_NORMAL, 400, 20);
+                DWRITE_TEXT_METRICS tm{};
+                t->GetMetrics(&tm);
+                x += std::ceil(tm.widthIncludingTrailingWhitespace) + 8;
+            }
+            c.split = x;
+            if (c.children) x += 12;
+            c.x1 = x;
+        }
+        if (m_crumbHot >= static_cast<int>(m_crumbs.size())) m_crumbHot = -1;
+    };
     View all;
     all.kind = View::Kind::AllMusic;
     auto categoryView = [](media::GroupKind k) {
@@ -1411,6 +1429,7 @@ void MainWindow::BuildCrumbs() {
         m_crumbs.push_back({L"All Music", go(allLibrary), {}});
         if (m_view.kind == View::Kind::AllFavorites) m_crumbs.push_back({L"Favorites", go(m_view), {}});
         if (m_view.kind == View::Kind::Search) m_crumbs.push_back({L"Search results", go(m_view), {}});
+        layoutCrumbs();
         return;
     }
     if (m_view.library == View::Library::Netease) {
@@ -1427,6 +1446,7 @@ void MainWindow::BuildCrumbs() {
         } else if (m_view.kind == View::Kind::Search) {
             m_crumbs.push_back({L"Search results", go(m_view), neteaseMenu});
         }
+        layoutCrumbs();
         return;
     }
 
@@ -1461,20 +1481,7 @@ void MainWindow::BuildCrumbs() {
     }
 
     // Lay out: name with 4 DIP padding, arrow 12 DIP; the root crumb is an arrow only.
-    float x = 0;
-    for (auto& c : m_crumbs) {
-        c.x0 = x;
-        if (!c.text.empty()) {
-            auto t = MakeText(Tr(c.text), 12.0f, DWRITE_FONT_WEIGHT_NORMAL, 400, 20);
-            DWRITE_TEXT_METRICS tm{};
-            t->GetMetrics(&tm);
-            x += std::ceil(tm.widthIncludingTrailingWhitespace) + 8;
-        }
-        c.split = x;
-        if (c.children) x += 12;
-        c.x1 = x;
-    }
-    if (m_crumbHot >= static_cast<int>(m_crumbs.size())) m_crumbHot = -1;
+    layoutCrumbs();
 }
 
 void MainWindow::PaintBreadcrumb() {
