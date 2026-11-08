@@ -400,7 +400,10 @@ bool Client::UserPlaylists(int64_t userId, abort_callback& abort, std::vector<Pl
                 if (own || likedPlaylist == 0) likedPlaylist = playlist.id;
                 continue;
             }
-            if (special != 0) continue;
+            // 100 is 私人雷达 (personal radar): an official dynamic playlist that users
+            // collect like any other. Keep it in the account lists even though it is
+            // marked special; the other special types (yearly reviews, ...) stay out.
+            if (special != 0 && special != 100) continue;
             if (playlist.id) out.push_back(std::move(playlist));
         }
         if (!json::GetBool(body, L"more")) break;
