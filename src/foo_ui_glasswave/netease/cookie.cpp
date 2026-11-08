@@ -185,7 +185,8 @@ bool CookieHasMusicU(std::wstring_view cookie) {
     size_t start = 0;
     while (start < normalized.size()) {
         const size_t end = normalized.find(L';', start);
-        const std::wstring part = normalized.substr(start, end == std::wstring::npos ? std::wstring::npos : end - start);
+        const std::wstring part = Trim(normalized.substr(
+            start, end == std::wstring::npos ? std::wstring::npos : end - start));
         if (part.rfind(key, 0) == 0 && part.size() > key.size()) return true;
         if (end == std::wstring::npos) break;
         start = end + 1;

@@ -100,6 +100,24 @@ std::wstring JoinIds(const std::vector<int64_t>& ids) {
     return out;
 }
 
+std::wstring CookieNames(std::wstring_view cookie) {
+    std::wstring out;
+    size_t start = 0;
+    while (start < cookie.size()) {
+        const size_t end = cookie.find(L';', start);
+        const std::wstring part(cookie.substr(start, end == std::wstring_view::npos ? std::wstring_view::npos
+                                                                                   : end - start));
+        const size_t eq = part.find(L'=');
+        if (eq != std::wstring::npos && eq > 0) {
+            if (!out.empty()) out += L",";
+            out += part.substr(0, eq);
+        }
+        if (end == std::wstring_view::npos) break;
+        start = end + 1;
+    }
+    return out;
+}
+
 }  // namespace
 
 Song ParseSong(const json::Object& object) {
@@ -293,7 +311,8 @@ QrStatus Client::QrCheck(std::wstring_view key, abort_callback& abort) {
     if (code == 803 || !status.cookie.empty()) {
         Log(L"login: qr check code " + std::to_wstring(code) + L", json/header cookies " +
             std::to_wstring(responseCookies.size()) + L", normalized " + std::to_wstring(status.cookie.size()) +
-            (CookieHasMusicU(status.cookie) ? L", MUSIC_U ok" : L", MUSIC_U missing"));
+            (CookieHasMusicU(status.cookie) ? L", MUSIC_U ok" : L", MUSIC_U missing") + L", names [" +
+            CookieNames(status.cookie) + L"]");
     }
     return status;
 }
