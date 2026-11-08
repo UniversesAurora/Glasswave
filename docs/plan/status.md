@@ -164,6 +164,11 @@ Updated: 2026-11-08
   - The collected albums page offers Icon and Expanded tile. Expanded fetches the saved
     albums' tracks (four workers, first 120 albums) and lists them grouped by album, like
     a playlist's expanded tile; the choice is remembered per view.
+  - The artist page offers the same two layouts: its Expanded tile loads the artist's
+    album tracks (four workers, first 120 albums) and caches them per artist, so switching
+    back and forth is instant afterwards. The artist header appears as soon as the profile
+    request returns, while the album list (one 1000-album request) is still loading.
+    Browse pages offer only their real layouts in the view menu, with no grayed entries.
   - Not implemented yet: NetEase full-catalog search UI, adding songs to NetEase playlists,
     a combined All Music browse beyond Favorites, and an album view reached from anywhere
     other than an artist page or the collected albums page.
