@@ -3034,6 +3034,10 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
                     return 0;
                 }
             }
+            if (wp == VK_SPACE && !m_search->Focused()) {  // WMP's play / pause
+                playback_control::get()->play_or_pause();
+                return 0;
+            }
             if (wp == VK_BACK && !m_search->Focused()) {
                 GoBack();
                 return 0;
