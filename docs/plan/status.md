@@ -264,7 +264,17 @@ Updated: 2026-11-08
   - The shared song tables (NetEase lists and the cross-source Favorites / play history)
     offer a Play count column fed by our play history: hidden by default under Choose
     columns, visible by default on Most Played. Local library lists keep their existing
-    Play count column, which reads foobar2000's Playback Statistics (%play_count%).
+    Play count column, which reads foobar2000's Playback Statistics (%play_count%). A
+    track that starts while a song table is on screen updates its count immediately; the
+    row order changes only when the page is rebuilt.
+  - Clicking the NetEase Cloud Music library row (and its breadcrumb) opens the liked
+    Favorites page instead of the Created playlists section.
+  - The Now Playing, Recently Played and Most Played pages add removal actions to the
+    song context menu. Removing from Now Playing deletes the rows; when the playing song
+    goes, playback continues with the song that moved into its place, or stops if the
+    queue is empty. Removing from Recently Played clears the last-played time (the song
+    stays in Most Played), and removing from Most Played resets the count (the song stays
+    in Recently Played); both rebuild the page and keep the scroll anchor.
   - Menu check marks are now drawn as vectors (shape and colours sampled from Aero IMAGE
     976) instead of scaling the 16 px theme bitmap, so column and sort checks stay crisp
     at 200 % like the submenu arrow and radio bullet.
