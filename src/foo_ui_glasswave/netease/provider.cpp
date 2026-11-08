@@ -686,6 +686,7 @@ void Provider::FetchArtistDetail(int64_t artistId, ArtistDetailCallback done) {
         }
         Artist artist;
         if (!m_client.GetArtistDetail(artistId, abort, artist, error)) {
+            Log(L"artist: detail failed for " + std::to_wstring(artistId) + L": " + error);
             PostMain([done = std::move(done), error] {
                 if (done) done({}, ErrorOf(error));
             });

@@ -261,10 +261,12 @@ void PlaylistSource::BuildGroups() {
         g.first = r;
         g.count = 1;
         g.art = item;
-        g.header = f[1];
-        g.lines = {f[0].empty() ? ui::Tr(L"Unknown Album") : f[0], f[1], f[2], f[3]};
-        // Album artist and genre open their library views (keys are the names there).
-        g.linkKeys = {std::wstring(), f[4], f[2], std::wstring()};
+        const std::wstring album = f[0].empty() ? ui::Tr(L"Unknown Album") : f[0];
+        g.header = album;
+        g.lines = {album, f[1], f[2], f[3]};
+        // Album, album artist and genre open their views. The main window turns these into
+        // NetEase pages when the group's track is an ncm:// handle.
+        g.linkKeys = {album, f[4], f[2], std::wstring()};
         m_groups.push_back(std::move(g));
     }
 }

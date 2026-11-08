@@ -19,6 +19,7 @@
 #include "netease/provider.h"
 #include "netease/catalog.h"
 #include "netease/handle.h"
+#include "netease/log.h"
 #include "ui/art_cache.h"
 #include "ui/netease_login.h"
 #include "ui/netease_sources.h"
@@ -2323,7 +2324,12 @@ void MainWindow::OpenNeteaseArtistSongs(int64_t artistId, std::wstring name) {
 }
 
 void MainWindow::ShowNeteaseArtistDetail(const View& view, netease::Artist artist, std::wstring error) {
-    if (m_view.kind != view.kind || m_view.library != view.library || m_view.remoteId != view.remoteId) return;
+    if (m_view.kind != view.kind || m_view.library != view.library || m_view.remoteId != view.remoteId) {
+        netease::Log(L"artist: stale detail for " + view.remoteId);
+        return;
+    }
+    netease::Log(L"artist: detail " + std::to_wstring(artist.id) + L", albums " +
+                 std::to_wstring(artist.albumCount) + L", songs " + std::to_wstring(artist.songCount));
     if (!artist.id) {  // the profile request failed: show the message in the list
         m_artist.reset();
         m_artistAlbums.clear();
@@ -2876,15 +2882,46 @@ void MainWindow::OnAlbumLink(size_t group, size_t line) {
         Navigate(v, true);
         return;
     }
+    // A foobar2000 playlist's album column: its art is a playlist item, so NetEase rows
+    // open the remote album/artist pages instead of looking for local groups.
+    int64_t ncmSong = 0;
+    if (g.art.is_valid() && netease::ParseSongPath(g.art->get_path(), ncmSong)) {
+        const auto song = netease::Catalog::Get().FindSong(ncmSong);
+        if (!song) return;
+        if (line == 0) {
+            if (song->albumId) OpenNeteaseAlbum(song->albumId, g.lines[0]);
+        } else if (line == 1) {
+            for (const auto& ref : song->artistRefs)
+                if (ref.id) {
+                    OpenNeteaseArtist(ref.id, ref.name);
+                    return;
+                }
+        }
+        return;
+    }
     View v;
     v.kind = View::Kind::Group;
-    v.group = line == 0   ? media::GroupKind::Album
-              : line == 1 ? media::GroupKind::Artist
-              : line == 2 ? media::GroupKind::Genre
-                          : media::GroupKind::Year;
-    v.key = key;
-    v.name = g.lines[line];
-    if (!v.key.empty()) Navigate(v, true);
+    if (line == 0) {  // playlist album headers carry the album name, not the model's key
+        const media::Group* found = nullptr;
+        for (const auto& album : m_library.Groups(media::GroupKind::Album)) {
+            if (album.name != g.lines[0]) continue;
+            if (!found) found = &album;
+            if (!g.lines[1].empty() && album.secondary == g.lines[1]) {
+                found = &album;
+                break;
+            }
+        }
+        if (!found) return;
+        v.group = media::GroupKind::Album;
+        v.key = found->key;
+        v.name = found->name;
+    } else {
+        v.group = line == 1 ? media::GroupKind::Artist : line == 2 ? media::GroupKind::Genre : media::GroupKind::Year;
+        v.key = key;
+        v.name = g.lines[line];
+        if (v.key.empty()) return;
+    }
+    Navigate(v, true);
 }
 
 void MainWindow::GoBack() {
