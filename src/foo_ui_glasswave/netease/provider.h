@@ -26,6 +26,9 @@ public:
     // Called on the main thread after a playlist/album cache update that changes covers,
     // names or counts but does not need the open page to be re-read.
     void SetLibraryCallback(std::function<void()> callback);
+    // Called on the main thread after a like/unlike; only the favorite flags of the open
+    // rows change, so the page must not be re-read.
+    void SetLikesCallback(std::function<void()> callback);
 
     TaskQueue& Tasks() { return m_tasks; }
     Client& Api() { return m_client; }
@@ -103,6 +106,7 @@ private:
     void PostMain(std::function<void()> fn);
     void NotifyChanged();
     void NotifyLibraryChanged();
+    void NotifyLikesChanged();
     // The service can regenerate a playlist cover a moment after an edit; one delayed
     // summary read catches it without polling.
     void SchedulePlaylistSummaryRefresh(int64_t playlistId);
@@ -125,6 +129,7 @@ private:
     mutable std::mutex m_mutex;
     std::function<void()> m_stateCallback;
     std::function<void()> m_libraryCallback;
+    std::function<void()> m_likesCallback;
     Account m_account;
     std::vector<Playlist> m_createdPlaylists;
     std::vector<Playlist> m_collectedPlaylists;

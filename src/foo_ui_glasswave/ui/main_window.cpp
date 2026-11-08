@@ -570,12 +570,14 @@ void MainWindow::InitComposition() {
     });
     netease::Provider::Get().SetStateCallback([this] { OnNeteaseLoginChanged(); });
     netease::Provider::Get().SetLibraryCallback([this] { OnNeteaseLibraryChanged(); });
+    netease::Provider::Get().SetLikesCallback([this] { OnNeteaseLikesChanged(); });
     SetArtistLinkProvider([this](metadb_handle_list_cref items) { return BuildArtistLinks(items); });
     SetContextActionProvider([this](metadb_handle_list_cref items) { return BuildContextActions(items); });
     m_list = std::make_unique<ListView>(m_contentLayer);
     m_list->onLink = [this](size_t group, size_t line) { OnAlbumLink(group, line); };
     m_list->onNearEnd = [this] { OnListNearEnd(); };
     m_list->onEmptyContext = [this](POINT screen) { ShowPageContextMenu(screen); };
+    m_list->onSourceChanged = [this] { ApplyPendingScroll(); };
     m_list->onScrollAnim = [this] { StartScrollAnimation(); };
     m_list->onScrollHold = [this] { StartScrollRepeat(); };
     m_search = std::make_unique<SearchBox>(m_contentLayer);
@@ -2078,12 +2080,48 @@ void MainWindow::OnCrumbClick(POINT pt) {
 
 // ---- Navigation --------------------------------------------------------------------------
 
+std::wstring MainWindow::ViewKey(const View& view) const {
+    std::wstring key = std::to_wstring(static_cast<int>(view.library));
+    key += L'|';
+    key += std::to_wstring(static_cast<int>(view.kind));
+    key += L'|';
+    key += std::to_wstring(view.playlist);
+    key += L'|';
+    key += std::to_wstring(static_cast<int>(view.group));
+    key += L'|';
+    key += view.key;
+    key += L'|';
+    key += view.remoteId;
+    key += L'|';
+    key += std::to_wstring(static_cast<int>(view.neteaseScope));
+    key += view.scopeKnown ? L"|s" : L"|u";
+    key += L'|';
+    key += view.parentId;
+    key += L'|';
+    key += view.query;
+    return key;
+}
+
+void MainWindow::ApplyPendingScroll() {
+    if (m_pendingScrollKey.empty() || !m_list || !m_source || m_source->Count() == 0) return;
+    if (auto it = m_scrollPositions.find(m_pendingScrollKey); it != m_scrollPositions.end())
+        m_list->ScrollToRow(std::min(it->second, m_source->Count() - 1));
+    m_pendingScrollKey.clear();
+}
+
 void MainWindow::Navigate(const View& requested, bool push) {
     View view = requested;
     auto pm = playlist_manager::get();
     std::unique_ptr<media::ListSource> source;
 
     if (view.kind == View::Kind::Playlist && view.playlist >= pm->get_playlist_count()) view.kind = View::Kind::AllMusic;
+    // Remember where the page we are leaving was scrolled; ApplyPendingScroll puts the new
+    // source back there (also after an asynchronous page replaces its loading placeholder).
+    if (m_list && m_source && m_source->Count()) {
+        const size_t top = m_list->TopRow();
+        if (top != SIZE_MAX) m_scrollPositions[ViewKey(m_view)] = top;
+    }
+    m_pendingScrollKey = ViewKey(view);
     if (view.kind != View::Kind::NeteaseArtist || view.remoteId != m_view.remoteId) {
         m_artist.reset();
         m_artistAlbums.clear();
@@ -4135,6 +4173,45 @@ void MainWindow::OnNeteaseLibraryChanged() {
     RepaintBreadcrumb();
 }
 
+void MainWindow::OnNeteaseLikesChanged() {
+    UpdateFavoriteState();  // the taskbar and now-playing heart follow the playing song
+    if (!m_source || !m_list) return;
+    if (m_view.kind == View::Kind::NeteaseLiked || m_view.kind == View::Kind::AllFavorites) {
+        // Unliked songs leave these two views in place; keep the song that was on top.
+        const size_t topRow = m_list->TopRow();
+        const metadb_handle_ptr anchor =
+            topRow != SIZE_MAX && topRow < m_source->Count() ? m_source->Item(topRow) : metadb_handle_ptr{};
+        bool changed = false;
+        if (auto* source = dynamic_cast<ui::NeteaseSongSource*>(m_source.get())) {
+            std::vector<int64_t> unliked;
+            for (size_t row = 0; row < m_source->Count(); ++row) {
+                const auto track = m_source->Item(row);
+                int64_t id = 0;
+                if (track.is_valid() && netease::ParseSongPath(track->get_path(), id) &&
+                    !netease::Provider::Get().IsLiked(id))
+                    unliked.push_back(id);
+            }
+            changed = source->RemoveSongs(unliked) != 0;
+        } else if (auto* favorites = dynamic_cast<ui::AllFavoritesSource*>(m_source.get())) {
+            const size_t before = m_source->Count();
+            favorites->RemoveUnliked();
+            changed = m_source->Count() != before;
+        }
+        if (!changed) return;
+        m_list->Refresh();
+        size_t row = anchor.is_valid() ? m_source->FindRow(anchor) : SIZE_MAX;
+        if (row == SIZE_MAX && topRow != SIZE_MAX && m_source->Count())
+            row = std::min(topRow, m_source->Count() - 1);
+        if (row != SIZE_MAX) m_list->ScrollToRow(row);
+        return;
+    }
+    // Elsewhere only the favorite flag changes; refresh it without rebuilding the page.
+    if (auto* source = dynamic_cast<ui::SongTableSource*>(m_source.get())) {
+        source->RefreshFavorites();
+        m_list->Refresh();
+    }
+}
+
 void MainWindow::RenameNeteasePlaylist(int64_t id, std::wstring name) {
     if (!netease::Provider::Get().LoggedIn()) return;
     PromptText(m_hwnd, Tr(L"Rename playlist"), Tr(L"Playlist name"), name,
@@ -5918,6 +5995,7 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
         SetContextActionProvider({});
         netease::Provider::Get().SetStateCallback({});
         netease::Provider::Get().SetLibraryCallback({});
+        netease::Provider::Get().SetLikesCallback({});
         m_hover = m_pressed = nullptr;
         m_list.reset();
         m_nav.reset();

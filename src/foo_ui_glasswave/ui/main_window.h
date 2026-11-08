@@ -42,6 +42,7 @@ public:
     void OnPlaylistLockChanged();  // auto playlists attach as locks, also after start-up
     void ScheduleLibraryReload();
     void OnNeteaseLoginChanged();
+    void OnNeteaseLikesChanged();
 
 private:
     struct Layout {
@@ -128,6 +129,8 @@ private:
 
     // Navigation
     void Navigate(const View& view, bool push);
+    std::wstring ViewKey(const View& view) const;
+    void ApplyPendingScroll();
     void GoBack();
     void GoForward();
     void ShowOrganizeMenu();
@@ -384,6 +387,8 @@ private:
     std::vector<View> m_history;
     size_t m_historyPos = 0;
     View m_view;
+    std::map<std::wstring, size_t> m_scrollPositions;  // last top row per visited view
+    std::wstring m_pendingScrollKey;                   // view whose top row is being restored
     std::wstring m_filter;  // lower-cased search text
 
     // Playback state

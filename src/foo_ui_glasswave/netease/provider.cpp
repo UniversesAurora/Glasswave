@@ -188,6 +188,11 @@ void Provider::SetLibraryCallback(std::function<void()> callback) {
     m_libraryCallback = std::move(callback);
 }
 
+void Provider::SetLikesCallback(std::function<void()> callback) {
+    std::lock_guard lock(m_mutex);
+    m_likesCallback = std::move(callback);
+}
+
 void Provider::NotifyChanged() {
     std::function<void()> callback;
     {
@@ -202,6 +207,15 @@ void Provider::NotifyLibraryChanged() {
     {
         std::lock_guard lock(m_mutex);
         callback = m_libraryCallback;
+    }
+    if (callback) PostMain([callback = std::move(callback)] { callback(); });
+}
+
+void Provider::NotifyLikesChanged() {
+    std::function<void()> callback;
+    {
+        std::lock_guard lock(m_mutex);
+        callback = m_likesCallback;
     }
     if (callback) PostMain([callback = std::move(callback)] { callback(); });
 }
@@ -1014,7 +1028,7 @@ void Provider::ToggleLike(int64_t songId, bool like, DoneCallback done) {
         PostMain([done = std::move(done), ok, error] {
             if (done) done(ok, ok ? std::wstring() : ErrorOf(error));
         });
-        NotifyChanged();
+        NotifyLikesChanged();
     });
 }
 

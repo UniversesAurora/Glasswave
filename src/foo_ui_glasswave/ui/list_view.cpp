@@ -468,6 +468,7 @@ void ListView::SetSource(media::ListSource* source, bool resetScroll) {
     BuildLines();
     PaintHeader();
     Refresh();
+    if (onSourceChanged) onSourceChanged();
 }
 
 void ListView::SetBounds(const RECT& px, float scale) {

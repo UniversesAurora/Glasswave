@@ -263,6 +263,14 @@ void SongTableSource::RefreshPlayCounts() {
     for (auto& row : m_all) row.playCount = media::PlayStats::Get().CountFor(row.handle);
 }
 
+void SongTableSource::RefreshFavorites() {
+    for (auto& row : m_all) {
+        int64_t id = 0;
+        if (row.remote && row.handle.is_valid() && netease::ParseSongPath(row.handle->get_path(), id))
+            row.favorite = netease::Provider::Get().IsLiked(id);
+    }
+}
+
 std::pair<std::wstring, std::wstring> SongTableSource::GroupInfo(size_t row) const {
     if (m_sortColumn >= m_fields.size()) return {L"", L""};
     const SongTableRow& item = m_all[row];
@@ -531,6 +539,14 @@ size_t NeteaseSongSource::RemoveSongs(const std::vector<int64_t>& ids) {
 
 AllFavoritesSource::AllFavoritesSource(std::vector<metadb_handle_ptr> local, std::vector<netease::Song> remote)
     : SongTableSource(FavoriteRows(local, remote), true, L"No favorites.", L"all-favorites") {}
+
+void AllFavoritesSource::RemoveUnliked() {
+    RemoveRows([](const SongTableRow& row) {
+        int64_t id = 0;
+        return row.remote && row.handle.is_valid() && netease::ParseSongPath(row.handle->get_path(), id) &&
+               !netease::Provider::Get().IsLiked(id);
+    });
+}
 
 PlayStatsSource::PlayStatsSource(std::vector<media::PlayRecord> records, std::wstring emptyText)
     : SongTableSource(PlayStatRows(records), true, std::move(emptyText), L"all-play-stats") {

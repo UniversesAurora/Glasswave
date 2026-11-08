@@ -72,6 +72,8 @@ public:
     void Append(std::vector<SongTableRow> rows);
     // Re-reads the play counts (a track started while this list is on screen).
     void RefreshPlayCounts();
+    // Re-reads the NetEase favorite flag of every remote row.
+    void RefreshFavorites();
 
 protected:
     // Removes rows (a playlist edit) and returns how many disappeared.
@@ -121,6 +123,8 @@ public:
 class AllFavoritesSource : public SongTableSource {
 public:
     AllFavoritesSource(std::vector<metadb_handle_ptr> local, std::vector<netease::Song> remote);
+    // Drops the remote rows that are no longer liked (the NetEase list changed in place).
+    void RemoveUnliked();
 };
 
 // Recently Played / Most Played from every provider; the caller supplies the rows in
