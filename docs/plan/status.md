@@ -130,6 +130,30 @@ Updated: 2026-11-08
     selects every row under it without highlighting the bar itself; hovering draws only a
     one-pixel outline (no fill); Ctrl-click keeps the existing selection, and right-click
     selects the group before opening its menu.
+  - Details lists show sections only while sorted; a header context-menu item (Show groups)
+    turns them off. Section rows keep the plain row height when the cover column makes the
+    track rows taller.
+
+- 2026-11-08 (NetEase Cloud Music; see docs/adr/0008-netease-provider.md):
+  - NeteaseCloudMusicApi Enhanced runs as a loopback helper managed by the component; QR
+    login, DPAPI session, likes, created/collected/recommended playlists, playlist pages and
+    lossless playback through an `ncm://song/<id>` input all work.
+  - Library tree: All Music / Local Music / NetEase Cloud Music; NetEase shows Favorites,
+    Created playlists, Collected playlists and Recommended. All Music > Favorites combines
+    the local Favorites playlist with the NetEase liked list; the Details list is flat until
+    sorted and gains a sortable Source column.
+  - NetEase song lists and the combined favorites share SongTableSource (columns, sorting,
+    filtering, selection, expanded tiles, context menus); both offer Details and expanded
+    tiles, with a bounded LFU cover cache.
+  - Artist pages: right-clicking a NetEase song offers Go to artist (submenu for several
+    artists) and a local song opens the existing artist group view; the artist line in a
+    NetEase expanded tile links to the page. The page has a fixed 104 DIP header (80 DIP
+    avatar, name, album/song counts, brief description, Follow/Following) above a tile grid
+    whose first tile opens the hot songs and the rest open albums. These header values are
+    new UI, not Win7 measurements.
+  - Not implemented yet: NetEase full-catalog search UI, adding songs to NetEase playlists,
+    a combined All Music browse beyond Favorites, and an album view reached from anywhere
+    other than an artist page.
 
 ## Next
 
