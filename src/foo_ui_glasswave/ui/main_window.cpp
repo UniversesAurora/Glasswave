@@ -786,7 +786,7 @@ void MainWindow::UpdateLayout() {
     }
 
     // Content: navigation pane + list
-    L.navPane = {L.content.left, L.content.top, L.content.left + PxI(kNavPaneWidth), L.content.bottom};
+    L.navPane = {L.content.left, L.content.top, L.content.left + PxI(kNavPaneWidth), L.content.bottom - PxI(8)};
     L.list = {L.navPane.right, L.content.top, L.content.right, L.content.bottom};
 
     // Transport band: seek rule on top, capsule centered on the orb below it.
