@@ -306,6 +306,13 @@ Updated: 2026-11-08
   - The transport band's shuffle and repeat toggles load cfg at start-up after the buttons
     were first painted; they now repaint unconditionally, so the highlight matches the
     restored playback order instead of staying off.
+  - Album, artist and playlist covers share one cache key everywhere: NetEase song rows,
+    playlist/artist/album tiles, category grids and detail headers use
+    `ncm:album:` / `ncm:artist:` / `ncm:playlist:` ids, local album tiles use the library
+    album key, NetEase rows inside local playlists use the NetEase album key, and the local
+    rows of Favorites / play history dedupe by album. ArtCache also reuses a finished larger
+    decode when a smaller size is requested, so a cover already shown by a grid or header
+    does not load again for a list column.
   - NetEase's personal radar (私人雷达) is marked specialType 100 in /user/playlist.
     It is now kept in the account lists, so collecting it from Recommended makes it appear
     under Collected playlists and survive account refreshes; the interested page still
