@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "media/list_sources.h"
+#include "media/play_stats.h"
 #include "media/special_playlists.h"
 #include "media/favorites.h"
 #include "ui/win7_menu.h"
@@ -26,13 +27,14 @@ int CompareText(const std::wstring& a, const std::wstring& b) {
 }
 
 // Columns WMP 12 offers under "Choose columns" beyond the default ones (hidden by default).
+// "<playcount>" is our cross-source play history, not a titleformat field.
 std::vector<Column> ExtraColumns() {
     return {
         {L"Album artist", 150, false, false, true, "[%album artist%]"},
         {L"Composer", 150, false, false, true, "[%composer%]"},
         {L"Rating", 80, false, false, false, "[%rating%]"},  // drawn as WMP stars
         {L"Favorite", 58, false, false, false, "<favorite>"},  // toggles the Favorites playlist
-        {L"Play count", 70, false, true, true, "[%play_count%]"},
+        {L"Play count", 70, false, true, true, "<playcount>"},
         {L"Bit rate", 70, false, true, true, "[%bitrate% kbps]"},
         {L"Type", 60, false, false, true, "[%codec%]"},
         {L"Size", 70, false, true, true, "[%filesize_natural%]"},
@@ -40,6 +42,10 @@ std::vector<Column> ExtraColumns() {
         {L"File name", 200, false, false, true, "%filename_ext%"},
         {L"Folder", 260, false, false, true, "$directory_path(%path%)"},
     };
+}
+
+bool IsPlayCountColumn(const Column& column) {
+    return column.format && std::strcmp(column.format, "<playcount>") == 0;
 }
 
 template <class IsSel, class SetSel>
@@ -185,7 +191,7 @@ void PlaylistSource::SetViewStyle(ViewStyle style) {
     m_scripts.clear();
     for (size_t c = 0; c < m_columns.size(); ++c) {
         const char* f = m_fields[c] == kPlFormat ? m_columns[c].format : kScripts[m_fields[c]];
-        m_scripts.push_back(f ? Compile(f) : titleformat_object::ptr());
+        m_scripts.push_back(f && !IsPlayCountColumn(m_columns[c]) ? Compile(f) : titleformat_object::ptr());
     }
     m_sortColumn = SIZE_MAX;
     Rebuild();
@@ -320,6 +326,9 @@ std::wstring PlaylistSource::Cell(size_t row, size_t column) const {
             if (!v.empty()) return v;
         }
     }
+    if (field == kPlFormat && IsPlayCountColumn(m_columns[column]))
+        return std::to_wstring(
+            PlayStats::Get().CountFor(playlist_manager::get()->playlist_get_item_handle(m_playlist, item)));
     pfc::string8 out;
     playlist_manager::get()->playlist_item_format_title(m_playlist, item, nullptr, out, m_scripts[column], nullptr,
                                                         playback_control::display_level_all);
@@ -354,12 +363,20 @@ void PlaylistSource::Sort(size_t column, bool descending) {
     if (m_sortColumn == SIZE_MAX) pm->playlist_get_all_items(m_playlist, m_unsorted);
     std::vector<std::wstring> keys(n);
     pfc::string8 buf;
-    // Sort lengths by duration, the album column by album, everything else by its text.
+    // Sort lengths by duration, play counts by value, the album column by album, everything
+    // else by its text.
     const bool byLength = m_fields[column] == kPlLength;
+    const bool byPlayCount = m_fields[column] == kPlFormat && IsPlayCountColumn(m_columns[column]);
     titleformat_object::ptr script = byLength                             ? Compile("%length_seconds_fp%")
                                      : m_fields[column] == kPlAlbumColumn ? Compile("[%album%]")
                                                                           : m_scripts[column];
     for (t_size i = 0; i < n; ++i) {
+        if (byPlayCount) {  // zero-pad so the text compare orders numbers
+            wchar_t pad[32];
+            swprintf_s(pad, L"%010u", PlayStats::Get().CountFor(pm->playlist_get_item_handle(m_playlist, i)));
+            keys[i] = pad;
+            continue;
+        }
         pm->playlist_item_format_title(m_playlist, i, nullptr, buf, script, nullptr, playback_control::display_level_none);
         keys[i] = ui::Wide(buf);
         if (byLength) {  // zero-pad so the text compare orders numbers
@@ -573,7 +590,7 @@ void TrackSource::SetViewStyle(ViewStyle style) {
     }
     m_scripts.assign(m_columns.size(), nullptr);
     for (auto& extra : ExtraColumns()) {
-        m_scripts.push_back(Compile(extra.format));
+        m_scripts.push_back(IsPlayCountColumn(extra) ? titleformat_object::ptr() : Compile(extra.format));
         m_fields.push_back(kFormat);
         m_columns.push_back(std::move(extra));
     }
@@ -643,6 +660,10 @@ std::pair<std::wstring, std::wstring> TrackSource::GroupInfo(const Track& t) con
             const bool favorite = IsFavorite(t.handle);
             return {favorite ? L"1" : L"0", ui::Tr(favorite ? L"Favorite" : L"Not in Favorites")};
         }
+        if (IsPlayCountColumn(column)) {
+            const std::wstring v = std::to_wstring(PlayStats::Get().CountFor(t.handle));
+            return {v, v};
+        }
         if (column.format && std::strcmp(column.format, "[%rating%]") == 0) {
             static const wchar_t* const kStars[] = {L"1 Star", L"2 Stars", L"3 Stars", L"4 Stars", L"5 Stars"};
             const int n = t.rating.size() == 1 ? t.rating[0] - L'0' : 0;
@@ -680,6 +701,7 @@ void TrackSource::ApplySort() {
             const Column& column = m_columns[m_sortColumn];
             const bool favorite = column.format && std::strcmp(column.format, "<favorite>") == 0;
             const bool rating = column.format && std::strcmp(column.format, "[%rating%]") == 0;
+            const bool playCount = IsPlayCountColumn(column);
             for (size_t t : m_all) {
                 const Track& tr = tracks[t];
                 switch (field) {
@@ -704,7 +726,11 @@ void TrackSource::ApplySort() {
                         keys[t] = IsFavorite(tr.handle) ? L"1" : L"0";
                     else if (rating)
                         keys[t] = tr.rating;
-                    else {
+                    else if (playCount) {  // zero-pad so the text compare orders numbers
+                        wchar_t pad[32];
+                        swprintf_s(pad, L"%010u", PlayStats::Get().CountFor(tr.handle));
+                        keys[t] = pad;
+                    } else {
                         tr.handle->format_title(nullptr, buf, m_scripts[m_sortColumn], nullptr);
                         keys[t] = ui::Wide(buf);
                         if (keys[t].empty()) keys[t] = ui::Tr(L"Unknown");
@@ -742,6 +768,8 @@ std::wstring TrackSource::Cell(size_t row, size_t column) const {
     case kGenre: return t.genre;
     case kYear: return t.year;
     case kFormat: {
+        if (column < m_columns.size() && IsPlayCountColumn(m_columns[column]))
+            return std::to_wstring(PlayStats::Get().CountFor(t.handle));
         pfc::string8 out;
         if (column < m_scripts.size() && m_scripts[column].is_valid())
             t.handle->format_title(nullptr, out, m_scripts[column], nullptr);

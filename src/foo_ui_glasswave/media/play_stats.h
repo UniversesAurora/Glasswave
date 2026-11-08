@@ -31,7 +31,7 @@ public:
 
     void Record(const metadb_handle_ptr& track);  // a track started playing
     // The stored count of this track (0 when it has never been recorded).
-    uint32_t CountFor(const metadb_handle_ptr& track);
+    uint32_t CountFor(const metadb_handle_ptr& track) const;
     // Drops the last-played time (the track leaves Recently Played) but keeps the count.
     void ForgetRecent(metadb_handle_list_cref items);
     // Resets the count (the track leaves Most Played) but keeps the last-played time.

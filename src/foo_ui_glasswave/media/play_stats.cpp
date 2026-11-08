@@ -105,7 +105,12 @@ bool RecordKey(const metadb_handle_ptr& track, std::string& key, std::string& pa
 }  // namespace
 
 PlayStats& PlayStats::Get() {
-    static PlayStats stats;
+    // Loaded once, on first use: CountFor is const and runs from paint code.
+    static PlayStats stats = [] {
+        PlayStats value;
+        value.Load();
+        return value;
+    }();
     return stats;
 }
 
@@ -230,9 +235,8 @@ void PlayStats::Record(const metadb_handle_ptr& track) {
     Save();
 }
 
-uint32_t PlayStats::CountFor(const metadb_handle_ptr& track) {
+uint32_t PlayStats::CountFor(const metadb_handle_ptr& track) const {
     if (!track.is_valid()) return 0;
-    if (!m_loaded) Load();
     std::string key, path;
     bool remote = false;
     int64_t songId = 0;

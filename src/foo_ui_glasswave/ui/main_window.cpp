@@ -3645,10 +3645,8 @@ void MainWindow::ForgetPlayStats(metadb_handle_list_cref items, bool recent) {
 
 void MainWindow::RefreshPlayCounts() {
     if (!m_list) return;
-    if (auto* source = dynamic_cast<ui::SongTableSource*>(m_source.get())) {
-        source->RefreshPlayCounts();
-        m_list->Refresh();
-    }
+    if (auto* source = dynamic_cast<ui::SongTableSource*>(m_source.get())) source->RefreshPlayCounts();
+    m_list->Refresh();  // the local sources read the count from the store while painting
 }
 
 std::vector<std::pair<int64_t, std::wstring>> MainWindow::LocalPlaylistTargets(size_t exclude) {    auto pm = playlist_manager::get();
