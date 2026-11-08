@@ -2394,6 +2394,14 @@ void MainWindow::ShowNeteasePlaylists(const View& view, std::vector<netease::Pla
         style && m_source->SupportsViewStyle(static_cast<media::ViewStyle>(style->get())))
         m_source->SetViewStyle(static_cast<media::ViewStyle>(style->get()));
     m_list->SetSource(m_source.get(), false);
+    if (error.empty()) {
+        // The section fetch is authoritative: a playlist edited elsewhere can have a new
+        // cover URL, so neither the art cache nor the list's bitmap copy may keep the old
+        // one.
+        ArtCache::Get().Invalidate(L"ncm:playlist:");
+        ArtCache::Get().Invalidate(L"ncm://cover/playlist/");
+        m_list->InvalidateArt();
+    }
     RefreshNeteaseNavPlaylists();
 }
 
@@ -3028,10 +3036,15 @@ void MainWindow::ToggleAlbumCollected() {
             break;
         }
     m_detailActionPending = true;
+    m_skipStateNavigate = true;
     netease::Provider::Get().SetAlbumCollected(id, !collected, [this, id](bool ok, std::wstring error) {
         (void)error;
         m_detailActionPending = false;
-        if (ok && m_view.kind == View::Kind::NeteaseAlbum && m_view.remoteId == std::to_wstring(id))
+        if (!ok) {
+            m_skipStateNavigate = false;
+            return;
+        }
+        if (m_view.kind == View::Kind::NeteaseAlbum && m_view.remoteId == std::to_wstring(id))
             RepaintDetailHeader();
     });
 }
@@ -3048,11 +3061,15 @@ void MainWindow::TogglePlaylistSubscribed() {
                      netease::Provider::PlaylistScope::Collected;
     if (m_playlistDetail && m_playlistDetail->id == id && m_playlistDetail->subscribed) collected = true;
     m_detailActionPending = true;
+    m_skipStateNavigate = true;
     const bool next = !collected;
     netease::Provider::Get().SetPlaylistSubscribed(id, next, [this, id, next](bool ok, std::wstring error) {
         (void)error;
         m_detailActionPending = false;
-        if (!ok) return;
+        if (!ok) {
+            m_skipStateNavigate = false;
+            return;
+        }
         if (m_playlistDetail && m_playlistDetail->id == id) m_playlistDetail->subscribed = next;
         if (m_view.kind == View::Kind::NeteasePlaylist && m_view.remoteId == std::to_wstring(id))
             RepaintDetailHeader();
@@ -3141,7 +3158,14 @@ std::vector<ContextAction> MainWindow::BuildContextActions(metadb_handle_list_cr
             for (const auto& playlist : netease::Provider::Get().CreatedPlaylists()) {
                 playlists.push_back({playlist.name.empty() ? L"Unnamed playlist" : playlist.name,
                                      [this, playlistId = playlist.id, ids] {
-                                         netease::Provider::Get().AddToPlaylist(playlistId, ids);
+                                         const bool current =
+                                             m_view.kind == View::Kind::NeteasePlaylist &&
+                                             m_view.remoteId == std::to_wstring(playlistId);
+                                         if (!current) m_skipStateNavigate = true;
+                                         netease::Provider::Get().AddToPlaylist(
+                                             playlistId, ids, [this, current](bool ok, std::wstring) {
+                                                 if (!ok && !current) m_skipStateNavigate = false;
+                                             });
                                      }});
             }
             if (playlists.empty()) playlists.push_back({L"No created playlists", nullptr});
@@ -3157,9 +3181,36 @@ std::vector<ContextAction> MainWindow::BuildContextActions(metadb_handle_list_cr
                 if (created) {
                     actions.push_back({});
                     actions.push_back({L"Remove from this playlist", [this, playlistId, ids] {
+                                           const size_t topRow = m_list->TopRow();
+                                           const metadb_handle_ptr anchor =
+                                               topRow != SIZE_MAX && m_source ? m_source->Item(topRow) : metadb_handle_ptr{};
+                                           m_skipStateNavigate = true;
                                            netease::Provider::Get().RemoveFromPlaylist(
-                                               playlistId, ids, [this](bool ok, std::wstring) {
-                                                   if (ok) Navigate(m_view, false);
+                                               playlistId, ids,
+                                               [this, playlistId, ids, anchor, topRow](bool ok, std::wstring) {
+                                                   if (!ok) {
+                                                       m_skipStateNavigate = false;
+                                                       return;
+                                                   }
+                                                   if (m_view.kind != View::Kind::NeteasePlaylist ||
+                                                       m_view.remoteId != std::to_wstring(playlistId))
+                                                       return;
+                                                   auto* source =
+                                                       dynamic_cast<ui::NeteaseSongSource*>(m_source.get());
+                                                   if (!source) return;
+                                                   source->RemoveSongs(ids);
+                                                   if (m_playlistDetail && m_playlistDetail->id == playlistId)
+                                                       m_playlistDetail->trackCount =
+                                                           std::max(0, m_playlistDetail->trackCount -
+                                                                           static_cast<int>(ids.size()));
+                                                   // Keep the same song at the top; only the rows below it
+                                                   // disappear, so the view does not jump to the start.
+                                                   size_t row = anchor.is_valid() ? source->FindRow(anchor) : SIZE_MAX;
+                                                   if (row == SIZE_MAX && m_source->Count())
+                                                       row = std::min(topRow, m_source->Count() - 1);
+                                                   m_list->Refresh();
+                                                   if (row != SIZE_MAX) m_list->ScrollToRow(row);
+                                                   RepaintDetailHeader();
                                                });
                                        }});
                 }
@@ -3176,9 +3227,15 @@ std::vector<ContextAction> MainWindow::BuildContextActions(metadb_handle_list_cr
             if (collected) {
                 if (!actions.empty()) actions.push_back({});
                 actions.push_back({L"Uncollect album", [this, viewedAlbum] {
+                                       m_skipStateNavigate = true;
                                        netease::Provider::Get().SetAlbumCollected(
                                            viewedAlbum, false, [this](bool ok, std::wstring) {
-                                               if (ok) RepaintBreadcrumb();
+                                               if (!ok) {
+                                                   m_skipStateNavigate = false;
+                                                   return;
+                                               }
+                                               RepaintBreadcrumb();
+                                               RepaintDetailHeader();
                                            });
                                    }});
             }
@@ -3215,8 +3272,16 @@ void MainWindow::ShowPageContextMenu(POINT screen) {
                 collected = true;
                 break;
             }
-        actions.push_back({collected ? L"Uncollect album" : L"Collect album", [id, collected] {
-                               netease::Provider::Get().SetAlbumCollected(id, !collected);
+        actions.push_back({collected ? L"Uncollect album" : L"Collect album", [this, id, collected] {
+                               m_skipStateNavigate = true;
+                               netease::Provider::Get().SetAlbumCollected(
+                                   id, !collected, [this](bool ok, std::wstring) {
+                                       if (!ok) {
+                                           m_skipStateNavigate = false;
+                                           return;
+                                       }
+                                       RepaintDetailHeader();
+                                   });
                            }});
         break;
     }
@@ -3230,8 +3295,19 @@ void MainWindow::ShowPageContextMenu(POINT screen) {
         if (own) return;
         bool collected = scope == netease::Provider::PlaylistScope::Collected ||
                          (m_playlistDetail && m_playlistDetail->subscribed);
-        actions.push_back({collected ? L"Uncollect playlist" : L"Collect playlist", [id, collected] {
-                               netease::Provider::Get().SetPlaylistSubscribed(id, !collected);
+        actions.push_back({collected ? L"Uncollect playlist" : L"Collect playlist", [this, id, collected] {
+                               m_skipStateNavigate = true;
+                               const bool next = !collected;
+                               netease::Provider::Get().SetPlaylistSubscribed(
+                                   id, next, [this, id, next](bool ok, std::wstring) {
+                                       if (!ok) {
+                                           m_skipStateNavigate = false;
+                                           return;
+                                       }
+                                       if (m_playlistDetail && m_playlistDetail->id == id)
+                                           m_playlistDetail->subscribed = next;
+                                       RepaintDetailHeader();
+                                   });
                            }});
         break;
     }
@@ -3299,8 +3375,29 @@ void MainWindow::ShowPlaylistTileMenu(POINT screen, int64_t playlistId, std::wst
                 }
         }
         actions.push_back({L"", nullptr});
-        actions.push_back({collected ? L"Uncollect playlist" : L"Collect playlist", [playlistId, collected] {
-                               netease::Provider::Get().SetPlaylistSubscribed(playlistId, !collected);
+        actions.push_back({collected ? L"Uncollect playlist" : L"Collect playlist", [this, playlistId, collected] {
+                               m_skipStateNavigate = true;
+                               const bool next = !collected;
+                               netease::Provider::Get().SetPlaylistSubscribed(
+                                   playlistId, next, [this, playlistId, next](bool ok, std::wstring) {
+                                       if (!ok) {
+                                           m_skipStateNavigate = false;
+                                           return;
+                                       }
+                                       if (!next && m_view.kind == View::Kind::NeteasePlaylists &&
+                                           m_view.neteaseScope == View::NeteaseScope::Collected) {
+                                           if (auto* source = dynamic_cast<ui::NeteasePlaylistSource*>(
+                                                   m_source.get())) {
+                                               source->RemovePlaylist(playlistId);
+                                               m_list->Refresh();
+                                           }
+                                       }
+                                       if (m_view.kind == View::Kind::NeteasePlaylist &&
+                                           m_view.remoteId == std::to_wstring(playlistId)) {
+                                           if (m_playlistDetail) m_playlistDetail->subscribed = next;
+                                           RepaintDetailHeader();
+                                       }
+                                   });
                            }});
     }
     ShowActionMenu(m_hwnd, screen, actions);
@@ -3318,9 +3415,23 @@ void MainWindow::ShowAlbumGridMenu(POINT screen, int64_t albumId, std::wstring n
     if (collected) {
         if (!actions.empty()) actions.push_back({L"", nullptr});
         actions.push_back({L"Uncollect album", [this, albumId] {
+                               m_skipStateNavigate = true;
                                netease::Provider::Get().SetAlbumCollected(
-                                   albumId, false, [this](bool ok, std::wstring) {
-                                       if (ok && m_view.kind == View::Kind::NeteaseAlbums) Navigate(m_view, false);
+                                   albumId, false, [this, albumId](bool ok, std::wstring) {
+                                       if (!ok) {
+                                           m_skipStateNavigate = false;
+                                           return;
+                                       }
+                                       if (m_view.kind == View::Kind::NeteaseAlbums) {
+                                           if (auto* grid =
+                                                   dynamic_cast<ui::NeteaseAlbumGridSource*>(m_source.get())) {
+                                               grid->RemoveAlbum(albumId);
+                                               m_list->Refresh();
+                                           }
+                                       } else if (m_view.kind == View::Kind::NeteaseAlbum &&
+                                                  m_view.remoteId == std::to_wstring(albumId)) {
+                                           RepaintDetailHeader();
+                                       }
                                    });
                            }});
     }
@@ -3362,26 +3473,41 @@ void MainWindow::ShowNeteaseNavMenu(NavPane::Target target, POINT screen) {
 
 void MainWindow::OnNeteaseLoginChanged() {
     // Playlist covers change when their songs change; the summary fetched after an edit
-    // updates the catalog, and dropping the decoded thumbnails makes the new URLs load.
+    // updates the catalog, and dropping both the decoded art and the list's bitmap copy
+    // makes the new URLs load in the navigation and the tile pages.
     ArtCache::Get().Invalidate(L"ncm:playlist:");
+    ArtCache::Get().Invalidate(L"ncm://cover/playlist/");
+    if (m_list && m_view.kind == View::Kind::NeteasePlaylists) m_list->InvalidateArt();
     RefreshNeteaseNavPlaylists();
     m_nav->SetNeteaseState(netease::Provider::Get().LoggedIn(), netease::Provider::Get().CurrentAccount().nickname);
     UpdateFavoriteState();
-    m_forcePageRefresh = true;
-    if (m_view.library == View::Library::Netease || m_view.kind == View::Kind::AllFavorites)
+    const bool skip = m_skipStateNavigate;
+    m_skipStateNavigate = false;
+    if (!skip && (m_view.library == View::Library::Netease || m_view.kind == View::Kind::AllFavorites)) {
+        m_forcePageRefresh = true;
         Navigate(m_view, false);
+    }
     if (m_list) m_list->Refresh();
     RepaintBreadcrumb();
 }
 
 void MainWindow::RefreshCurrentPage() {
     ArtCache::Get().Invalidate(L"");
+    if (m_list) m_list->InvalidateArt();
     m_forcePageRefresh = true;
     if (m_view.library == View::Library::Netease || m_view.kind == View::Kind::AllFavorites) {
         // The account lists feed the navigation and the section pages; refresh them too, and
-        // drop the covers again once their new URLs are in the catalog.
-        netease::Provider::Get().RefreshAccount([this](bool, std::wstring) {
-            if (ArtCache::Existing()) ArtCache::Get().Invalidate(L"");
+        // drop the covers again once their new URLs are in the catalog. The page itself was
+        // already re-read above, so the state callback must not navigate a second time.
+        m_skipStateNavigate = true;
+        netease::Provider::Get().RefreshAccount([this](bool ok, std::wstring) {
+            if (!ok) {
+                m_skipStateNavigate = false;
+                return;
+            }
+            if (!ArtCache::Existing()) return;
+            ArtCache::Get().Invalidate(L"");
+            if (m_list) m_list->InvalidateArt();
         });
     }
     Navigate(m_view, false);

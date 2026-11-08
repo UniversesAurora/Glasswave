@@ -70,6 +70,8 @@ public:
     void Append(std::vector<SongTableRow> rows);
 
 protected:
+    // Removes rows (a playlist edit) and rebuilds the visible order.
+    void RemoveRows(const std::function<bool(const SongTableRow&)>& remove);
     // Expanded tile always groups an album's songs into one column, in first-appearance order.
     SongTableSource(std::vector<SongTableRow> rows, bool showSource, std::wstring emptyText,
                     std::wstring columnKey);
@@ -104,6 +106,7 @@ class NeteaseSongSource : public SongTableSource {
 public:
     NeteaseSongSource(std::vector<netease::Song> songs, std::wstring emptyText);
     void AppendSongs(const std::vector<netease::Song>& songs);
+    void RemoveSongs(const std::vector<int64_t>& ids);
 };
 
 // Favorites from every provider: local Favorites and the NetEase liked list, with a
@@ -149,6 +152,7 @@ public:
     metadb_handle_list SelectedItems() const override { return {}; }
     void SetFilter(std::wstring_view filterLower) override;
     void AppendAlbums(std::vector<netease::Album> albums);  // next artist page
+    void RemoveAlbum(int64_t albumId);  // uncollected on the collected-albums page
 
 private:
     std::wstring m_artistName;
@@ -236,6 +240,7 @@ class NeteasePlaylistSource : public media::ListSource {public:
     void ContextMenu(HWND owner, POINT screen) override;
     metadb_handle_list SelectedItems() const override { return {}; }
     void SetFilter(std::wstring_view filterLower) override;
+    void RemovePlaylist(int64_t playlistId);  // uncollected on the collected-playlists page
 
 private:
     std::vector<netease::Playlist> m_playlists;

@@ -27,6 +27,12 @@ public:
     void SetFocused(bool focused);
     void Refresh();  // data changed: clamp scroll and repaint
     void EnsureVisible(size_t row);
+    // Covers can change server-side; drop the decoded bitmaps and paint again. The art
+    // cache is invalidated separately.
+    void InvalidateArt();
+    // The first item row visible at or after the top line (SIZE_MAX when the view is empty).
+    size_t TopRow() const;
+    void ScrollToRow(size_t row);
 
     bool HitTest(POINT pt) const { return PtInRect(&m_bounds, pt) != FALSE; }
     bool Capturing() const { return m_drag != Drag::None; }

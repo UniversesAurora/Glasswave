@@ -522,24 +522,28 @@ void ListView::CheckNearEnd() {
 
 void ListView::EnsureVisible(size_t row) {
     if (!m_source || row >= m_source->Count()) return;
-    size_t line = LineOfRow(row);
+    const size_t rowLine = LineOfRow(row);
+    size_t line = rowLine;
     // Bring a group's header into view together with its first track.
-    if (m_mode == Mode::Grouped && line > 0 && line < m_lines.size() && m_lines[line - 1].kind == Line::GroupHeader)
-        --line;
+    if (m_mode == Mode::Grouped && rowLine > 0 && rowLine < m_lines.size() &&
+        m_lines[rowLine - 1].kind == Line::GroupHeader)
+        line = rowLine - 1;
     if (m_mode == Mode::Grouped && !m_lineTop.empty()) {
         const float viewH = RowsHeightDip();
         const float top = LineTopDip(m_top);
-        const float lineTop = LineTopDip(line);
-        const float lineBottom = LineTopDip(line + 1);
-        if (lineTop >= top && lineBottom <= top + viewH) return;
-        if (lineTop < top) {
+        // Visibility is decided by the row itself, not by the group header: a header at the
+        // bottom edge does not mean the track below it is visible.
+        const float rowTop = LineTopDip(rowLine);
+        const float rowBottom = LineTopDip(rowLine + 1);
+        if (rowTop >= top && rowBottom <= top + viewH) return;
+        if (rowTop < top) {
             ScrollTo(line);
             return;
         }
-        // Scroll the smallest amount that puts the line's bottom at the view's bottom.
-        auto it = std::lower_bound(m_lineTop.begin(), m_lineTop.end(), lineBottom - viewH);
+        // Scroll the smallest amount that puts the row's bottom at the view's bottom.
+        auto it = std::lower_bound(m_lineTop.begin(), m_lineTop.end(), rowBottom - viewH);
         const size_t target = it == m_lineTop.end() ? m_lines.size() : static_cast<size_t>(it - m_lineTop.begin());
-        ScrollTo(std::min(target, line));
+        ScrollTo(std::min(target, rowLine));
         return;
     }
     const size_t v = std::max<size_t>(VisibleLines(), 1);
@@ -548,6 +552,29 @@ void ListView::EnsureVisible(size_t row) {
         ScrollTo(line);
     else if (last >= m_top + v)
         ScrollTo(last - v + 1);
+}
+
+void ListView::InvalidateArt() {
+    m_artBitmaps.clear();
+    PaintRows();
+}
+
+size_t ListView::TopRow() const {
+    if (!m_source || m_source->Count() == 0) return SIZE_MAX;
+    switch (m_mode) {
+    case Mode::Tiles: return std::min(m_top * TileColumns(), m_source->Count() - 1);
+    case Mode::Grouped:
+        for (size_t line = m_top; line < m_lines.size(); ++line)
+            if (m_lines[line].kind == Line::Item && m_lines[line].row < m_source->Count())
+                return m_lines[line].row;
+        return SIZE_MAX;
+    default: return m_top < m_source->Count() ? m_top : SIZE_MAX;
+    }
+}
+
+void ListView::ScrollToRow(size_t row) {
+    if (!m_source || row >= m_source->Count()) return;
+    ScrollTo(LineOfRow(row));
 }
 
 // ---- Painting -------------------------------------------------------------------------------
@@ -1349,20 +1376,20 @@ void ListView::OnRButtonUp(HWND owner, POINT pt) {
         m_source->SetFocus(hit.row);
         m_anchor = hit.row;
         PaintRows();
-    } else if (hit.part == Part::GroupHeader) {
+    } else if (hit.part == Part::GroupHeader || hit.part == Part::AlbumColumn || hit.part == Part::Link) {
         const auto& g = (*m_source->Groups())[hit.group];
         if (g.count) {
-            m_source->SelectRange(g.first, g.first + g.count - 1, false);
+            // A right-click on a group that is already fully selected keeps the rest of the
+            // selection: the menu then acts on everything the user selected. Otherwise the
+            // group becomes the selection.
+            bool allSelected = true;
+            for (size_t r = g.first; allSelected && r < g.first + g.count; ++r)
+                if (!m_source->IsSelected(r)) allSelected = false;
+            if (!allSelected) {
+                m_source->SelectRange(g.first, g.first + g.count - 1, false);
+                m_anchor = g.first;
+            }
             m_source->SetFocus(g.first);
-            m_anchor = g.first;
-            PaintRows();
-        }
-    } else if (hit.part == Part::AlbumColumn || hit.part == Part::Link) {
-        const auto& g = (*m_source->Groups())[hit.group];
-        if (g.count) {
-            m_source->SelectRange(g.first, g.first + g.count - 1, false);
-            m_source->SetFocus(g.first);
-            m_anchor = g.first;
             PaintRows();
         }
     } else if (hit.part == Part::HeaderCell || hit.part == Part::HeaderEdge) {

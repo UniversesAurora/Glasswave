@@ -8,6 +8,7 @@
 
 #include <ctime>
 #include <cwctype>
+#include <unordered_set>
 
 namespace glasswave::ui {
 
@@ -302,6 +303,16 @@ void SongTableSource::Append(std::vector<SongTableRow> rows) {
     RebuildVisible();
 }
 
+void SongTableSource::RemoveRows(const std::function<bool(const SongTableRow&)>& remove) {
+    const auto end = std::remove_if(m_all.begin(), m_all.end(), remove);
+    if (end == m_all.end()) return;
+    m_all.erase(end, m_all.end());
+    m_selected.assign(m_all.size(), 0);
+    m_focus = SIZE_MAX;
+    SortOrder();
+    RebuildVisible();
+}
+
 void SongTableSource::RebuildVisible() {
     m_visible.clear();
     for (size_t index : m_order)
@@ -450,6 +461,16 @@ NeteaseSongSource::NeteaseSongSource(std::vector<netease::Song> songs, std::wstr
 
 void NeteaseSongSource::AppendSongs(const std::vector<netease::Song>& songs) { Append(NeteaseRows(songs)); }
 
+void NeteaseSongSource::RemoveSongs(const std::vector<int64_t>& ids) {
+    if (ids.empty()) return;
+    std::unordered_set<int64_t> removed(ids.begin(), ids.end());
+    RemoveRows([&removed](const SongTableRow& row) {
+        int64_t id = 0;
+        return row.handle.is_valid() && netease::ParseSongPath(row.handle->get_path(), id) &&
+               removed.count(id) != 0;
+    });
+}
+
 AllFavoritesSource::AllFavoritesSource(std::vector<metadb_handle_ptr> local, std::vector<netease::Song> remote)
     : SongTableSource(FavoriteRows(local, remote), true, L"No favorites.", L"all-favorites") {}
 
@@ -559,6 +580,16 @@ void NeteaseAlbumGridSource::SetFilter(std::wstring_view filterLower) {
 void NeteaseAlbumGridSource::AppendAlbums(std::vector<netease::Album> albums) {
     if (albums.empty()) return;
     m_albums.insert(m_albums.end(), std::make_move_iterator(albums.begin()), std::make_move_iterator(albums.end()));
+    SetFilter(m_filter);
+}
+
+void NeteaseAlbumGridSource::RemoveAlbum(int64_t albumId) {
+    const auto end =
+        std::remove_if(m_albums.begin(), m_albums.end(), [albumId](const netease::Album& album) {
+            return album.id == albumId;
+        });
+    if (end == m_albums.end()) return;
+    m_albums.erase(end, m_albums.end());
     SetFilter(m_filter);
 }
 
@@ -712,6 +743,15 @@ void NeteasePlaylistSource::SetFilter(std::wstring_view filterLower) {
         if (m_filter.empty() || Contains(Lower(m_playlists[i].name), m_filter)) m_rows.push_back(i);
     m_selected.assign(m_playlists.size(), 0);
     m_focus = SIZE_MAX;
+}
+
+void NeteasePlaylistSource::RemovePlaylist(int64_t playlistId) {
+    const auto end =
+        std::remove_if(m_playlists.begin(), m_playlists.end(),
+                       [playlistId](const netease::Playlist& playlist) { return playlist.id == playlistId; });
+    if (end == m_playlists.end()) return;
+    m_playlists.erase(end, m_playlists.end());
+    SetFilter(m_filter);
 }
 
 }  // namespace glasswave::ui

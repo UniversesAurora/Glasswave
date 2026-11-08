@@ -317,6 +317,7 @@ private:
     bool m_collectedTracksLoading = false;
     bool m_startAlbumPage = false;  // start the first page once Navigate has set the view
     bool m_forcePageRefresh = false;  // the next Navigate re-reads the current page from the service
+    bool m_skipStateNavigate = false;  // a write updates the page in place: no reload on its state callback
     bool m_detailActionPending = false;
     int m_detailArtToken = 0;
     winrt::com_ptr<IWICBitmapSource> m_icon, m_art;
