@@ -109,6 +109,7 @@
     <ClCompile Include="media\list_sources.cpp" />
     <ClCompile Include="media\source_identity.cpp" />
     <ClCompile Include="netease\config.cpp" />
+    <ClCompile Include="netease\client.cpp" />
     <ClCompile Include="netease\cookie.cpp" />
     <ClCompile Include="netease\http.cpp" />
     <ClCompile Include="netease\json.cpp" />
@@ -149,6 +150,7 @@
     <ClInclude Include="media\source_identity.h" />
     <ClInclude Include="media\cue_encoding.h" />
     <ClInclude Include="netease\config.h" />
+    <ClInclude Include="netease\client.h" />
     <ClInclude Include="netease\cookie.h" />
     <ClInclude Include="netease\http.h" />
     <ClInclude Include="netease\json.h" />
