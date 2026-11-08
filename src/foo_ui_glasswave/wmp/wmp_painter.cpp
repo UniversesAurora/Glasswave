@@ -124,8 +124,8 @@ void HeaderSeparator(ID2D1DeviceContext* dc, float x, float height) {
                           .get());
 }
 
-void ScrollBar(ID2D1DeviceContext* dc, D2D1_SIZE_F size, float thumbTop, float thumbHeight, ScrollBarPart hot,
-               ScrollBarPart pressed) {
+void ScrollBar(ID2D1DeviceContext* dc, D2D1_SIZE_F size, float thumbTop, float thumbHeight,
+               const float* partBlends) {
     const float L = Hairline(dc);
     const float W = size.width, H = size.height;
     const float arrow = std::min(17.0f, H / 2);
@@ -135,56 +135,56 @@ void ScrollBar(ID2D1DeviceContext* dc, D2D1_SIZE_F size, float thumbTop, float t
     using win7::Module;
     auto& art = win7::Resources::Get();
     const bool aero = art.Has(Module::Aero, 728);
-
-    // Track: IMAGE 728, 14x5 (one 14x1 row per state); the pressed state is darker.
-    const int trackState = pressed == ScrollBarPart::Track ? 2 : 0;
-    const D2D1_RECT_F trackRect{0, arrow, W, H - arrow};
-    if (aero) {
-        // IMAGE 728 is 14x1 per state with fixed 10 px left / 3 px right margins; the theme
-        // nine-grids it to the 17/21/26 px scrollbar width so the edges stay one device pixel
-        // sharp at every DPI.
-        win7::DrawNineGrid(dc, Module::Aero, 728, {0.0f, static_cast<float>(trackState), 14.0f,
-                                                    static_cast<float>(trackState + 1)},
-                           {10.0f, 0.0f, 3.0f, 0.0f}, trackRect, 1.0f);
-    } else {
-        dc->FillRectangle({0, 0, W, H}, Solid(dc, Hex(0xF2F6FA)).get());
-        dc->FillRectangle({0, 0, L, H}, Solid(dc, Hex(0xC9D5E1)).get());
-        dc->FillRectangle({0, 0, W, H},
-                          Vertical(dc, 0, H, {{0.0f, Hex(0xF7FAFC)}, {1.0f, Hex(0xE5EDF5)}}).get());
-    }
-
-    auto partState = [&](ScrollBarPart part) {
-        if (pressed == part) return 2;
-        return hot == part ? 1 : 0;
+    auto blendOf = [&](ScrollBarPart part) {
+        return partBlends ? std::clamp(partBlends[static_cast<int>(part)], 0.0f, 2.0f) : 0.0f;
     };
-    auto plate = [&](bool down) {
-        const ScrollBarPart part = down ? ScrollBarPart::ArrowDown : ScrollBarPart::ArrowUp;
-        const int s = partState(part);
+    auto drawTrack = [&](int state, float opacity) {
+        const D2D1_RECT_F trackRect{0, arrow, W, H - arrow};
+        if (aero) {
+            // IMAGE 728 is 14x1 per state with fixed 10 px left / 3 px right margins; the
+            // theme nine-grids it to the 17/21/26 px scrollbar width.
+            win7::DrawNineGrid(dc, Module::Aero, 728,
+                               {0.0f, static_cast<float>(state), 14.0f, static_cast<float>(state + 1)},
+                               {10.0f, 0.0f, 3.0f, 0.0f}, trackRect, opacity);
+        } else {
+            dc->FillRectangle({0, 0, W, H}, Solid(dc, Hex(state == 2 ? 0xE0E2E3 : 0xF2F6FA, opacity)).get());
+            dc->FillRectangle({0, 0, L, H}, Solid(dc, Hex(0xC9D5E1, opacity)).get());
+            dc->FillRectangle({L, 0, W, H},
+                              Vertical(dc, 0, H,
+                                       {{0.0f, Hex(state == 2 ? 0xE0E2E3 : 0xF7FAFC, opacity)},
+                                        {1.0f, Hex(state == 2 ? 0xD8DADC : 0xE5EDF5, opacity)}})
+                                  .get());
+        }
+    };
+    drawTrack(0, 1.0f);
+    const float trackBlend = blendOf(ScrollBarPart::Track);
+    if (trackBlend > 0.0f) drawTrack(1, std::min(trackBlend, 1.0f));
+    if (trackBlend > 1.0f) drawTrack(2, trackBlend - 1.0f);
+
+    const int glyphDpi = scale <= 1.0f ? 96 : scale <= 1.25f ? 120 : 144;
+    const int glyphSize = glyphDpi == 96 ? 13 : glyphDpi == 120 ? 16 : 20;
+    const int glyphId = glyphDpi == 96 ? 718 : glyphDpi == 120 ? 719 : 720;
+    auto drawPlate = [&](bool down, int state, float opacity) {
         const D2D1_RECT_F r{0, down ? H - arrow : 0, W, down ? H : arrow};
         if (aero) {
             // IMAGE 717: 20 states of 17x17; states 1-4 up, 5-8 down (normal/hot/pressed/
-            // disabled), and the matching hover variants after them. The 8 px border is
-            // fixed, as the theme nine-grids it to 21/26 px at 120/144 dpi.
-            const int index = (down ? 4 : 0) + s;
+            // disabled). The 8 px border is fixed, as the theme nine-grids it.
+            const int index = (down ? 4 : 0) + state;
             win7::DrawNineGrid(dc, Module::Aero, 717,
                                {0.0f, static_cast<float>(index * 17), 17.0f,
                                 static_cast<float>((index + 1) * 17)},
-                               {8.0f, 8.0f, 8.0f, 8.0f}, r, 1.0f);
+                               {8.0f, 8.0f, 8.0f, 8.0f}, r, opacity);
         } else {
-            const bool press = s == 2;
-            const bool hotPart = s == 1;
+            const bool press = state == 2;
+            const bool hotPart = state == 1;
             dc->FillRectangle(r, Vertical(dc, r.top, r.bottom,
-                                          {{0.0f, Hex(press ? 0xD9ECFB : hotPart ? 0xF2FAFF : 0xFBFDFF)},
-                                           {1.0f, Hex(press ? 0xBFDCF2 : hotPart ? 0xD3E9FA : 0xE6EEF6)}})
+                                          {{0.0f, Hex(press ? 0xD9ECFB : hotPart ? 0xF2FAFF : 0xFBFDFF, opacity)},
+                                           {1.0f, Hex(press ? 0xBFDCF2 : hotPart ? 0xD3E9FA : 0xE6EEF6, opacity)}})
                                       .get());
             dc->DrawRectangle({r.left + L / 2, r.top + L / 2, r.right - L / 2, r.bottom - L / 2},
-                              Solid(dc, Hex(press ? 0x5E8CB5 : hotPart ? 0x7FA8CB : 0xC0CCD8)).get(), L);
+                              Solid(dc, Hex(press ? 0x5E8CB5 : hotPart ? 0x7FA8CB : 0xC0CCD8, opacity)).get(), L);
         }
-        // Glyph: 96/120/144 dpi resources 718/719/720, 20 states each.
-        const int glyphDpi = scale <= 1.0f ? 96 : scale <= 1.25f ? 120 : 144;
-        const int glyphSize = glyphDpi == 96 ? 13 : glyphDpi == 120 ? 16 : 20;
-        const int glyphId = glyphDpi == 96 ? 718 : glyphDpi == 120 ? 719 : 720;
-        const int index = (down ? 4 : 0) + s;
+        const int index = (down ? 4 : 0) + state;
         const float dstSize = glyphSize / scale;
         const D2D1_RECT_F glyph{(W - dstSize) / 2, (r.top + r.bottom) / 2 - dstSize / 2,
                                 (W + dstSize) / 2, (r.top + r.bottom) / 2 + dstSize / 2};
@@ -192,8 +192,7 @@ void ScrollBar(ID2D1DeviceContext* dc, D2D1_SIZE_F size, float thumbTop, float t
             !win7::DrawPartTo(dc, Module::Aero, glyphId,
                               {0, static_cast<UINT>(index * glyphSize), static_cast<UINT>(glyphSize),
                                static_cast<UINT>((index + 1) * glyphSize)},
-                              glyph, 1.0f)) {
-            // Vector fallback: a small dark triangle.
+                              glyph, opacity)) {
             const float cx = (r.left + r.right) / 2, cy = (r.top + r.bottom) / 2;
             const bool up = !down;
             const float d = 3.5f;
@@ -201,63 +200,70 @@ void ScrollBar(ID2D1DeviceContext* dc, D2D1_SIZE_F size, float thumbTop, float t
                                           {cx + d, cy + (up ? 1.5f : -1.5f)},
                                           {cx, cy + (up ? -2.0f : 2.0f)}})
                                      .get(),
-                             Solid(dc, Hex(s ? 0x1E395B : 0x4A5563)).get());
+                             Solid(dc, Hex(state ? 0x1E395B : 0x4A5563, opacity)).get());
         }
     };
-    plate(false);
-    plate(true);
+    for (bool down : {false, true}) {
+        drawPlate(down, 0, 1.0f);
+        const float b = blendOf(down ? ScrollBarPart::ArrowDown : ScrollBarPart::ArrowUp);
+        if (b > 0.0f) drawPlate(down, 1, std::min(b, 1.0f));
+        if (b > 1.0f) drawPlate(down, 2, b - 1.0f);
+    }
     if (thumbHeight <= 0) return;
 
-    const ScrollBarPart thumbPart = ScrollBarPart::Thumb;
-    const int thumbState = pressed == thumbPart ? 2 : hot == thumbPart ? 1 : 0;
     const D2D1_RECT_F t{0, std::round(thumbTop), W, std::round(thumbTop + thumbHeight)};
-    if (aero) {
-        // IMAGE 733: 5 states of 17x22; the top and bottom 5 rows are fixed, the middle
-        // stretches. Rows 0 and 21 are baked track colour.
-        const float sy = static_cast<float>(thumbState * 22);
-        if (thumbHeight <= 10) {
-            win7::DrawPartTo(dc, Module::Aero, 733,
-                             {0, static_cast<UINT>(sy), 17, static_cast<UINT>(sy + 22)}, t, 1.0f);
+    const int gripDpi = scale <= 1.0f ? 96 : scale <= 1.25f ? 120 : 144;
+    const int gripW = gripDpi == 96 ? 9 : gripDpi == 120 ? 11 : 14;
+    const int gripH = gripDpi == 96 ? 10 : gripDpi == 120 ? 12 : 16;
+    const int gripId = gripDpi == 96 ? 724 : gripDpi == 120 ? 725 : 726;
+    auto drawThumb = [&](int state, float opacity) {
+        if (aero) {
+            // IMAGE 733: 5 states of 17x22; 8 px side borders, 5 px top/bottom caps.
+            const float sy = static_cast<float>(state * 22);
+            if (thumbHeight <= 10) {
+                win7::DrawPartTo(dc, Module::Aero, 733,
+                                 {0, static_cast<UINT>(sy), 17, static_cast<UINT>(sy + 22)}, t, opacity);
+            } else {
+                win7::DrawNineGrid(dc, Module::Aero, 733, {0.0f, sy, 17.0f, sy + 22.0f},
+                                   {8.0f, 5.0f, 8.0f, 5.0f}, t, opacity);
+            }
         } else {
-            // Nine-grid: 8 px side borders, 5 px top/bottom caps (the baked track rows stay
-            // in the caps), so the thumb corners stay sharp when the theme scales it.
-            win7::DrawNineGrid(dc, Module::Aero, 733,
-                               {0.0f, sy, 17.0f, sy + 22.0f},
-                               {8.0f, 5.0f, 8.0f, 5.0f}, t, 1.0f);
+            const D2D1_RECT_F f{2, t.top, W - 2, t.bottom};
+            const D2D1_ROUNDED_RECT rr{Inset(f, L / 2), 2.5f, 2.5f};
+            dc->FillRoundedRectangle(
+                rr, Vertical(dc, f.top, f.bottom,
+                             {{0.0f, Hex(state == 2 ? 0xD2EDFC : state == 1 ? 0xEAF8FF : 0xF7FBFE, opacity)},
+                              {1.0f, Hex(state == 2 ? 0x9FD2EF : state == 1 ? 0xBEE4FA : 0xDDEAF6, opacity)}})
+                        .get());
+            dc->DrawRoundedRectangle(rr, Solid(dc, Hex(state == 2 ? 0x2D6A96
+                                                         : state == 1 ? 0x3C7FB1
+                                                                       : 0x9DB4CA,
+                                                     opacity))
+                                             .get(), L);
         }
-    } else {
-        const D2D1_RECT_F f{2, t.top, W - 2, t.bottom};
-        const D2D1_ROUNDED_RECT rr{Inset(f, L / 2), 2.5f, 2.5f};
-        dc->FillRoundedRectangle(rr, Vertical(dc, f.top, f.bottom,
-                                              {{0.0f, Hex(thumbState == 2 ? 0xD2EDFC : thumbState == 1 ? 0xEAF8FF : 0xF7FBFE)},
-                                               {1.0f, Hex(thumbState == 2 ? 0x9FD2EF : thumbState == 1 ? 0xBEE4FA : 0xDDEAF6)}})
-                                         .get());
-        dc->DrawRoundedRectangle(rr, Solid(dc, thumbState == 2 ? Hex(0x2D6A96)
-                                                 : thumbState == 1 ? Hex(0x3C7FB1)
-                                                                   : Hex(0x9DB4CA))
-                                         .get(), L);
-    }
-    if (thumbHeight > 22) {  // gripper, centred on the thumb
-        const int gripDpi = scale <= 1.0f ? 96 : scale <= 1.25f ? 120 : 144;
-        const int gripW = gripDpi == 96 ? 9 : gripDpi == 120 ? 11 : 14;
-        const int gripH = gripDpi == 96 ? 10 : gripDpi == 120 ? 12 : 16;
-        const int gripId = gripDpi == 96 ? 724 : gripDpi == 120 ? 725 : 726;
-        const float gw = gripW / scale, gh = gripH / scale;
-        const D2D1_RECT_F grip{(W - gw) / 2, (t.top + t.bottom) / 2 - gh / 2,
-                               (W + gw) / 2, (t.top + t.bottom) / 2 + gh / 2};
-        if (!art.Has(Module::Aero, gripId) ||
-            !win7::DrawPartTo(dc, Module::Aero, gripId,
-                              {0, static_cast<UINT>(thumbState * gripH), static_cast<UINT>(gripW),
-                               static_cast<UINT>((thumbState + 1) * gripH)},
-                              grip, 1.0f)) {
-            const float cx = (t.left + t.right) / 2, cy = (t.top + t.bottom) / 2;
-            for (int i = -1; i <= 1; ++i) {
-                const float y = Snap(dc, cy + i * 3.0f);
-                dc->FillRectangle({cx - 3.5f, y, cx + 3.5f, y + L},
-                                  Solid(dc, Hex(thumbState == 2 ? 0x2B5A85 : 0x5A7E9F, 0.8f)).get());
+        if (thumbHeight > 22) {
+            const float gw = gripW / scale, gh = gripH / scale;
+            const D2D1_RECT_F grip{(W - gw) / 2, (t.top + t.bottom) / 2 - gh / 2,
+                                   (W + gw) / 2, (t.top + t.bottom) / 2 + gh / 2};
+            if (!art.Has(Module::Aero, gripId) ||
+                !win7::DrawPartTo(dc, Module::Aero, gripId,
+                                  {0, static_cast<UINT>(state * gripH), static_cast<UINT>(gripW),
+                                   static_cast<UINT>((state + 1) * gripH)},
+                                  grip, opacity)) {
+                const float cx = (t.left + t.right) / 2, cy = (t.top + t.bottom) / 2;
+                for (int i = -1; i <= 1; ++i) {
+                    const float y = Snap(dc, cy + i * 3.0f);
+                    dc->FillRectangle({cx - 3.5f, y, cx + 3.5f, y + L},
+                                      Solid(dc, Hex(state == 2 ? 0x2B5A85 : 0x5A7E9F,
+                                                    0.8f * opacity)).get());
+                }
             }
         }
-    }
+    };
+    drawThumb(0, 1.0f);
+    const float thumbBlend = blendOf(ScrollBarPart::Thumb);
+    if (thumbBlend > 0.0f) drawThumb(1, std::min(thumbBlend, 1.0f));
+    if (thumbBlend > 1.0f) drawThumb(2, thumbBlend - 1.0f);
 }
 
 // Small black drop-down triangle, drawn as a vector so it stays sharp at any DPI (the 14x20

@@ -22,10 +22,11 @@ void HeaderSeparator(ID2D1DeviceContext* dc, float x, float height);
 // Slim Win7-style scrollbar: track + thumb (no arrow buttons).
 // Vertical scrollbar with the original Aero arrow plates/glyphs and thumb when aero.msstyles
 // is available (fallbacks are drawn otherwise). thumbTop/thumbHeight are DIP within `size`;
-// 0 height hides the thumb. hot/pressed name the part under the mouse / being dragged.
+// 0 height hides the thumb. partBlends[part] (ScrollBarPart 1..4) is 0 normal, 1 hot,
+// 2 pressed; intermediate values cross-fade, as Win7 does.
 enum class ScrollBarPart { None, ArrowUp, ArrowDown, Track, Thumb };
 void ScrollBar(ID2D1DeviceContext* dc, D2D1_SIZE_F size, float thumbTop, float thumbHeight,
-               ScrollBarPart hot, ScrollBarPart pressed);
+               const float* partBlends);
 
 // Toolbar text button ("Organize", "Create playlist") with optional drop-down arrow.
 void CommandButton(ID2D1DeviceContext* dc, D2D1_SIZE_F size, Layer layer, std::wstring_view text, bool dropDown);

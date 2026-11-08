@@ -50,6 +50,11 @@ public:
     std::function<void()> onNearEnd;
     // Right-click on empty space: the page's own actions (follow, collect, ...).
     std::function<void(POINT screen)> onEmptyContext;
+    // Start the window's fade/repeat timers when a scrollbar state changes / is held.
+    std::function<void()> onScrollAnim;
+    std::function<void()> onScrollHold;
+    bool AnimateScrollBar();  // one fade tick; true while a transition is running
+    bool OnScrollRepeat();    // one auto-repeat tick; true while a press should continue
 
 private:
     enum class Mode { Plain, Grouped, Tiles };
@@ -157,6 +162,8 @@ private:
     size_t m_anchor = SIZE_MAX;
     int m_scrollHot = 0;      // 1 up, 2 down, 3 track, 4 thumb
     int m_scrollPressed = 0;
+    POINT m_scrollPt{};
+    std::array<float, 5> m_scrollBlend{};  // 0 normal .. 1 hot .. 2 pressed
     Drag m_drag = Drag::None;
     int m_dragOffset = 0;   // thumb
     size_t m_dragCol = 0;   // display index

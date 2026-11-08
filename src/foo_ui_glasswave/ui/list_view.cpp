@@ -1021,6 +1021,56 @@ bool ListView::ThumbGeometry(float* top, float* height) const {
     return true;
 }
 
+bool ListView::AnimateScrollBar() {
+    bool active = false, changed = false;
+    for (int part = 1; part <= 4; ++part) {
+        const float target = m_scrollPressed == part ? 2.0f : m_scrollHot == part ? 1.0f : 0.0f;
+        float& blend = m_scrollBlend[part];
+        if (blend < target) {
+            blend = std::min(target, blend + 0.12f);
+            changed = true;
+        } else if (blend > target) {
+            blend = std::max(target, blend - 0.12f);
+            changed = true;
+        }
+        if (blend != target) active = true;
+    }
+    if (changed) PaintScrollBar();
+    return active;
+}
+
+bool ListView::OnScrollRepeat() {
+    const size_t page = std::max<size_t>(VisibleLines(), 1) - 1;
+    switch (m_scrollPressed) {
+    case 1:
+        if (m_top == 0) return false;
+        ScrollTo(m_top > 3 ? m_top - 3 : 0);
+        return m_top > 0;
+    case 2:
+        if (m_top >= MaxTop()) return false;
+        ScrollTo(m_top + 3);
+        return m_top < MaxTop();
+    case 3: {
+        float top = 0, height = 0;
+        if (!ThumbGeometry(&top, &height)) return false;
+        const RECT rr = RowsRect();
+        const float y = static_cast<float>(m_scrollPt.y - rr.top);
+        if (y < top) {
+            if (m_top == 0) return false;
+            ScrollTo(m_top > page ? m_top - page : 0);
+            return true;
+        }
+        if (y >= top + height) {
+            if (m_top >= MaxTop()) return false;
+            ScrollTo(m_top + page);
+            return true;
+        }
+        return false;
+    }
+    default: return false;
+    }
+}
+
 void ListView::PaintScrollBar() {
     auto& host = gfx::CompositionHost::Get();
     const RECT rr = RowsRect();
@@ -1028,18 +1078,8 @@ void ListView::PaintScrollBar() {
     float top = 0, height = 0;
     const bool has = ThumbGeometry(&top, &height);
     const float s = m_scale;
-    auto part = [](int value) {
-        switch (value) {
-        case 1: return wp::ScrollBarPart::ArrowUp;
-        case 2: return wp::ScrollBarPart::ArrowDown;
-        case 3: return wp::ScrollBarPart::Track;
-        case 4: return wp::ScrollBarPart::Thumb;
-        default: return wp::ScrollBarPart::None;
-        }
-    };
     host.Repaint(m_scroll, w, h, s, [&](ID2D1DeviceContext* dc) {
-        wp::ScrollBar(dc, {w / s, h / s}, top / s, has ? height / s : 0, part(m_scrollHot),
-                      part(m_scrollPressed));
+        wp::ScrollBar(dc, {w / s, h / s}, top / s, has ? height / s : 0, m_scrollBlend.data());
     });
     PlaceVisual(m_scroll, static_cast<float>(rr.right - m_bounds.left), static_cast<float>(HeaderHeightPx()),
                 static_cast<float>(w), static_cast<float>(h));
@@ -1228,7 +1268,7 @@ void ListView::OnMouseMove(POINT pt) {
                                                       : 0;
     if (scrollHot != m_scrollHot) {
         m_scrollHot = scrollHot;
-        PaintScrollBar();
+        if (onScrollAnim) onScrollAnim();
     }
 }
 
@@ -1247,7 +1287,7 @@ void ListView::OnMouseLeave() {
     }
     if (m_scrollHot) {
         m_scrollHot = 0;
-        PaintScrollBar();
+        if (onScrollAnim) onScrollAnim();
     }
 }
 
@@ -1259,8 +1299,9 @@ void ListView::OnLButtonDown(POINT pt, bool ctrl, bool shift) {
         ThumbGeometry(&top, &height);
         m_drag = Drag::Thumb;
         m_scrollPressed = 4;
+        m_scrollPt = pt;
         m_dragOffset = static_cast<int>(pt.y - RowsRect().top - top);
-        PaintScrollBar();
+        if (onScrollAnim) onScrollAnim();
         break;
     }
     case Part::Track: {
@@ -1273,19 +1314,25 @@ void ListView::OnLButtonDown(POINT pt, bool ctrl, bool shift) {
                 ScrollTo(m_top + page);
         }
         m_scrollPressed = 3;
-        PaintScrollBar();
+        m_scrollPt = pt;
+        if (onScrollAnim) onScrollAnim();
+        if (onScrollHold) onScrollHold();
         break;
     }
     case Part::ArrowUp: {
         ScrollTo(m_top > 3 ? m_top - 3 : 0);
         m_scrollPressed = 1;
-        PaintScrollBar();
+        m_scrollPt = pt;
+        if (onScrollAnim) onScrollAnim();
+        if (onScrollHold) onScrollHold();
         break;
     }
     case Part::ArrowDown: {
         ScrollTo(m_top + 3);
         m_scrollPressed = 2;
-        PaintScrollBar();
+        m_scrollPt = pt;
+        if (onScrollAnim) onScrollAnim();
+        if (onScrollHold) onScrollHold();
         break;
     }
     case Part::HeaderEdge: {
@@ -1356,7 +1403,7 @@ void ListView::OnLButtonUp(POINT pt) {
     m_drag = Drag::None;
     if (m_scrollPressed) {
         m_scrollPressed = 0;
-        PaintScrollBar();
+        if (onScrollAnim) onScrollAnim();
     }
     switch (drag) {
     case Drag::Thumb: PaintScrollBar(); break;
@@ -1397,8 +1444,12 @@ void ListView::OnLButtonUp(POINT pt) {
 }
 
 void ListView::CancelDrag() {
-    if (m_drag == Drag::None) return;
-    m_drag = Drag::None;
+    if (m_drag != Drag::None) m_drag = Drag::None;
+    if (m_scrollPressed || m_scrollHot) {
+        m_scrollPressed = 0;
+        m_scrollHot = 0;
+        if (onScrollAnim) onScrollAnim();
+    }
     PaintHeader();
     PaintRows();
     PaintScrollBar();

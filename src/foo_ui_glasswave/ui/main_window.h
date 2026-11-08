@@ -191,6 +191,10 @@ private:
     void OnDetailBriefBarDown(POINT pt);
     void OnDetailBriefBarMove(POINT pt);
     void OnDetailBriefBarUp();
+    bool AnimateDetailScrollBar();  // one fade tick; true while transitioning
+    bool OnDetailBriefRepeat();     // one auto-repeat tick while a bar part is held
+    void StartScrollAnimation();
+    void StartScrollRepeat();
     void ShowPageContextMenu(POINT screen);  // actions for the page itself (no selected item)
     // Context-menu "Go to artist" destinations for the first item (NetEase or local).
     std::vector<ArtistLink> BuildArtistLinks(metadb_handle_list_cref items);
@@ -322,6 +326,11 @@ private:
     int m_detailBriefHot = 0;  // 1 up, 2 down, 3 track, 4 thumb
     int m_detailBriefPressed = 0;
     int m_detailBriefDragOffset = 0;  // px
+    POINT m_detailBriefPressPt{};
+    std::array<float, 5> m_detailBriefBlend{};  // 0 normal .. 1 hot .. 2 pressed
+    bool m_scrollAnimActive = false;
+    bool m_scrollRepeatActive = false;
+    ULONGLONG m_scrollRepeatSince = 0;
     size_t m_artistAlbumOffset = 0;     // API offset for the next album metadata page
     size_t m_artistTracksLoaded = 0;    // albums whose tracks are in m_artistSongs
     bool m_artistAlbumsMore = true;

@@ -233,7 +233,12 @@ Updated: 2026-11-08
     2x replacements for the arrow glyphs and/or the thumb gripper can be made with
     scripts/upscale-scrollbar.ps1 (waifu2x; never committed); the component loads
     hd\aero\<id>@2x.png automatically. The thumb background, plate and track stay the
-    original theme art.
+    original theme art. Scrollbar hot/pressed states cross-fade over about 130 ms on a
+    16 ms timer that stops once settled; holding an arrow repeats line steps and holding
+    the track keeps paging toward the pointer until the thumb reaches it (350 ms delay,
+    then 50 ms), in both the list and the expanded description bar. The locally upscaled
+    scrollbar parts were rejected by the owner and are not installed; the upscaler stays
+    optional.
   - Not implemented yet: NetEase full-catalog search UI and a combined All Music browse
     beyond Favorites.
 

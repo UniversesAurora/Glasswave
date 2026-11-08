@@ -49,6 +49,8 @@ constexpr wchar_t kClassName[] = L"Glasswave.MainWindow";
 constexpr wchar_t kAppName[] = L"Glasswave";
 constexpr UINT_PTR kLibraryTimer = 1;
 constexpr UINT_PTR kVolumeTipTimer = 2;
+constexpr UINT_PTR kScrollAnimTimer = 3;
+constexpr UINT_PTR kScrollRepeatTimer = 4;
 constexpr UINT kVolumeTipDelayMs = 800;  // hover before the bubble appears; dragging is immediate
 constexpr float kNavPaneWidth = 190.0f;
 
@@ -563,6 +565,8 @@ void MainWindow::InitComposition() {
     m_list->onLink = [this](size_t group, size_t line) { OnAlbumLink(group, line); };
     m_list->onNearEnd = [this] { OnListNearEnd(); };
     m_list->onEmptyContext = [this](POINT screen) { ShowPageContextMenu(screen); };
+    m_list->onScrollAnim = [this] { StartScrollAnimation(); };
+    m_list->onScrollHold = [this] { StartScrollRepeat(); };
     m_search = std::make_unique<SearchBox>(m_contentLayer);
     m_search->onChange = [this](const std::wstring& text) {
         m_filter = media::Lower(text);
@@ -2052,6 +2056,7 @@ void MainWindow::Navigate(const View& requested, bool push) {
         m_detailBriefScroll = 0;
         m_detailBriefHot = 0;
         m_detailBriefPressed = 0;
+        m_detailBriefBlend.fill(0.0f);
     }
     switch (view.kind) {
     case View::Kind::NeteaseLiked: {
@@ -2127,6 +2132,7 @@ void MainWindow::Navigate(const View& requested, bool push) {
             m_detailBriefScroll = 0;
             m_detailBriefHot = 0;
             m_detailBriefPressed = 0;
+            m_detailBriefBlend.fill(0.0f);
         }
         m_detailHeaderSize = {};  // repaint the band for this page, not the previous one
         if (auto cached = netease::Catalog::Get().FindPlaylist(id)) m_playlistDetail = std::move(*cached);
@@ -2275,6 +2281,7 @@ void MainWindow::Navigate(const View& requested, bool push) {
             m_detailBriefScroll = 0;
             m_detailBriefHot = 0;
             m_detailBriefPressed = 0;
+            m_detailBriefBlend.fill(0.0f);
         }
         m_detailHeaderSize = {};  // repaint the band for this page, not the previous one
         if (auto cached = netease::Catalog::Get().FindAlbum(id)) m_albumDetail = std::move(*cached);
@@ -3058,15 +3065,6 @@ void MainWindow::PaintDetailHeader() {
                 const float barY = (bar.top - rect.top) / s;
                 const float barH = (bar.bottom - bar.top) / s;
                 float thumbTop = 0, thumbH = 0;
-                auto part = [](int value) {
-                    switch (value) {
-                    case 1: return wp::ScrollBarPart::ArrowUp;
-                    case 2: return wp::ScrollBarPart::ArrowDown;
-                    case 3: return wp::ScrollBarPart::Track;
-                    case 4: return wp::ScrollBarPart::Thumb;
-                    default: return wp::ScrollBarPart::None;
-                    }
-                };
                 if (DetailBriefThumb(&thumbTop, &thumbH)) {
                     // Keep the surface's DPI transform; replacing it would draw the bar at
                     // device scale and make it jump around at 125 %/150 %.
@@ -3075,8 +3073,8 @@ void MainWindow::PaintDetailHeader() {
                     const D2D1::Matrix3x2F baseM(base._11, base._12, base._21, base._22, base._31,
                                                  base._32);
                     dc->SetTransform(D2D1::Matrix3x2F::Translation(barX, barY) * baseM);
-                    wp::ScrollBar(dc, {kDetailScrollWidth, barH}, thumbTop, thumbH, part(m_detailBriefHot),
-                                  part(m_detailBriefPressed));
+                    wp::ScrollBar(dc, {kDetailScrollWidth, barH}, thumbTop, thumbH,
+                                  m_detailBriefBlend.data());
                     dc->SetTransform(baseM);
                 }
             }
@@ -3148,13 +3146,14 @@ void MainWindow::UpdateDetailBriefHover(POINT pt) {
     const int part = DetailBriefPartAt(pt);
     if (part != m_detailBriefHot) {
         m_detailBriefHot = part;
-        RepaintDetailHeader();
+        StartScrollAnimation();
     }
 }
 
 void MainWindow::OnDetailBriefBarDown(POINT pt) {
     const int part = DetailBriefPartAt(pt);
     m_detailBriefPressed = part;
+    m_detailBriefPressPt = pt;
     if (part == 1) {
         ScrollDetailBrief(-54.0f);
     } else if (part == 2) {
@@ -3171,7 +3170,8 @@ void MainWindow::OnDetailBriefBarDown(POINT pt) {
         if (DetailBriefThumb(&top, &height))
             m_detailBriefDragOffset = pt.y - m_layout.detailBriefBar.top - PxI(top);
     }
-    RepaintDetailHeader();  // pressed state
+    StartScrollAnimation();
+    if (part >= 1 && part <= 3) StartScrollRepeat();
 }
 
 void MainWindow::OnDetailBriefBarMove(POINT pt) {
@@ -3194,7 +3194,72 @@ void MainWindow::OnDetailBriefBarMove(POINT pt) {
 void MainWindow::OnDetailBriefBarUp() {
     if (!m_detailBriefPressed) return;
     m_detailBriefPressed = 0;
-    RepaintDetailHeader();
+    StartScrollAnimation();
+}
+
+bool MainWindow::AnimateDetailScrollBar() {
+    bool active = false, changed = false;
+    for (int part = 1; part <= 4; ++part) {
+        const float target =
+            m_detailBriefPressed == part ? 2.0f : m_detailBriefHot == part ? 1.0f : 0.0f;
+        float& blend = m_detailBriefBlend[part];
+        if (blend < target) {
+            blend = std::min(target, blend + 0.12f);
+            changed = true;
+        } else if (blend > target) {
+            blend = std::max(target, blend - 0.12f);
+            changed = true;
+        }
+        if (blend != target) active = true;
+    }
+    if (changed) RepaintDetailHeader();
+    return active;
+}
+
+bool MainWindow::OnDetailBriefRepeat() {
+    const float maxScroll = std::max(0.0f, m_detailBriefContentH - m_detailBriefViewH);
+    const float page = std::max(18.0f, m_detailBriefViewH - 36.0f);
+    switch (m_detailBriefPressed) {
+    case 1:
+        if (m_detailBriefScroll <= 0.0f) return false;
+        ScrollDetailBrief(-54.0f);
+        return m_detailBriefScroll > 0.0f;
+    case 2:
+        if (m_detailBriefScroll >= maxScroll) return false;
+        ScrollDetailBrief(54.0f);
+        return m_detailBriefScroll < maxScroll;
+    case 3: {
+        float top = 0, height = 0;
+        if (!DetailBriefThumb(&top, &height)) return false;
+        const float y = (m_detailBriefPressPt.y - m_layout.detailBriefBar.top) / m_scale;
+        if (y < top) {
+            if (m_detailBriefScroll <= 0.0f) return false;
+            ScrollDetailBrief(-page);
+            return true;
+        }
+        if (y >= top + height) {
+            if (m_detailBriefScroll >= maxScroll) return false;
+            ScrollDetailBrief(page);
+            return true;
+        }
+        return false;
+    }
+    default:
+        return false;
+    }
+}
+
+void MainWindow::StartScrollAnimation() {
+    if (m_scrollAnimActive) return;
+    m_scrollAnimActive = true;
+    SetTimer(m_hwnd, kScrollAnimTimer, 16, nullptr);
+}
+
+void MainWindow::StartScrollRepeat() {
+    if (m_scrollRepeatActive) return;
+    m_scrollRepeatActive = true;
+    m_scrollRepeatSince = GetTickCount64();
+    SetTimer(m_hwnd, kScrollRepeatTimer, 50, nullptr);
 }
 
 void MainWindow::ToggleArtistFollow() {
@@ -4944,6 +5009,25 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
             if (m_volumeHover) ShowVolumeTip(VolumeThumbX());
             return 0;
         }
+        if (wp == kScrollAnimTimer) {
+            bool active = m_list && m_list->AnimateScrollBar();
+            active |= AnimateDetailScrollBar();
+            if (!active) {
+                KillTimer(hwnd, kScrollAnimTimer);
+                m_scrollAnimActive = false;
+            }
+            return 0;
+        }
+        if (wp == kScrollRepeatTimer) {
+            if (GetTickCount64() - m_scrollRepeatSince < 350) return 0;
+            bool active = m_list && m_list->OnScrollRepeat();
+            active |= OnDetailBriefRepeat();
+            if (!active) {
+                KillTimer(hwnd, kScrollRepeatTimer);
+                m_scrollRepeatActive = false;
+            }
+            return 0;
+        }
         break;
 
     case WM_NCCALCSIZE:
@@ -5146,7 +5230,7 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
         m_trackingClient = false;
         if (m_detailBriefHot) {
             m_detailBriefHot = 0;
-            RepaintDetailHeader();
+            StartScrollAnimation();
         }
         if (m_hover && !IsCaptionWidget(m_hover->Id()) && !m_pressed) SetHoverWidget(nullptr);
         if (m_capture == Capture::None) {
@@ -5275,7 +5359,7 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
             if (m_capture == Capture::Nav) m_nav->CancelDrag();
             if (m_capture == Capture::DetailScroll) {
                 m_detailBriefPressed = 0;
-                RepaintDetailHeader();
+                StartScrollAnimation();
             }
             m_capture = Capture::None;
             m_seeking = false;
