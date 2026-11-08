@@ -316,8 +316,8 @@ void Disclosure(ID2D1DeviceContext* dc, D2D1_POINT_2F c, bool expanded, bool hot
     // Win7 tree view glyph as vectors: expanded is a filled corner triangle with a darker edge
     // than its centre, collapsed an open triangle; hovering turns both cyan-blue.
     const float px = Hairline(dc);
-    auto shape = expanded ? Polygon(dc, {{c.x + 3.5f, c.y - 3.5f}, {c.x + 3.5f, c.y + 3.5f}, {c.x - 3.5f, c.y + 3.5f}})
-                          : Polygon(dc, {{c.x - 2, c.y - 4.5f}, {c.x + 2.5f, c.y}, {c.x - 2, c.y + 4.5f}});
+    auto shape = expanded ? Polygon(dc, {{c.x + 3, c.y - 3}, {c.x + 3, c.y + 3}, {c.x - 3, c.y + 3}})
+                          : Polygon(dc, {{c.x - 2, c.y - 4}, {c.x + 2, c.y}, {c.x - 2, c.y + 4}});
     const uint32_t fill = expanded ? (hot ? 0x82DFFB : 0x595959) : 0xFFFFFF;
     const uint32_t edge = hot ? 0x1CC4F7 : expanded ? 0x262626 : 0xA6A6A6;
     dc->FillGeometry(shape.get(), Solid(dc, Hex(fill)).get());

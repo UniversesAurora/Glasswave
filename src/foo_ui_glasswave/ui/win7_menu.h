@@ -12,7 +12,9 @@ namespace glasswave::ui {
 // user's aero.msstyles the menu is shown unchanged.
 //
 // Same as TrackPopupMenuEx; pass TPM_RETURNCMD to get the chosen command.
-UINT TrackWin7Menu(HMENU menu, UINT flags, int x, int y, HWND owner);
+// icons (optional) maps command ids to slots of wmploc's 16 px icon strip 331, drawn in
+// place of a check mark; a default item (SetMenuDefaultItem) is drawn bold.
+UINT TrackWin7Menu(HMENU menu, UINT flags, int x, int y, HWND owner, const std::map<UINT, int>* icons = nullptr);
 
 // foobar2000's context menu for `items` at screen point `pt`, as a Win7 menu.
 void RunContextMenu(HWND owner, metadb_handle_list_cref items, POINT pt);

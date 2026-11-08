@@ -1616,11 +1616,17 @@ void MainWindow::ShowViewMenu() {
         if (!m_source->SupportsViewStyle(style)) flags |= MF_GRAYED;
         AppendMenuW(menu, flags, static_cast<UINT_PTR>(style) + 1, label);
     }
+    // WMP 12: each view with its icon (strip 331 slots 57 icon, 56 expanded tile, 55 details),
+    // the current one in bold.
     const UINT current = static_cast<UINT>(m_source->GetViewStyle()) + 1;
-    CheckMenuRadioItem(menu, 1, 3, current, MF_BYCOMMAND);
+    SetMenuDefaultItem(menu, current, FALSE);
+    const std::map<UINT, int> icons{{static_cast<UINT>(media::ViewStyle::Icons) + 1, 57},
+                                    {static_cast<UINT>(media::ViewStyle::Tiles) + 1, 56},
+                                    {static_cast<UINT>(media::ViewStyle::Details) + 1, 55}};
     POINT pt{m_layout.viewOptions.left, m_layout.viewOptions.bottom};
     ClientToScreen(m_hwnd, &pt);
-    const UINT cmd = TrackWin7Menu(menu, TPM_RETURNCMD | TPM_NONOTIFY | TPM_LEFTALIGN | TPM_TOPALIGN, pt.x, pt.y, m_hwnd);
+    const UINT cmd =
+        TrackWin7Menu(menu, TPM_RETURNCMD | TPM_NONOTIFY | TPM_LEFTALIGN | TPM_TOPALIGN, pt.x, pt.y, m_hwnd, &icons);
     DestroyMenu(menu);
     if (cmd == 0 || cmd == current) return;
     ApplyViewStyle(static_cast<media::ViewStyle>(cmd - 1));

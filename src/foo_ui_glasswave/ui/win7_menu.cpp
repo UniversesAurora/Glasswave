@@ -36,12 +36,13 @@ struct Dib {
     int w = 0, h = 0;
 };
 
-// Premultiplied 32-bpp DIB of an aero image, cached for the process (GDI frees it at exit).
-const Dib* Image(int id) {
-    static std::map<int, Dib> cache;
-    if (auto it = cache.find(id); it != cache.end()) return it->second.bmp ? &it->second : nullptr;
-    Dib& d = cache[id];
-    IWICBitmapSource* src = win7::Resources::Get().Image(win7::Module::Aero, id);
+// Premultiplied 32-bpp DIB of an aero (or wmploc) image, cached for the process (GDI frees it at exit).
+const Dib* Image(int id, win7::Module module = win7::Module::Aero) {
+    static std::map<std::pair<int, int>, Dib> cache;
+    const auto key = std::make_pair(static_cast<int>(module), id);
+    if (auto it = cache.find(key); it != cache.end()) return it->second.bmp ? &it->second : nullptr;
+    Dib& d = cache[key];
+    IWICBitmapSource* src = win7::Resources::Get().Image(module, id);
     if (!src) return nullptr;
     winrt::com_ptr<IWICFormatConverter> conv;
     auto* wic = gfx::CompositionHost::Get().Wic();
@@ -87,14 +88,16 @@ void NineGrid(HDC dc, const Dib& img, RECT s, int m, RECT d) {
 struct ItemData {
     std::wstring text;
     bool separator = false, radio = false, submenu = false;
+    int icon = -1;  // slot in wmploc's 16 px icon strip 331, shown instead of a check
 };
 
 struct MenuState {
     std::vector<std::unique_ptr<ItemData>> items;
     std::set<const ItemData*> mine;
     UINT dpi = 96;
-    HFONT font = nullptr;
+    HFONT font = nullptr, bold = nullptr;  // bold: the default item (e.g. the current view)
     HBRUSH back = nullptr;
+    const std::map<UINT, int>* icons = nullptr;  // command id -> icon slot
     int Px(float v) const { return static_cast<int>(std::lround(v * dpi / 96.0f)); }
 };
 MenuState* g_menu = nullptr;  // menus are modal: one at a time
@@ -108,7 +111,7 @@ void Convert(HMENU menu, MenuState& s) {
     for (int i = 0, n = GetMenuItemCount(menu); i < n; ++i) {
         wchar_t buf[512]{};
         MENUITEMINFOW ii{sizeof(ii)};
-        ii.fMask = MIIM_FTYPE | MIIM_SUBMENU | MIIM_STRING;
+        ii.fMask = MIIM_FTYPE | MIIM_SUBMENU | MIIM_STRING | MIIM_ID;
         ii.dwTypeData = buf;
         ii.cch = static_cast<UINT>(std::size(buf) - 1);
         if (!GetMenuItemInfoW(menu, i, TRUE, &ii) || (ii.fType & MFT_OWNERDRAW)) continue;
@@ -116,6 +119,8 @@ void Convert(HMENU menu, MenuState& s) {
         d->separator = (ii.fType & MFT_SEPARATOR) != 0;
         d->radio = (ii.fType & MFT_RADIOCHECK) != 0;
         d->submenu = ii.hSubMenu != nullptr;
+        if (s.icons)
+            if (auto it = s.icons->find(ii.wID); it != s.icons->end()) d->icon = it->second;
         if (!d->separator) d->text = TrMenu(buf);  // ours and foobar2000's items alike
         MENUITEMINFOW set{sizeof(set)};
         set.fMask = MIIM_FTYPE | MIIM_DATA;
@@ -140,7 +145,7 @@ void Measure(MEASUREITEMSTRUCT& mis, const ItemData& d, const MenuState& s) {
         return;
     }
     HDC dc = GetDC(nullptr);
-    HGDIOBJ old = SelectObject(dc, s.font);
+    HGDIOBJ old = SelectObject(dc, s.bold);  // room for a bold default item
     const auto [label, shortcut] = Split(d.text);
     RECT a{}, b{};
     DrawTextW(dc, label.c_str(), -1, &a, DT_SINGLELINE | DT_CALCRECT);
@@ -173,9 +178,14 @@ void Draw(const DRAWITEMSTRUCT& dis, const ItemData& d, const MenuState& s) {
         if (const Dib* item = Image(kItem)) {
             const int state = disabled ? 3 : 1;
             NineGrid(dc, *item, {0, 21 * state, 7, 21 * state + 21}, 3,
-                     {rc.left + s.Px(2), rc.top, rc.right - s.Px(2), rc.bottom});
+                     {rc.left, rc.top, rc.right, rc.bottom});  // close to the menu edge, as in Win7
         }
-    if (dis.itemState & ODS_CHECKED) {
+    if (d.icon >= 0) {  // an icon in the check column (WMP's view menu) instead of a mark
+        if (const Dib* strip = Image(331, win7::Module::Wmploc)) {
+            const int g = s.Px(16), cx = rc.left + s.Px(3) + (s.Px(kCheckBox) - g) / 2, cy = (rc.top + rc.bottom - g) / 2;
+            Blit(dc, *strip, {16 * d.icon, 0, 16 * d.icon + 16, 16}, {cx, cy, cx + g, cy + g});
+        }
+    } else if (dis.itemState & ODS_CHECKED) {
         const int box = s.Px(kCheckBox), bx = rc.left + s.Px(3), by = (rc.top + rc.bottom - box) / 2;
         if (const Dib* back = Image(kCheckBackground))
             NineGrid(dc, *back, {0, disabled ? 7 : 0, 7, disabled ? 14 : 7}, 3, {bx, by, bx + box, by + box});
@@ -186,7 +196,7 @@ void Draw(const DRAWITEMSTRUCT& dis, const ItemData& d, const MenuState& s) {
         }
     }
     const auto [label, shortcut] = Split(d.text);
-    HGDIOBJ old = SelectObject(dc, s.font);
+    HGDIOBJ old = SelectObject(dc, (dis.itemState & ODS_DEFAULT) ? s.bold : s.font);  // default item bold
     SetBkMode(dc, TRANSPARENT);
     SetTextColor(dc, disabled ? kDisabledText : kText);
     RECT tr{rc.left + s.Px(kTextLeft), rc.top, rc.right - s.Px(kArrowArea), rc.bottom};
@@ -269,7 +279,7 @@ LRESULT CALLBACK HookProc(int code, WPARAM wp, LPARAM lp) {
 
 }  // namespace
 
-UINT TrackWin7Menu(HMENU menu, UINT flags, int x, int y, HWND owner) {
+UINT TrackWin7Menu(HMENU menu, UINT flags, int x, int y, HWND owner, const std::map<UINT, int>* icons) {
     const bool art = Image(kItem) && Image(kGutter);
     if (!art || g_menu) return TrackPopupMenuEx(menu, flags, x, y, owner, nullptr);
     MenuState state;
@@ -277,6 +287,10 @@ UINT TrackWin7Menu(HMENU menu, UINT flags, int x, int y, HWND owner) {
     NONCLIENTMETRICSW ncm{sizeof(ncm)};
     SystemParametersInfoForDpi(SPI_GETNONCLIENTMETRICS, sizeof(ncm), &ncm, 0, state.dpi);
     state.font = CreateFontIndirectW(&ncm.lfMenuFont);
+    LOGFONTW bold = ncm.lfMenuFont;
+    bold.lfWeight = FW_BOLD;
+    state.bold = CreateFontIndirectW(&bold);
+    state.icons = icons;
     state.back = CreateSolidBrush(kBackColor);
     Convert(menu, state);
     g_menu = &state;
@@ -288,6 +302,7 @@ UINT TrackWin7Menu(HMENU menu, UINT flags, int x, int y, HWND owner) {
     RemoveWindowSubclass(owner, OwnerProc, 0x67770001);
     g_menu = nullptr;
     DeleteObject(state.font);
+    DeleteObject(state.bold);
     DeleteObject(state.back);
     return result;
 }
