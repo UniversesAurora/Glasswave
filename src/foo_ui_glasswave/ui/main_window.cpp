@@ -3682,10 +3682,14 @@ void MainWindow::RefreshPlayCounts() {
     m_list->Refresh();  // the local sources read the count from the store while painting
 }
 
-std::vector<std::pair<int64_t, std::wstring>> MainWindow::LocalPlaylistTargets(size_t exclude) {    auto pm = playlist_manager::get();
+std::vector<std::pair<int64_t, std::wstring>> MainWindow::LocalPlaylistTargets(size_t exclude) {
+    auto pm = playlist_manager::get();
     std::vector<std::pair<int64_t, std::wstring>> out;
+    const t_size favorites = media::FavoritesPlaylist(false);
     for (t_size p = 0; p < pm->get_playlist_count(); ++p) {
-        if (p == exclude || media::IsQueue(p) || media::IsAutoPlaylist(p)) continue;
+        // Favorites has its own action (the one that understands local vs. NetEase songs)
+        // and must not be offered as a copy target for whole playlists.
+        if (p == exclude || p == favorites || media::IsQueue(p) || media::IsAutoPlaylist(p)) continue;
         pfc::string8 name;
         pm->playlist_get_name(p, name);
         out.emplace_back(static_cast<int64_t>(p), Wide(name));
