@@ -54,7 +54,7 @@ enum WidgetId {
     kCapMin = 1, kCapMax, kCapClose,
     kBack, kForward, kOrganize, kAddFiles, kAddFolder, kNewPlaylist,
     kSeek, kShuffle, kRepeat, kStop, kPrev, kNext, kPlay, kMute, kVolume, kViewOptions,
-    kArtistFollow,
+    kArtistFollow, kArtistBriefToggle,
 };
 bool IsCaptionWidget(int id) { return id >= kCapMin && id <= kCapClose; }
 
@@ -644,6 +644,20 @@ void MainWindow::CreateWidgets() {
     if (Widget* follow = WidgetById(kArtistFollow))
         follow->enabled = [this] { return m_artist && m_artist->followKnown && !m_followPending; };
 
+    // The artist description's Show more / Show less link.
+    add(kArtistBriefToggle, [this](auto* dc, D2D1_SIZE_F s, Layer l) {
+        const std::wstring label = Tr(m_artistBriefExpanded ? L"Show less" : L"Show more");
+        auto layout = MakeText(label, 12.0f, DWRITE_FONT_WEIGHT_NORMAL, s.width, s.height);
+        layout->SetUnderline(TRUE, DWRITE_TEXT_RANGE{0, static_cast<UINT32>(label.size())});
+        com_ptr<ID2D1SolidColorBrush> ink;
+        dc->CreateSolidColorBrush(Hex(l == Layer::Normal ? 0x0066CC : 0x1E5BA8), ink.put());
+        dc->DrawTextLayout({0, 0}, layout.get(), ink.get());
+    }, {})->onClick = [this] {
+        m_artistBriefExpanded = !m_artistBriefExpanded;
+        RepaintBreadcrumb();
+        RepaintArtistHeader();
+    };
+
     // Seek bar (the band's top rule, as in WMP 12)
     add(kSeek, [this](auto* dc, D2D1_SIZE_F s, Layer l) {
         const float progress = m_seeking ? m_seekPreview
@@ -826,6 +840,8 @@ void MainWindow::UpdateLayout() {
     L.list = {L.navPane.right, L.content.top, L.content.right, L.content.bottom};
     L.artistHeader = {};
     L.artistFollow = {};
+    L.artistBriefToggle = {};
+    m_artistBriefOverflow = false;
     if (m_view.kind == View::Kind::NeteaseArtist) {
         L.artistHeader = {L.navPane.right, L.content.top, L.content.right,
                           std::min<LONG>(L.content.top + PxI(kArtistHeaderHeight), L.content.bottom)};
@@ -834,14 +850,34 @@ void MainWindow::UpdateLayout() {
             L.artistFollow = {right - PxI(kArtistFollowWidth), L.artistHeader.top + PxI(22), right,
                               L.artistHeader.top + PxI(22 + kArtistFollowHeight)};
         }
-        // The description grows the band instead of being ellipsized.
+        // The description is limited to three lines until expanded; the link sits below it.
         if (m_artist && !m_artist->brief.empty()) {
-            auto layout = MakeWrappedText(m_artist->brief, 12.0f, DWRITE_FONT_WEIGHT_NORMAL, ArtistHeaderTextWidth(), 1000.0f);
+            auto full = MakeWrappedText(m_artist->brief, 12.0f, DWRITE_FONT_WEIGHT_NORMAL,
+                                        ArtistHeaderTextWidth(), 4000.0f);
             DWRITE_TEXT_METRICS metrics{};
-            layout->GetMetrics(&metrics);
-            const float needed = 62 + metrics.height + 14;
+            full->GetMetrics(&metrics);
+            const float fullHeight = metrics.height;
+            // Expanded text still has to leave room for the collapse link inside the window.
+            const float bandSpace = (L.content.bottom - L.content.top) / m_scale;
+            const float briefLimit = std::max(48.0f, bandSpace - 62 - 12 - 18 - 8);
+            const float collapsed = std::min(fullHeight, 48.0f);
+            const float expandedShown = std::min(fullHeight, briefLimit);
+            m_artistBriefOverflow = fullHeight > collapsed + 1.0f;
+            const float used = m_artistBriefExpanded ? expandedShown : collapsed;
+            float needed = 62 + used + 12;
+            if (m_artistBriefOverflow) needed += 18;
             L.artistHeader.bottom =
                 std::min<LONG>(L.content.top + std::max<int>(PxI(kArtistHeaderHeight), PxI(needed)), L.content.bottom);
+            if (m_artistBriefOverflow) {
+                const std::wstring label = Tr(m_artistBriefExpanded ? L"Show less" : L"Show more");
+                auto link = MakeText(label, 12.0f, DWRITE_FONT_WEIGHT_NORMAL, 200.0f, 18.0f);
+                DWRITE_TEXT_METRICS linkMetrics{};
+                link->GetMetrics(&linkMetrics);
+                const int linkX = L.artistHeader.left + PxI(18 + kArtistAvatar + 18);
+                const int y = L.artistHeader.top + PxI(62 + used + 2);
+                const int w = PxI(std::ceil(linkMetrics.widthIncludingTrailingWhitespace) + 4.0f);
+                L.artistBriefToggle = {linkX, y, linkX + w, y + PxI(18)};
+            }
         }
         L.list.top = L.artistHeader.bottom;
     }
@@ -985,6 +1021,7 @@ void MainWindow::UpdateLayout() {
         case kNewPlaylist: r = &L.newPlaylist; break;
         case kViewOptions: r = &L.viewOptions; break;
         case kArtistFollow: r = &L.artistFollow; break;
+        case kArtistBriefToggle: r = &L.artistBriefToggle; break;
         case kSeek: r = &L.seek; break;
         case kShuffle: r = &L.shuffle; break;
         case kRepeat: r = &L.repeat; break;
@@ -1912,6 +1949,7 @@ void MainWindow::Navigate(const View& requested, bool push) {
         m_artistAlbumsLoading = false;
         m_artistHeaderSize = {};  // repaint the band with the new artist's placeholder
         m_followPending = false;
+        m_artistBriefExpanded = false;
     }
     switch (view.kind) {
     case View::Kind::NeteaseLiked: {
@@ -2350,6 +2388,14 @@ void MainWindow::ShowNeteaseArtistDetail(const View& view, netease::Artist artis
             m_history[m_historyPos].name = artist.name;
     }
     m_artist = std::move(artist);
+    // The followed-artists cache is authoritative for artists the user follows, even when
+    // the album endpoint's followed flag lags behind a just-completed follow.
+    for (const auto& saved : netease::Provider::Get().FollowedArtists())
+        if (saved.id == m_artist->id) {
+            m_artist->followed = true;
+            m_artist->followKnown = true;
+            break;
+        }
     m_followPending = false;
     RepaintBreadcrumb();
     RepaintArtistHeader();
@@ -2386,7 +2432,13 @@ void MainWindow::LoadArtistAlbumPage() {
                 return;
             if (!m_artist || m_artist->id != artistId) return;
             if (followedKnown) {
-                m_artist->followed = followed;
+                bool followedNow = followed;
+                for (const auto& saved : netease::Provider::Get().FollowedArtists())
+                    if (saved.id == artistId) {
+                        followedNow = true;
+                        break;
+                    }
+                m_artist->followed = followedNow;
                 m_artist->followKnown = true;
                 RepaintArtistHeader();
             }
@@ -2591,10 +2643,12 @@ void MainWindow::PaintArtistHeader() {
         const float W = w / s, H = h / s;
         const float px = LinePx() / s;
         dc->FillRectangle({-1, 0, W + 1, H}, VGrad(dc, 0, H, {{0.0f, 0xF6FBFF}, {1.0f, 0xEBF3FC}}).get());
-        FillLine(dc, H - px, px, 0xC3CCCF);
+        com_ptr<ID2D1SolidColorBrush> rule;
+        dc->CreateSolidColorBrush(Hex(0xC3CCCF), rule.put());
+        dc->FillRectangle({0, H - px, W, H}, rule.get());
 
         const float pad = 18, side = kArtistAvatar;
-        const float ax = pad, ay = std::round((H - side) / 2);
+        const float ax = pad, ay = 14;  // the avatar stays at the top-left of the band
         if (avatar) {
             winrt::com_ptr<ID2D1Bitmap> bitmap;
             if (SUCCEEDED(dc->CreateBitmapFromWicBitmap(avatar.get(), nullptr, bitmap.put())))
@@ -2621,8 +2675,9 @@ void MainWindow::PaintArtistHeader() {
             dc->DrawTextLayout({textX, 42}, statsLayout.get(), sub.get());
         }
         if (!brief.empty()) {
-            auto briefLayout = MakeWrappedText(brief, 12.0f, DWRITE_FONT_WEIGHT_NORMAL, textW,
-                                               std::max(24.0f, H - 62 - 12));
+            const float limit = std::max(24.0f, H - 62 - 12 - 18);  // leave room for the link
+            const float maxH = m_artistBriefExpanded ? limit : std::min(48.0f, limit);
+            auto briefLayout = MakeWrappedText(brief, 12.0f, DWRITE_FONT_WEIGHT_NORMAL, textW, maxH);
             dc->DrawTextLayout({textX, 62}, briefLayout.get(), faint.get());
         }
     });
@@ -2633,6 +2688,7 @@ void MainWindow::RepaintArtistHeader() {
     if (!m_artistHeader || m_view.kind != View::Kind::NeteaseArtist) return;
     PaintArtistHeader();
     if (Widget* follow = WidgetById(kArtistFollow)) follow->Invalidate();
+    if (Widget* brief = WidgetById(kArtistBriefToggle)) brief->Invalidate();
 }
 
 float MainWindow::ArtistHeaderTextWidth() const {

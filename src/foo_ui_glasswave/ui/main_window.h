@@ -52,6 +52,7 @@ private:
         RECT organize{}, addFiles{}, addFolder{}, newPlaylist{}, search{}, viewOptions{};
         RECT navPane{}, list{};
         RECT artistHeader{}, artistFollow{};  // NetEase artist pages
+        RECT artistBriefToggle{};
         RECT seek{}, capsule{}, divider{}, shuffle{}, repeat{}, stop{}, prev{}, next{}, play{}, mute{}, volume{};
         RECT nowPlaying{}, time{}, stream{};
         POINT cluster{};  // origin of the WMP 12 transport cluster bitmap
@@ -266,6 +267,8 @@ private:
     std::vector<netease::Album> m_artistAlbums;  // its albums, kept for the view-style switch
     std::vector<netease::Song> m_artistSongs;    // expanded-tile contents, cached per artist
     std::wstring m_artistSongsId;
+    bool m_artistBriefExpanded = false;
+    bool m_artistBriefOverflow = false;
     size_t m_artistAlbumOffset = 0;     // API offset for the next album metadata page
     size_t m_artistTracksLoaded = 0;    // albums whose tracks are in m_artistSongs
     bool m_artistAlbumsMore = true;
