@@ -252,13 +252,22 @@ Updated: 2026-11-08
     playlists over the Media Library (which never contains NetEase tracks), so they live
     in the Smart playlists section under Local Music. Local Music lists its categories
     directly, without the old Music level; breadcrumbs, section menus and drag ordering
-    follow the tree, and a smart playlist's crumb starts at Local Music.
+    follow the tree, and a smart playlist's crumb starts at Local Music. The Smart
+    playlists section is itself draggable among the categories; its slot is saved in
+    cfg_navSmartAt and restored on the next run.
   - All Music gained cross-source Recently Played and Most Played, built on our own store
     because foobar2000 auto playlists cannot see NetEase tracks: each track that starts
     playing is recorded with its display metadata, source and NetEase ids in
     `<profile>\glasswave\play-stats.txt` (newest 2000 kept, written atomically), and the
     two pages mix local and NetEase rows with a Source column. The lists refresh when the
     page is opened, not live while it is on screen.
+  - The shared song tables (NetEase lists and the cross-source Favorites / play history)
+    offer a Play count column fed by our play history: hidden by default under Choose
+    columns, visible by default on Most Played. Local library lists keep their existing
+    Play count column, which reads foobar2000's Playback Statistics (%play_count%).
+  - Menu check marks are now drawn as vectors (shape and colours sampled from Aero IMAGE
+    976) instead of scaling the 16 px theme bitmap, so column and sort checks stay crisp
+    at 200 % like the submenu arrow and radio bullet.
   - Not implemented yet: NetEase full-catalog search UI and a combined All Music browse
     beyond Favorites.
 
