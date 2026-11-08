@@ -145,7 +145,10 @@ Updated: 2026-11-08
     playlists section and lists its categories directly, and NetEase shows Favorites,
     Created playlists, Collected playlists and Recommended. All Music > Favorites combines
     the local Favorites playlist with the NetEase liked list; the Details list is flat until
-    sorted and gains a sortable Source column.
+    sorted and gains a sortable Source column. The NetEase liked page re-reads /likelist on
+    every entry (the authoritative like state) and uses the liked playlist detail only for
+    its order and metadata, so likes and unlikes made in the official client appear without
+    a restart; likes the detail has not picked up yet are appended.
   - NetEase song lists and the combined favorites share SongTableSource (columns, sorting,
     filtering, selection, expanded tiles, context menus); both offer Details and expanded
     tiles, with a bounded LFU cover cache.
