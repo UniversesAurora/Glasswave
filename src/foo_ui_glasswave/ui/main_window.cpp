@@ -274,7 +274,8 @@ struct MainWindow::PlayCallback : play_callback_impl_base {
     explicit PlayCallback(MainWindow& w)
         : play_callback_impl_base(flag_on_playback_starting | flag_on_playback_new_track | flag_on_playback_stop |
                                   flag_on_playback_pause | flag_on_playback_edited | flag_on_playback_seek |
-                                  flag_on_playback_time | flag_on_playback_dynamic_info_track | flag_on_volume_change),
+                                  flag_on_playback_time | flag_on_playback_dynamic_info |
+                                  flag_on_playback_dynamic_info_track | flag_on_volume_change),
           window(w) {}
 
     void on_playback_starting(play_control::t_track_command cmd, bool) override {
@@ -297,6 +298,7 @@ struct MainWindow::PlayCallback : play_callback_impl_base {
     void on_playback_seek(double) override { window.OnPlaybackTime(); }
     void on_playback_time(double) override { window.OnPlaybackTime(); }
     void on_playback_edited(metadb_handle_ptr) override { window.OnTrackChanged(); }
+    void on_playback_dynamic_info(const file_info&) override { window.OnTrackChanged(); }
     void on_playback_dynamic_info_track(const file_info&) override { window.OnTrackChanged(); }
     void on_volume_change(float) override { window.OnVolumeChanged(); }
 
