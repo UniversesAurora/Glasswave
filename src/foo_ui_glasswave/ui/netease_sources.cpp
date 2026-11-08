@@ -470,7 +470,7 @@ media::TileInfo NeteaseAlbumGridSource::Tile(size_t row) const {
     if (row >= m_rows.size()) return tile;
     const size_t index = m_rows[row];
     if (!index) {
-        tile.icon = 29722;  // WMP's large playlist icon, the same one the playlists page uses
+        tile.icon = 29711;  // WMP's large music note, for the hot songs tile
         tile.lines = {Tr(L"Hot songs"), m_artistName};
         return tile;
     }
