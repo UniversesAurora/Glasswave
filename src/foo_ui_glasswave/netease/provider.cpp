@@ -248,6 +248,7 @@ void Provider::RefreshAccount(DoneCallback done) {
         int64_t likedPlaylist = 0;
         std::wstring playlistError;
         if (m_client.UserPlaylists(account.userId, abort, playlists, likedPlaylist, playlistError)) {
+            for (const auto& playlist : playlists) Catalog::Get().Put(playlist);
             std::vector<Playlist> created, collected;
             for (auto& playlist : playlists)
                 (playlist.creatorId == account.userId ? created : collected).push_back(std::move(playlist));

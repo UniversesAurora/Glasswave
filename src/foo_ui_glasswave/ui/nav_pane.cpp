@@ -1,6 +1,8 @@
 #include "pch.h"
 #include "ui/nav_pane.h"
 #include "gfx/composition_host.h"
+#include "netease/catalog.h"
+#include "ui/art_cache.h"
 #include "ui/text.h"
 #include "win7/win7_resources.h"
 #include "media/favorites.h"
@@ -89,9 +91,13 @@ NavPane::NavPane(const winrt::Windows::UI::Composition::ContainerVisual& parent)
     m_visual = gfx::CompositionHost::Get().Compositor().CreateSpriteVisual();
     parent.Children().InsertAtTop(m_visual);
     Rebuild();
+    m_artToken = ArtCache::Get().Subscribe([this] { Paint(); });
 }
 
-NavPane::~NavPane() { IconCache().clear(); }  // WIC objects go before COM does
+NavPane::~NavPane() {
+    ArtCache::Get().Unsubscribe(m_artToken);
+    IconCache().clear();  // WIC objects go before COM does
+}
 
 int NavPane::RowHeightPx() const { return static_cast<int>(std::lround(kRowHeight * m_scale)); }
 
@@ -307,7 +313,25 @@ void NavPane::Paint() {
                                 : it.target == Target::SmartHeader  ? 29572
                                 : it.target == Target::Category ? CategoryIcon(static_cast<media::GroupKind>(it.playlist))
                                                                 : 0;
-            if (!DrawWmpIcon(dc, {x + 16, y + rowH / 2}, it.icon, autoPlaylist, s, special))
+            bool drewCover = false;
+            if (it.target == Target::NeteaseRemotePlaylist && it.remoteId) {
+                const auto track = netease::Catalog::Get().PlaylistHandle(it.remoteId);
+                const std::wstring key = L"ncm:playlist:" + std::to_wstring(it.remoteId);
+                winrt::com_ptr<IWICBitmapSource> cover;
+                const int coverPx = static_cast<int>(std::lround(16 * m_scale));
+                if (ArtCache::Get().Find(key, track, coverPx, &cover) == ArtCache::State::Ready && cover) {
+                    winrt::com_ptr<ID2D1Bitmap> bitmap;
+                    if (SUCCEEDED(dc->CreateBitmapFromWicBitmap(cover.get(), nullptr, bitmap.put()))) {
+                        const float side = 16.0f;
+                        const float ix = std::round((x + 8) * s) / s;
+                        const float iy = std::round((y + (rowH - side) / 2) * s) / s;
+                        dc->DrawBitmap(bitmap.get(), D2D1::RectF(ix, iy, ix + side, iy + side), 1.0f,
+                                       D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+                        drewCover = true;
+                    }
+                }
+            }
+            if (!drewCover && !DrawWmpIcon(dc, {x + 16, y + rowH / 2}, it.icon, autoPlaylist, s, special))
                 wp::NavGlyph(dc, {x + 16, y + rowH / 2}, it.icon);
             auto layout = MakeText(Tr(it.text), 12.0f, DWRITE_FONT_WEIGHT_NORMAL, width - x - 34, rowH);
             dc->DrawTextLayout({x + 26, y}, layout.get(), ink.get());

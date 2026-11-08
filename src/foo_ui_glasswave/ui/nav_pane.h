@@ -77,6 +77,7 @@ private:
     bool m_focused = false;
     std::vector<media::GroupKind> m_categories{media::GroupKind::Artist, media::GroupKind::Album, media::GroupKind::Genre};
     size_t m_top = 0;
+    int m_artToken = 0;
     RECT m_bounds{};
     float m_scale = 1.0f;
 };
