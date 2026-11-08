@@ -1619,16 +1619,24 @@ std::vector<MenuAction> MainWindow::AllSectionsMenu() {
 
 std::vector<MenuAction> MainWindow::LocalSectionsMenu() {
     auto go = [this](View v) { return [this, v] { Navigate(v, true); }; };
-    View smart;
-    smart.library = View::Library::Local;
-    smart.kind = View::Kind::SmartPlaylists;
-    std::vector<MenuAction> out{{L"Smart playlists", go(smart)}};
-    for (auto kind : m_nav->Categories()) {
-        View v;
-        v.library = View::Library::Local;
-        v.kind = View::Kind::Category;
-        v.group = kind;
-        out.push_back({CategoryLabel(kind), go(v)});
+    const auto kinds = m_nav->Categories();
+    const int count = static_cast<int>(kinds.size());
+    const int at = std::clamp(m_nav->SmartPosition(), 0, count);
+    std::vector<MenuAction> out;
+    for (int i = 0; i <= count; ++i) {
+        if (i == at) {  // the same interleaving the navigation pane shows
+            View smart;
+            smart.library = View::Library::Local;
+            smart.kind = View::Kind::SmartPlaylists;
+            out.push_back({L"Smart playlists", go(smart)});
+        }
+        if (i < count) {
+            View v;
+            v.library = View::Library::Local;
+            v.kind = View::Kind::Category;
+            v.group = kinds[static_cast<size_t>(i)];
+            out.push_back({CategoryLabel(v.group), go(v)});
+        }
     }
     return out;
 }
