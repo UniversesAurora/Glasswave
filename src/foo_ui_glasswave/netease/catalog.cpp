@@ -67,6 +67,12 @@ void Catalog::Put(const Artist& artist) {
     m_artists[artist.id] = artist;
 }
 
+void Catalog::Put(const Album& album) {
+    if (!album.id) return;
+    std::lock_guard lock(m_mutex);
+    m_albums[album.id] = album;
+}
+
 void Catalog::Put(const std::vector<Album>& albums) {
     std::lock_guard lock(m_mutex);
     for (const auto& album : albums)

@@ -40,6 +40,11 @@ public:
     using PlaylistsCallback = std::function<void(std::vector<Playlist> playlists, std::wstring error)>;
     using SongsCallback = std::function<void(std::vector<Song> songs, std::wstring error)>;
     using DetailCallback = std::function<void(PlaylistDetail detail, std::wstring error)>;
+    struct ArtistPage {
+        Artist info;
+        std::vector<Album> albums;
+    };
+    using ArtistCallback = std::function<void(ArtistPage page, std::wstring error)>;
 
     void StartService(DoneCallback done = {});
     void RefreshAccount(DoneCallback done = {});
@@ -48,8 +53,12 @@ public:
     void FetchRecommended(PlaylistsCallback done);
     void FetchLiked(SongsCallback done);
     void FetchPlaylist(int64_t playlistId, DetailCallback done);
+    void FetchArtist(int64_t artistId, ArtistCallback done);
+    void FetchArtistTopSongs(int64_t artistId, SongsCallback done);
+    void FetchAlbumSongs(int64_t albumId, SongsCallback done);
     void Search(std::wstring_view query, SongsCallback done);
     void ToggleLike(int64_t songId, bool like, DoneCallback done = {});
+    void SetArtistFollow(int64_t artistId, bool follow, DoneCallback done = {});
 
     void OnLoginCookie(std::wstring cookie, DoneCallback done = {});
     void Logout();

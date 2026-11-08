@@ -20,6 +20,7 @@ public:
     void Put(const std::vector<Song>& songs);
     void Put(const Playlist& playlist);
     void Put(const Artist& artist);
+    void Put(const Album& album);
     void Put(const std::vector<Album>& albums);
 
     std::optional<Song> FindSong(int64_t id) const;

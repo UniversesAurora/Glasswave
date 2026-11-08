@@ -495,6 +495,92 @@ void Provider::FetchPlaylist(int64_t playlistId, DetailCallback done) {
     });
 }
 
+void Provider::FetchArtist(int64_t artistId, ArtistCallback done) {
+    m_tasks.Post([this, artistId, done = std::move(done)] {
+        if (m_stopping) return;
+        abort_callback_impl abort;
+        std::wstring error;
+        if (!m_service.EnsureStarted(abort, &error)) {
+            PostMain([done = std::move(done), error] {
+                if (done) done({}, ErrorOf(error));
+            });
+            return;
+        }
+        ArtistPage page;
+        if (!m_client.GetArtistDetail(artistId, abort, page.info, error)) {
+            PostMain([done = std::move(done), error] {
+                if (done) done({}, ErrorOf(error));
+            });
+            return;
+        }
+        std::wstring albumError;
+        bool followed = false;
+        if (m_client.GetArtistAlbums(artistId, abort, page.albums, &followed, albumError)) {
+            page.info.followed = followed;
+            page.info.followKnown = true;
+        } else {
+            Log(L"artist: album list failed for " + std::to_wstring(artistId) + L": " + albumError);
+        }
+        Catalog::Get().Put(page.info);
+        Catalog::Get().Put(page.albums);
+        PostMain([done = std::move(done), page = std::move(page), albumError = std::move(albumError)]() mutable {
+            if (done) done(std::move(page), albumError);
+        });
+    });
+}
+
+void Provider::FetchArtistTopSongs(int64_t artistId, SongsCallback done) {
+    m_tasks.Post([this, artistId, done = std::move(done)] {
+        if (m_stopping) return;
+        abort_callback_impl abort;
+        std::wstring error;
+        if (!m_service.EnsureStarted(abort, &error)) {
+            PostMain([done = std::move(done), error] {
+                if (done) done({}, ErrorOf(error));
+            });
+            return;
+        }
+        std::vector<Song> songs;
+        if (!m_client.GetArtistTopSongs(artistId, abort, songs, error)) {
+            PostMain([done = std::move(done), error] {
+                if (done) done({}, ErrorOf(error));
+            });
+            return;
+        }
+        PostMain([done = std::move(done), songs = std::move(songs)]() mutable {
+            Catalog::Get().PutAndHint(songs);
+            if (done) done(std::move(songs), {});
+        });
+    });
+}
+
+void Provider::FetchAlbumSongs(int64_t albumId, SongsCallback done) {
+    m_tasks.Post([this, albumId, done = std::move(done)] {
+        if (m_stopping) return;
+        abort_callback_impl abort;
+        std::wstring error;
+        if (!m_service.EnsureStarted(abort, &error)) {
+            PostMain([done = std::move(done), error] {
+                if (done) done({}, ErrorOf(error));
+            });
+            return;
+        }
+        Album info;
+        std::vector<Song> songs;
+        if (!m_client.GetAlbum(albumId, abort, info, songs, error)) {
+            PostMain([done = std::move(done), error] {
+                if (done) done({}, ErrorOf(error));
+            });
+            return;
+        }
+        Catalog::Get().Put(info);
+        PostMain([done = std::move(done), songs = std::move(songs)]() mutable {
+            Catalog::Get().PutAndHint(songs);
+            if (done) done(std::move(songs), {});
+        });
+    });
+}
+
 void Provider::Search(std::wstring_view query, SongsCallback done) {
     m_tasks.Post([this, query = std::wstring(query), done = std::move(done)] {
         if (m_stopping) return;
@@ -550,6 +636,25 @@ void Provider::ToggleLike(int64_t songId, bool like, DoneCallback done) {
             if (done) done(ok, ok ? std::wstring() : ErrorOf(error));
         });
         NotifyChanged();
+    });
+}
+
+void Provider::SetArtistFollow(int64_t artistId, bool follow, DoneCallback done) {
+    std::wstring loginError;
+    if (!RequireLogin(loginError)) {
+        if (done) done(false, loginError);
+        return;
+    }
+    m_tasks.Post([this, artistId, follow, done = std::move(done)] {
+        if (m_stopping) return;
+        abort_callback_impl abort;
+        std::wstring error;
+        bool ok = false;
+        if (m_service.EnsureStarted(abort, &error))
+            ok = m_client.SetArtistFollow(artistId, follow, abort, error);
+        PostMain([done = std::move(done), ok, error] {
+            if (done) done(ok, ok ? std::wstring() : ErrorOf(error));
+        });
     });
 }
 
