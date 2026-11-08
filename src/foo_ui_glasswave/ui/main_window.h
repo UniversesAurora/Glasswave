@@ -51,7 +51,7 @@ private:
     };
 
     struct View {
-        enum class Kind { Playlist, AllMusic, Artists, Albums, Genres, Group } kind = Kind::AllMusic;
+        enum class Kind { Playlist, AllMusic, Artists, Albums, Genres, Group, Playlists } kind = Kind::AllMusic;
         size_t playlist = 0;
         media::GroupKind group = media::GroupKind::Artist;
         std::wstring key, name;
@@ -123,13 +123,14 @@ private:
     // output device (a menu) right-aligned.
     std::wstring m_streamInfo;
     std::vector<std::pair<double, std::wstring>> m_lyrics;  // synced lines (seconds, text)
-    RECT m_npTitleRect{}, m_npArtistRect{};  // client px, for clicks
+    RECT m_npTitleRect{}, m_npArtistRect{}, m_npStarRect{};  // client px, for clicks
+    bool m_npFavorite = false;                                // the playing song is in Favorites
     D2D1_RECT_F m_deviceText{};             // DIP inside m_layout.stream
     std::wstring m_deviceName;              // cached: listing devices is slow
     LONG m_streamWidth = 0;                 // width the stream block was painted at
     void RefreshDeviceName();
     RECT DeviceRect() const;
-    int m_npHot = 0;                                           // 1 title, 2 artist, 3 device
+    int m_npHot = 0;  // 1 title, 2 artist, 3 device, 4 Favorite star
     winrt::Windows::UI::Composition::SpriteVisual m_time{nullptr}, m_streamVisual{nullptr};
     service_ptr m_outputCallback;
     void RepaintStreamInfo();

@@ -1046,12 +1046,25 @@ void MainWindow::RepaintNowPlaying() {
             return RECT{m_layout.nowPlaying.left + PxI(r.left), m_layout.nowPlaying.top + PxI(r.top),
                         m_layout.nowPlaying.left + PxI(r.right), m_layout.nowPlaying.top + PxI(r.bottom)};
         };
-        m_npTitleRect = toClient(line(m_trackTitle, top, dark.get(), m_npHot == 1));
+        // The title leaves room for the Favorite star right after it (as in current players).
+        const D2D1_RECT_F title = [&] {
+            auto layout = MakeText(m_trackTitle, 12.0f, DWRITE_FONT_WEIGHT_NORMAL, 350 - x - 22, lh + 2);
+            if (m_npHot == 1) layout->SetUnderline(TRUE, {0, static_cast<UINT32>(m_trackTitle.size())});
+            dc->DrawTextLayout({x, top - 1}, layout.get(), m_npHot == 1 ? link.get() : dark.get());
+            DWRITE_TEXT_METRICS tm{};
+            layout->GetMetrics(&tm);
+            return D2D1_RECT_F{x, top, x + std::min(tm.widthIncludingTrailingWhitespace, 350 - x - 22), top + lh};
+        }();
+        m_npTitleRect = toClient(title);
+        // WMP's stars: gold (5530) in Favorites, gold outline (5531) on hover, empty (5533).
+        const float sx = std::round((title.right + 6) * m_scale) / m_scale, sy = std::round((top + (lh - 14) / 2) * m_scale) / m_scale;
+        win7::Draw(dc, win7::Module::Wmploc, m_npFavorite ? 5530 : m_npHot == 4 ? 5531 : 5533, {sx, sy});
+        m_npStarRect = toClient({sx - 3, sy - 3, sx + 17, sy + 17});
         m_npArtistRect = m_trackArtist.empty() ? RECT{}
                                                : toClient(line(m_trackArtist, top + lh, grey.get(), m_npHot == 2));
         if (!m_lyrics.empty()) line(lyric, top + 2 * lh, lyricInk.get(), false);
     });
-    if (m_trackTitle.empty()) m_npTitleRect = m_npArtistRect = {};
+    if (m_trackTitle.empty()) m_npTitleRect = m_npArtistRect = m_npStarRect = {};
     // Time right of the controls.
     host.Repaint(m_time, PxI(110), PxI(20), m_scale, [&](ID2D1DeviceContext* dc) {
         if (m_length <= 0 && m_trackTitle.empty()) return;
@@ -1186,6 +1199,7 @@ void MainWindow::LoadLyrics(const metadb_handle_ptr& track) {
 int MainWindow::NowPlayingPartAt(POINT pt) const {
     if (PtInRect(&m_npTitleRect, pt)) return 1;
     if (PtInRect(&m_npArtistRect, pt)) return 2;
+    if (PtInRect(&m_npStarRect, pt)) return 4;
     if (const RECT d = DeviceRect(); PtInRect(&d, pt)) return 3;
     return 0;
 }
@@ -1196,7 +1210,7 @@ void MainWindow::UpdateNowPlayingHover(POINT pt) {
     const int old = m_npHot;
     m_npHot = part;
     if (old == 3 || part == 3) RepaintStreamInfo();
-    if (old == 1 || old == 2 || part == 1 || part == 2) RepaintNowPlaying();
+    if (old == 1 || old == 2 || old == 4 || part == 1 || part == 2 || part == 4) RepaintNowPlaying();
 }
 
 void MainWindow::OnNowPlayingClick(int part) {
@@ -1218,6 +1232,12 @@ void MainWindow::OnNowPlayingClick(int part) {
         break;
     }
     case 3: ShowDeviceMenu(); break;
+    case 4: {  // Favorite star next to the title
+        metadb_handle_ptr now;
+        if (playback_control::get()->get_now_playing(now)) media::ToggleFavorite(now);
+        UpdateFavoriteState();
+        break;
+    }
     default: break;
     }
 }
@@ -1319,19 +1339,23 @@ void MainWindow::BuildCrumbs() {
                                        {L"All music", go(all)},
                                        {L"Genre", go(kindView(View::Kind::Genres))}};
     };
+    View playlistsPage;
+    playlistsPage.kind = View::Kind::Playlists;
     View nowPlaying;
     nowPlaying.kind = View::Kind::Playlist;
     nowPlaying.playlist = playlist_manager::get()->get_active_playlist();
 
     m_crumbs.clear();
     m_crumbs.push_back({L"", {}, [go, all] { return std::vector<MenuAction>{{L"Library", go(all)}}; }});
-    m_crumbs.push_back({L"Library", go(all), [go, all, nowPlaying] {
-                            return std::vector<MenuAction>{{L"Playlists", go(nowPlaying)}, {L"Music", go(all)}};
+    m_crumbs.push_back({L"Library", go(all), [go, all, playlistsPage] {
+                            return std::vector<MenuAction>{{L"Playlists", go(playlistsPage)}, {L"Music", go(all)}};
                         }});
     if (m_view.kind == View::Kind::Playlist && media::IsQueue(m_view.playlist)) {
         m_crumbs.push_back({L"Now Playing", go(m_view), {}});  // the queue sits beside Playlists
+    } else if (m_view.kind == View::Kind::Playlists) {
+        m_crumbs.push_back({L"Playlists", go(m_view), playlists});
     } else if (m_view.kind == View::Kind::Playlist) {
-        m_crumbs.push_back({L"Playlists", go(nowPlaying), playlists});
+        m_crumbs.push_back({L"Playlists", go(playlistsPage), playlists});
         m_crumbs.push_back({m_view.name, go(m_view), {}});
     } else {
         m_crumbs.push_back({L"Music", go(all), music});
@@ -1524,6 +1548,18 @@ void MainWindow::Navigate(const View& requested, bool push) {
     }
     case View::Kind::Artists:
     case View::Kind::Albums:
+    case View::Kind::Playlists: {  // WMP's Playlists page: every playlist as an icon
+        source = std::make_unique<media::PlaylistsSource>(
+            [this](size_t playlist) {
+                View v;
+                v.kind = View::Kind::Playlist;
+                v.playlist = playlist;
+                Navigate(v, true);
+            },
+            [this](size_t playlist, POINT screen) { ShowPlaylistMenu(playlist, screen); });
+        m_nav->Select(NavPane::Target::PlaylistsHeader, 0);
+        break;
+    }
     case View::Kind::Genres: {
         const auto kind = view.kind == View::Kind::Artists  ? media::GroupKind::Artist
                           : view.kind == View::Kind::Albums ? media::GroupKind::Album
@@ -1716,14 +1752,7 @@ void MainWindow::OnNavItem(const NavPane::Item& item) {
     case NavPane::Target::Artists: v.kind = View::Kind::Artists; break;
     case NavPane::Target::Albums: v.kind = View::Kind::Albums; break;
     case NavPane::Target::Genres: v.kind = View::Kind::Genres; break;
-    case NavPane::Target::PlaylistsHeader: {
-        auto pm = playlist_manager::get();
-        const t_size active = pm->get_active_playlist();
-        if (active == SIZE_MAX) return;
-        v.kind = View::Kind::Playlist;
-        v.playlist = active;
-        break;
-    }
+    case NavPane::Target::PlaylistsHeader: v.kind = View::Kind::Playlists; break;  // WMP's Playlists page
     default: return;
     }
     Navigate(v, true);
@@ -2070,6 +2099,10 @@ void MainWindow::UpdateFavoriteState() {
     metadb_handle_ptr now;
     const bool fav = playback_control::get()->get_now_playing(now) && media::IsFavorite(now);
     if (m_taskbar) m_taskbar->SetFavorite(fav);
+    if (fav != m_npFavorite) {
+        m_npFavorite = fav;
+        RepaintNowPlaying();
+    }
 }
 
 void MainWindow::OnPlaylistContentChanged(size_t playlist) {
@@ -2089,7 +2122,8 @@ void MainWindow::OnPlaylistSelectionChanged(size_t playlist) {
 void MainWindow::OnPlaylistsChanged() {
     if (!m_nav) return;
     m_nav->Rebuild();
-    if (m_view.kind == View::Kind::Playlist) Navigate(m_view, false);  // index or name may have changed
+    if (m_view.kind == View::Kind::Playlist || m_view.kind == View::Kind::Playlists)
+        Navigate(m_view, false);  // index, name or the set of playlists may have changed
 }
 
 void MainWindow::ScheduleLibraryReload() {

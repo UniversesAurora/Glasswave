@@ -13,12 +13,17 @@ constexpr uint8_t kLeft[] = {126, 98, 75, 58, 48, 39, 31, 23, 17, 12, 8, 4, 2};
 constexpr uint8_t kTop[] = {115, 86, 63, 47, 37, 29, 23, 16, 12, 7, 4, 2};
 constexpr uint8_t kRight[] = {158, 137, 121, 106, 96, 84, 72, 60, 49, 40, 31, 24, 17, 12, 8, 4, 2};
 constexpr uint8_t kBottom[] = {162, 144, 129, 116, 106, 95, 84, 72, 60, 49, 39, 31, 24, 17, 12, 7, 4, 2};
+// Inactive windows cast a much fainter, tighter shadow (owner's Win7 capture at 150 %: 4 px at
+// the left from 22 %, 9 px at the bottom from 29 %), resampled to 96 DPI.
+constexpr uint8_t kLeftInactive[] = {57, 30, 15, 5};
+constexpr uint8_t kTopInactive[] = {50, 26, 12, 4};
+constexpr uint8_t kRightInactive[] = {66, 40, 22, 10, 3};
+constexpr uint8_t kBottomInactive[] = {75, 51, 33, 20, 9, 3, 1};
 
 constexpr float kCoreRadius = 10.0f;   // DIP; rounding of the shadow's corners
 constexpr float kWindowRadius = 6.0f;  // DIP; must match the frame's corner radius
 
-template <size_t N>
-float Profile(const uint8_t (&t)[N], float d) {
+float ProfileOf(const uint8_t* t, size_t N, float d) {
     if (d <= 0) return t[0];
     const float i = std::floor(d);
     const size_t k = static_cast<size_t>(i);
@@ -39,7 +44,11 @@ void RegisterShadowClass() {
 
 // Shadow alpha for the pixel at (x, y), relative to the owner's top-left
 // corner, in device pixels. W/H: owner size; s: DPI scale.
-float ShadowAlpha(int x, int y, int W, int H, float s) {
+float ShadowAlpha(int x, int y, int W, int H, float s, bool active) {
+    auto PL = [&](float d) { return active ? ProfileOf(kLeft, std::size(kLeft), d) : ProfileOf(kLeftInactive, std::size(kLeftInactive), d); };
+    auto PR = [&](float d) { return active ? ProfileOf(kRight, std::size(kRight), d) : ProfileOf(kRightInactive, std::size(kRightInactive), d); };
+    auto PT = [&](float d) { return active ? ProfileOf(kTop, std::size(kTop), d) : ProfileOf(kTopInactive, std::size(kTopInactive), d); };
+    auto PB = [&](float d) { return active ? ProfileOf(kBottom, std::size(kBottom), d) : ProfileOf(kBottomInactive, std::size(kBottomInactive), d); };
     const float cx = x + 0.5f, cy = y + 0.5f;
     const float rc = kCoreRadius * s;
 
@@ -51,8 +60,8 @@ float ShadowAlpha(int x, int y, int W, int H, float s) {
         const float len = std::max(std::hypot(vx, vy), 1e-3f);
         const float d = (len - rc - 0.5f) / s;
         const float wx = vx * vx / (len * len), wy = 1.0f - wx;
-        const float a = wx * (left ? Profile(kLeft, d) : Profile(kRight, d)) +
-                        wy * (top ? Profile(kTop, d) : Profile(kBottom, d));
+        const float a = wx * (left ? PL(d) : PR(d)) +
+                        wy * (top ? PT(d) : PB(d));
         // Inside the owner's rect only the pixels outside its rounded corner show.
         if (cx >= 0 && cx <= W && cy >= 0 && cy <= H) {
             const float rw = kWindowRadius * s;
@@ -64,10 +73,10 @@ float ShadowAlpha(int x, int y, int W, int H, float s) {
         }
         return a;
     }
-    if (cx < 0) return Profile(kLeft, (-cx - 0.5f) / s);
-    if (cx > W) return Profile(kRight, (cx - W - 0.5f) / s);
-    if (cy < 0) return Profile(kTop, (-cy - 0.5f) / s);
-    if (cy > H) return Profile(kBottom, (cy - H - 0.5f) / s);
+    if (cx < 0) return PL((-cx - 0.5f) / s);
+    if (cx > W) return PR((cx - W - 0.5f) / s);
+    if (cy < 0) return PT((-cy - 0.5f) / s);
+    if (cy > H) return PB((cy - H - 0.5f) / s);
     return 0.0f;  // under the owner
 }
 
@@ -157,7 +166,7 @@ void ShadowFrame::Render(const RECT& owner, float s) {
     const int eR = static_cast<int>(std::ceil(std::size(kRight) * s));
     const int eB = static_cast<int>(std::ceil(std::size(kBottom) * s));
     const int cz = static_cast<int>(std::ceil(kCoreRadius * s));
-    const float strength = m_active ? 1.0f : 0.8f;
+    const float strength = 1.0f;  // inactive windows use their own, fainter profiles
 
     // Strip rectangles relative to the owner's top-left corner.
     const RECT strips[4] = {
@@ -191,7 +200,7 @@ void ShadowFrame::Render(const RECT& owner, float s) {
         auto* px = static_cast<uint32_t*>(bits);
         for (int y = 0; y < h; ++y) {
             for (int x = 0; x < w; ++x) {
-                const float a = ShadowAlpha(r.left + x, r.top + y, W, H, s) * strength;
+                const float a = ShadowAlpha(r.left + x, r.top + y, W, H, s, m_active) * strength;
                 const uint32_t A = static_cast<uint32_t>(std::clamp(a, 0.0f, 255.0f) + 0.5f);
                 px[y * w + x] = A << 24;  // premultiplied black
             }

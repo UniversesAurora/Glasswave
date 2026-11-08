@@ -34,6 +34,7 @@ enum class TileStyle { None, Album, Artist };
 struct TileInfo {
     metadb_handle_ptr art;
     std::array<std::wstring, 3> lines;
+    int icon = 0;  // wmploc PNG drawn instead of a cover (playlists page), 0 = none
 };
 
 class ListSource {
@@ -237,6 +238,46 @@ private:
     ViewStyle m_style = ViewStyle::Icons;
     size_t m_sortColumn = SIZE_MAX;
     bool m_sortDescending = false;
+};
+
+// WMP 12's Playlists page: every playlist but the queue, as icons or details (title, count).
+// Opening and the context menu are the main window's.
+class PlaylistsSource : public ListSource {
+public:
+    using Open = std::function<void(size_t playlist)>;
+    using Menu = std::function<void(size_t playlist, POINT screen)>;
+    PlaylistsSource(Open open, Menu menu);
+
+    const std::vector<Column>& Columns() const override { return m_columns; }
+    size_t Count() const override { return m_rows.size(); }
+    std::wstring Cell(size_t row, size_t column) const override;
+    std::wstring EmptyText() const override { return L"No playlists."; }
+    TileStyle Tiles() const override { return m_style == ViewStyle::Icons ? TileStyle::Album : TileStyle::None; }
+    TileInfo Tile(size_t row) const override;
+    bool SupportsViewStyle(ViewStyle s) const override { return s != ViewStyle::Tiles; }
+    ViewStyle GetViewStyle() const override { return m_style; }
+    void SetViewStyle(ViewStyle style) override { m_style = style; }
+    bool IsSelected(size_t row) const override { return row < m_selected.size() && m_selected[row]; }
+    void SelectOnly(size_t row) override;
+    void Toggle(size_t row) override;
+    void SelectRange(size_t a, size_t b, bool keepOthers) override;
+    void SelectAll() override;
+    void SetSelection(const std::vector<size_t>& rows) override;
+    size_t Focus() const override { return m_focus; }
+    void SetFocus(size_t row) override { m_focus = row; }
+    void Activate(size_t row) override;
+    void ContextMenu(HWND owner, POINT screen) override;
+    metadb_handle_list SelectedItems() const override;
+    void SetFilter(std::wstring_view filterLower) override;
+
+private:
+    Open m_open;
+    Menu m_menu;
+    std::vector<Column> m_columns;
+    std::vector<size_t> m_rows;  // playlist indices
+    std::vector<uint8_t> m_selected;
+    size_t m_focus = SIZE_MAX;
+    ViewStyle m_style = ViewStyle::Icons;
 };
 
 // Replace the "Now Playing" playlist with `items` and start playback at `start`

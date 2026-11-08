@@ -767,7 +767,10 @@ void ListView::PaintTiles(ID2D1DeviceContext* dc) {
                          k == 0 ? kInk : kGreyInk);
             } else {
                 const float a = kAlbumTileArt, ax = x + (ts.width - a) / 2, ay = y + 10;
-                DrawArt(dc, info.art, {ax, ay, ax + a, ay + a});
+                if (info.icon)  // playlists page: WMP's large playlist icon instead of a cover
+                    win7::DrawStretched(dc, win7::Module::Wmploc, L"#" + std::to_wstring(info.icon), {ax + 10, ay + 10, ax + a - 10, ay + a - 10});
+                else
+                    DrawArt(dc, info.art, {ax, ay, ax + a, ay + a});
                 for (size_t k = 0; k < 2; ++k)
                     Text(dc, info.lines[k], {x + 6, ay + a + 5 + k * 17, x + ts.width - 6, ay + a + 5 + (k + 1) * 17},
                          k == 0 ? kInk : kGreyInk, DWRITE_TEXT_ALIGNMENT_CENTER);

@@ -1,6 +1,7 @@
 #include "pch.h"
 #include "media/list_sources.h"
 #include "media/special_playlists.h"
+#include "media/favorites.h"
 #include "ui/win7_menu.h"
 #include "media/source_identity.h"
 #include "ui/text.h"
@@ -51,6 +52,90 @@ void RangeSelect(size_t count, size_t a, size_t b, bool keepOthers, IsSel, SetSe
 }  // namespace
 
 void PlayItems(const metadb_handle_list& items, size_t start) { PlayQueue(items, start); }
+
+// ---- PlaylistsSource --------------------------------------------------------------------
+
+PlaylistsSource::PlaylistsSource(Open open, Menu menu) : m_open(std::move(open)), m_menu(std::move(menu)) {
+    m_columns = {{L"Title", 0, true}, {L"Count", 70, false, true}};
+    SetFilter({});
+}
+
+std::wstring PlaylistsSource::Cell(size_t row, size_t column) const {
+    if (row >= m_rows.size()) return {};
+    auto pm = playlist_manager::get();
+    if (column == 1) return std::to_wstring(pm->playlist_get_item_count(m_rows[row]));
+    pfc::string8 name;
+    pm->playlist_get_name(m_rows[row], name);
+    return ui::Wide(name);
+}
+
+TileInfo PlaylistsSource::Tile(size_t row) const {
+    TileInfo info;
+    if (row >= m_rows.size()) return info;
+    const t_size p = m_rows[row];
+    // WMP's 192 px icons: 29722 playlist, 29772 auto playlist, 29726 star (Favorites).
+    info.icon = p == FavoritesPlaylist(false) ? 29726 : IsSmart(p) ? 29772 : 29722;
+    const t_size n = playlist_manager::get()->playlist_get_item_count(p);
+    info.lines = {Cell(row, 0), std::to_wstring(n) + (n == 1 ? L" song" : L" songs"), {}};
+    return info;
+}
+
+void PlaylistsSource::SelectOnly(size_t row) {
+    std::fill(m_selected.begin(), m_selected.end(), uint8_t{0});
+    if (row < m_selected.size()) m_selected[row] = 1;
+}
+
+void PlaylistsSource::Toggle(size_t row) {
+    if (row < m_selected.size()) m_selected[row] ^= 1;
+}
+
+void PlaylistsSource::SelectRange(size_t a, size_t b, bool keepOthers) {
+    if (!keepOthers) std::fill(m_selected.begin(), m_selected.end(), uint8_t{0});
+    if (a > b) std::swap(a, b);
+    for (size_t r = a; r <= b && r < m_selected.size(); ++r) m_selected[r] = 1;
+}
+
+void PlaylistsSource::SelectAll() { std::fill(m_selected.begin(), m_selected.end(), uint8_t{1}); }
+
+void PlaylistsSource::SetSelection(const std::vector<size_t>& rows) {
+    std::fill(m_selected.begin(), m_selected.end(), uint8_t{0});
+    for (size_t r : rows)
+        if (r < m_selected.size()) m_selected[r] = 1;
+}
+
+void PlaylistsSource::Activate(size_t row) {
+    if (row < m_rows.size() && m_open) m_open(m_rows[row]);
+}
+
+void PlaylistsSource::ContextMenu(HWND, POINT screen) {
+    if (m_menu) m_menu(m_focus < m_rows.size() ? m_rows[m_focus] : SIZE_MAX, screen);
+}
+
+metadb_handle_list PlaylistsSource::SelectedItems() const {
+    metadb_handle_list out;
+    auto pm = playlist_manager::get();
+    for (size_t r = 0; r < m_rows.size(); ++r)
+        if (m_selected[r]) {
+            metadb_handle_list items;
+            pm->playlist_get_all_items(m_rows[r], items);
+            out.add_items(items);
+        }
+    return out;
+}
+
+void PlaylistsSource::SetFilter(std::wstring_view filterLower) {
+    auto pm = playlist_manager::get();
+    m_rows.clear();
+    pfc::string8 name;
+    for (t_size p = 0, n = pm->get_playlist_count(); p < n; ++p) {
+        if (IsQueue(p)) continue;  // the queue has its own place
+        pm->playlist_get_name(p, name);
+        if (!filterLower.empty() && Lower(ui::Wide(name)).find(filterLower) == std::wstring::npos) continue;
+        m_rows.push_back(p);
+    }
+    m_selected.assign(m_rows.size(), 0);
+    if (m_focus >= m_rows.size()) m_focus = SIZE_MAX;
+}
 
 // ---- PlaylistSource ---------------------------------------------------------------------
 
@@ -171,8 +256,13 @@ std::wstring PlaylistSource::EmptyText() const {
 }
 
 bool PlaylistSource::IsPlaying(size_t row) const {
+    // Playing from this playlist: its exact item. Otherwise (songs play from the queue, a
+    // copy of the list the user started them in) the same song shows as playing here too.
+    auto pm = playlist_manager::get();
     t_size p = 0, i = 0;
-    return playlist_manager::get()->get_playing_item_location(&p, &i) && p == m_playlist && i == m_rows[row];
+    if (pm->get_playing_item_location(&p, &i) && p == m_playlist) return i == m_rows[row];
+    metadb_handle_ptr now;
+    return playback_control::get()->get_now_playing(now) && now == pm->playlist_get_item_handle(m_playlist, m_rows[row]);
 }
 
 bool PlaylistSource::IsSelected(size_t row) const {
