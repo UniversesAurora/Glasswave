@@ -15,6 +15,7 @@ public:
     NeteaseSongSource(std::vector<netease::Song> songs, std::wstring emptyText);
 
     const std::vector<media::Column>& Columns() const override { return m_columns; }
+    std::wstring ColumnSetKey() const override { return L"netease-songs"; }
     size_t Count() const override { return m_rows.size(); }
     std::wstring Cell(size_t row, size_t column) const override;
     std::wstring EmptyText() const override { return m_emptyText; }
@@ -63,6 +64,7 @@ public:
     NeteasePlaylistSource(std::vector<netease::Playlist> playlists, std::wstring emptyText, Open open);
 
     const std::vector<media::Column>& Columns() const override { return m_columns; }
+    std::wstring ColumnSetKey() const override { return L"netease-playlists"; }
     size_t Count() const override { return m_rows.size(); }
     std::wstring Cell(size_t row, size_t column) const override;
     std::wstring EmptyText() const override { return m_emptyText; }

@@ -61,6 +61,7 @@ private:
 
     void PostMain(std::function<void()> fn);
     void NotifyChanged();
+    bool RequireLogin(std::wstring& error) const;
     bool EnsureAccount(abort_callback& abort, int64_t& userId, std::wstring& error);
     void SetAccountLocked(const Account& account);
 

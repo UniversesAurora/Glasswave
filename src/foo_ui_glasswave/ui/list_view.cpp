@@ -324,6 +324,7 @@ D2D1_POINT_2F ListView::ContentPoint(POINT pt) const {
 void ListView::LoadColumnLayout() {
     const auto& cols = m_source->Columns();
     std::wstring key;
+    if (!m_source->ColumnSetKey().empty()) key = m_source->ColumnSetKey() + L":";
     for (const auto& c : cols) key += c.title + L'|';
     if (AlbumColumn()) key += L"#art";
     if (key == m_columnKey && m_order.size() == cols.size()) return;

@@ -84,6 +84,8 @@ public:
         if (m_decoder.is_valid()) return;
         auto& provider = Provider::Get();
         provider.Initialize();
+        if (!provider.LoggedIn())
+            throw exception_io_data("Please sign in to NetEase Cloud Music before playing this track.");
         std::wstring error;
         if (!provider.Service().EnsureStarted(p_abort, &error))
             throw exception_io_data(Utf8(error.empty() ? L"NetEase service is unavailable." : error).c_str());

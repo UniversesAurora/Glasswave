@@ -102,6 +102,12 @@ void Provider::NotifyChanged() {
     if (callback) PostMain([callback = std::move(callback)] { callback(); });
 }
 
+bool Provider::RequireLogin(std::wstring& error) const {
+    if (LoggedIn()) return true;
+    error = L"Please sign in to NetEase Cloud Music.";
+    return false;
+}
+
 bool Provider::EnsureAccount(abort_callback& abort, int64_t& userId, std::wstring& error) {
     {
         std::lock_guard lock(m_mutex);
@@ -113,13 +119,14 @@ bool Provider::EnsureAccount(abort_callback& abort, int64_t& userId, std::wstrin
     Account account;
     if (!m_client.GetAccount(abort, account, error)) return false;
     if (!account.loggedIn) {
+        const bool hadSession = !SessionCookie().empty();
         ClearSessionCookie();
         ClearAccount();
         {
             std::lock_guard lock(m_mutex);
             m_account = {};
         }
-        NotifyChanged();
+        if (hadSession) NotifyChanged();
         error = L"Please sign in to NetEase Cloud Music.";
         return false;
     }
@@ -148,6 +155,12 @@ void Provider::RefreshAccount(DoneCallback done) {
         if (m_stopping) return;
         abort_callback_impl abort;
         std::wstring error;
+        if (!RequireLogin(error)) {
+            PostMain([done = std::move(done), error] {
+                if (done) done(false, ErrorOf(error));
+            });
+            return;
+        }
         if (!m_service.EnsureStarted(abort, &error)) {
             PostMain([done = std::move(done), error] {
                 if (done) done(false, ErrorOf(error));
@@ -200,6 +213,12 @@ void Provider::RefreshLikes(DoneCallback done) {
         if (m_stopping) return;
         abort_callback_impl abort;
         std::wstring error;
+        if (!RequireLogin(error)) {
+            PostMain([done = std::move(done), error] {
+                if (done) done(false, ErrorOf(error));
+            });
+            return;
+        }
         if (!m_service.EnsureStarted(abort, &error)) {
             PostMain([done = std::move(done), error] {
                 if (done) done(false, ErrorOf(error));
@@ -236,6 +255,12 @@ void Provider::FetchMyPlaylists(PlaylistsCallback done) {
         if (m_stopping) return;
         abort_callback_impl abort;
         std::wstring error;
+        if (!RequireLogin(error)) {
+            PostMain([done = std::move(done), error] {
+                if (done) done({}, ErrorOf(error));
+            });
+            return;
+        }
         if (!m_service.EnsureStarted(abort, &error)) {
             PostMain([done = std::move(done), error] {
                 if (done) done({}, ErrorOf(error));
@@ -274,6 +299,12 @@ void Provider::FetchRecommended(PlaylistsCallback done) {
         if (m_stopping) return;
         abort_callback_impl abort;
         std::wstring error;
+        if (!RequireLogin(error)) {
+            PostMain([done = std::move(done), error] {
+                if (done) done({}, ErrorOf(error));
+            });
+            return;
+        }
         if (!m_service.EnsureStarted(abort, &error)) {
             PostMain([done = std::move(done), error] {
                 if (done) done({}, ErrorOf(error));
@@ -299,6 +330,12 @@ void Provider::FetchLiked(SongsCallback done) {
         if (m_stopping) return;
         abort_callback_impl abort;
         std::wstring error;
+        if (!RequireLogin(error)) {
+            PostMain([done = std::move(done), error] {
+                if (done) done({}, ErrorOf(error));
+            });
+            return;
+        }
         if (!m_service.EnsureStarted(abort, &error)) {
             PostMain([done = std::move(done), error] {
                 if (done) done({}, ErrorOf(error));
@@ -369,6 +406,12 @@ void Provider::FetchPlaylist(int64_t playlistId, DetailCallback done) {
         if (m_stopping) return;
         abort_callback_impl abort;
         std::wstring error;
+        if (!RequireLogin(error)) {
+            PostMain([done = std::move(done), error] {
+                if (done) done({}, ErrorOf(error));
+            });
+            return;
+        }
         if (!m_service.EnsureStarted(abort, &error)) {
             PostMain([done = std::move(done), error] {
                 if (done) done({}, ErrorOf(error));
@@ -416,6 +459,11 @@ void Provider::Search(std::wstring_view query, SongsCallback done) {
 }
 
 void Provider::ToggleLike(int64_t songId, bool like, DoneCallback done) {
+    std::wstring loginError;
+    if (!RequireLogin(loginError)) {
+        if (done) done(false, loginError);
+        return;
+    }
     {
         std::lock_guard lock(m_likedMutex);
         if (like)

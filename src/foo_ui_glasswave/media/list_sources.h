@@ -47,6 +47,8 @@ public:
     virtual ~ListSource() = default;
 
     virtual const std::vector<Column>& Columns() const = 0;
+    // Extra discriminator for the saved column layout (provider-specific column sets).
+    virtual std::wstring ColumnSetKey() const { return {}; }
     virtual size_t Count() const = 0;
     virtual std::wstring Cell(size_t row, size_t column) const = 0;
     virtual std::wstring EmptyText() const = 0;
