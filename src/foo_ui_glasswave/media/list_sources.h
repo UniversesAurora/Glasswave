@@ -21,6 +21,7 @@ Column ArtColumn(bool hidden);
 // WMP 12 details view grouped by album: a header line, then the tracks next to an
 // album column showing the cover and up to four lines of album information.
 struct RowGroup {
+    std::wstring key;             // album identity, or the sort column's group value
     size_t first = 0, count = 0;  // rows
     metadb_handle_ptr art;        // track whose front cover represents the group
     std::wstring header;
@@ -77,6 +78,10 @@ public:
     virtual void SelectAll() = 0;
     // The track a row shows (rating / favourite cells); empty for group rows.
     virtual metadb_handle_ptr Item(size_t /*row*/) const { return {}; }
+    // Album art column: rows of the same album share one cache key, so the cover is fetched
+    // and decoded once. ArtTrack is the track whose front cover represents the album.
+    virtual std::wstring ArtKey(size_t /*row*/) const { return {}; }
+    virtual metadb_handle_ptr ArtTrack(size_t row) const { return Item(row); }
     // Row showing this track, or SIZE_MAX ("jump to the playing song").
     virtual size_t FindRow(const metadb_handle_ptr& /*track*/) const { return SIZE_MAX; }
     // Exactly these rows selected, all others not (rubber-band selection).
@@ -121,6 +126,8 @@ public:
     void SetSelection(const std::vector<size_t>& rows) override;
     size_t FindRow(const metadb_handle_ptr& track) const override;
     metadb_handle_ptr Item(size_t row) const override;
+    std::wstring ArtKey(size_t row) const override;
+    metadb_handle_ptr ArtTrack(size_t row) const override;
     size_t Focus() const override;
     void SetFocus(size_t row) override;
     void Activate(size_t row) override;
@@ -148,6 +155,9 @@ private:
     std::vector<size_t> m_rows;  // playlist item index per visible row
     std::vector<Column> m_columns;
     std::vector<titleformat_object::ptr> m_scripts;
+    mutable std::vector<std::wstring> m_artKeys;
+    mutable std::vector<metadb_handle_ptr> m_artTracks;
+    mutable std::map<std::wstring, metadb_handle_ptr> m_artReps;
 };
 
 // Tracks from the library snapshot (all music, or the contents of a group).
@@ -177,6 +187,7 @@ public:
     void SetSelection(const std::vector<size_t>& rows) override;
     size_t FindRow(const metadb_handle_ptr& track) const override;
     metadb_handle_ptr Item(size_t row) const override;
+    std::wstring ArtKey(size_t row) const override;
     size_t Focus() const override { return m_focus; }
     void SetFocus(size_t row) override { m_focus = row; }
     void Activate(size_t row) override;
@@ -201,6 +212,8 @@ private:
     std::vector<size_t> m_libraryOrder;  // m_all as built, for sorting back
     std::wstring m_filter;
 
+    bool GroupBySort() const;  // Details view with a non-album sort column
+    std::pair<std::wstring, std::wstring> GroupInfo(const Track& track) const;  // key, label
     void ApplySort();
 };
 

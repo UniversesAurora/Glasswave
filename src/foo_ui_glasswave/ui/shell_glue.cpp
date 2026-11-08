@@ -63,13 +63,23 @@ winrt::com_ptr<IWICBitmapSource> DecodeArt(IWICImagingFactory* wic, const album_
         FAILED(wic->CreateDecoderFromStream(stream.get(), nullptr, WICDecodeMetadataCacheOnDemand, decoder.put())) ||
         FAILED(decoder->GetFrame(0, frame.put())))
         return nullptr;
+    // A large JPEG often carries an EXIF thumbnail. When it is at least the requested size,
+    // scale from it instead of decoding the full image: the visible difference at list-cover
+    // sizes is nil, and large scans stop stalling the art worker.
+    winrt::com_ptr<IWICBitmapSource> source = frame;
+    winrt::com_ptr<IWICBitmapSource> thumbnail;
+    if (SUCCEEDED(frame->GetThumbnail(thumbnail.put())) && thumbnail) {
+        UINT tw = 0, th = 0;
+        if (SUCCEEDED(thumbnail->GetSize(&tw, &th)) && std::max(tw, th) >= static_cast<UINT>(sizePx))
+            source = thumbnail;
+    }
     UINT w = 0, h = 0;
-    frame->GetSize(&w, &h);
+    source->GetSize(&w, &h);
     if (!w || !h) return nullptr;
     const double k = std::min(1.0, static_cast<double>(sizePx) / std::max(w, h));
     const UINT tw = std::max(1u, static_cast<UINT>(w * k)), th = std::max(1u, static_cast<UINT>(h * k));
     if (FAILED(wic->CreateBitmapScaler(scaler.put())) ||
-        FAILED(scaler->Initialize(frame.get(), tw, th, WICBitmapInterpolationModeHighQualityCubic)) ||
+        FAILED(scaler->Initialize(source.get(), tw, th, WICBitmapInterpolationModeHighQualityCubic)) ||
         FAILED(wic->CreateFormatConverter(conv.put())) ||
         FAILED(conv->Initialize(scaler.get(), GUID_WICPixelFormat32bppPBGRA, WICBitmapDitherTypeNone, nullptr, 0,
                                 WICBitmapPaletteTypeMedianCut)) ||

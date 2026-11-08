@@ -6,6 +6,7 @@
 #include "media/source_identity.h"
 #include "ui/text.h"
 #include "ui/i18n.h"
+#include <cwctype>
 
 namespace glasswave::media {
 
@@ -54,7 +55,7 @@ void RangeSelect(size_t count, size_t a, size_t b, bool keepOthers, IsSel, SetSe
 
 void PlayItems(const metadb_handle_list& items, size_t start) { PlayQueue(items, start); }
 
-Column ArtColumn(bool hidden) { return {L"Album art", 30, false, false, hidden, kArtFormat}; }
+Column ArtColumn(bool hidden) { return {L"Album art", 42, false, false, hidden, kArtFormat}; }
 
 // ---- PlaylistsSource --------------------------------------------------------------------
 
@@ -136,7 +137,7 @@ void PlaylistsSource::SetFilter(std::wstring_view filterLower) {
     const t_size favorites = FavoritesPlaylist(false);
     for (t_size p = 0, n = pm->get_playlist_count(); p < n; ++p) {
         if (IsQueue(p)) continue;  // the queue has its own place
-        if ((p == favorites || IsSmart(p)) != m_smart) continue;
+        if ((p == favorites || IsAutoPlaylist(p)) != m_smart) continue;
         pm->playlist_get_name(p, name);
         if (!filterLower.empty() && Lower(ui::Wide(name)).find(filterLower) == std::wstring::npos) continue;
         m_rows.push_back(p);
@@ -198,6 +199,9 @@ void PlaylistSource::Rebuild() {
     auto pm = playlist_manager::get();
     const t_size n = m_playlist < pm->get_playlist_count() ? pm->playlist_get_item_count(m_playlist) : 0;
     m_rows.clear();
+    m_artKeys.clear();
+    m_artTracks.clear();
+    m_artReps.clear();
     if (m_filter.empty()) {
         m_rows.resize(n);
         for (size_t i = 0; i < n; ++i) m_rows[i] = i;
@@ -400,6 +404,43 @@ metadb_handle_ptr PlaylistSource::Item(size_t row) const {
     return row < m_rows.size() ? playlist_manager::get()->playlist_get_item_handle(m_playlist, m_rows[row]) : metadb_handle_ptr{};
 }
 
+std::wstring PlaylistSource::ArtKey(size_t row) const {
+    if (row >= m_rows.size()) return {};
+    if (m_artKeys.size() != m_rows.size()) {
+        m_artKeys.assign(m_rows.size(), {});
+        m_artTracks.assign(m_rows.size(), {});
+        m_artReps.clear();
+    }
+    if (!m_artKeys[row].empty()) return m_artKeys[row];
+    auto pm = playlist_manager::get();
+    // Album + folder, not album artist: one album often lists different contributing artists
+    // per track, but they all share the same cover.
+    static const auto script = Compile("[%album%]\x1f$directory_path(%path%)");
+    pfc::string8 buf;
+    pm->playlist_item_format_title(m_playlist, m_rows[row], nullptr, buf, script, nullptr,
+                                   playback_control::display_level_none);
+    std::wstring text = ui::Wide(buf);
+    const metadb_handle_ptr item = pm->playlist_get_item_handle(m_playlist, m_rows[row]);
+    std::wstring key;
+    if (text.find_first_not_of(L'\x1f') != std::wstring::npos && item.is_valid()) {
+        key = L"pl:" + text;
+    } else if (item.is_valid()) {  // no album/folder information: keep the track distinct
+        key = L"tr:" + ui::Wide(item->get_path()) + L'|' + std::to_wstring(item->get_subsong_index());
+    } else {
+        key = L"row:" + std::to_wstring(row);
+    }
+    // One representative track per album: the first row that asked for this cover.
+    const auto it = m_artReps.try_emplace(key, item).first;
+    m_artKeys[row] = key;
+    m_artTracks[row] = it->second;
+    return key;
+}
+
+metadb_handle_ptr PlaylistSource::ArtTrack(size_t row) const {
+    ArtKey(row);  // fills the per-row cache
+    return row < m_artTracks.size() ? m_artTracks[row] : Item(row);
+}
+
 size_t PlaylistSource::FindRow(const metadb_handle_ptr& track) const {
     auto pm = playlist_manager::get();
     for (size_t r = 0; r < m_rows.size(); ++r)
@@ -513,6 +554,71 @@ void TrackSource::Sort(size_t column, bool descending) {
     ApplySort();
 }
 
+bool TrackSource::GroupBySort() const {
+    // WMP regroups a Details list by the column that was just used for sorting. Expanded
+    // tile keeps album grouping (its album column would not make sense otherwise).
+    return m_style == ViewStyle::Details && m_sortColumn != SIZE_MAX && m_sortColumn < m_fields.size() &&
+           m_fields[m_sortColumn] != kAlbum && m_fields[m_sortColumn] != kAlbumColumn;
+}
+
+std::pair<std::wstring, std::wstring> TrackSource::GroupInfo(const Track& t) const {
+    if (m_sortColumn >= m_fields.size()) return {t.album, t.album};
+    const int field = m_fields[m_sortColumn];
+    const Column& column = m_columns[m_sortColumn];
+    switch (field) {
+    case kNumber: {
+        const std::wstring v = t.number.empty() ? ui::Tr(L"Unknown") : t.number;
+        return {v, v};
+    }
+    case kTitle: {
+        wchar_t c = t.title.empty() ? L'#' : t.title[0];
+        if (c >= L'a' && c <= L'z') c = static_cast<wchar_t>(c - L'a' + L'A');
+        if (std::iswpunct(static_cast<wint_t>(c)) || std::iswspace(static_cast<wint_t>(c))) c = L'#';
+        std::wstring label(1, c);
+        return {label, label};
+    }
+    case kLength: {
+        const long long minutes = static_cast<long long>(t.seconds) / 60;
+        const std::wstring key = std::to_wstring(minutes);
+        return {key, key + ui::Tr(minutes == 1 ? L" minute" : L" minutes")};
+    }
+    case kArtist: {
+        const std::wstring v = t.artist.empty() ? ui::Tr(L"Unknown Artist") : t.artist;
+        return {v, v};
+    }
+    case kGenre: {
+        const std::wstring v = t.genre.empty() ? ui::Tr(L"Unknown Genre") : t.genre;
+        return {v, v};
+    }
+    case kYear: {
+        const std::wstring v = t.year.empty() ? ui::Tr(L"Unknown Year") : t.year;
+        return {v, v};
+    }
+    case kFormat: {
+        if (column.format && std::strcmp(column.format, "<favorite>") == 0) {
+            const bool favorite = IsFavorite(t.handle);
+            return {favorite ? L"1" : L"0", ui::Tr(favorite ? L"Favorite" : L"Not in Favorites")};
+        }
+        if (column.format && std::strcmp(column.format, "[%rating%]") == 0) {
+            static const wchar_t* const kStars[] = {L"1 Star", L"2 Stars", L"3 Stars", L"4 Stars", L"5 Stars"};
+            const int n = t.rating.size() == 1 ? t.rating[0] - L'0' : 0;
+            const std::wstring label = t.rating.empty() ? ui::Tr(L"Unrated")
+                                       : n >= 1 && n <= 5 ? ui::Tr(kStars[n - 1])
+                                                          : t.rating;
+            return {t.rating, label};
+        }
+        pfc::string8 buf;
+        if (m_sortColumn < m_scripts.size() && m_scripts[m_sortColumn].is_valid())
+            t.handle->format_title(nullptr, buf, m_scripts[m_sortColumn], nullptr);
+        std::wstring v = ui::Wide(buf);
+        if (v.empty()) v = ui::Tr(L"Unknown");
+        return {v, v};
+    }
+    default:
+        return {t.album, t.album};
+    }
+}
+
 void TrackSource::ApplySort() {
     m_all = m_libraryOrder;
     const auto& tracks = m_model.Tracks();
@@ -524,14 +630,21 @@ void TrackSource::ApplySort() {
             const size_t a = tracks[t].albumIndex;
             return a < albums.size() ? albums[a].name : tracks[t].album;
         };
-        // Track columns sort inside each album; the album columns order the albums.
         std::vector<std::wstring> keys(tracks.size());
         if (!byAlbum) {
             pfc::string8 buf;
+            const Column& column = m_columns[m_sortColumn];
+            const bool favorite = column.format && std::strcmp(column.format, "<favorite>") == 0;
+            const bool rating = column.format && std::strcmp(column.format, "[%rating%]") == 0;
             for (size_t t : m_all) {
                 const Track& tr = tracks[t];
                 switch (field) {
-                case kNumber: keys[t] = tr.number; break;
+                case kNumber: {
+                    wchar_t pad[32];
+                    swprintf_s(pad, L"%06d", _wtoi(tr.number.c_str()));
+                    keys[t] = pad;
+                    break;
+                }
                 case kTitle: keys[t] = tr.title; break;
                 case kLength: {
                     wchar_t pad[32];
@@ -539,12 +652,19 @@ void TrackSource::ApplySort() {
                     keys[t] = pad;
                     break;
                 }
-                case kArtist: keys[t] = tr.artist; break;
-                case kGenre: keys[t] = tr.genre; break;
-                case kYear: keys[t] = tr.year; break;
+                case kArtist: keys[t] = tr.artist.empty() ? ui::Tr(L"Unknown Artist") : tr.artist; break;
+                case kGenre: keys[t] = tr.genre.empty() ? ui::Tr(L"Unknown Genre") : tr.genre; break;
+                case kYear: keys[t] = tr.year.empty() ? ui::Tr(L"Unknown Year") : tr.year; break;
                 default:
-                    tr.handle->format_title(nullptr, buf, m_scripts[m_sortColumn], nullptr);
-                    keys[t] = ui::Wide(buf);
+                    if (favorite)
+                        keys[t] = IsFavorite(tr.handle) ? L"1" : L"0";
+                    else if (rating)
+                        keys[t] = tr.rating;
+                    else {
+                        tr.handle->format_title(nullptr, buf, m_scripts[m_sortColumn], nullptr);
+                        keys[t] = ui::Wide(buf);
+                        if (keys[t].empty()) keys[t] = ui::Tr(L"Unknown");
+                    }
                     break;
                 }
             }
@@ -556,9 +676,10 @@ void TrackSource::ApplySort() {
                 if (c) return desc ? c > 0 : c < 0;
                 return tracks[a].albumIndex < tracks[b].albumIndex;  // same title: keep albums apart
             }
+            const int c = CompareText(keys[a], keys[b]);
+            if (m_style != ViewStyle::Tiles) return desc ? c > 0 : c < 0;  // Details: group by the column
             const size_t ra = m_model.AlbumRank(tracks[a].albumIndex), rb = m_model.AlbumRank(tracks[b].albumIndex);
             if (ra != rb) return ra < rb;
-            const int c = CompareText(keys[a], keys[b]);
             return desc ? c > 0 : c < 0;
         });
     }
@@ -612,6 +733,13 @@ metadb_handle_ptr TrackSource::Item(size_t row) const {
     return row < m_rows.size() ? m_model.Tracks()[m_all[m_rows[row]]].handle : metadb_handle_ptr{};
 }
 
+std::wstring TrackSource::ArtKey(size_t row) const {
+    if (row >= m_rows.size()) return {};
+    const Track& t = m_model.Tracks()[m_all[m_rows[row]]];
+    const auto& albums = m_model.Groups(GroupKind::Album);
+    return t.albumIndex < albums.size() ? L"lib:" + albums[t.albumIndex].key : std::wstring();
+}
+
 size_t TrackSource::FindRow(const metadb_handle_ptr& track) const {
     const auto& tracks = m_model.Tracks();
     for (size_t r = 0; r < m_rows.size(); ++r)
@@ -651,22 +779,36 @@ void TrackSource::SetFilter(std::wstring_view filterLower) {
     m_focus = SIZE_MAX;
 
     m_groups.clear();
+    const bool bySort = GroupBySort();
     const auto& albums = m_model.Groups(GroupKind::Album);
     for (size_t r = 0; r < m_rows.size(); ++r) {
         const Track& t = m_model.Tracks()[m_all[m_rows[r]]];
-        if (!m_groups.empty() && m_model.Tracks()[m_all[m_rows[m_groups.back().first]]].albumIndex == t.albumIndex) {
+        std::wstring key, header;
+        if (bySort) {
+            auto info = GroupInfo(t);
+            key = std::move(info.first);
+            header = std::move(info.second);
+        } else {
+            key = L"a:" + std::to_wstring(t.albumIndex);
+            const Group* album = t.albumIndex < albums.size() ? &albums[t.albumIndex] : nullptr;
+            header = album ? album->secondary : t.albumArtist;
+        }
+        if (!m_groups.empty() && m_groups.back().key == key) {
             ++m_groups.back().count;
             continue;
         }
         RowGroup g;
+        g.key = std::move(key);
         g.first = r;
         g.count = 1;
         g.art = t.handle;
-        const Group* album = t.albumIndex < albums.size() ? &albums[t.albumIndex] : nullptr;
-        g.header = album ? album->secondary : t.albumArtist;
-        g.lines = {t.album, album ? album->secondary : t.albumArtist, t.genre, album ? album->year : t.year};
-        g.linkKeys = {album ? album->key : std::wstring(), t.hasAlbumArtist ? t.albumArtist : std::wstring(),
-                      t.genre, {}};
+        g.header = std::move(header);
+        if (!bySort) {
+            const Group* album = t.albumIndex < albums.size() ? &albums[t.albumIndex] : nullptr;
+            g.lines = {t.album, album ? album->secondary : t.albumArtist, t.genre, album ? album->year : t.year};
+            g.linkKeys = {album ? album->key : std::wstring(), t.hasAlbumArtist ? t.albumArtist : std::wstring(),
+                          t.genre, {}};
+        }
         m_groups.push_back(std::move(g));
     }
 }

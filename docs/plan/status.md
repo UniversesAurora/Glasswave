@@ -92,6 +92,41 @@ Updated: 2026-11-08
   (Apple Music style cover per row, row height stays WMP's 22 DIP): on by default in
   playlist Details, hidden in library Details (album headers already show the cover).
 
+- 2026-11-08 (resume / rows / translations):
+  - Resume now saves the playing item's playlist, index, path, subsong and active state
+    from a UI-thread timer, not from the playback callback; seeking to the saved position
+    is also done from that timer. Both operations bug-check foobar2000 when called from
+    `on_playback_new_track`. The state is saved again on shutdown; a user stop or the end
+    of the list restores paused, a shutdown while playing restores playing.
+  - The Album art column makes Details rows 40 DIP tall (42 DIP wide), so the cover is a
+    real thumbnail; grouped views keep WMP's 22 DIP because the album column already shows
+    the cover.
+  - Chinese UI: the search placeholder, view menu (Icon / Expanded tile / Details), column
+    menu (Choose columns / Reset columns) and every empty-list message are translated.
+  - Auto playlists restored after the UI could stay under Playlists when their lock event
+    arrived before `autoplaylist_manager` reported the client ("已分级 5 星"). The nav pane
+    now classifies an auto playlist by its lock: the autoplaylist lock blocks item edits
+    (add / remove / reorder / replace), while our queue / Favorites lock does not. The
+    rebuild that `on_playlist_locked` triggers is therefore already correct; no retry
+    timers or paint-time rebuilding.
+  - Album art in list rows is cached per album (album name + folder), not per track: a CUE
+    album's dozens of subsongs share one fetch/decode, and all rows draw the same thumbnail.
+    Library rows key on the library album group. Three worker threads decode the visible
+    covers in parallel, and ListView keeps up to 128 decoded D2D bitmaps across paints so a
+    newly arrived cover does not recreate all the others. Cover decoding uses an image's
+    embedded thumbnail when it is at least the requested size, skipping the full-size scan.
+  - Win7 menus draw the submenu arrow and the radio bullet as GDI+ vectors: the 9x9 / 16x16
+    theme bitmaps were soft at 200 %. The screenshots' blue ball keeps its gradient and
+    highlight; the bitmap remains the fallback if GDI+ is unavailable.
+  - Details song lists now regroup by the clicked sort column as WMP does: rating groups
+    ("5 Stars", ...), length in whole minutes, year, genre, artist, title initial, etc.
+    Non-album sorts are global (not just within albums); the third header click resets to
+    the album grouping. Expanded tile keeps album grouping for its album column.
+  - Group header bars (album headers and sort groups) are clickable like WMP: clicking one
+    selects every row under it without highlighting the bar itself; hovering draws only a
+    one-pixel outline (no fill); Ctrl-click keeps the existing selection, and right-click
+    selects the group before opening its menu.
+
 ## Next
 
 1. Owner tests everything from 2026-11-08 (list in the session reply); fix what they report.

@@ -38,6 +38,8 @@ namespace {
 constexpr wchar_t kClassName[] = L"Glasswave.MainWindow";
 constexpr wchar_t kAppName[] = L"Glasswave";
 constexpr UINT_PTR kLibraryTimer = 1;
+constexpr UINT_PTR kResumeTimer = 2;
+constexpr UINT kResumeTimerMs = 120;
 constexpr float kNavPaneWidth = 190.0f;
 
 enum WidgetId {
@@ -255,6 +257,8 @@ cfg_var_modern::cfg_string cfg_resumePlaylist({0x4b9e2d71, 0x6a3c, 0x4f58, {0x8d
 cfg_var_modern::cfg_int cfg_resumeIndex({0x4b9e2d72, 0x6a3c, 0x4f58, {0x8d, 0x10, 0x2e, 0x7c, 0x5a, 0x9b, 0x3f, 0x46}}, -1);
 cfg_var_modern::cfg_string cfg_resumePath({0x4b9e2d73, 0x6a3c, 0x4f58, {0x8d, 0x10, 0x2e, 0x7c, 0x5a, 0x9b, 0x3f, 0x46}}, "");
 cfg_var_modern::cfg_string cfg_resumePosition({0x4b9e2d74, 0x6a3c, 0x4f58, {0x8d, 0x10, 0x2e, 0x7c, 0x5a, 0x9b, 0x3f, 0x46}}, "0");
+cfg_var_modern::cfg_int cfg_resumeSubsong({0x4b9e2d75, 0x6a3c, 0x4f58, {0x8d, 0x10, 0x2e, 0x7c, 0x5a, 0x9b, 0x3f, 0x46}}, -1);
+cfg_var_modern::cfg_int cfg_resumeActive({0x4b9e2d76, 0x6a3c, 0x4f58, {0x8d, 0x10, 0x2e, 0x7c, 0x5a, 0x9b, 0x3f, 0x46}}, 1);
 
 cfg_var_modern::cfg_int cfg_shuffle({0x8d2f6a13, 0x4b7c, 0x4e19, {0x9f, 0x3a, 0x2c, 0x6e, 0x8b, 0x1d, 0x5a, 0x70}}, 0);
 cfg_var_modern::cfg_int cfg_repeat({0x8d2f6a14, 0x4b7c, 0x4e19, {0x9f, 0x3a, 0x2c, 0x6e, 0x8b, 0x1d, 0x5a, 0x70}}, 0);
@@ -277,16 +281,14 @@ struct MainWindow::PlayCallback : play_callback_impl_base {
         window.OnPlaybackStateChanged();
     }
     void on_playback_new_track(metadb_handle_ptr) override {
-        if (window.m_resumeSeek > 0) {  // the track restored at start-up: to its position
-            playback_control::get()->playback_seek(window.m_resumeSeek);
-            window.m_resumeSeek = 0;
-        }
+        // Seeking from here makes foobar2000 bug-check; the resume timer seeks instead.
         window.OnShuffleTrack();
         window.OnTrackChanged();
         window.OnPlaybackStateChanged();
     }
     void on_playback_stop(play_control::t_stop_reason reason) override {
         if (reason == play_control::stop_reason_starting_another) return;
+        if (reason != play_control::stop_reason_shutting_down) window.OnPlaybackStopped();
         window.OnPlaybackStateChanged();
         window.OnTrackChanged();
     }
@@ -383,6 +385,18 @@ HWND MainWindow::Create(user_interface::HookProc_t hook) {
 
 void MainWindow::Destroy() {
     if (m_hwnd) DestroyWindow(m_hwnd);
+}
+
+void MainWindow::SavePlaybackState() {
+    try {
+        auto pc = playback_control::get();
+        if (pc->is_playing()) {
+            cfg_resumePosition = pfc::format_float(pc->playback_get_position(), 0, 1).c_str();
+            RememberPlayback();
+        }
+        if (m_wasPlaying) cfg_resumeActive = 1;  // closing while playing: play again
+    } catch (...) {
+    }
 }
 
 LRESULT CALLBACK MainWindow::WndProcThunk(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
@@ -1328,7 +1342,7 @@ void MainWindow::BuildCrumbs() {
         v.group = k;
         return v;
     };
-    auto isSmartList = [](t_size p) { return p == media::FavoritesPlaylist(false) || media::IsSmart(p); };
+    auto isSmartList = [](t_size p) { return p == media::FavoritesPlaylist(false) || media::IsAutoPlaylist(p); };
     auto playlistsOf = [this, go, isSmartList](bool smart) {
         std::vector<MenuAction> out;
         auto pm = playlist_manager::get();
@@ -1935,6 +1949,12 @@ void MainWindow::FocusNav() {
 void MainWindow::OnPlaybackStateChanged() {
     auto pc = playback_control::get();
     const bool playing = pc->is_playing(), paused = pc->is_paused();
+    // Keep the state to restore on the next start. Only while a song is active, so a stop
+    // during shutdown does not overwrite it.
+    if (metadb_handle_ptr now; pc->get_now_playing(now) && playing) {
+        m_wasPlaying = !paused;
+        cfg_resumeActive = paused ? 0 : 1;
+    }
     if (playing == m_playing && paused == m_paused) return;
     m_playing = playing;
     m_paused = paused;
@@ -1944,7 +1964,24 @@ void MainWindow::OnPlaybackStateChanged() {
     if (m_list) m_list->Refresh();  // playing marker
 }
 
+void MainWindow::OnPlaybackStopped() {
+    // A stop by the user or the end of the list should come back paused, not start playing
+    // by itself; a stop that is part of WM_CLOSE keeps the state it had while playing.
+    if (m_closing) return;
+    m_wasPlaying = false;
+    cfg_resumeActive = 0;
+}
+
 void MainWindow::OnTrackChanged() {
+    // Only the track itself is read here: playlist_manager lookups belong on the UI thread.
+    // Walking a playlist from inside on_playback_new_track makes foobar2000 bug-check.
+    if (metadb_handle_ptr now; playback_control::get()->get_now_playing(now) && m_hwnd) {
+        cfg_resumePath = now->get_path();
+        cfg_resumeSubsong = static_cast<int64_t>(now->get_subsong_index());
+        m_resumePending = true;
+        m_resumeAttempts = 0;
+        SetTimer(m_hwnd, kResumeTimer, kResumeTimerMs, nullptr);
+    }
     static titleformat_object::ptr s_title, s_artist;
     if (!s_title) {
         titleformat_compiler::get()->compile_safe(s_title, "$if2(%title%,%filename%)");
@@ -2005,7 +2042,6 @@ void MainWindow::OnTrackChanged() {
     metadb_handle_ptr playing;
     if (pc->get_now_playing(playing)) LoadLyrics(playing);
     else m_lyrics.clear();
-    RememberPlayback();
     RepaintStreamInfo();
     UpdateFavoriteState();
     RepaintNowPlaying();
@@ -2018,36 +2054,97 @@ void MainWindow::OnTrackChanged() {
     SetWindowTextW(m_hwnd, caption.c_str());
 }
 
+bool MainWindow::LocatePlaying(t_size* playlist, t_size* index) {
+    metadb_handle_ptr now;
+    if (!playback_control::get()->get_now_playing(now)) return false;
+    auto pm = playlist_manager::get();
+    if (pm->get_playing_item_location(playlist, index)) {
+        metadb_handle_ptr item;
+        if (pm->playlist_get_item_handle(item, *playlist, *index) && item == now) return true;
+    }
+    // The core does not always report a location for a song played from the queue (or the
+    // location can lag one event behind). Look it up directly instead of giving up.
+    auto find = [&](t_size p) {
+        if (p == SIZE_MAX || p >= pm->get_playlist_count()) return false;
+        t_size i = SIZE_MAX;
+        if (!pm->playlist_find_item(p, now, i)) return false;
+        *playlist = p;
+        *index = i;
+        return true;
+    };
+    if (find(media::QueuePlaylist(false)) || find(pm->get_playing_playlist()) || find(pm->get_active_playlist()))
+        return true;
+    for (t_size p = 0, n = pm->get_playlist_count(); p < n; ++p)
+        if (find(p)) return true;
+    return false;
+}
+
 void MainWindow::RememberPlayback() {
     // Where playback is, for the next start (written to the config by foobar2000 on exit).
-    auto pm = playlist_manager::get();
-    t_size playlist = SIZE_MAX, index = SIZE_MAX;
+    auto pc = playback_control::get();
     metadb_handle_ptr now;
-    if (!playback_control::get()->get_now_playing(now) || !pm->get_playing_item_location(&playlist, &index)) return;
+    if (!pc->get_now_playing(now)) {
+        m_resumePending = false;
+        return;
+    }
+    t_size playlist = SIZE_MAX, index = SIZE_MAX;
+    if (!LocatePlaying(&playlist, &index)) {
+        m_resumePending = true;  // retried from OnPlaybackTime once the core knows the location
+        return;
+    }
     pfc::string8 name;
-    pm->playlist_get_name(playlist, name);
+    playlist_manager::get()->playlist_get_name(playlist, name);
     cfg_resumePlaylist = name.c_str();
     cfg_resumeIndex = static_cast<int64_t>(index);
     cfg_resumePath = now->get_path();
+    cfg_resumeSubsong = static_cast<int64_t>(now->get_subsong_index());
+    // Keep the last active/paused state; a stop while shutting down must not turn the next
+    // start into a paused restore.
+    if (pc->is_playing()) cfg_resumeActive = pc->is_paused() ? 0 : 1;
+    m_resumePending = false;
 }
 
 void MainWindow::RestorePlayback() {
-    // Back to the song and position of the last session, paused, like a current player.
+    // Back to the song and position of the last session; playing again if it was playing.
     auto pc = playback_control::get();
     if (pc->is_playing() || cfg_resumeIndex.get() < 0 || cfg_resumePath.get().is_empty()) return;
     auto pm = playlist_manager::get();
-    const t_size p = pm->find_playlist(cfg_resumePlaylist.get().c_str());
-    const t_size index = static_cast<t_size>(cfg_resumeIndex.get());
-    if (p == SIZE_MAX || index >= pm->playlist_get_item_count(p)) return;
+    const std::string path = cfg_resumePath.get().c_str();
+    const int64_t subsong = cfg_resumeSubsong.get();
+    auto matches = [&](t_size p, t_size i, metadb_handle_ptr& out) {
+        if (p == SIZE_MAX || p >= pm->get_playlist_count() || i >= pm->playlist_get_item_count(p)) return false;
+        if (!pm->playlist_get_item_handle(out, p, i)) return false;
+        if (pfc::strcmp_ex(out->get_path(), SIZE_MAX, path.c_str(), SIZE_MAX) != 0) return false;
+        return subsong < 0 || out->get_subsong_index() == static_cast<t_size>(subsong);
+    };
+    t_size p = pm->find_playlist(cfg_resumePlaylist.get().c_str());
+    t_size index = static_cast<t_size>(cfg_resumeIndex.get());
     metadb_handle_ptr item;
-    if (!pm->playlist_get_item_handle(item, p, index) || pfc::strcmp_ex(item->get_path(), SIZE_MAX, cfg_resumePath.get().c_str(), SIZE_MAX) != 0)
-        return;  // the list changed since: do not play something else
+    if (!matches(p, index, item)) {
+        // The playlist changed since: find the exact song, the queue first.
+        p = SIZE_MAX;
+        std::vector<t_size> order;
+        const t_size queue = media::QueuePlaylist(false);
+        if (queue != SIZE_MAX) order.push_back(queue);
+        for (t_size i = 0, n = pm->get_playlist_count(); i < n; ++i)
+            if (i != queue) order.push_back(i);
+        for (t_size candidate : order) {
+            for (t_size i = 0, n = pm->playlist_get_item_count(candidate); i < n; ++i)
+                if (matches(candidate, i, item)) {
+                    p = candidate;
+                    index = i;
+                    break;
+                }
+            if (p != SIZE_MAX) break;
+        }
+    }
+    if (p == SIZE_MAX) return;
     m_resumeSeek = std::max(0.0, atof(cfg_resumePosition.get().c_str()));
     pm->set_playing_playlist(p);
     pm->playlist_set_focus_item(p, index);
     pm->queue_flush();
     pm->queue_add_item_playlist(p, index);
-    pc->start(playback_control::track_command_play, true);  // paused
+    pc->start(playback_control::track_command_play, cfg_resumeActive.get() == 0);
 }
 
 void MainWindow::OnPlaybackTime() {
@@ -2187,8 +2284,9 @@ void MainWindow::OnPlaylistsChanged() {
 }
 
 void MainWindow::OnPlaylistLockChanged() {
-    // foobar2000 restores auto playlists after the UI is up; each one shows up as a lock, and
-    // only then can it be told apart from a plain playlist.
+    // foobar2000 restores auto playlists after the UI is up; each one shows up as a lock.
+    // The lock's filter mask tells the nav pane it is an auto playlist before the client is
+    // registered, so this one rebuild is enough.
     if (!m_nav) return;
     m_nav->Rebuild();
     if (m_view.kind == View::Kind::Playlists || m_view.kind == View::Kind::SmartPlaylists) Navigate(m_view, false);
@@ -2465,6 +2563,24 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
             KillTimer(hwnd, kLibraryTimer);
             m_library.Reload();
             if (m_view.kind != View::Kind::Playlist) Navigate(m_view, false);
+            return 0;
+        }
+        if (wp == kResumeTimer) {
+            KillTimer(hwnd, kResumeTimer);
+            // The restored position is applied on the UI thread: playback_control::seek from
+            // inside on_playback_new_track triggers foobar2000's bug check.
+            if (m_resumeSeek > 0) {
+                metadb_handle_ptr now;
+                const bool same = playback_control::get()->get_now_playing(now) &&
+                                  pfc::strcmp_ex(now->get_path(), SIZE_MAX, cfg_resumePath.get().c_str(), SIZE_MAX) == 0 &&
+                                  (cfg_resumeSubsong.get() < 0 || now->get_subsong_index() ==
+                                                                       static_cast<t_size>(cfg_resumeSubsong.get()));
+                if (same) playback_control::get()->playback_seek(m_resumeSeek);
+                m_resumeSeek = 0;
+            }
+            RememberPlayback();
+            if (m_resumePending && ++m_resumeAttempts < 5)
+                SetTimer(hwnd, kResumeTimer, kResumeTimerMs, nullptr);
             return 0;
         }
         break;
@@ -2865,6 +2981,7 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
 
     case WM_CLOSE:
         // Closing the main window exits foobar2000; the core then calls user_interface::shutdown().
+        m_closing = true;
         standard_commands::main_exit();
         return 0;
 
@@ -2872,6 +2989,7 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
         WINDOWPLACEMENT wpl{sizeof(wpl)};
         if (GetWindowPlacement(hwnd, &wpl)) cfg_placement.set(wpl);
         KillTimer(hwnd, kLibraryTimer);
+        KillTimer(hwnd, kResumeTimer);
         RevokeDragDrop(hwnd);
         m_dropTarget = nullptr;
         if (m_artNotify) {

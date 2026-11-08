@@ -7,8 +7,10 @@
 #include "media/special_playlists.h"
 
 #include <commctrl.h>
+#include <gdiplus.h>
 #pragma comment(lib, "comctl32.lib")
 #pragma comment(lib, "msimg32.lib")
+#pragma comment(lib, "gdiplus.lib")
 
 namespace glasswave::ui {
 
@@ -138,6 +140,54 @@ std::pair<std::wstring, std::wstring> Split(const std::wstring& text) {
     return tab == std::wstring::npos ? std::pair{text, std::wstring{}} : std::pair{text.substr(0, tab), text.substr(tab + 1)};
 }
 
+ULONG_PTR GdiplusToken() {
+    static const ULONG_PTR token = [] {
+        Gdiplus::GdiplusStartupInput input;
+        ULONG_PTR out = 0;
+        Gdiplus::GdiplusStartup(&out, &input, nullptr);
+        return out;
+    }();
+    return token;
+}
+
+// The theme's 9x9 submenu bitmap is too coarse once the menu is drawn at 200 %. A vector
+// triangle stays crisp at any DPI.
+bool DrawSubmenuArrow(HDC dc, int ax, int ay, int a, bool disabled) {
+    if (!GdiplusToken()) return false;
+    Gdiplus::Graphics g(dc);
+    g.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+    const Gdiplus::REAL x = ax + a * (3.0f / 9.0f), y = ay + a * (1.0f / 9.0f);
+    const Gdiplus::REAL w = a * (4.0f / 9.0f), h = a * (7.0f / 9.0f);
+    const Gdiplus::PointF points[3] = {{x, y}, {x, y + h}, {x + w, y + h / 2}};
+    Gdiplus::SolidBrush brush(disabled ? Gdiplus::Color(255, 109, 109, 109) : Gdiplus::Color(255, 10, 10, 10));
+    return g.FillPolygon(&brush, points, 3) == Gdiplus::Ok;
+}
+
+// The radio bullet is a 13 px glass sphere in the theme bitmap; drawing it as a small
+// gradient sphere keeps the highlight and the dark rim without magnifying the 96-DPI art.
+bool DrawRadioBullet(HDC dc, int cx, int cy, int size, bool disabled) {
+    if (!GdiplusToken()) return false;
+    Gdiplus::Graphics g(dc);
+    g.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+    const Gdiplus::REAL r = size * 0.25f;  // the theme's bullet occupies 8 of its 16 px cell
+    Gdiplus::GraphicsPath path;
+    path.AddEllipse(cx - r, cy - r, 2 * r, 2 * r);
+    Gdiplus::PathGradientBrush brush(&path);
+    brush.SetCenterPoint(Gdiplus::PointF(cx - r * 0.30f, cy - r * 0.35f));
+    brush.SetCenterColor(disabled ? Gdiplus::Color(255, 250, 250, 250) : Gdiplus::Color(255, 226, 233, 255));
+    Gdiplus::Color surround[1] = {disabled ? Gdiplus::Color(255, 130, 130, 130) : Gdiplus::Color(255, 24, 30, 104)};
+    int surroundCount = 1;
+    brush.SetSurroundColors(surround, &surroundCount);
+    Gdiplus::Status status = g.FillPath(&brush, &path);
+    Gdiplus::SolidBrush highlight(Gdiplus::Color(190, 255, 255, 255));
+    status = status == Gdiplus::Ok ? g.FillEllipse(&highlight, cx - r * 0.55f, cy - r * 0.62f, r * 0.70f, r * 0.42f)
+                                   : status;
+    Gdiplus::Pen rim(disabled ? Gdiplus::Color(255, 105, 105, 105) : Gdiplus::Color(255, 24, 30, 92),
+                     std::max(1.0f, size / 16.0f));
+    if (status == Gdiplus::Ok) status = g.DrawPath(&rim, &path);
+    return status == Gdiplus::Ok;
+}
+
 void Measure(MEASUREITEMSTRUCT& mis, const ItemData& d, const MenuState& s) {
     if (d.separator) {
         mis.itemWidth = 0;
@@ -190,9 +240,11 @@ void Draw(const DRAWITEMSTRUCT& dis, const ItemData& d, const MenuState& s) {
         if (const Dib* back = Image(kCheckBackground))
             NineGrid(dc, *back, {0, disabled ? 7 : 0, 7, disabled ? 14 : 7}, 3, {bx, by, bx + box, by + box});
         if (const Dib* check = Image(kCheck)) {
-            const int cell = (d.radio ? 2 : 0) + (disabled ? 1 : 0), g = s.Px(16);
+            const bool bullet = d.radio;
+            const int cell = (bullet ? 2 : 0) + (disabled ? 1 : 0), g = s.Px(16);
             const int cx = bx + (box - g) / 2, cy = by + (box - g) / 2;
-            Blit(dc, *check, {0, 16 * cell, 16, 16 * cell + 16}, {cx, cy, cx + g, cy + g});
+            if (!bullet || !DrawRadioBullet(dc, cx + g / 2, cy + g / 2, g, disabled))
+                Blit(dc, *check, {0, 16 * cell, 16, 16 * cell + 16}, {cx, cy, cx + g, cy + g});
         }
     }
     const auto [label, shortcut] = Split(d.text);
@@ -205,11 +257,11 @@ void Draw(const DRAWITEMSTRUCT& dis, const ItemData& d, const MenuState& s) {
     if (!shortcut.empty()) DrawTextW(dc, shortcut.c_str(), -1, &tr, DT_SINGLELINE | DT_VCENTER | DT_RIGHT | DT_NOPREFIX);
     SelectObject(dc, old);
     if (d.submenu) {
-        if (const Dib* arrow = Image(kSubmenu)) {
-            const int a = s.Px(9), ax = rc.right - s.Px(kArrowArea) + (s.Px(kArrowArea) - a) / 2 + s.Px(2);
-            const int ay = (rc.top + rc.bottom - a) / 2, st = disabled ? 1 : 0;
-            Blit(dc, *arrow, {0, 9 * st, 9, 9 * st + 9}, {ax, ay, ax + a, ay + a});
-        }
+        const int a = s.Px(9), ax = rc.right - s.Px(kArrowArea) + (s.Px(kArrowArea) - a) / 2 + s.Px(2);
+        const int ay = (rc.top + rc.bottom - a) / 2;
+        if (!DrawSubmenuArrow(dc, ax, ay, a, disabled))
+            if (const Dib* arrow = Image(kSubmenu))
+                Blit(dc, *arrow, {0, 9 * (disabled ? 1 : 0), 9, 9 * (disabled ? 1 : 0) + 9}, {ax, ay, ax + a, ay + a});
         // Keep the system from drawing its own submenu arrow over ours.
         ExcludeClipRect(dc, rc.left, rc.top, rc.right, rc.bottom);
     }

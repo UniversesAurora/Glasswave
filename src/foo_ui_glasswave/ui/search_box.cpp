@@ -2,6 +2,7 @@
 #include "ui/search_box.h"
 #include "gfx/composition_host.h"
 #include "ui/text.h"
+#include "ui/i18n.h"
 #include "wmp/wmp_painter.h"
 
 namespace glasswave::ui {
@@ -56,10 +57,12 @@ void SearchBox::Paint() {
         wmp::paint::SearchFrame(dc, size, m_focused);
         winrt::com_ptr<ID2D1SolidColorBrush> ink;
         const bool placeholder = m_text.empty();
+        const std::wstring& placeholderText = Tr(L"Search");
         dc->CreateSolidColorBrush(placeholder ? D2D1::ColorF(0x8D8D8D) : D2D1::ColorF(0x1E1E1E), ink.put());
-        auto layout = MakeText(placeholder ? std::wstring_view(L"Search") : std::wstring_view(m_text), 12.0f,
+        auto layout = MakeText(placeholder ? std::wstring_view(placeholderText) : std::wstring_view(m_text), 12.0f,
                                DWRITE_FONT_WEIGHT_NORMAL, 4096, size.height);
-        if (placeholder) layout->SetFontStyle(DWRITE_FONT_STYLE_ITALIC, {0, 6});
+        if (placeholder)
+            layout->SetFontStyle(DWRITE_FONT_STYLE_ITALIC, {0, static_cast<UINT32>(placeholderText.size())});
         // Keep the end of long text visible.
         DWRITE_TEXT_METRICS tm{};
         layout->GetMetrics(&tm);

@@ -18,6 +18,7 @@ using winrt::Windows::Foundation::Numerics::float3;
 
 namespace {
 constexpr float kRowHeight = 22.0f;
+constexpr float kArtRowHeight = 40.0f;  // rows with the cover column: room for a real thumbnail
 constexpr float kHeaderHeight = 23.0f;  // wmploc LISTVIEWHEADER cells are 23 px
 constexpr float kScrollWidth = 14.0f;
 constexpr float kGutter = 18.0f;  // playing marker column
@@ -32,6 +33,7 @@ constexpr D2D1_SIZE_F kAlbumTile{132, 160};
 constexpr float kAlbumTileArt = 100;
 constexpr D2D1_SIZE_F kArtistTile{240, 108};
 constexpr float kArtistTileArt = 88;
+constexpr size_t kMaxArtBitmaps = 128;  // decoded covers kept for scrolling and view switches
 
 constexpr uint32_t kInk = 0x1E1E1E, kSecondaryInk = 0x4A4A4A, kGreyInk = 0x7A7A7A, kPlayingInk = 0x1E5BA8;
 constexpr uint32_t kGroupInk = 0x2E64B4, kGroupRule = 0xC9D7E8, kLinkInk = 0x0066CC;
@@ -174,9 +176,24 @@ ListView::~ListView() {
 
 // ---- Geometry -------------------------------------------------------------------------------
 
-int ListView::RowHeightPx() const { return static_cast<int>(std::lround(kRowHeight * m_scale)); }
+int ListView::RowHeightPx() const {
+    return static_cast<int>(std::lround((ArtColumnVisible() ? kArtRowHeight : kRowHeight) * m_scale));
+}
 int ListView::HeaderHeightPx() const { return static_cast<int>(std::lround(kHeaderHeight * m_scale)); }
 int ListView::ScrollWidthPx() const { return static_cast<int>(std::lround(kScrollWidth * m_scale)); }
+
+bool ListView::ArtColumnVisible() const {
+    if (!m_source || m_mode == Mode::Tiles) return false;
+    // Grouped Details (library songs) has no album column, so growing the rows is safe.
+    // Expanded tile has the album column and no Art column; keep its measured height.
+    if (m_mode == Mode::Grouped && m_groupArt) return false;
+    const auto& columns = m_source->Columns();
+    for (size_t i = 0; i < columns.size(); ++i) {
+        const bool shown = !(i < m_hidden.size() ? m_hidden[i] != 0 : columns[i].hidden);
+        if (shown && KindOf(columns[i]) == CellKind::Art) return true;
+    }
+    return false;
+}
 
 int ListView::LineHeightPx() const {
     if (m_mode == Mode::Tiles) return static_cast<int>(std::lround(TileSize().height * m_scale));
@@ -376,6 +393,7 @@ void ListView::SetSource(media::ListSource* source, bool resetScroll) {
     m_source = source;
     m_hot = SIZE_MAX;
     m_hotGroup = SIZE_MAX;
+    m_hotGroupHeader = SIZE_MAX;
     m_hotLinkGroup = SIZE_MAX;
     m_anchor = source ? source->Focus() : SIZE_MAX;
     if (resetScroll) {
@@ -414,6 +432,7 @@ void ListView::Refresh() {
     m_scrollX = std::clamp(m_scrollX, 0.0f, std::max(0.0f, ContentWidth() + 4 - RowsWidth()));
     if (m_source && m_hot != SIZE_MAX && m_hot >= m_source->Count()) m_hot = SIZE_MAX;
     m_hotGroup = SIZE_MAX;
+    m_hotGroupHeader = SIZE_MAX;
     m_hotLinkGroup = SIZE_MAX;
     PaintHeader();
     PaintRows();
@@ -625,8 +644,10 @@ void ListView::PaintCells(ID2D1DeviceContext* dc, size_t row, float y, float row
         } else if (kind == CellKind::Art) {
             // The song's front cover, as tall as the row allows, centred in the column.
             const float side = rowH - 4, ax = std::round((c.x + (c.w - side) / 2) * m_scale) / m_scale;
-            if (const metadb_handle_ptr item = m_source->Item(row); item.is_valid())
-                DrawArt(dc, item, {ax, y + 2, ax + side, y + 2 + side});
+            if (const metadb_handle_ptr item = m_source->Item(row); item.is_valid()) {
+                const metadb_handle_ptr art = m_source->ArtTrack(row);
+                DrawArt(dc, m_source->ArtKey(row), art.is_valid() ? art : item, {ax, y + 2, ax + side, y + 2 + side});
+            }
             continue;
         } else if (kind == CellKind::Favorite) {
             // No heart in WMP's art: a gold star (5530) when the song is in Favorites, its
@@ -700,6 +721,12 @@ void ListView::PaintGrouped(ID2D1DeviceContext* dc, D2D1_SIZE_F size) {
             const float ly = std::round((y + rowH / 2 + 1) * m_scale) / m_scale;
             if (lx < viewRight - 6)
                 dc->FillRectangle({lx, ly, viewRight - 6, ly + line1}, Brush(dc, kGroupRule).get());
+            // Hovering the bar shows only its outline, as WMP does (no selection fill).
+            if (line.group == m_hotGroupHeader) {
+                const float px = std::max(1.0f, std::floor(m_scale)) / m_scale;
+                dc->DrawRoundedRectangle({{2.5f, y + 1.5f, viewRight - 2.5f, y + rowH - 0.5f}, 2, 2},
+                                         Brush(dc, 0x7DA2CE, 0.6f).get(), px);
+            }
             continue;
         }
         if (line.kind != Line::Item) continue;
@@ -787,22 +814,49 @@ void ListView::PaintTiles(ID2D1DeviceContext* dc) {
     }
 }
 
-void ListView::DrawArt(ID2D1DeviceContext* dc, const metadb_handle_ptr& track, D2D1_RECT_F box) {
+void ListView::DrawArt(ID2D1DeviceContext* dc, const std::wstring& key, const metadb_handle_ptr& track, D2D1_RECT_F box) {
     const float side = box.right - box.left;
+    const int sizePx = static_cast<int>(std::lround(side * m_scale));
+    std::wstring cacheKey = key;
+    if (cacheKey.empty()) {
+        cacheKey = pfc::stringcvt::string_wide_from_utf8(track->get_path()).get_ptr();
+        cacheKey += L'|' + std::to_wstring(track->get_subsong_index());
+    }
+    cacheKey += L'|' + std::to_wstring(sizePx);
+
+    winrt::com_ptr<ID2D1Bitmap> bmp;
+    if (auto it = m_artBitmaps.find(cacheKey); it != m_artBitmaps.end()) {
+        it->second.used = ++m_artClock;
+        bmp = it->second.bitmap;
+    }
     winrt::com_ptr<IWICBitmapSource> src;
-    const auto state = ArtCache::Get().Find(track, static_cast<int>(std::lround(side * m_scale)), &src);
-    if (state == ArtCache::State::Pending) return;  // painted when it arrives
+    UINT sw = 0, sh = 0;
+    if (bmp) {
+        const D2D1_SIZE_F sz = bmp->GetSize();
+        sw = static_cast<UINT>(sz.width);
+        sh = static_cast<UINT>(sz.height);
+    } else {
+        const auto state = ArtCache::Get().Find(key, track, sizePx, &src);
+        if (state == ArtCache::State::Pending) return;  // painted when it arrives
+        if (src) {
+            src->GetSize(&sw, &sh);
+            if (SUCCEEDED(dc->CreateBitmapFromWicBitmap(src.get(), nullptr, bmp.put()))) {
+                m_artBitmaps[cacheKey] = {bmp, ++m_artClock};
+                if (m_artBitmaps.size() > kMaxArtBitmaps) {
+                    auto oldest = m_artBitmaps.begin();
+                    for (auto it = m_artBitmaps.begin(); it != m_artBitmaps.end(); ++it)
+                        if (it->second.used < oldest->second.used) oldest = it;
+                    m_artBitmaps.erase(oldest);
+                }
+            }
+        }
+    }
 
     D2D1_RECT_F dst = box;
-    winrt::com_ptr<ID2D1Bitmap> bmp;
-    if (src && SUCCEEDED(dc->CreateBitmapFromWicBitmap(src.get(), nullptr, bmp.put()))) {
-        UINT bw = 0, bh = 0;
-        src->GetSize(&bw, &bh);
-        if (bw && bh && bw != bh) {  // keep the aspect ratio, bottom-aligned like WMP covers
-            const float k = side / std::max(bw, bh);
-            const float w = bw * k, h = bh * k;
-            dst = {box.left + (side - w) / 2, box.bottom - h, box.left + (side + w) / 2, box.bottom};
-        }
+    if (sw && sh && sw != sh) {  // keep the aspect ratio, bottom-aligned like WMP covers
+        const float k = side / std::max(sw, sh);
+        const float w = sw * k, h = sh * k;
+        dst = {box.left + (side - w) / 2, box.bottom - h, box.left + (side + w) / 2, box.bottom};
     }
     // WMP's soft drop shadow (wmploc ALBUMDROPSHADOW: a blurred square with an 8/200 margin).
     const float m = (dst.right - dst.left) * 8.0f / 184.0f;
@@ -890,6 +944,11 @@ ListView::Hit ListView::HitAt(POINT pt) const {
     case Mode::Grouped: {
         if (line >= m_lines.size()) return hit;
         const Line& l = m_lines[line];
+        if (l.kind == Line::GroupHeader) {  // WMP: clicking the group bar selects the group
+            hit.part = Part::GroupHeader;
+            hit.group = l.group;
+            return hit;
+        }
         float rowLeft = 0;
         if (AlbumColumn()) {
             const auto cols = Columns(RowsWidth());
@@ -991,6 +1050,11 @@ void ListView::OnMouseMove(POINT pt) {
         if (hot == m_hot) PaintRows();  // otherwise the hot-row change below repaints
     }
     const size_t hotGroup = hit.part == Part::AlbumColumn || hit.part == Part::Link ? hit.group : SIZE_MAX;
+    const size_t hotGroupHeader = hit.part == Part::GroupHeader ? hit.group : SIZE_MAX;
+    if (hotGroupHeader != m_hotGroupHeader) {
+        m_hotGroupHeader = hotGroupHeader;
+        PaintRows();
+    }
     const size_t linkGroup = hit.part == Part::Link ? hit.group : SIZE_MAX;
     const size_t linkLine = hit.part == Part::Link ? hit.line : 0;
     const bool thumbHot = hit.part == Part::Thumb;
@@ -1013,9 +1077,10 @@ void ListView::OnMouseLeave() {
         m_hotHeader = SIZE_MAX;
         PaintHeader();
     }
-    if (m_hot != SIZE_MAX || m_hotGroup != SIZE_MAX || m_hotLinkGroup != SIZE_MAX) {
+    if (m_hot != SIZE_MAX || m_hotGroup != SIZE_MAX || m_hotGroupHeader != SIZE_MAX || m_hotLinkGroup != SIZE_MAX) {
         m_hot = SIZE_MAX;
         m_hotGroup = SIZE_MAX;
+        m_hotGroupHeader = SIZE_MAX;
         m_hotLinkGroup = SIZE_MAX;
         PaintRows();
     }
@@ -1095,7 +1160,8 @@ void ListView::OnLButtonDown(POINT pt, bool ctrl, bool shift) {
         PaintRows();
         break;
     }
-    case Part::AlbumColumn: {  // WMP: clicking the album cell selects the whole album
+    case Part::AlbumColumn:
+    case Part::GroupHeader: {  // WMP: the album cell / group bar selects the whole group
         const auto& g = (*m_source->Groups())[hit.group];
         if (g.count == 0) break;
         m_source->SelectRange(g.first, g.first + g.count - 1, ctrl);
@@ -1178,6 +1244,14 @@ void ListView::OnRButtonUp(HWND owner, POINT pt) {
         m_source->SetFocus(hit.row);
         m_anchor = hit.row;
         PaintRows();
+    } else if (hit.part == Part::GroupHeader) {
+        const auto& g = (*m_source->Groups())[hit.group];
+        if (g.count) {
+            m_source->SelectRange(g.first, g.first + g.count - 1, false);
+            m_source->SetFocus(g.first);
+            m_anchor = g.first;
+            PaintRows();
+        }
     } else if (hit.part == Part::AlbumColumn || hit.part == Part::Link) {
         const auto& g = (*m_source->Groups())[hit.group];
         if (g.count) {
@@ -1245,8 +1319,7 @@ void ListView::ShowHeaderMenu(HWND owner, POINT pt, size_t displayCol) {
         if (m_hidden.size() < srcCols.size()) m_hidden.resize(srcCols.size(), 0);
         m_hidden[i] = m_hidden[i] ? 0 : 1;
         SaveColumnLayout();
-        PaintHeader();
-        PaintRows();
+        Refresh();  // the cover column changes the row height
     }
 }
 

@@ -115,7 +115,7 @@ void NavPane::Rebuild() {
             m_items.push_back({Target::Playlist, fav, 1, L"Favorites", wp::NavIcon::Playlist, false});
         pfc::string8 smartName;  // every auto playlist, presets and the user's own
         for (t_size p = 0, n = pm->get_playlist_count(); p < n; ++p)
-            if (media::IsSmart(p)) {
+            if (media::IsAutoPlaylist(p)) {
                 pm->playlist_get_name(p, smartName);
                 m_items.push_back({Target::Playlist, p, 1, Wide(smartName), wp::NavIcon::Playlist, false});
             }
@@ -236,7 +236,7 @@ void NavPane::Paint() {
                 // Win7 tree expander as vectors (the 16 px theme glyph went soft at 200 %).
                 wp::Disclosure(dc, {x + 2, y + rowH / 2}, expanded, i == m_hotExpander);
             }
-            const bool autoPlaylist = it.target == Target::Playlist && autoplaylist_manager::get()->is_client_present(it.playlist);
+            const bool autoPlaylist = it.target == Target::Playlist && media::IsAutoPlaylist(it.playlist);
             // Favorites: star; queue: WMP's playlist icon with the orbit; smart header: auto playlist.
             const int special = it.target == Target::Playlist && it.text == L"Favorites" ? 29526
                                 : it.target == Target::Queue                            ? 29513

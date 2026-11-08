@@ -7,6 +7,7 @@ namespace glasswave::ui {
 namespace {
 std::unique_ptr<ArtCache> g_cache;
 constexpr size_t kMaxEntries = 600;  // thumbnails kept (about 90 KB each at 150 px)
+constexpr int kWorkers = 3;          // covers of the visible albums load in parallel
 }  // namespace
 
 ArtCache& ArtCache::Get() {
@@ -18,7 +19,9 @@ ArtCache* ArtCache::Existing() { return g_cache.get(); }
 
 void ArtCache::Shutdown() { g_cache.reset(); }
 
-ArtCache::ArtCache() { m_thread = std::thread([this] { Worker(); }); }  // after every member exists
+ArtCache::ArtCache() {
+    for (int i = 0; i < kWorkers; ++i) m_threads.emplace_back([this] { Worker(); });
+}
 
 ArtCache::~ArtCache() {
     {
@@ -28,21 +31,27 @@ ArtCache::~ArtCache() {
     }
     m_abort.abort();
     m_wake.notify_all();
-    if (m_thread.joinable()) m_thread.join();
+    for (auto& thread : m_threads)
+        if (thread.joinable()) thread.join();
 }
 
-ArtCache::State ArtCache::Find(const metadb_handle_ptr& track, int sizePx, winrt::com_ptr<IWICBitmapSource>* out) {
+ArtCache::State ArtCache::Find(const std::wstring& key, const metadb_handle_ptr& track, int sizePx,
+                               winrt::com_ptr<IWICBitmapSource>* out) {
     *out = nullptr;
     if (!track.is_valid()) return State::Missing;
-    std::wstring key = pfc::stringcvt::string_wide_from_utf8(track->get_path()).get_ptr();
-    key += L'|' + std::to_wstring(track->get_subsong_index()) + L'|' + std::to_wstring(sizePx);
+    std::wstring cacheKey = key;
+    if (cacheKey.empty()) {
+        cacheKey = pfc::stringcvt::string_wide_from_utf8(track->get_path()).get_ptr();
+        cacheKey += L'|' + std::to_wstring(track->get_subsong_index());
+    }
+    cacheKey += L'|' + std::to_wstring(sizePx);
 
-    auto [it, inserted] = m_entries.try_emplace(key);
+    auto [it, inserted] = m_entries.try_emplace(cacheKey);
     it->second.used = ++m_clock;
     if (inserted) {
         {
             std::lock_guard lock(m_mutex);
-            m_queue.push_front({key, track, sizePx});
+            m_queue.push_front({cacheKey, track, sizePx});
         }
         m_wake.notify_one();
         // Keep memory bounded: drop the least recently used finished thumbnails.

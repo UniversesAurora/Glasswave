@@ -38,6 +38,7 @@ public:
 
     void shutdown() override {
         if (m_window) {
+            m_window->SavePlaybackState();  // shutdown may stop playback first
             m_window->Destroy();
             m_window.reset();
         }

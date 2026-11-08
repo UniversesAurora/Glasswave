@@ -25,9 +25,11 @@ public:
     HWND Create(user_interface::HookProc_t hook);
     void Destroy();
     HWND Hwnd() const { return m_hwnd; }
+    void SavePlaybackState();  // last chance before shutdown: current song and position
 
     // Forwarded from the core callbacks.
     void OnPlaybackStateChanged();
+    void OnPlaybackStopped();  // user stop / end of list: do not auto-play after a restart
     void OnTrackChanged();
     void OnPlaybackTime();
     void OnVolumeChanged();
@@ -145,9 +147,14 @@ private:
     void JumpToPlaying();
     void ShowDeviceMenu();
     void UpdateFavoriteState();  // taskbar Favorite button for the playing song
+    bool LocatePlaying(t_size* playlist, t_size* index);
     void RememberPlayback();     // song / position for the next start
     void RestorePlayback();
     double m_resumeSeek = 0;     // seek here when the restored track starts
+    bool m_resumePending = false;  // the playing item's playlist was not known yet
+    int m_resumeAttempts = 0;
+    bool m_wasPlaying = false;   // the last active state, kept across the shutdown stop
+    bool m_closing = false;      // WM_CLOSE: the next stop is the program exiting
     void ApplyLanguage(Language language);
     void SetVolumeFromX(int x);
     void ShowVolumeTip(float thumbX);  // Win7 tooltip bubble with the volume while dragging

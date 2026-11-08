@@ -71,9 +71,21 @@ bool IsSmart(t_size playlist) {
     }
 }
 
+bool IsAutoPlaylist(t_size playlist) {
+    if (playlist == SIZE_MAX) return false;
+    if (IsSmart(playlist)) return true;
+    // While foobar2000 restores auto playlists, the lock is installed before the client is
+    // registered. The lock blocks item edits; our own queue / Favorites lock does not.
+    auto pm = playlist_manager::get();
+    if (!pm->playlist_lock_is_present(playlist)) return false;
+    const t_uint32 mask = pm->playlist_lock_get_filter_mask(playlist);
+    return (mask & (playlist_lock::filter_add | playlist_lock::filter_remove | playlist_lock::filter_reorder |
+                    playlist_lock::filter_replace)) != 0;
+}
+
 bool IsSpecial(t_size playlist) {
     if (playlist == SIZE_MAX) return false;
-    return IsQueue(playlist) || playlist == FavoritesPlaylist(false) || IsSmart(playlist);
+    return IsQueue(playlist) || playlist == FavoritesPlaylist(false) || IsAutoPlaylist(playlist);
 }
 
 t_size AddSmartPreset(const SmartPreset& preset) {

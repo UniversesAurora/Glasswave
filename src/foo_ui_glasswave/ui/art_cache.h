@@ -22,7 +22,12 @@ public:
     enum class State { Pending, Ready, Missing };
     // Thumbnail of `track`'s front cover fitting `sizePx`. While it loads (Pending) or when
     // there is none (Missing), *out is null. Main thread only.
-    State Find(const metadb_handle_ptr& track, int sizePx, winrt::com_ptr<IWICBitmapSource>* out);
+    // `key` lets several rows of one album share a single load; empty derives it from the track.
+    State Find(const std::wstring& key, const metadb_handle_ptr& track, int sizePx,
+               winrt::com_ptr<IWICBitmapSource>* out);
+    State Find(const metadb_handle_ptr& track, int sizePx, winrt::com_ptr<IWICBitmapSource>* out) {
+        return Find(std::wstring(), track, sizePx, out);
+    }
 
     // Called (coalesced, main thread) after new thumbnails arrive.
     int Subscribe(std::function<void()> callback);
@@ -54,7 +59,7 @@ private:
     std::deque<Request> m_queue;  // newest first: what was just scrolled into view loads first
     std::vector<std::pair<std::wstring, winrt::com_ptr<IWICBitmapSource>>> m_done;
     bool m_quit = false;
-    std::thread m_thread;
+    std::vector<std::thread> m_threads;
     abort_callback_impl m_abort;
 };
 

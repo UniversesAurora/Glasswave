@@ -23,7 +23,11 @@ const std::vector<SmartPreset>& SmartPresets();
 
 t_size QueuePlaylist(bool create);
 bool IsQueue(t_size playlist);
-bool IsSmart(t_size playlist);    // an auto playlist
+bool IsSmart(t_size playlist);    // an auto playlist client is registered
+// An auto playlist for grouping purposes: the client is present, or the playlist is locked
+// against item edits (the lock autoplaylist_manager installs, which is already visible when
+// on_playlist_locked fires, before is_client_present() reports the client).
+bool IsAutoPlaylist(t_size playlist);
 bool IsSpecial(t_size playlist);  // queue, Favorites or a smart playlist
 
 // Creates the queue and Favorites, protects both, and creates the default smart playlists on
