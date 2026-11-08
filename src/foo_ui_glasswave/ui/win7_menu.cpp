@@ -188,6 +188,23 @@ bool DrawRadioBullet(HDC dc, int cx, int cy, int size, bool disabled) {
     return status == Gdiplus::Ok;
 }
 
+// The theme's check mark is a 16 px bitmap that goes soft once the menu is drawn at
+// 200 %. Draw the same two-stroke mark as vectors (shape and colours sampled from
+// IMAGE 976's first cell).
+bool DrawCheckMark(HDC dc, int x, int y, int size, bool disabled) {
+    if (!GdiplusToken()) return false;
+    Gdiplus::Graphics g(dc);
+    g.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+    const Gdiplus::REAL k = size / 16.0f;
+    const Gdiplus::PointF points[3] = {
+        {x + 4.0f * k, y + 7.6f * k}, {x + 6.6f * k, y + 11.6f * k}, {x + 12.6f * k, y + 2.2f * k}};
+    Gdiplus::Pen pen(disabled ? Gdiplus::Color(255, 0x84, 0x85, 0x89) : Gdiplus::Color(255, 0x0C, 0x12, 0xA1),
+                     std::max(1.0f, 2.0f * k));
+    pen.SetLineJoin(Gdiplus::LineJoinMiter);
+    pen.SetLineCap(Gdiplus::LineCapFlat, Gdiplus::LineCapFlat, Gdiplus::DashCapFlat);
+    return g.DrawLines(&pen, points, 3) == Gdiplus::Ok;
+}
+
 void Measure(MEASUREITEMSTRUCT& mis, const ItemData& d, const MenuState& s) {
     if (d.separator) {
         mis.itemWidth = 0;
@@ -239,12 +256,20 @@ void Draw(const DRAWITEMSTRUCT& dis, const ItemData& d, const MenuState& s) {
         const int box = s.Px(kCheckBox), bx = rc.left + s.Px(3), by = (rc.top + rc.bottom - box) / 2;
         if (const Dib* back = Image(kCheckBackground))
             NineGrid(dc, *back, {0, disabled ? 7 : 0, 7, disabled ? 14 : 7}, 3, {bx, by, bx + box, by + box});
-        if (const Dib* check = Image(kCheck)) {
-            const bool bullet = d.radio;
-            const int cell = (bullet ? 2 : 0) + (disabled ? 1 : 0), g = s.Px(16);
-            const int cx = bx + (box - g) / 2, cy = by + (box - g) / 2;
-            if (!bullet || !DrawRadioBullet(dc, cx + g / 2, cy + g / 2, g, disabled))
+        const int g = s.Px(16);
+        const int cx = bx + (box - g) / 2, cy = by + (box - g) / 2;
+        if (d.radio) {
+            if (!DrawRadioBullet(dc, cx + g / 2, cy + g / 2, g, disabled)) {
+                if (const Dib* check = Image(kCheck)) {
+                    const int cell = 2 + (disabled ? 1 : 0);
+                    Blit(dc, *check, {0, 16 * cell, 16, 16 * cell + 16}, {cx, cy, cx + g, cy + g});
+                }
+            }
+        } else if (!DrawCheckMark(dc, cx, cy, g, disabled)) {
+            if (const Dib* check = Image(kCheck)) {
+                const int cell = disabled ? 1 : 0;
                 Blit(dc, *check, {0, 16 * cell, 16, 16 * cell + 16}, {cx, cy, cx + g, cy + g});
+            }
         }
     }
     const auto [label, shortcut] = Split(d.text);
