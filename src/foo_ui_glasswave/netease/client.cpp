@@ -175,6 +175,9 @@ bool Client::Request(std::wstring_view path, const std::vector<std::pair<std::ws
         query += UrlEncode(value);
     };
     for (const auto& [name, value] : params) append(name, value);
+    // The Enhanced server caches successful responses for two minutes. A changing
+    // parameter keeps account state, QR polls and short-lived playback URLs fresh.
+    append(L"_t", std::to_wstring(GetTickCount64()));
 
     const std::wstring url = Wide(base) + std::wstring(path) + (query.empty() ? L"" : L"?" + Wide(query));
     const std::wstring method = post ? L"POST" : L"GET";
