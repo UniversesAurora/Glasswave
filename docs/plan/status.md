@@ -368,16 +368,19 @@ Updated: 2026-11-08 (evening)
   and threads, play history size and rows, and NetEase account, audio quality, cover disk
   cache size/clear and service address. The play history file and the saved last page use
   new formats (old ones are ignored once).
+- 2026-11-08 (later): the provider's account row left the navigation pane (sign in/out on the
+  preferences page; the provider root's menu offers Sign in while signed out). Playlist views
+  and history follow playlists being created, deleted and reordered. Remove from Now Playing
+  removes the selected rows only. NetEase stream URLs (signed for ~20 minutes) are renewed
+  when they expire during a pause and the decoder seeks or reconnects.
 
 ## Next
 
 1. Owner tests the restructured NetEase pages and the preferences page (list in the session
    reply); fix what they report.
-2. Open review items not fixed yet: playlist views and history hold foobar2000 playlist
-   indices (wrong page after a playlist is deleted before it); "Remove from Now Playing"
-   removes every copy of a song; a NetEase stream URL expires after ~20 minutes of pause;
-   the helper's loopback binding is not verified after start (ADR 0008 says it is); an
-   external service address over plain http sends the session cookie in clear text.
+2. Open review items the owner chose to leave: the helper's loopback binding is not verified
+   after start (ADR 0008 says it is); an external service address over plain http sends
+   the session cookie in clear text.
 3. Glass blur stays the host backdrop + color matrix (legacy accent tried, no gain).
 4. Remaining tuning from the Win7 captures.
 5. Stacked covers for artists.
