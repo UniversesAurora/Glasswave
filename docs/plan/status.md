@@ -150,10 +150,20 @@ Updated: 2026-11-08
     NetEase expanded tile links to the page. The page has a fixed 104 DIP header (80 DIP
     avatar, name, album/song counts, brief description, Follow/Following) above a tile grid
     whose first tile opens the hot songs and the rest open albums. These header values are
-    new UI, not Win7 measurements.
+    new UI, not Win7 measurements. The description wraps and grows the header instead of
+    being ellipsized.
+  - Navigation uses one breadcrumb model for every library: the root lists all libraries,
+    each library owns its section menu, and each section lists its own content. NetEase
+    gained Artists (followed artists) and Albums (collected albums) sections; playlist
+    pages keep their Created/Collected/Recommended parent, artist pages sit under Artists,
+    and an album opened from an artist keeps the artist in the path. Every level is
+    separated by an arrow; only levels with children open a menu. The local library is
+    labelled Local Music, and the Chinese terminology follows WMP (艺术家 / 唱片集). The
+    account refresh prefetches followed artists, collected albums and recommended
+    playlists so the menus are populated.
   - Not implemented yet: NetEase full-catalog search UI, adding songs to NetEase playlists,
     a combined All Music browse beyond Favorites, and an album view reached from anywhere
-    other than an artist page.
+    other than an artist page or the collected albums page.
 
 ## Next
 
