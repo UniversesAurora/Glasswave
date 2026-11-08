@@ -45,7 +45,7 @@ void SeekBar(ID2D1DeviceContext* dc, D2D1_SIZE_F size, float progress, bool hot,
 enum class NavIcon { None, Library, Playlist, Music, Artist, Album, Genre, NowPlaying };
 void NavGlyph(ID2D1DeviceContext* dc, D2D1_POINT_2F center, NavIcon icon);
 // Expand / collapse triangle.
-void Disclosure(ID2D1DeviceContext* dc, D2D1_POINT_2F center, bool expanded);
+void Disclosure(ID2D1DeviceContext* dc, D2D1_POINT_2F center, bool expanded, bool hot = false);
 // Little "playing" speaker marker for the current track.
 void PlayingMarker(ID2D1DeviceContext* dc, D2D1_POINT_2F center, bool paused);
 

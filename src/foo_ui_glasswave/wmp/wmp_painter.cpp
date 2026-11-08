@@ -77,8 +77,18 @@ com_ptr<ID2D1PathGeometry> Polygon(ID2D1DeviceContext* dc, std::initializer_list
 
 void RowPlate(ID2D1DeviceContext* dc, D2D1_RECT_F r, RowState state, bool focused) {
     if (state == RowState::Normal) return;
-    const float L = Hairline(dc);
     const D2D1_RECT_F rc{Snap(dc, r.left), Snap(dc, r.top), Snap(dc, r.right), Snap(dc, r.bottom)};
+    // WMP 12 draws Win7's list selection: aero.msstyles Explorer::ListView item (premultiplied,
+    // 7x74, sizing 3): 602 hot, 601 selected, 603 selected + hot, 604 selected without focus
+    // (grey). Matches the owner's capture: border #83ACDD, #E8F2FE to #CEE4FE inside.
+    {
+        const int id = state == RowState::Hot           ? 602
+                       : !focused                        ? 604
+                       : state == RowState::SelectedHot ? 603
+                                                         : 601;
+        if (win7::DrawNineGrid(dc, win7::Module::Aero, id, {0, 0, 7, 74}, {3, 3, 3, 3}, rc)) return;
+    }
+    const float L = Hairline(dc);
     const D2D1_ROUNDED_RECT outer{Inset(rc, L / 2), 2.5f, 2.5f};
     D2D1_COLOR_F top, bottom, border, inner;
     switch (state) {
@@ -302,13 +312,16 @@ void NavGlyph(ID2D1DeviceContext* dc, D2D1_POINT_2F c, NavIcon icon) {
     }
 }
 
-void Disclosure(ID2D1DeviceContext* dc, D2D1_POINT_2F c, bool expanded) {
-    auto ink = Solid(dc, Hex(0x595959));
-    if (expanded)
-        dc->FillGeometry(Polygon(dc, {{c.x + 3, c.y - 3}, {c.x + 3, c.y + 3}, {c.x - 3, c.y + 3}}).get(), ink.get());
-    else
-        dc->DrawGeometry(Polygon(dc, {{c.x - 2, c.y - 4}, {c.x + 2, c.y}, {c.x - 2, c.y + 4}}).get(),
-                         Solid(dc, Hex(0xA6A6A6)).get(), 1.0f);
+void Disclosure(ID2D1DeviceContext* dc, D2D1_POINT_2F c, bool expanded, bool hot) {
+    // Win7 tree view glyph as vectors: expanded is a filled corner triangle with a darker edge
+    // than its centre, collapsed an open triangle; hovering turns both cyan-blue.
+    const float px = Hairline(dc);
+    auto shape = expanded ? Polygon(dc, {{c.x + 3.5f, c.y - 3.5f}, {c.x + 3.5f, c.y + 3.5f}, {c.x - 3.5f, c.y + 3.5f}})
+                          : Polygon(dc, {{c.x - 2, c.y - 4.5f}, {c.x + 2.5f, c.y}, {c.x - 2, c.y + 4.5f}});
+    const uint32_t fill = expanded ? (hot ? 0x82DFFB : 0x595959) : 0xFFFFFF;
+    const uint32_t edge = hot ? 0x1CC4F7 : expanded ? 0x262626 : 0xA6A6A6;
+    dc->FillGeometry(shape.get(), Solid(dc, Hex(fill)).get());
+    dc->DrawGeometry(shape.get(), Solid(dc, Hex(edge)).get(), px);
 }
 
 void PlayingMarker(ID2D1DeviceContext* dc, D2D1_POINT_2F c, bool paused) {

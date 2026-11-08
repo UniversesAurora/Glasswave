@@ -1827,6 +1827,13 @@ void MainWindow::AddDroppedFiles(IDataObject* data) {
 void MainWindow::SetSearchFocus(bool focused) {
     m_search->SetFocused(focused);
     m_list->SetFocused(!focused);
+    m_nav->SetFocused(false);
+}
+
+void MainWindow::FocusNav() {
+    m_search->SetFocused(false);
+    m_list->SetFocused(false);
+    m_nav->SetFocused(true);
 }
 
 // ---- Core state ------------------------------------------------------------------------
@@ -2576,6 +2583,7 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         }
         if (m_nav->HitTest(pt)) {
+            FocusNav();
             if (const NavPane::Item* item = m_nav->OnLButtonDown(pt)) {
                 const NavPane::Item copy = *item;
                 OnNavItem(copy);

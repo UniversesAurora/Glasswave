@@ -23,6 +23,8 @@ public:
     void Rebuild();  // playlists changed
     void SetBounds(const RECT& px, float scale);
     void Select(Target target, size_t playlist);
+    // Selection is blue while the pane has the focus, grey otherwise (Win7 tree view).
+    void SetFocused(bool focused);
     const RECT& Bounds() const { return m_bounds; }
 
     bool HitTest(POINT pt) const { return PtInRect(&m_bounds, pt) != FALSE; }
@@ -43,6 +45,8 @@ private:
     Target m_selTarget = Target::Music;
     size_t m_selPlaylist = 0;
     size_t m_hot = SIZE_MAX;
+    size_t m_hotExpander = SIZE_MAX;  // item whose expander is under the mouse
+    bool m_focused = false;
     size_t m_top = 0;
     RECT m_bounds{};
     float m_scale = 1.0f;

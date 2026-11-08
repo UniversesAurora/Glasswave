@@ -104,6 +104,7 @@ private:
     void OnNavItem(const NavPane::Item& item);
     void AddDroppedFiles(IDataObject* data);
     void SetSearchFocus(bool focused);
+    void FocusNav();  // the navigation pane has the focus (its selection turns blue)
 
     LRESULT HitTest(POINT clientPt) const;
     Widget* WidgetAt(POINT clientPt) const;

@@ -127,6 +127,12 @@ void NavPane::SetBounds(const RECT& px, float scale) {
     if (changed) Paint();
 }
 
+void NavPane::SetFocused(bool focused) {
+    if (focused == m_focused) return;
+    m_focused = focused;
+    Paint();
+}
+
 void NavPane::Select(Target target, size_t playlist) {
     m_selTarget = target;
     m_selPlaylist = playlist;
@@ -158,8 +164,12 @@ const NavPane::Item* NavPane::OnLButtonDown(POINT pt) {
 void NavPane::OnMouseMove(POINT pt) {
     const Item* item = ItemAt(pt);
     const size_t hot = item ? static_cast<size_t>(item - m_items.data()) : SIZE_MAX;
-    if (hot != m_hot) {
+    // The expander lights up on its own when the mouse is over it.
+    const float x = (pt.x - m_bounds.left) / m_scale;
+    const size_t expander = item && item->expandable && x < 16 + item->level * kIndent ? hot : SIZE_MAX;
+    if (hot != m_hot || expander != m_hotExpander) {
         m_hot = hot;
+        m_hotExpander = expander;
         Paint();
     }
 }
@@ -167,6 +177,7 @@ void NavPane::OnMouseMove(POINT pt) {
 void NavPane::OnMouseLeave() {
     if (m_hot != SIZE_MAX) {
         m_hot = SIZE_MAX;
+        m_hotExpander = SIZE_MAX;
         Paint();
     }
 }
@@ -201,14 +212,14 @@ void NavPane::Paint() {
             if (selected || hot)
                 wp::RowPlate(dc, {4, y, width - 6, y + rowH},
                              selected ? (hot ? wp::RowState::SelectedHot : wp::RowState::Selected) : wp::RowState::Hot,
-                             true);
+                             m_focused);
             const float x = 8 + it.level * kIndent;
             if (it.expandable) {
                 const bool expanded = it.target == Target::PlaylistsHeader ? m_playlistsExpanded
                                       : it.target == Target::SmartHeader   ? m_smartExpanded
                                                                            : m_musicExpanded;
                 // Win7 tree expander as vectors (the 16 px theme glyph went soft at 200 %).
-                wp::Disclosure(dc, {x + 2, y + rowH / 2}, expanded);
+                wp::Disclosure(dc, {x + 2, y + rowH / 2}, expanded, i == m_hotExpander);
             }
             const bool autoPlaylist = it.target == Target::Playlist && autoplaylist_manager::get()->is_client_present(it.playlist);
             // Favorites: star; queue: WMP's playlist icon with the orbit; smart header: auto playlist.

@@ -44,14 +44,15 @@ struct Colorization {
 // Windows 7 default "Sky" colorization (registry defaults 0x6B74B8FC, 8/43/49, reflection 50).
 inline constexpr Colorization kWin7Sky{0x6B74B8FC, 0x6B74B8FC, 0.08f, 0.43f, 0.49f, 0.50f};
 
-// Inactive windows: Win7 glass becomes more transparent and paler. Base color and
-// afterglow are weakened and the blur takes the remaining share (sum unchanged).
+// Inactive windows: Win7 glass loses its colour and is clear (owner's capture: an inactive
+// WMP next to an active Explorer). No base colour or afterglow; the blurred backdrop takes
+// the whole share.
 constexpr Colorization MakeInactive(const Colorization& active) {
     Colorization c = active;
     const float total = active.colorBalance + active.afterglowBalance + active.blurBalance;
-    c.colorBalance = active.colorBalance * 0.4f;
-    c.afterglowBalance = active.afterglowBalance * 0.55f;
-    c.blurBalance = total - c.colorBalance - c.afterglowBalance;
+    c.colorBalance = 0.0f;
+    c.afterglowBalance = 0.0f;
+    c.blurBalance = total;
     c.reflectionIntensity = active.reflectionIntensity * 0.8f;
     return c;
 }
