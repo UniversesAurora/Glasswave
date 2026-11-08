@@ -115,6 +115,12 @@ void Catalog::Hint(const std::vector<Song>& songs) {
         setMeta("album artist", Utf8(song.albumArtist));
         setMeta("album", Utf8(song.album));
         if (song.durationMs > 0) info.set_length(static_cast<double>(song.durationMs) / 1000.0);
+        if (!song.codec.empty()) info.info_set("codec", Utf8(song.codec).c_str());
+        if (song.bitrate > 0) info.info_set_int("bitrate", song.bitrate);
+        if (song.sampleRate > 0) info.info_set_int("samplerate", song.sampleRate);
+        if (song.bitsPerSample > 0) info.info_set_int("bitspersample", song.bitsPerSample);
+        info.info_set_int("channels", 2);
+        if (song.codec == L"FLAC") info.info_set("encoding", "lossless");
         t_filestats stats;
         hints->add_hint(Handle(song.id), info, stats, true);
     }
