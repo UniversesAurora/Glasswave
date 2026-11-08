@@ -2136,6 +2136,7 @@ void MainWindow::OnPlaybackStateChanged() {
         if (auto* w = WidgetById(id)) w->Invalidate();
     if (m_taskbar) m_taskbar->SetPlayState(playing, paused);
     if (m_list) m_list->Refresh();  // playing marker
+    OnTrackChanged();  // paused resume still has codec/bitrate information
 }
 
 void MainWindow::OnTrackChanged() {
@@ -2145,8 +2146,10 @@ void MainWindow::OnTrackChanged() {
         titleformat_compiler::get()->compile_safe(s_artist, "[%artist%]");
     }
     auto pc = playback_control::get();
+    metadb_handle_ptr now;
+    const bool loaded = pc->get_now_playing(now);
     pfc::string8 title, artist;
-    if (pc->is_playing()) {
+    if (loaded) {
         pc->playback_format_title(nullptr, title, s_title, nullptr, playback_control::display_level_all);
         pc->playback_format_title(nullptr, artist, s_artist, nullptr, playback_control::display_level_all);
     } else {
@@ -2154,22 +2157,23 @@ void MainWindow::OnTrackChanged() {
     }
     m_trackTitle = Wide(title);
     m_trackArtist = Wide(artist);
-    if (metadb_handle_ptr now; pc->get_now_playing(now)) {
+    if (loaded) {
         if (const media::RepairedText* r = media::CueCatalog::Get().Repair(now)) {  // mis-decoded cue sheet
             if (!r->title.empty()) m_trackTitle = r->title;
             if (!r->artist.empty()) m_trackArtist = r->artist;
         }
     }
-    m_length = pc->is_playing() ? pc->playback_get_length() : 0;
-    m_position = pc->is_playing() ? pc->playback_get_position() : 0;
+    m_length = loaded ? pc->playback_get_length() : 0;
+    m_position = loaded ? pc->playback_get_position() : 0;
 
-    // Stream format: codec, bit rate, sample rate, bit depth, channels.
+    // Stream format: codec, bit rate, sample rate, bit depth, channels. A paused resumed
+    // track still has all of this; gate on a loaded track, not on is_playing().
     static titleformat_object::ptr s_stream;
     if (!s_stream)
         titleformat_compiler::get()->compile_safe(
             s_stream, "[%codec%]|[%bitrate%]|[%samplerate%]|[$info(bitspersample)]|[%channels%]");
     m_streamInfo.clear();
-    if (pc->is_playing()) {
+    if (loaded) {
         pfc::string8 raw;
         pc->playback_format_title(nullptr, raw, s_stream, nullptr, playback_control::display_level_all);
         std::vector<std::wstring> f;
@@ -2196,8 +2200,7 @@ void MainWindow::OnTrackChanged() {
             add(ch);
         }
     }
-    metadb_handle_ptr playing;
-    if (pc->get_now_playing(playing)) LoadLyrics(playing);
+    if (loaded) LoadLyrics(now);
     else m_lyrics.clear();
     RepaintStreamInfo();
     UpdateFavoriteState();
