@@ -436,7 +436,6 @@ void AppendArtistCommands(HMENU menu, const std::vector<ArtistLink>& links) {
             AppendMenuW(sub, MF_STRING, kArtistBase + static_cast<UINT>(i), links[i].name.c_str());
         AppendMenuW(menu, MF_POPUP | MF_STRING, reinterpret_cast<UINT_PTR>(sub), TrC(L"Go to artist"));
     }
-    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
 }
 
 bool RunArtistCommand(UINT cmd, const std::vector<ArtistLink>& links) {
@@ -490,10 +489,7 @@ void RunContextMenu(HWND owner, metadb_handle_list_cref items, POINT pt) {
     const auto actions = ContextActionsFor(items);
     UINT nextAction = kActionBase;
     std::vector<std::function<void()>> flat;
-    if (!actions.empty()) {
-        AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-        AppendContextActions(menu, actions, nextAction, flat);
-    }
+    if (!actions.empty()) AppendContextActions(menu, actions, nextAction, flat);
     cm->win32_build_menu(menu, kBase, 0x7FFF);
     const UINT cmd = TrackWin7Menu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_NONOTIFY, pt.x, pt.y, owner);
     DestroyMenu(menu);
@@ -524,10 +520,7 @@ void RunPlaylistContextMenu(HWND owner, POINT pt) {
     const auto actions = ContextActionsFor(items);
     UINT nextAction = kActionBase;
     std::vector<std::function<void()>> flat;
-    if (!actions.empty()) {
-        AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-        AppendContextActions(menu, actions, nextAction, flat);
-    }
+    if (!actions.empty()) AppendContextActions(menu, actions, nextAction, flat);
     cm->win32_build_menu(menu, kBase, 0x7FFF);
     const UINT cmd = TrackWin7Menu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_NONOTIFY, pt.x, pt.y, owner);
     DestroyMenu(menu);

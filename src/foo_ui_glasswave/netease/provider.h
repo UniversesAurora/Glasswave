@@ -9,6 +9,8 @@
 #include <functional>
 #include <mutex>
 #include <unordered_set>
+#include <map>
+#include <optional>
 #include <vector>
 
 namespace glasswave::netease {
@@ -44,6 +46,11 @@ public:
     std::vector<Playlist> RecommendedPlaylists() const;
     std::vector<Artist> FollowedArtists() const;
     std::vector<Album> CollectedAlbums() const;
+    // Last fetched song lists, so a page can show its content immediately while it
+    // revalidates. An empty optional means the page has never been loaded.
+    std::optional<std::vector<Song>> CachedLikedSongs() const;
+    std::optional<std::vector<Song>> CachedPlaylistSongs(int64_t playlistId) const;
+    std::optional<std::vector<Song>> CachedAlbumSongs(int64_t albumId) const;
     enum class PlaylistScope { Unknown, Created, Collected, Recommended };
     PlaylistScope FindPlaylistScope(int64_t playlistId) const;
 
@@ -136,6 +143,9 @@ private:
     std::vector<Playlist> m_recommendedPlaylists;
     std::vector<Artist> m_followedArtists;
     std::vector<Album> m_collectedAlbums;
+    std::optional<std::vector<Song>> m_likedSongs;
+    std::map<int64_t, std::vector<Song>> m_playlistSongs;
+    std::map<int64_t, std::vector<Song>> m_albumSongs;
     int64_t m_likedPlaylist = 0;
     mutable std::mutex m_likedMutex;
     std::unordered_set<int64_t> m_liked;

@@ -2139,8 +2139,11 @@ void MainWindow::Navigate(const View& requested, bool push) {
     }
     switch (view.kind) {
     case View::Kind::NeteaseLiked: {
-        source = std::make_unique<ui::NeteaseSongSource>(std::vector<netease::Song>{},
-                                                         L"Loading your NetEase favorites...");
+        auto cached = netease::Provider::Get().CachedLikedSongs();
+        const bool known = cached.has_value();
+        source = std::make_unique<ui::NeteaseSongSource>(
+            cached ? std::move(*cached) : std::vector<netease::Song>{},
+            known ? L"No favorites." : L"Loading your NetEase favorites...");
         m_nav->Select(NavPane::Target::NeteaseLiked, 0);
         const View requestedView = view;
         netease::Provider::Get().FetchLiked(
@@ -2150,7 +2153,9 @@ void MainWindow::Navigate(const View& requested, bool push) {
         break;
     }
     case View::Kind::AllFavorites: {
-        source = std::make_unique<ui::AllFavoritesSource>(LocalFavoriteHandles(), std::vector<netease::Song>{});
+        auto cached = netease::Provider::Get().CachedLikedSongs();
+        source = std::make_unique<ui::AllFavoritesSource>(
+            LocalFavoriteHandles(), cached ? std::move(*cached) : std::vector<netease::Song>{});
         m_nav->Select(NavPane::Target::AllFavorites, 0);
         const View requestedView = view;
         netease::Provider::Get().FetchLiked(
@@ -2209,8 +2214,11 @@ void MainWindow::Navigate(const View& requested, bool push) {
         break;
     }
     case View::Kind::NeteasePlaylist: {
-        source = std::make_unique<ui::NeteaseSongSource>(std::vector<netease::Song>{}, L"Loading playlist...");
         const int64_t id = static_cast<int64_t>(_wcstoi64(view.remoteId.c_str(), nullptr, 10));
+        auto cachedSongs = netease::Provider::Get().CachedPlaylistSongs(id);
+        source = std::make_unique<ui::NeteaseSongSource>(
+            cachedSongs ? std::move(*cachedSongs) : std::vector<netease::Song>{},
+            cachedSongs ? L"No songs." : L"Loading playlist...");
         m_nav->Select(NavPane::Target::NeteaseRemotePlaylist, 0, id);
         m_detailActionPending = false;
         const bool sameDetail = m_playlistDetail && m_playlistDetail->id == id;
@@ -2358,9 +2366,12 @@ void MainWindow::Navigate(const View& requested, bool push) {
         break;
     }
     case View::Kind::NeteaseAlbum: {
-        source = std::make_unique<ui::NeteaseSongSource>(std::vector<netease::Song>{}, L"Loading album...");
-        m_nav->Select(NavPane::Target::None, 0);
         const int64_t id = static_cast<int64_t>(_wcstoi64(view.remoteId.c_str(), nullptr, 10));
+        auto cachedSongs = netease::Provider::Get().CachedAlbumSongs(id);
+        source = std::make_unique<ui::NeteaseSongSource>(
+            cachedSongs ? std::move(*cachedSongs) : std::vector<netease::Song>{},
+            cachedSongs ? L"No songs." : L"Loading album...");
+        m_nav->Select(NavPane::Target::None, 0);
         m_detailActionPending = false;
         const bool sameDetail = m_albumDetail && m_albumDetail->id == id;
         m_albumDetail.reset();
@@ -2523,22 +2534,43 @@ std::vector<metadb_handle_ptr> MainWindow::LocalFavoriteHandles() const {
 
 void MainWindow::ShowNeteaseSongs(const View& view, std::vector<netease::Song> songs, std::wstring error) {
     if (m_view.kind != view.kind || m_view.library != view.library || m_view.remoteId != view.remoteId) return;
-    if (view.kind == View::Kind::AllFavorites) {
-        auto source = std::make_unique<ui::AllFavoritesSource>(LocalFavoriteHandles(), std::move(songs));
+    if (!m_list) return;
+    // The page already shows cached data (or an empty loading list). Swap in the fresh rows
+    // without losing the selection or the song that was on top.
+    const size_t topRow = m_source ? static_cast<size_t>(m_list->TopRow()) : SIZE_MAX;
+    const metadb_handle_ptr anchor =
+        m_source && topRow != SIZE_MAX && topRow < m_source->Count() ? m_source->Item(topRow) : metadb_handle_ptr{};
+    std::vector<metadb_handle_ptr> selected;
+    if (m_source)
+        for (size_t row = 0; row < m_source->Count(); ++row)
+            if (m_source->IsSelected(row)) {
+                const auto track = m_source->Item(row);
+                if (track.is_valid()) selected.push_back(track);
+            }
+    auto install = [&](std::unique_ptr<media::ListSource> source) {
         m_source = std::move(source);
         if (auto* style = ViewStyleSetting(view);
             style && m_source->SupportsViewStyle(static_cast<media::ViewStyle>(style->get())))
             m_source->SetViewStyle(static_cast<media::ViewStyle>(style->get()));
         m_list->SetSource(m_source.get(), false);
+        std::vector<size_t> rows;
+        for (const auto& track : selected) {
+            const size_t row = m_source->FindRow(track);
+            if (row != SIZE_MAX) rows.push_back(row);
+        }
+        if (!rows.empty()) m_source->SetSelection(rows);
+        if (anchor.is_valid()) {
+            const size_t row = m_source->FindRow(anchor);
+            if (row != SIZE_MAX) m_list->ScrollToRow(row);
+        }
+        m_list->Refresh();
+    };
+    if (view.kind == View::Kind::AllFavorites) {
+        install(std::make_unique<ui::AllFavoritesSource>(LocalFavoriteHandles(), std::move(songs)));
         return;
     }
-    auto source = std::make_unique<ui::NeteaseSongSource>(
-        std::move(songs), error.empty() ? L"No songs." : std::move(error));
-    m_source = std::move(source);
-    if (auto* style = ViewStyleSetting(view);
-        style && m_source->SupportsViewStyle(static_cast<media::ViewStyle>(style->get())))
-        m_source->SetViewStyle(static_cast<media::ViewStyle>(style->get()));
-    m_list->SetSource(m_source.get(), false);
+    install(std::make_unique<ui::NeteaseSongSource>(
+        std::move(songs), error.empty() ? L"No songs." : std::move(error)));
 }
 
 void MainWindow::ShowNeteasePlaylists(const View& view, std::vector<netease::Playlist> playlists,
@@ -3494,12 +3526,15 @@ std::vector<ContextAction> MainWindow::BuildContextActions(metadb_handle_list_cr
     if (items.get_count() == 0) return actions;
     metadb_handle_list selected;
     selected.add_items(items);
+    // Page-specific removals go after the song actions, so View artist/View album stay
+    // together at the top of the menu.
+    std::vector<ContextAction> pageActions;
     if (m_view.kind == View::Kind::Playlist && media::IsQueue(m_view.playlist)) {
-        actions.push_back({L"Remove from Now Playing", [this, selected] { RemoveFromNowPlaying(selected); }});
+        pageActions.push_back({L"Remove from Now Playing", [this, selected] { RemoveFromNowPlaying(selected); }});
     } else if (m_view.kind == View::Kind::AllRecentPlayed) {
-        actions.push_back({L"Remove from Recently Played", [this, selected] { ForgetPlayStats(selected, true); }});
+        pageActions.push_back({L"Remove from Recently Played", [this, selected] { ForgetPlayStats(selected, true); }});
     } else if (m_view.kind == View::Kind::AllMostPlayed) {
-        actions.push_back({L"Remove from Most Played", [this, selected] { ForgetPlayStats(selected, false); }});
+        pageActions.push_back({L"Remove from Most Played", [this, selected] { ForgetPlayStats(selected, false); }});
     }
     // A regular foobar2000 playlist takes local and NetEase tracks alike, so this applies
     // to every song selection; source-only playlists (NetEase) are offered separately below.
@@ -3514,7 +3549,7 @@ std::vector<ContextAction> MainWindow::BuildContextActions(metadb_handle_list_cr
                                   }});
     }
     if (localPlaylists.empty()) localPlaylists.push_back({L"No playlists", nullptr});
-    actions.push_back({L"Add to playlist", nullptr, std::move(localPlaylists)});
+    ContextAction addToPlaylist{L"Add to playlist", nullptr, std::move(localPlaylists)};
     const metadb_handle_ptr& first = items[0];
     int64_t firstSong = 0;
     if (first.is_valid() && netease::ParseSongPath(first->get_path(), firstSong)) {
@@ -3536,6 +3571,8 @@ std::vector<ContextAction> MainWindow::BuildContextActions(metadb_handle_list_cr
             actions.push_back({L"View album", [this, albumId, albumName] {
                                    OpenNeteaseAlbum(albumId, albumName);
                                }});
+        if (albumId) actions.push_back({});
+        actions.push_back(std::move(addToPlaylist));
         if (!ids.empty()) {
             std::vector<ContextAction> playlists;
             for (const auto& playlist : netease::Provider::Get().CreatedPlaylists()) {
@@ -3620,6 +3657,10 @@ std::vector<ContextAction> MainWindow::BuildContextActions(metadb_handle_list_cr
                                    }});
             }
         }
+        if (!pageActions.empty()) {
+            actions.push_back({});
+            for (auto& action : pageActions) actions.push_back(std::move(action));
+        }
         return actions;
     }
     const media::Track* track = first.is_valid() ? m_library.FindTrack(first) : nullptr;
@@ -3633,6 +3674,12 @@ std::vector<ContextAction> MainWindow::BuildContextActions(metadb_handle_list_cr
                                v.name = name;
                                Navigate(v, true);
                            }});
+        actions.push_back({});
+    }
+    actions.push_back(std::move(addToPlaylist));
+    if (!pageActions.empty()) {
+        actions.push_back({});
+        for (auto& action : pageActions) actions.push_back(std::move(action));
     }
     return actions;
 }

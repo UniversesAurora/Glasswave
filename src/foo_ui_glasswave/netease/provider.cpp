@@ -155,6 +155,23 @@ std::vector<Album> Provider::CollectedAlbums() const {
     return m_collectedAlbums;
 }
 
+std::optional<std::vector<Song>> Provider::CachedLikedSongs() const {
+    std::lock_guard lock(m_mutex);
+    return m_likedSongs;
+}
+
+std::optional<std::vector<Song>> Provider::CachedPlaylistSongs(int64_t playlistId) const {
+    std::lock_guard lock(m_mutex);
+    auto it = m_playlistSongs.find(playlistId);
+    return it == m_playlistSongs.end() ? std::nullopt : std::optional<std::vector<Song>>(it->second);
+}
+
+std::optional<std::vector<Song>> Provider::CachedAlbumSongs(int64_t albumId) const {
+    std::lock_guard lock(m_mutex);
+    auto it = m_albumSongs.find(albumId);
+    return it == m_albumSongs.end() ? std::nullopt : std::optional<std::vector<Song>>(it->second);
+}
+
 Provider::PlaylistScope Provider::FindPlaylistScope(int64_t playlistId) const {
     std::lock_guard lock(m_mutex);
     for (const auto& playlist : m_createdPlaylists)
@@ -806,6 +823,10 @@ void Provider::FetchLiked(SongsCallback done) {
             m_liked.clear();
             for (const auto& song : songs) m_liked.insert(song.id);
         }
+        {
+            std::lock_guard lock(m_mutex);
+            m_likedSongs = songs;
+        }
         PostMain([done = std::move(done), songs = std::move(songs)]() mutable {
             Catalog::Get().PutAndHint(songs);
             if (done) done(std::move(songs), {});
@@ -838,6 +859,10 @@ void Provider::FetchPlaylist(int64_t playlistId, DetailCallback done) {
             return;
         }
         Catalog::Get().Put(detail.info);
+        {
+            std::lock_guard lock(m_mutex);
+            m_playlistSongs[playlistId] = detail.songs;
+        }
         PostMain([done = std::move(done), detail = std::move(detail)]() mutable {
             Catalog::Get().PutAndHint(detail.songs);
             if (done) done(std::move(detail), {});
@@ -967,6 +992,10 @@ void Provider::FetchAlbumDetail(int64_t albumId, AlbumDetailCallback done) {
             return;
         }
         Catalog::Get().Put(info);
+        {
+            std::lock_guard lock(m_mutex);
+            m_albumSongs[albumId] = songs;
+        }
         PostMain([done = std::move(done), info, songs = std::move(songs)]() mutable {
             Catalog::Get().PutAndHint(songs);
             if (done) done(info, std::move(songs), {});
@@ -1387,6 +1416,9 @@ void Provider::Logout() {
         m_recommendedPlaylists.clear();
         m_followedArtists.clear();
         m_collectedAlbums.clear();
+        m_likedSongs.reset();
+        m_playlistSongs.clear();
+        m_albumSongs.clear();
         m_likedPlaylist = 0;
         std::lock_guard liked(m_likedMutex);
         m_liked.clear();
