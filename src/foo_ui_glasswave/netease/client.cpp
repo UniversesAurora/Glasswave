@@ -954,6 +954,28 @@ bool Client::DeletePlaylist(int64_t playlistId, abort_callback& abort, std::wstr
     return true;
 }
 
+bool Client::ReorderPlaylists(const std::vector<int64_t>& ids, abort_callback& abort, std::wstring& error) {
+    if (ids.empty()) return true;
+    std::wstring list = L"[";
+    for (size_t i = 0; i < ids.size(); ++i) {
+        if (i) list += L',';
+        list += std::to_wstring(ids[i]);
+    }
+    list += L']';
+    json::Object body;
+    int code = 0;
+    if (!Request(L"/playlist/order/update", {{L"ids", list}}, true, abort, body, code, error)) return false;
+    if (code == 301) {
+        error = L"Please sign in to NetEase Cloud Music.";
+        return false;
+    }
+    if (code != 200) {
+        error = MessageOf(body, code);
+        return false;
+    }
+    return true;
+}
+
 bool Client::CreatePlaylist(std::wstring_view name, abort_callback& abort, int64_t& id, std::wstring& error) {
     id = 0;
     json::Object body;

@@ -21,7 +21,8 @@ namespace {
 constexpr float kRowHeight = 22.0f;
 constexpr float kArtRowHeight = 40.0f;  // rows with the cover column: room for a real thumbnail
 constexpr float kHeaderHeight = 23.0f;  // wmploc LISTVIEWHEADER cells are 23 px
-constexpr float kScrollWidth = 14.0f;
+constexpr float kScrollWidth = 17.0f;
+constexpr float kScrollArrow = 17.0f;
 constexpr float kGutter = 18.0f;  // playing marker column
 constexpr float kCellPad = 6.0f;
 constexpr float kMinColumn = 24.0f;
@@ -1011,11 +1012,12 @@ void ListView::DrawArt(ID2D1DeviceContext* dc, const std::wstring& key, const me
 
 bool ListView::ThumbGeometry(float* top, float* height) const {
     const size_t n = LineCount(), v = VisibleLines();
-    const float trackH = static_cast<float>(std::max<LONG>(RowsRect().bottom - RowsRect().top, 0));
+    const float arrow = kScrollArrow * m_scale;
+    const float trackH = static_cast<float>(std::max<LONG>(RowsRect().bottom - RowsRect().top, 0)) - arrow * 2;
     if (n <= v || trackH <= 0) return false;
     const float minH = 24.0f * m_scale;
-    *height = std::max(minH, trackH * v / n);
-    *top = (trackH - *height) * m_top / std::max<size_t>(MaxTop(), 1);
+    *height = std::min(trackH, std::max(minH, trackH * v / n));
+    *top = arrow + (trackH - *height) * m_top / std::max<size_t>(MaxTop(), 1);
     return true;
 }
 
@@ -1026,8 +1028,18 @@ void ListView::PaintScrollBar() {
     float top = 0, height = 0;
     const bool has = ThumbGeometry(&top, &height);
     const float s = m_scale;
+    auto part = [](int value) {
+        switch (value) {
+        case 1: return wp::ScrollBarPart::ArrowUp;
+        case 2: return wp::ScrollBarPart::ArrowDown;
+        case 3: return wp::ScrollBarPart::Track;
+        case 4: return wp::ScrollBarPart::Thumb;
+        default: return wp::ScrollBarPart::None;
+        }
+    };
     host.Repaint(m_scroll, w, h, s, [&](ID2D1DeviceContext* dc) {
-        wp::ScrollBar(dc, {w / s, h / s}, top / s, has ? height / s : 0, m_thumbHot || m_drag == Drag::Thumb);
+        wp::ScrollBar(dc, {w / s, h / s}, top / s, has ? height / s : 0, part(m_scrollHot),
+                      part(m_scrollPressed));
     });
     PlaceVisual(m_scroll, static_cast<float>(rr.right - m_bounds.left), static_cast<float>(HeaderHeightPx()),
                 static_cast<float>(w), static_cast<float>(h));
@@ -1057,11 +1069,18 @@ ListView::Hit ListView::HitAt(POINT pt) const {
     const RECT rr = RowsRect();
     if (pt.x >= rr.right) {
         float top = 0, height = 0;
-        hit.part = Part::Track;
-        if (ThumbGeometry(&top, &height)) {
-            const float y = static_cast<float>(pt.y - rr.top);
-            if (y >= top && y < top + height) hit.part = Part::Thumb;
+        const float arrow = kScrollArrow * m_scale;
+        const float y = static_cast<float>(pt.y - rr.top);
+        if (y < arrow) {
+            hit.part = Part::ArrowUp;
+            return hit;
         }
+        if (y >= static_cast<float>(rr.bottom - rr.top) - arrow) {
+            hit.part = Part::ArrowDown;
+            return hit;
+        }
+        hit.part = Part::Track;
+        if (ThumbGeometry(&top, &height) && y >= top && y < top + height) hit.part = Part::Thumb;
         return hit;
     }
     hit.part = Part::Empty;
@@ -1135,8 +1154,9 @@ void ListView::OnMouseMove(POINT pt) {
         const RECT rr = RowsRect();
         float top = 0, height = 0;
         if (ThumbGeometry(&top, &height)) {
-            const float trackH = static_cast<float>(rr.bottom - rr.top) - height;
-            const float y = static_cast<float>(pt.y - rr.top - m_dragOffset);
+            const float arrow = kScrollArrow * m_scale;
+            const float trackH = static_cast<float>(rr.bottom - rr.top) - arrow * 2 - height;
+            const float y = static_cast<float>(pt.y - rr.top - arrow - m_dragOffset);
             const float frac = trackH > 0 ? std::clamp(y / trackH, 0.0f, 1.0f) : 0.0f;
             ScrollTo(static_cast<size_t>(std::lround(frac * MaxTop())));
         }
@@ -1194,7 +1214,6 @@ void ListView::OnMouseMove(POINT pt) {
     }
     const size_t linkGroup = hit.part == Part::Link ? hit.group : SIZE_MAX;
     const size_t linkLine = hit.part == Part::Link ? hit.line : 0;
-    const bool thumbHot = hit.part == Part::Thumb;
     if (hot != m_hot || hotGroup != m_hotGroup || linkGroup != m_hotLinkGroup || linkLine != m_hotLinkLine) {
         m_hot = hot;
         m_hotGroup = hotGroup;
@@ -1202,8 +1221,13 @@ void ListView::OnMouseMove(POINT pt) {
         m_hotLinkLine = linkLine;
         PaintRows();
     }
-    if (thumbHot != m_thumbHot) {
-        m_thumbHot = thumbHot;
+    const int scrollHot = hit.part == Part::ArrowUp ? 1
+                          : hit.part == Part::ArrowDown ? 2
+                          : hit.part == Part::Track   ? 3
+                          : hit.part == Part::Thumb   ? 4
+                                                      : 0;
+    if (scrollHot != m_scrollHot) {
+        m_scrollHot = scrollHot;
         PaintScrollBar();
     }
 }
@@ -1221,8 +1245,8 @@ void ListView::OnMouseLeave() {
         m_hotLinkGroup = SIZE_MAX;
         PaintRows();
     }
-    if (m_thumbHot) {
-        m_thumbHot = false;
+    if (m_scrollHot) {
+        m_scrollHot = 0;
         PaintScrollBar();
     }
 }
@@ -1234,6 +1258,7 @@ void ListView::OnLButtonDown(POINT pt, bool ctrl, bool shift) {
         float top = 0, height = 0;
         ThumbGeometry(&top, &height);
         m_drag = Drag::Thumb;
+        m_scrollPressed = 4;
         m_dragOffset = static_cast<int>(pt.y - RowsRect().top - top);
         PaintScrollBar();
         break;
@@ -1247,6 +1272,20 @@ void ListView::OnLButtonDown(POINT pt, bool ctrl, bool shift) {
             else
                 ScrollTo(m_top + page);
         }
+        m_scrollPressed = 3;
+        PaintScrollBar();
+        break;
+    }
+    case Part::ArrowUp: {
+        ScrollTo(m_top > 3 ? m_top - 3 : 0);
+        m_scrollPressed = 1;
+        PaintScrollBar();
+        break;
+    }
+    case Part::ArrowDown: {
+        ScrollTo(m_top + 3);
+        m_scrollPressed = 2;
+        PaintScrollBar();
         break;
     }
     case Part::HeaderEdge: {
@@ -1315,6 +1354,10 @@ void ListView::OnLButtonDown(POINT pt, bool ctrl, bool shift) {
 void ListView::OnLButtonUp(POINT pt) {
     const Drag drag = m_drag;
     m_drag = Drag::None;
+    if (m_scrollPressed) {
+        m_scrollPressed = 0;
+        PaintScrollBar();
+    }
     switch (drag) {
     case Drag::Thumb: PaintScrollBar(); break;
     case Drag::Marquee: PaintRows(); break;

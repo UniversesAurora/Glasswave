@@ -32,7 +32,7 @@ public:
     void ScrollToRow(size_t row);
 
     bool HitTest(POINT pt) const { return PtInRect(&m_bounds, pt) != FALSE; }
-    bool Capturing() const { return m_drag != Drag::None; }
+    bool Capturing() const { return m_drag != Drag::None || m_scrollPressed != 0; }
     LPCWSTR CursorAt(POINT pt) const;  // system cursor id, or null for the default
     void OnMouseMove(POINT pt);
     void OnMouseLeave();
@@ -53,7 +53,7 @@ public:
 
 private:
     enum class Mode { Plain, Grouped, Tiles };
-    enum class Part { None, HeaderCell, HeaderEdge, Row, GroupHeader, AlbumColumn, Link, Empty, Track, Thumb };
+    enum class Part { None, HeaderCell, HeaderEdge, Row, GroupHeader, AlbumColumn, Link, Empty, ArrowUp, ArrowDown, Track, Thumb };
     enum class Drag { None, Thumb, Resize, PendingMove, Move, Marquee };
     struct Line {
         enum Kind : uint8_t { GroupHeader, Item, Filler } kind = Item;
@@ -155,7 +155,8 @@ private:
     size_t m_hotLinkGroup = SIZE_MAX, m_hotLinkLine = 0;
     size_t m_hotHeader = SIZE_MAX;  // display index of the hovered header cell
     size_t m_anchor = SIZE_MAX;
-    bool m_thumbHot = false;
+    int m_scrollHot = 0;      // 1 up, 2 down, 3 track, 4 thumb
+    int m_scrollPressed = 0;
     Drag m_drag = Drag::None;
     int m_dragOffset = 0;   // thumb
     size_t m_dragCol = 0;   // display index

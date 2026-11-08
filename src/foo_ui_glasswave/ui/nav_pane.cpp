@@ -101,6 +101,153 @@ NavPane::~NavPane() {
 
 int NavPane::RowHeightPx() const { return static_cast<int>(std::lround(kRowHeight * m_scale)); }
 
+std::wstring NavPane::ItemKey(const Item& item) {
+    switch (item.target) {
+    case Target::Queue: return L"queue";
+    case Target::LibraryAll: return L"all";
+    case Target::LibraryLocal: return L"local";
+    case Target::LibraryNetease: return L"netease";
+    case Target::AllFavorites: return L"favorites";
+    case Target::PlaylistsHeader: return L"playlists";
+    case Target::SmartHeader: return L"smart";
+    case Target::Music: return L"music";
+    case Target::NeteaseLiked: return L"liked";
+    case Target::NeteaseArtists: return L"artists";
+    case Target::NeteaseAlbums: return L"albums";
+    case Target::NeteaseCreatedHeader: return L"created";
+    case Target::NeteaseCollectedHeader: return L"collected";
+    case Target::NeteaseRecommended: return L"recommended";
+    case Target::NeteaseLogin: return L"account";
+    default: return {};
+    }
+}
+
+std::wstring NavPane::GroupKeyOf(size_t index) const {
+    if (index >= m_items.size()) return {};
+    const Item& item = m_items[index];
+    if (item.level == 0) return L"root";
+    for (size_t i = index; i > 0; --i)
+        if (m_items[i - 1].level < item.level) return ItemKey(m_items[i - 1]);
+    return {};
+}
+
+bool NavPane::IsStaticItem(size_t index) const {
+    return index < m_items.size() && m_items[index].level <= 1 && !ItemKey(m_items[index]).empty();
+}
+
+void NavPane::SetStaticOrder(std::wstring_view serialized) {
+    m_staticOrder.clear();
+    size_t start = 0;
+    while (start <= serialized.size()) {
+        const size_t end = serialized.find(L';', start);
+        const std::wstring part(serialized.substr(
+            start, end == std::wstring_view::npos ? std::wstring_view::npos : end - start));
+        const size_t eq = part.find(L'=');
+        if (eq != std::wstring::npos && eq > 0) {
+            std::vector<std::wstring> keys;
+            size_t pos = eq + 1;
+            while (pos <= part.size()) {
+                const size_t comma = part.find(L',', pos);
+                std::wstring key = part.substr(pos, comma == std::wstring::npos ? std::wstring::npos : comma - pos);
+                if (!key.empty()) keys.push_back(std::move(key));
+                if (comma == std::wstring::npos) break;
+                pos = comma + 1;
+            }
+            m_staticOrder[part.substr(0, eq)] = std::move(keys);
+        }
+        if (end == std::wstring::npos) break;
+        start = end + 1;
+    }
+    Rebuild();
+}
+
+std::wstring NavPane::SerializeOrder() const {
+    std::wstring out;
+    for (const auto& [group, keys] : m_staticOrder) {
+        if (keys.empty()) continue;
+        if (!out.empty()) out += L';';
+        out += group;
+        out += L'=';
+        for (size_t i = 0; i < keys.size(); ++i) {
+            if (i) out += L',';
+            out += keys[i];
+        }
+    }
+    return out;
+}
+
+void NavPane::ApplyStaticOrder() {
+    if (m_items.empty()) return;
+    struct Block {
+        std::wstring key;
+        size_t original = 0;
+        std::vector<Item> items;
+    };
+    auto sortBlocks = [](std::vector<Block>& blocks, const std::vector<std::wstring>& order) {
+        auto rank = [&](const Block& block) {
+            auto it = std::find(order.begin(), order.end(), block.key);
+            return it == order.end() ? order.size() + block.original
+                                     : static_cast<size_t>(it - order.begin());
+        };
+        std::stable_sort(blocks.begin(), blocks.end(),
+                         [&](const Block& a, const Block& b) { return rank(a) < rank(b); });
+    };
+    std::vector<Block> roots;
+    for (auto& item : m_items) {
+        if (item.level == 0) roots.push_back({ItemKey(item), roots.size(), {}});
+        if (!roots.empty()) roots.back().items.push_back(std::move(item));
+    }
+    auto rootOrder = m_staticOrder.find(L"root");
+    if (rootOrder != m_staticOrder.end()) sortBlocks(roots, rootOrder->second);
+    std::vector<Item> ordered;
+    ordered.reserve(m_items.size());
+    for (auto& root : roots) {
+        if (root.items.empty()) continue;
+        ordered.push_back(std::move(root.items.front()));
+        const std::wstring rootKey = root.key;
+        std::vector<Block> children;
+        for (size_t i = 1; i < root.items.size(); ++i) {
+            Item& item = root.items[i];
+            if (item.level == 1) children.push_back({ItemKey(item), children.size(), {}});
+            if (!children.empty()) children.back().items.push_back(std::move(item));
+        }
+        auto childOrder = m_staticOrder.find(rootKey);
+        if (childOrder != m_staticOrder.end()) sortBlocks(children, childOrder->second);
+        for (auto& child : children)
+            for (auto& item : child.items) ordered.push_back(std::move(item));
+    }
+    m_items = std::move(ordered);
+}
+
+bool NavPane::ApplyStaticMove(const Item& dragged, const Item& target, bool after,
+                              const std::wstring& group) {
+    const std::wstring from = ItemKey(dragged);
+    const std::wstring to = ItemKey(target);
+    if (from.empty() || to.empty() || from == to) return false;
+    auto& order = m_staticOrder[group];
+    if (order.empty()) {  // first move: take the current visible order of the group
+        for (size_t i = 0; i < m_items.size(); ++i) {
+            const Item& item = m_items[i];
+            const bool inGroup = group == L"root" ? item.level == 0
+                                                  : item.level == 1 && GroupKeyOf(i) == group;
+            if (!inGroup) continue;
+            const std::wstring key = ItemKey(item);
+            if (!key.empty() && std::find(order.begin(), order.end(), key) == order.end())
+                order.push_back(key);
+        }
+    }
+    auto fromIt = std::find(order.begin(), order.end(), from);
+    if (fromIt == order.end()) return false;
+    order.erase(fromIt);
+    auto toIt = std::find(order.begin(), order.end(), to);
+    if (toIt == order.end()) return false;
+    const size_t index = static_cast<size_t>(toIt - order.begin()) + (after ? 1 : 0);
+    order.insert(order.begin() + static_cast<std::ptrdiff_t>(index), from);
+    if (m_order) m_order(SerializeOrder());
+    Rebuild();
+    return true;
+}
+
 void NavPane::Rebuild() {
     m_items.clear();
     auto pm = playlist_manager::get();
@@ -166,6 +313,7 @@ void NavPane::Rebuild() {
                                          : std::wstring(L"Sign in to NetEase Cloud Music...");
         m_items.push_back({Target::NeteaseLogin, 0, 1, account, wp::NavIcon::Playlist, false});
     }
+    ApplyStaticOrder();
     m_hot = SIZE_MAX;
     Paint();
 }
@@ -218,6 +366,11 @@ const NavPane::Item* NavPane::ItemAt(POINT pt) const {
 }
 
 const NavPane::Item* NavPane::OnLButtonDown(POINT pt) {
+    m_press = SIZE_MAX;
+    m_pressPending = false;
+    m_dragging = false;
+    m_drop = SIZE_MAX;
+    m_dropAfter = false;
     const Item* item = ItemAt(pt);
     if (!item) return nullptr;
     // Clicking the disclosure triangle toggles; clicking the label also selects.
@@ -234,10 +387,152 @@ const NavPane::Item* NavPane::OnLButtonDown(POINT pt) {
         Rebuild();
         return nullptr;
     }
+    m_press = static_cast<size_t>(item - m_items.data());
+    m_pressPt = pt;
+    m_pressPending = true;
     return item;
 }
 
+const NavPane::Item* NavPane::OnLButtonUp(POINT pt) {
+    (void)pt;
+    const Item* result = nullptr;
+    if (m_dragging) {
+        if (m_drop < m_items.size() && m_drop != m_press && m_press < m_items.size()) {
+            const Item from = m_items[m_press];
+            const Item to = m_items[m_drop];
+            const bool after = m_dropAfter;
+            const bool staticMove = IsStaticItem(m_press) && IsStaticItem(m_drop);
+            const std::wstring group = staticMove
+                                           ? (from.level == 0 ? std::wstring(L"root") : GroupKeyOf(m_press))
+                                           : std::wstring();
+            m_press = SIZE_MAX;
+            m_pressPending = false;
+            m_dragging = false;
+            m_drop = SIZE_MAX;
+            m_dropAfter = false;
+            Paint();
+            if (staticMove) ApplyStaticMove(from, to, after, group);
+            else if (m_move) m_move(from, to, after);
+            return nullptr;
+        }
+    } else if (m_pressPending && m_press < m_items.size()) {
+        result = &m_items[m_press];
+    }
+    m_press = SIZE_MAX;
+    m_pressPending = false;
+    m_dragging = false;
+    m_drop = SIZE_MAX;
+    m_dropAfter = false;
+    Paint();
+    return result;
+}
+
+void NavPane::CancelDrag() {
+    if (!m_pressPending && !m_dragging) return;
+    m_press = SIZE_MAX;
+    m_pressPending = false;
+    m_dragging = false;
+    m_drop = SIZE_MAX;
+    m_dropAfter = false;
+    Paint();
+}
+
+bool NavPane::MovableItem(size_t index) const {
+    if (index >= m_items.size()) return false;
+    const Item& item = m_items[index];
+    if (item.level == 0) return !ItemKey(item).empty();
+    if (item.level == 1) {
+        const std::wstring group = GroupKeyOf(index);
+        return group == L"local" || group == L"netease";
+    }
+    if (item.level != 2) return false;
+    for (size_t i = index; i > 0; --i) {
+        if (m_items[i - 1].level >= 2) continue;
+        const Target parent = m_items[i - 1].target;
+        return parent == Target::NeteaseCreatedHeader || parent == Target::NeteaseCollectedHeader ||
+               parent == Target::Music || parent == Target::PlaylistsHeader ||
+               parent == Target::SmartHeader;
+    }
+    return false;
+}
+
+bool NavPane::SameSiblingGroup(size_t a, size_t b) const {
+    if (a >= m_items.size() || b >= m_items.size() || a == b) return false;
+    const Item& first = m_items[a];
+    const Item& second = m_items[b];
+    if (first.level == 0 && second.level == 0) return true;
+    if (first.level == 1 && second.level == 1) {
+        auto parentOf = [this](size_t index) {
+            for (size_t i = index; i > 0; --i)
+                if (m_items[i - 1].level == 0) return i - 1;
+            return SIZE_MAX;
+        };
+        const size_t pa = parentOf(a);
+        const size_t pb = parentOf(b);
+        if (pa == SIZE_MAX || pb == SIZE_MAX || pa != pb) return false;
+        // The All Music section has a single child; Local and NetEase have several.
+        const std::wstring group = ItemKey(m_items[pa]);
+        return group == L"local" || group == L"netease";
+    }
+    if (first.level != 2 || second.level != 2) return false;
+    auto parentOf = [this](size_t index) {
+        for (size_t i = index; i > 0; --i)
+            if (m_items[i - 1].level < 2) return i - 1;
+        return SIZE_MAX;
+    };
+    const size_t pa = parentOf(a);
+    const size_t pb = parentOf(b);
+    if (pa == SIZE_MAX || pb == SIZE_MAX || m_items[pa].target != m_items[pb].target) return false;
+    // Groups whose order can be persisted: the two NetEase playlist sections, the local
+    // playlists and smart playlists, and the Music categories.
+    const Target parent = m_items[pa].target;
+    return parent == Target::NeteaseCreatedHeader || parent == Target::NeteaseCollectedHeader ||
+           parent == Target::Music || parent == Target::PlaylistsHeader ||
+           parent == Target::SmartHeader;
+}
+
+void NavPane::UpdateDropTarget(POINT pt) {
+    const Item* item = ItemAt(pt);
+    const size_t drop = item ? static_cast<size_t>(item - m_items.data()) : SIZE_MAX;
+    if (drop == SIZE_MAX || !SameSiblingGroup(m_press, drop)) {
+        if (m_drop != SIZE_MAX) {
+            m_drop = SIZE_MAX;
+            Paint();
+        }
+        return;
+    }
+    const int rowH = RowHeightPx();
+    const int top = m_bounds.top + std::lround(6 * m_scale) + static_cast<int>(drop - m_top) * rowH;
+    const bool after = pt.y >= top + rowH / 2;
+    if (m_drop != drop || m_dropAfter != after) {
+        m_drop = drop;
+        m_dropAfter = after;
+        Paint();
+    }
+}
+
 void NavPane::OnMouseMove(POINT pt) {
+    if (m_pressPending) {
+        if (!m_dragging) {
+            const int moved = std::abs(pt.x - m_pressPt.x) + std::abs(pt.y - m_pressPt.y);
+            if (moved > std::lround(4 * m_scale) && MovableItem(m_press)) m_dragging = true;
+        }
+        if (m_dragging) {
+            const int rowH = RowHeightPx();
+            const int header = std::lround(6 * m_scale);
+            const size_t visible =
+                std::max<size_t>(1, (m_bounds.bottom - m_bounds.top - header) / std::max(rowH, 1));
+            if (pt.y < m_bounds.top + header + rowH && m_top > 0) {
+                --m_top;
+                Paint();
+            } else if (pt.y > m_bounds.bottom - rowH && m_top + visible < m_items.size()) {
+                ++m_top;
+                Paint();
+            }
+            UpdateDropTarget(pt);
+            return;
+        }
+    }
     const Item* item = ItemAt(pt);
     const size_t hot = item ? static_cast<size_t>(item - m_items.data()) : SIZE_MAX;
     // The expander lights up on its own when the mouse is over it.
@@ -337,6 +632,14 @@ void NavPane::Paint() {
                 wp::NavGlyph(dc, {x + 16, y + rowH / 2}, it.icon);
             auto layout = MakeText(Tr(it.text), 12.0f, DWRITE_FONT_WEIGHT_NORMAL, width - x - 34, rowH);
             dc->DrawTextLayout({x + 26, y}, layout.get(), ink.get());
+        }
+        if (m_dragging && m_drop != SIZE_MAX && m_drop >= m_top && m_drop < m_items.size()) {
+            const float lineY = 6 + static_cast<float>(m_drop - m_top) * rowH + (m_dropAfter ? rowH : 0);
+            if (lineY >= 6 && lineY <= h / s) {
+                winrt::com_ptr<ID2D1SolidColorBrush> mark;
+                dc->CreateSolidColorBrush(D2D1::ColorF(0x3C7FB1), mark.put());
+                dc->FillRectangle({4, lineY - 1, width - 6, lineY + 1}, mark.get());
+            }
         }
     });
 }

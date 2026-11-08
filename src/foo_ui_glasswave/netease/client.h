@@ -85,6 +85,9 @@ public:
     bool CreatePlaylist(std::wstring_view name, abort_callback& abort, int64_t& id, std::wstring& error);
     bool RenamePlaylist(int64_t playlistId, std::wstring_view name, abort_callback& abort, std::wstring& error);
     bool DeletePlaylist(int64_t playlistId, abort_callback& abort, std::wstring& error);
+    // Reorders the signed-in user's playlists to the given id sequence (created first, then
+    // collected, matching what the navigation shows).
+    bool ReorderPlaylists(const std::vector<int64_t>& ids, abort_callback& abort, std::wstring& error);
 
 private:
     bool Request(std::wstring_view path, const std::vector<std::pair<std::wstring, std::wstring>>& params,

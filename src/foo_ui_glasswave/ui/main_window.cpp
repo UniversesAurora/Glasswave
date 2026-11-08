@@ -65,6 +65,7 @@ constexpr float kSplitArrow = 16, kViewOptionsSplit = 26;
 
 // NetEase detail page header: a fixed band above the list (new UI, no Win7 measurement).
 constexpr float kDetailHeaderHeight = 104, kDetailArt = 80, kDetailActionWidth = 88, kDetailActionHeight = 26;
+constexpr float kDetailBriefMaxHeight = 260.0f, kDetailScrollWidth = 17.0f;
 constexpr size_t kAlbumPageSize = 12;  // albums loaded per page in expanded album views
 
 std::wstring YearText(int64_t publishTimeMs) {
@@ -124,6 +125,10 @@ cfg_var_modern::cfg_int cfg_viewNcmArtist({0x6a1f3c63, 0x2b7e, 0x4d90, {0x8c, 0x
 // {6A1F3C5D-2B7E-4D90-8C15-3E9A7B2D4F61}
 cfg_var_modern::cfg_string cfg_navCategories({0x6a1f3c5d, 0x2b7e, 0x4d90, {0x8c, 0x15, 0x3e, 0x9a, 0x7b, 0x2d, 0x4f, 0x61}},
                                              "012");
+// Static navigation sections, in order: root and the local/NetEase child groups.
+// {6A1F3C5E-2B7E-4D90-8C15-3E9A7B2D4F61}
+cfg_var_modern::cfg_string cfg_navOrder({0x6a1f3c5e, 0x2b7e, 0x4d90, {0x8c, 0x15, 0x3e, 0x9a, 0x7b, 0x2d, 0x4f, 0x61}},
+                                        "");
 
 std::vector<media::GroupKind> LoadNavCategories() {
     std::vector<media::GroupKind> out;
@@ -543,6 +548,13 @@ void MainWindow::InitComposition() {
     m_nav = std::make_unique<NavPane>(m_contentLayer);
     m_nav->SetCategories(LoadNavCategories());
     m_nav->SetNeteaseState(netease::Provider::Get().LoggedIn(), netease::Provider::Get().CurrentAccount().nickname);
+    m_nav->SetMoveCallback([this](const NavPane::Item& dragged, const NavPane::Item& target, bool after) {
+        OnNavMove(dragged, target, after);
+    });
+    m_nav->SetStaticOrder(pfc::stringcvt::string_wide_from_utf8(cfg_navOrder.get()).get_ptr());
+    m_nav->SetOrderCallback([](std::wstring text) {
+        cfg_navOrder.set(pfc::stringcvt::string_utf8_from_wide(text.c_str()).get_ptr());
+    });
     netease::Provider::Get().SetStateCallback([this] { OnNeteaseLoginChanged(); });
     netease::Provider::Get().SetLibraryCallback([this] { OnNeteaseLibraryChanged(); });
     SetArtistLinkProvider([this](metadb_handle_list_cref items) { return BuildArtistLinks(items); });
@@ -685,6 +697,7 @@ void MainWindow::CreateWidgets() {
         dc->DrawTextLayout({0, 0}, layout.get(), ink.get());
     }, {})->onClick = [this] {
         m_detailBriefExpanded = !m_detailBriefExpanded;
+        m_detailBriefScroll = 0;
         RepaintBreadcrumb();
         RepaintDetailHeader();
     };
@@ -884,7 +897,14 @@ void MainWindow::UpdateLayout() {
     L.detailHeader = {};
     L.detailAction = {};
     L.detailBriefToggle = {};
+    L.detailBriefArea = {};
+    L.detailBriefBar = {};
     m_detailBriefOverflow = false;
+    m_detailBriefScrollable = false;
+    m_detailBriefScroll = 0;
+    m_detailBriefViewH = 0;
+    m_detailBriefContentH = 0;
+    m_detailBriefTextW = 0;
     m_detail = BuildDetailHeader();
     if (m_detail.visible) {
         L.detailHeader = {L.navPane.right, L.content.top, L.content.right,
@@ -894,31 +914,62 @@ void MainWindow::UpdateLayout() {
             L.detailAction = {right - PxI(kDetailActionWidth), L.detailHeader.top + PxI(22), right,
                               L.detailHeader.top + PxI(22 + kDetailActionHeight)};
         }
-        // The description is limited to three lines until expanded; the link sits below it.
+        // The description is limited to three lines until expanded. Expanded text has its own
+        // maximum height and scrollbar, so the song list below always stays reachable.
         if (!m_detail.brief.empty()) {
-            auto full = MakeWrappedText(m_detail.brief, 12.0f, DWRITE_FONT_WEIGHT_NORMAL,
-                                        DetailHeaderTextWidth(), 4000.0f);
-            DWRITE_TEXT_METRICS metrics{};
-            full->GetMetrics(&metrics);
-            const float fullHeight = metrics.height;
-            // Expanded text still has to leave room for the collapse link inside the window.
+            const float baseW = DetailHeaderTextWidth();
+            const float textX = 18 + kDetailArt + 18;
             const float bandSpace = (L.content.bottom - L.content.top) / m_scale;
-            const float briefLimit = std::max(48.0f, bandSpace - 62 - 12 - 18 - 8);
-            const float collapsed = std::min(fullHeight, 48.0f);
-            const float expandedShown = std::min(fullHeight, briefLimit);
-            m_detailBriefOverflow = fullHeight > collapsed + 1.0f;
-            const float used = m_detailBriefExpanded ? expandedShown : collapsed;
+            const float maxView = std::min(kDetailBriefMaxHeight,
+                                           std::max(96.0f, bandSpace - 62 - 12 - 18 - 8));
+            auto measure = [&](float width) {
+                auto layout = MakeWrappedText(m_detail.brief, 12.0f, DWRITE_FONT_WEIGHT_NORMAL, width, 4000.0f);
+                DWRITE_TEXT_METRICS metrics{};
+                layout->GetMetrics(&metrics);
+                return metrics.height;
+            };
+            const float fullBase = measure(baseW);
+            const float collapsed = std::min(fullBase, 48.0f);
+            m_detailBriefOverflow = fullBase > collapsed + 1.0f;
+            float textW = baseW;
+            float contentH = fullBase;
+            float used = collapsed;
+            bool scrollable = false;
+            if (m_detailBriefExpanded) {
+                if (fullBase > maxView + 1.0f) {
+                    scrollable = true;
+                    textW = std::max(80.0f, baseW - kDetailScrollWidth - 6);
+                    contentH = measure(textW);
+                    used = std::min(contentH, maxView);
+                } else {
+                    used = fullBase;
+                }
+            }
             float needed = 62 + used + 12;
             if (m_detailBriefOverflow) needed += 18;
             if (m_detailBriefExpanded) needed += 6;  // pixel rounding must not clip the last line
             L.detailHeader.bottom =
                 std::min<LONG>(L.content.top + std::max<int>(PxI(kDetailHeaderHeight), PxI(needed)), L.content.bottom);
+            m_detailBriefScrollable = scrollable;
+            m_detailBriefViewH = used;
+            m_detailBriefContentH = contentH;
+            m_detailBriefTextW = textW;
+            const float maxScroll = std::max(0.0f, contentH - used);
+            m_detailBriefScroll = scrollable ? std::clamp(m_detailBriefScroll, 0.0f, maxScroll) : 0.0f;
+            const int briefX = L.detailHeader.left + PxI(textX);
+            const int briefY = L.detailHeader.top + PxI(62);
+            L.detailBriefArea = {briefX, briefY, briefX + PxI(textW), briefY + PxI(used)};
+            if (scrollable) {
+                const int barLeft = L.detailHeader.left + PxI(textX + baseW - kDetailScrollWidth);
+                L.detailBriefBar = {barLeft, briefY, barLeft + PxI(kDetailScrollWidth), briefY + PxI(used)};
+                L.detailBriefArea.right = barLeft - PxI(4);
+            }
             if (m_detailBriefOverflow) {
                 const std::wstring label = Tr(m_detailBriefExpanded ? L"Show less" : L"Show more");
                 auto link = MakeText(label, 12.0f, DWRITE_FONT_WEIGHT_NORMAL, 200.0f, 18.0f);
                 DWRITE_TEXT_METRICS linkMetrics{};
                 link->GetMetrics(&linkMetrics);
-                const int linkX = L.detailHeader.left + PxI(18 + kDetailArt + 18);
+                const int linkX = L.detailHeader.left + PxI(textX);
                 const int y = L.detailHeader.top + PxI(62 + used + 2);
                 const int w = PxI(std::ceil(linkMetrics.widthIncludingTrailingWhitespace) + 4.0f);
                 L.detailBriefToggle = {linkX, y, linkX + w, y + PxI(18)};
@@ -1998,6 +2049,9 @@ void MainWindow::Navigate(const View& requested, bool push) {
         m_detailHeaderSize = {};  // repaint the band with the new artist's placeholder
         m_detailActionPending = false;
         m_detailBriefExpanded = false;
+        m_detailBriefScroll = 0;
+        m_detailBriefHot = 0;
+        m_detailBriefPressed = 0;
     }
     switch (view.kind) {
     case View::Kind::NeteaseLiked: {
@@ -2068,7 +2122,12 @@ void MainWindow::Navigate(const View& requested, bool push) {
         m_detailActionPending = false;
         const bool sameDetail = m_playlistDetail && m_playlistDetail->id == id;
         m_playlistDetail.reset();
-        if (!sameDetail) m_detailBriefExpanded = false;
+        if (!sameDetail) {
+            m_detailBriefExpanded = false;
+            m_detailBriefScroll = 0;
+            m_detailBriefHot = 0;
+            m_detailBriefPressed = 0;
+        }
         m_detailHeaderSize = {};  // repaint the band for this page, not the previous one
         if (auto cached = netease::Catalog::Get().FindPlaylist(id)) m_playlistDetail = std::move(*cached);
         const View requestedView = view;
@@ -2211,7 +2270,12 @@ void MainWindow::Navigate(const View& requested, bool push) {
         m_detailActionPending = false;
         const bool sameDetail = m_albumDetail && m_albumDetail->id == id;
         m_albumDetail.reset();
-        if (!sameDetail) m_detailBriefExpanded = false;
+        if (!sameDetail) {
+            m_detailBriefExpanded = false;
+            m_detailBriefScroll = 0;
+            m_detailBriefHot = 0;
+            m_detailBriefPressed = 0;
+        }
         m_detailHeaderSize = {};  // repaint the band for this page, not the previous one
         if (auto cached = netease::Catalog::Get().FindAlbum(id)) m_albumDetail = std::move(*cached);
         const View requestedView = view;
@@ -2976,10 +3040,46 @@ void MainWindow::PaintDetailHeader() {
             dc->DrawTextLayout({textX, 42}, statsLayout.get(), sub.get());
         }
         if (!m_detail.brief.empty()) {
-            const float limit = std::max(24.0f, H - 62 - 12 - 18);  // leave room for the link
-            const float maxH = m_detailBriefExpanded ? limit : std::min(48.0f, limit);
-            auto briefLayout = MakeWrappedText(m_detail.brief, 12.0f, DWRITE_FONT_WEIGHT_NORMAL, textW, maxH);
-            dc->DrawTextLayout({textX, 62}, briefLayout.get(), faint.get());
+            const float drawW = m_detailBriefTextW > 0 ? m_detailBriefTextW : textW;
+            if (m_detailBriefScrollable) {
+                const D2D1_RECT_F clip{textX, 62, textX + drawW, 62 + m_detailBriefViewH};
+                dc->PushAxisAlignedClip(clip, D2D1_ANTIALIAS_MODE_ALIASED);
+                auto full = MakeWrappedText(m_detail.brief, 12.0f, DWRITE_FONT_WEIGHT_NORMAL, drawW, 4000.0f);
+                dc->DrawTextLayout({textX, 62 - m_detailBriefScroll}, full.get(), faint.get());
+                dc->PopAxisAlignedClip();
+            } else {
+                const float maxH = m_detailBriefExpanded ? std::max(24.0f, m_detailBriefViewH) : 48.0f;
+                auto briefLayout = MakeWrappedText(m_detail.brief, 12.0f, DWRITE_FONT_WEIGHT_NORMAL, drawW, maxH);
+                dc->DrawTextLayout({textX, 62}, briefLayout.get(), faint.get());
+            }
+            if (m_detailBriefScrollable && m_layout.detailBriefBar.right > m_layout.detailBriefBar.left) {
+                const RECT& bar = m_layout.detailBriefBar;
+                const float barX = (bar.left - rect.left) / s;
+                const float barY = (bar.top - rect.top) / s;
+                const float barH = (bar.bottom - bar.top) / s;
+                float thumbTop = 0, thumbH = 0;
+                auto part = [](int value) {
+                    switch (value) {
+                    case 1: return wp::ScrollBarPart::ArrowUp;
+                    case 2: return wp::ScrollBarPart::ArrowDown;
+                    case 3: return wp::ScrollBarPart::Track;
+                    case 4: return wp::ScrollBarPart::Thumb;
+                    default: return wp::ScrollBarPart::None;
+                    }
+                };
+                if (DetailBriefThumb(&thumbTop, &thumbH)) {
+                    // Keep the surface's DPI transform; replacing it would draw the bar at
+                    // device scale and make it jump around at 125 %/150 %.
+                    D2D1_MATRIX_3X2_F base{};
+                    dc->GetTransform(&base);
+                    const D2D1::Matrix3x2F baseM(base._11, base._12, base._21, base._22, base._31,
+                                                 base._32);
+                    dc->SetTransform(D2D1::Matrix3x2F::Translation(barX, barY) * baseM);
+                    wp::ScrollBar(dc, {kDetailScrollWidth, barH}, thumbTop, thumbH, part(m_detailBriefHot),
+                                  part(m_detailBriefPressed));
+                    dc->SetTransform(baseM);
+                }
+            }
         }
     });
     Place(m_detailHeader, rect);  // Repaint resets the visual to its surface origin
@@ -3010,6 +3110,91 @@ void MainWindow::OnDetailAction() {
     case View::Kind::NeteasePlaylist: TogglePlaylistSubscribed(); break;
     default: break;
     }
+}
+
+bool MainWindow::DetailBriefThumb(float* top, float* height) const {
+    if (!m_detailBriefScrollable) return false;
+    const float arrow = 17.0f;
+    const float barH = m_detailBriefViewH;
+    const float trackH = barH - arrow * 2;
+    if (trackH <= 0 || m_detailBriefContentH <= m_detailBriefViewH + 0.5f) return false;
+    *height = std::max(24.0f, std::min(trackH, trackH * m_detailBriefViewH / m_detailBriefContentH));
+    const float maxScroll = std::max(0.001f, m_detailBriefContentH - m_detailBriefViewH);
+    *top = arrow + (trackH - *height) * (m_detailBriefScroll / maxScroll);
+    return true;
+}
+
+int MainWindow::DetailBriefPartAt(POINT pt) const {
+    if (!m_detailBriefScrollable || !PtInRect(&m_layout.detailBriefBar, pt)) return 0;
+    const RECT& bar = m_layout.detailBriefBar;
+    const float y = (pt.y - bar.top) / m_scale;
+    const float h = (bar.bottom - bar.top) / m_scale;
+    if (y < 17.0f) return 1;
+    if (y >= h - 17.0f) return 2;
+    float top = 0, height = 0;
+    if (DetailBriefThumb(&top, &height) && y >= top && y < top + height) return 4;
+    return 3;
+}
+
+void MainWindow::ScrollDetailBrief(float delta) {
+    const float maxScroll = std::max(0.0f, m_detailBriefContentH - m_detailBriefViewH);
+    const float next = std::clamp(m_detailBriefScroll + delta, 0.0f, maxScroll);
+    if (next == m_detailBriefScroll) return;
+    m_detailBriefScroll = next;
+    RepaintDetailHeader();
+}
+
+void MainWindow::UpdateDetailBriefHover(POINT pt) {
+    const int part = DetailBriefPartAt(pt);
+    if (part != m_detailBriefHot) {
+        m_detailBriefHot = part;
+        RepaintDetailHeader();
+    }
+}
+
+void MainWindow::OnDetailBriefBarDown(POINT pt) {
+    const int part = DetailBriefPartAt(pt);
+    m_detailBriefPressed = part;
+    if (part == 1) {
+        ScrollDetailBrief(-54.0f);
+    } else if (part == 2) {
+        ScrollDetailBrief(54.0f);
+    } else if (part == 3) {
+        float top = 0, height = 0;
+        if (DetailBriefThumb(&top, &height)) {
+            const float y = (pt.y - m_layout.detailBriefBar.top) / m_scale;
+            const float page = std::max(18.0f, m_detailBriefViewH - 36.0f);
+            ScrollDetailBrief(y < top ? -page : page);
+        }
+    } else if (part == 4) {
+        float top = 0, height = 0;
+        if (DetailBriefThumb(&top, &height))
+            m_detailBriefDragOffset = pt.y - m_layout.detailBriefBar.top - PxI(top);
+    }
+    RepaintDetailHeader();  // pressed state
+}
+
+void MainWindow::OnDetailBriefBarMove(POINT pt) {
+    if (m_detailBriefPressed != 4) return;
+    float top = 0, height = 0;
+    if (!DetailBriefThumb(&top, &height)) return;
+    const float arrow = 17.0f;
+    const float trackH = m_detailBriefViewH - arrow * 2;
+    if (trackH <= height) return;
+    const float y = (pt.y - m_layout.detailBriefBar.top) / m_scale - arrow - m_detailBriefDragOffset / m_scale;
+    const float maxScroll = std::max(0.0f, m_detailBriefContentH - m_detailBriefViewH);
+    const float frac = std::clamp(y / (trackH - height), 0.0f, 1.0f);
+    const float next = frac * maxScroll;
+    if (next != m_detailBriefScroll) {
+        m_detailBriefScroll = next;
+        RepaintDetailHeader();
+    }
+}
+
+void MainWindow::OnDetailBriefBarUp() {
+    if (!m_detailBriefPressed) return;
+    m_detailBriefPressed = 0;
+    RepaintDetailHeader();
 }
 
 void MainWindow::ToggleArtistFollow() {
@@ -3961,6 +4146,108 @@ void MainWindow::OnNavItem(const NavPane::Item& item) {
     Navigate(v, true);
 }
 
+void MainWindow::OnNavMove(const NavPane::Item& dragged, const NavPane::Item& target, bool after) {
+    if (dragged.target == NavPane::Target::Category && target.target == NavPane::Target::Category) {
+        auto kinds = m_nav->Categories();
+        const auto kind = static_cast<media::GroupKind>(dragged.playlist);
+        const auto destination = static_cast<media::GroupKind>(target.playlist);
+        auto from = std::find(kinds.begin(), kinds.end(), kind);
+        if (from == kinds.end()) return;
+        kinds.erase(from);
+        auto to = std::find(kinds.begin(), kinds.end(), destination);
+        if (to == kinds.end()) return;
+        const size_t index = static_cast<size_t>(to - kinds.begin()) + (after ? 1 : 0);
+        kinds.insert(kinds.begin() + static_cast<std::ptrdiff_t>(index), kind);
+        SetNavCategories(std::move(kinds));
+        return;
+    }
+    if (dragged.target == NavPane::Target::Playlist && target.target == NavPane::Target::Playlist) {
+        auto pm = playlist_manager::get();
+        const t_size count = pm->get_playlist_count();
+        if (!count) return;
+        auto smart = [](t_size p) {
+            return p == media::FavoritesPlaylist(false) || media::IsAutoPlaylist(p);
+        };
+        const bool groupSmart = smart(dragged.playlist);
+        if (smart(target.playlist) != groupSmart) return;
+        auto inGroup = [&](t_size p) {
+            return groupSmart ? smart(p) : !media::IsSpecial(p) && !media::IsAutoPlaylist(p);
+        };
+        std::vector<t_size> group;
+        for (t_size p = 0; p < count; ++p)
+            if (inGroup(p)) group.push_back(p);
+        auto from = std::find(group.begin(), group.end(), dragged.playlist);
+        if (from == group.end()) return;
+        const t_size moving = *from;
+        group.erase(from);
+        auto to = std::find(group.begin(), group.end(), target.playlist);
+        if (to == group.end()) return;
+        const size_t index = static_cast<size_t>(to - group.begin()) + (after ? 1 : 0);
+        group.insert(group.begin() + static_cast<std::ptrdiff_t>(index), moving);
+        std::vector<t_size> full(count);
+        for (t_size i = 0; i < count; ++i) full[i] = i;
+        size_t next = 0;
+        for (auto& value : full)
+            if (inGroup(value)) {
+                if (next >= group.size()) return;
+                value = group[next++];
+            }
+        if (next != group.size()) return;
+        std::vector<size_t> oldToNew(count);
+        for (size_t pos = 0; pos < count; ++pos) oldToNew[full[pos]] = pos;
+        if (!pm->reorder(full.data(), count)) return;
+        if (m_view.kind == View::Kind::Playlist && m_view.playlist < count)
+            m_view.playlist = oldToNew[m_view.playlist];
+        for (auto& view : m_history)
+            if (view.kind == View::Kind::Playlist && view.playlist < count)
+                view.playlist = oldToNew[view.playlist];
+        m_nav->Rebuild();
+        if (m_view.kind == View::Kind::Playlist) Navigate(m_view, false);
+        return;
+    }
+    if (dragged.target != NavPane::Target::NeteaseRemotePlaylist ||
+        target.target != NavPane::Target::NeteaseRemotePlaylist)
+        return;
+    auto created = netease::Provider::Get().CreatedPlaylists();
+    auto collected = netease::Provider::Get().CollectedPlaylists();
+    auto contains = [](const std::vector<netease::Playlist>& list, int64_t id) {
+        return std::any_of(list.begin(), list.end(), [id](const netease::Playlist& p) { return p.id == id; });
+    };
+    auto move = [](std::vector<netease::Playlist>& list, int64_t fromId, int64_t toId, bool after) {
+        auto from = std::find_if(list.begin(), list.end(),
+                                 [fromId](const netease::Playlist& p) { return p.id == fromId; });
+        if (from == list.end()) return false;
+        netease::Playlist value = *from;
+        list.erase(from);
+        auto to = std::find_if(list.begin(), list.end(),
+                               [toId](const netease::Playlist& p) { return p.id == toId; });
+        if (to == list.end()) return false;
+        const size_t index = static_cast<size_t>(to - list.begin()) + (after ? 1 : 0);
+        list.insert(list.begin() + static_cast<std::ptrdiff_t>(index), std::move(value));
+        return true;
+    };
+    const bool inCreated = contains(created, dragged.remoteId);
+    const bool inCollected = contains(collected, dragged.remoteId);
+    if (!inCreated && !inCollected) return;
+    if (inCreated) {
+        if (!move(created, dragged.remoteId, target.remoteId, after)) return;
+    } else if (!move(collected, dragged.remoteId, target.remoteId, after)) {
+        return;
+    }
+    std::vector<NavPane::RemotePlaylist> navCreated, navCollected;
+    std::vector<int64_t> ids;
+    for (const auto& playlist : created) {
+        navCreated.push_back({playlist.id, playlist.name});
+        ids.push_back(playlist.id);
+    }
+    for (const auto& playlist : collected) {
+        navCollected.push_back({playlist.id, playlist.name});
+        ids.push_back(playlist.id);
+    }
+    m_nav->SetNeteasePlaylists(std::move(navCreated), std::move(navCollected));
+    netease::Provider::Get().ReorderPlaylists(std::move(ids));
+}
+
 void MainWindow::ShowOrganizeMenu() {
     POINT pt{m_layout.organize.left, m_layout.organize.bottom};
     ClientToScreen(m_hwnd, &pt);
@@ -4811,6 +5098,14 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
     // -- Client-area mouse --
     case WM_MOUSEMOVE: {
         POINT pt{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
+        if (m_capture == Capture::DetailScroll) {
+            OnDetailBriefBarMove(pt);
+            return 0;
+        }
+        if (m_capture == Capture::Nav) {
+            m_nav->OnMouseMove(pt);
+            return 0;
+        }
         if (m_capture == Capture::List) {
             m_list->OnMouseMove(pt);
         } else if (m_pressed) {
@@ -4829,6 +5124,7 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
             m_nav->OnMouseMove(pt);
             UpdateCrumbHover(pt);
             UpdateNowPlayingHover(pt);
+            UpdateDetailBriefHover(pt);
             const bool overVolume = PtInRect(&m_layout.volume, pt) != FALSE;
             if (overVolume) {
                 if (!m_volumeHover) {
@@ -4848,6 +5144,10 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
     }
     case WM_MOUSELEAVE:
         m_trackingClient = false;
+        if (m_detailBriefHot) {
+            m_detailBriefHot = 0;
+            RepaintDetailHeader();
+        }
         if (m_hover && !IsCaptionWidget(m_hover->Id()) && !m_pressed) SetHoverWidget(nullptr);
         if (m_capture == Capture::None) {
             m_list->OnMouseLeave();
@@ -4862,6 +5162,12 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
     case WM_LBUTTONDBLCLK: {
         POINT pt{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
         const bool dbl = msg == WM_LBUTTONDBLCLK;
+        if (m_detailBriefScrollable && PtInRect(&m_layout.detailBriefBar, pt)) {
+            OnDetailBriefBarDown(pt);
+            m_capture = Capture::DetailScroll;
+            SetCapture(hwnd);
+            return 0;
+        }
         if (PtInRect(&m_layout.breadcrumb, pt)) {
             OnCrumbClick(pt);
             return 0;
@@ -4895,11 +5201,9 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
         }
         if (m_nav->HitTest(pt)) {
             FocusNav();
-            if (const NavPane::Item* item = m_nav->OnLButtonDown(pt)) {
-                const NavPane::Item copy = *item;
-                OnNavItem(copy);
-                if (dbl && copy.target == NavPane::Target::Playlist && m_source && m_source->Count())
-                    m_source->Activate(0);
+            if (m_nav->OnLButtonDown(pt)) {
+                m_capture = Capture::Nav;
+                SetCapture(hwnd);
             }
             return 0;
         }
@@ -4912,6 +5216,21 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
     case WM_LBUTTONUP: {
         POINT pt{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
         m_ncDownId = 0;
+        if (m_capture == Capture::DetailScroll) {
+            m_capture = Capture::None;
+            ReleaseCapture();
+            OnDetailBriefBarUp();
+            return 0;
+        }
+        if (m_capture == Capture::Nav) {
+            m_capture = Capture::None;
+            ReleaseCapture();
+            if (const NavPane::Item* item = m_nav->OnLButtonUp(pt)) {
+                const NavPane::Item copy = *item;
+                OnNavItem(copy);
+            }
+            return 0;
+        }
         if (m_capture == Capture::List) {
             m_capture = Capture::None;
             ReleaseCapture();
@@ -4953,6 +5272,11 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
                 m_pressed = nullptr;
             }
             if (m_capture == Capture::List) m_list->CancelDrag();
+            if (m_capture == Capture::Nav) m_nav->CancelDrag();
+            if (m_capture == Capture::DetailScroll) {
+                m_detailBriefPressed = 0;
+                RepaintDetailHeader();
+            }
             m_capture = Capture::None;
             m_seeking = false;
         }
@@ -4961,6 +5285,11 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
         POINT pt{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
         ScreenToClient(hwnd, &pt);
         const int delta = GET_WHEEL_DELTA_WPARAM(wp);
+        if (m_detailBriefScrollable &&
+            (PtInRect(&m_layout.detailBriefArea, pt) || PtInRect(&m_layout.detailBriefBar, pt))) {
+            ScrollDetailBrief(-delta / static_cast<float>(WHEEL_DELTA) * 54.0f);
+            return 0;
+        }
         if (m_list->HitTest(pt)) {
             m_list->OnWheel(delta, (GET_KEYSTATE_WPARAM(wp) & MK_SHIFT) != 0);
             m_list->OnMouseMove(pt);

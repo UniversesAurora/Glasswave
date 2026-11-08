@@ -255,7 +255,8 @@ bool Provider::ReloadUserPlaylists(abort_callback& abort, int64_t userId, std::w
     return true;
 }
 
-void Provider::ApplyPlaylistInfo(const Playlist& info) {    if (!info.id) return;
+void Provider::ApplyPlaylistInfo(const Playlist& info) {
+    if (!info.id) return;
     Catalog::Get().Put(info);
     std::lock_guard lock(m_mutex);
     auto update = [&info](std::vector<Playlist>& list) {
@@ -274,6 +275,26 @@ void Provider::ApplyPlaylistInfo(const Playlist& info) {    if (!info.id) return
     update(m_createdPlaylists);
     update(m_collectedPlaylists);
     update(m_recommendedPlaylists);
+}
+
+void Provider::ApplyPlaylistOrder(const std::vector<int64_t>& ids) {
+    std::lock_guard lock(m_mutex);
+    auto apply = [&ids](std::vector<Playlist>& list) {
+        std::map<int64_t, Playlist> byId;
+        for (auto& playlist : list) byId.emplace(playlist.id, std::move(playlist));
+        std::vector<Playlist> ordered;
+        ordered.reserve(list.size());
+        for (int64_t id : ids) {
+            auto it = byId.find(id);
+            if (it == byId.end()) continue;
+            ordered.push_back(std::move(it->second));
+            byId.erase(it);
+        }
+        for (auto& [id, playlist] : byId) ordered.push_back(std::move(playlist));
+        list = std::move(ordered);
+    };
+    apply(m_createdPlaylists);
+    apply(m_collectedPlaylists);
 }
 
 void Provider::SchedulePlaylistSummaryRefresh(int64_t playlistId) {
@@ -1266,6 +1287,38 @@ void Provider::DeletePlaylist(int64_t playlistId, DoneCallback done) {
             if (done) done(ok, ok ? std::wstring() : ErrorOf(error));
         });
         if (ok) NotifyLibraryChanged();
+    });
+}
+
+void Provider::ReorderPlaylists(std::vector<int64_t> ids, DoneCallback done) {
+    if (ids.empty()) {
+        if (done) done(true, {});
+        return;
+    }
+    std::wstring loginError;
+    if (!RequireLogin(loginError)) {
+        if (done) done(false, loginError);
+        return;
+    }
+    ApplyPlaylistOrder(ids);  // the navigation shows the new order immediately
+    m_tasks.Post([this, ids = std::move(ids), done = std::move(done)]() mutable {
+        if (m_stopping) return;
+        abort_callback_impl abort;
+        std::wstring error;
+        bool ok = false;
+        if (m_service.EnsureStarted(abort, &error)) {
+            ok = m_client.ReorderPlaylists(ids, abort, error);
+            int64_t userId = 0;
+            if (EnsureAccount(abort, userId, error)) {
+                std::wstring listError;
+                ReloadUserPlaylists(abort, userId, listError);  // authoritative order (or restores)
+            }
+        }
+        if (!ok) Log(L"playlist: reorder failed: " + error);
+        PostMain([done = std::move(done), ok, error] {
+            if (done) done(ok, ok ? std::wstring() : ErrorOf(error));
+        });
+        NotifyLibraryChanged();
     });
 }
 

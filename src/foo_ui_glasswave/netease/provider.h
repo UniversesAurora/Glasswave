@@ -87,6 +87,9 @@ public:
     void CreatePlaylist(std::wstring name, CreatePlaylistCallback done);
     void RenamePlaylist(int64_t playlistId, std::wstring name, DoneCallback done = {});
     void DeletePlaylist(int64_t playlistId, DoneCallback done = {});
+    // Reorders created/collected playlists to the given id sequence (created first, then
+    // collected), updates the caches immediately and confirms with the service.
+    void ReorderPlaylists(std::vector<int64_t> ids, DoneCallback done = {});
 
     void OnLoginCookie(std::wstring cookie, DoneCallback done = {});
     void Logout();
@@ -109,6 +112,7 @@ private:
     // Updates the catalog and the cached playlists with a fresh summary (cover, name,
     // count). Worker thread; the caller posts NotifyChanged afterwards.
     void ApplyPlaylistInfo(const Playlist& info);
+    void ApplyPlaylistOrder(const std::vector<int64_t>& ids);
     // Re-reads the user's playlists after a create/delete so the navigation lists stay exact.
     bool ReloadUserPlaylists(abort_callback& abort, int64_t userId, std::wstring& error);
 

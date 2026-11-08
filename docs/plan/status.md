@@ -218,6 +218,14 @@ Updated: 2026-11-08
     visible while the replacement loads, and a version counter lets the list swap in the
     new bitmap only once it has been decoded. Images that did not change therefore stay
     visually identical instead of flashing.
+  - Expanded descriptions are capped at 260 DIP and get their own scroll area (wheel,
+    arrows, thumb drag and track paging). Navigation rows can be dragged within their
+    sibling group: root libraries and their subtrees, the Local/NetEase subsections, local
+    and smart playlists, Music categories, and NetEase created/collected playlists (through
+    /playlist/order/update). The hierarchy never changes; the static section order is
+    persisted and the service order is reloaded after a playlist drag. The list and
+    description scrollbars use the original Aero parts from aero.msstyles: track 728, arrow
+    plates 717, glyphs 718/719/720 by DPI, thumb 733 and gripper 724/725/726.
   - Not implemented yet: NetEase full-catalog search UI and a combined All Music browse
     beyond Favorites.
 

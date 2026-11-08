@@ -53,6 +53,8 @@ private:
         RECT navPane{}, list{};
         RECT detailHeader{}, detailAction{};  // NetEase detail pages: artist, album, playlist
         RECT detailBriefToggle{};
+        RECT detailBriefArea{};  // text area of the description (wheel), client px
+        RECT detailBriefBar{};   // its Win7 scrollbar, client px; empty when not scrollable
         RECT seek{}, capsule{}, divider{}, shuffle{}, repeat{}, stop{}, prev{}, next{}, play{}, mute{}, volume{};
         RECT nowPlaying{}, time{}, stream{};
         POINT cluster{};  // origin of the WMP 12 transport cluster bitmap
@@ -112,7 +114,7 @@ private:
     void UpdateCrumbHover(POINT pt);
     void OnCrumbClick(POINT pt);
 
-    enum class Capture { None, Widget, List };
+    enum class Capture { None, Widget, List, DetailScroll, Nav };
 
     static LRESULT CALLBACK WndProcThunk(HWND, UINT, WPARAM, LPARAM);
     LRESULT WndProc(UINT msg, WPARAM wp, LPARAM lp);
@@ -181,6 +183,14 @@ private:
     void ToggleArtistFollow();
     void ToggleAlbumCollected();
     void TogglePlaylistSubscribed();
+    // The description's own scroll area (long artist/album/playlist introductions).
+    bool DetailBriefThumb(float* top, float* height) const;  // DIP within the bar
+    int DetailBriefPartAt(POINT pt) const;  // 0 none, 1 up, 2 down, 3 track, 4 thumb
+    void ScrollDetailBrief(float delta);
+    void UpdateDetailBriefHover(POINT pt);
+    void OnDetailBriefBarDown(POINT pt);
+    void OnDetailBriefBarMove(POINT pt);
+    void OnDetailBriefBarUp();
     void ShowPageContextMenu(POINT screen);  // actions for the page itself (no selected item)
     // Context-menu "Go to artist" destinations for the first item (NetEase or local).
     std::vector<ArtistLink> BuildArtistLinks(metadb_handle_list_cref items);
@@ -191,6 +201,7 @@ private:
     void ShowAlbumGridMenu(POINT screen, int64_t albumId, std::wstring name);
     int ViewStyles() const;  // view options the current source offers
     void OnNavItem(const NavPane::Item& item);
+    void OnNavMove(const NavPane::Item& dragged, const NavPane::Item& target, bool after);
     void AddDroppedFiles(IDataObject* data);
     void SetSearchFocus(bool focused);
     void FocusNav();  // the navigation pane has the focus (its selection turns blue)
@@ -303,6 +314,14 @@ private:
     std::wstring m_artistSongsId;
     bool m_detailBriefExpanded = false;
     bool m_detailBriefOverflow = false;
+    float m_detailBriefScroll = 0;  // DIP into the description
+    float m_detailBriefViewH = 0;   // DIP visible description height
+    float m_detailBriefContentH = 0;
+    float m_detailBriefTextW = 0;  // DIP text width (without the bar)
+    bool m_detailBriefScrollable = false;
+    int m_detailBriefHot = 0;  // 1 up, 2 down, 3 track, 4 thumb
+    int m_detailBriefPressed = 0;
+    int m_detailBriefDragOffset = 0;  // px
     size_t m_artistAlbumOffset = 0;     // API offset for the next album metadata page
     size_t m_artistTracksLoaded = 0;    // albums whose tracks are in m_artistSongs
     bool m_artistAlbumsMore = true;
