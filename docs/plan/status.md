@@ -200,6 +200,12 @@ Updated: 2026-11-08
   - Expanded tile collects an album's songs into one column on every song table, ordered by
     the album's first appearance; this also applies to local playlists (only the displayed
     order changes). Details keeps the view's own order.
+  - Batch actions use every selected NetEase song. Right-clicking an album column or group
+    header whose rows are already fully selected keeps the rest of the selection instead of
+    replacing it. Removing songs updates the playlist source in place and keeps the same
+    top song, and collecting an album/playlist or following an artist no longer reloads the
+    song list. Jump-to-playing now decides visibility from the track's row, not its group
+    header. Playlist tiles drop both decoded art copies when a cover changes.
   - Not implemented yet: NetEase full-catalog search UI, a combined All Music browse beyond
     Favorites, and playlist rename/delete.
 
