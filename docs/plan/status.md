@@ -260,7 +260,9 @@ Updated: 2026-11-08
     playing is recorded with its display metadata, source and NetEase ids in
     `<profile>\glasswave\play-stats.txt` (newest 2000 kept, written atomically), and the
     two pages mix local and NetEase rows with a Source column. The lists refresh when the
-    page is opened, not live while it is on screen.
+    page is opened, not live while it is on screen. Their navigation icons are wmploc's
+    clock-with-note (575) and pie chart (550); the Smart playlists header keeps the
+    auto-playlist icon.
   - Every song list — the shared song tables, the local library and playlists — offers a
     Count column fed by our cross-source play history: hidden by default under Choose
     columns, visible by default on Most Played. The local sources read the store
@@ -271,6 +273,9 @@ Updated: 2026-11-08
   - Mixed-source lists show a Source column: All Music > Favorites and the two play-history
     pages already had one; the queue and every playlist now label each row Local Music or
     NetEase Cloud Music as well, and the column sorts by source.
+  - The transport band's shuffle and repeat toggles load cfg at start-up after the buttons
+    were first painted; they now repaint unconditionally, so the highlight matches the
+    restored playback order instead of staying off.
   - NetEase's personal radar (私人雷达) is marked specialType 100 in /user/playlist.
     It is now kept in the account lists, so collecting it from Recommended makes it appear
     under Collected playlists and survive account refreshes; the interested page still
