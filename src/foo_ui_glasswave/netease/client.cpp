@@ -597,36 +597,33 @@ bool Client::GetArtistDetail(int64_t artistId, abort_callback& abort, Artist& ou
     return true;
 }
 
-bool Client::GetArtistAlbums(int64_t artistId, abort_callback& abort, std::vector<Album>& out, bool* followed,
-                             std::wstring& error) {
+bool Client::GetArtistAlbumsPage(int64_t artistId, int offset, int limit, abort_callback& abort,
+                                 std::vector<Album>& out, bool* followed, bool* more, std::wstring& error) {
     out.clear();
     if (followed) *followed = false;
-    int offset = 0;
-    for (int page = 0; page < 10; ++page) {  // 1000 albums is well past any artist's catalogue
-        json::Object body;
-        int code = 0;
-        if (!Request(L"/artist/album",
-                     {{L"id", std::to_wstring(artistId)},
-                      {L"limit", L"1000"},
-                      {L"offset", std::to_wstring(offset)}},
-                     false, abort, body, code, error))
-            return false;
-        if (code != 200) {
-            error = MessageOf(body, code);
-            return false;
-        }
-        if (followed && page == 0) {
-            if (auto artist = json::GetObject(body, L"artist"); artist && artist->HasKey(L"followed"))
-                *followed = json::GetBool(*artist, L"followed");
-        }
-        auto albums = json::GetArray(body, L"hotAlbums");
-        if (!albums) break;
+    if (more) *more = false;
+    json::Object body;
+    int code = 0;
+    if (!Request(L"/artist/album",
+                 {{L"id", std::to_wstring(artistId)},
+                  {L"limit", std::to_wstring(limit)},
+                  {L"offset", std::to_wstring(offset)}},
+                 false, abort, body, code, error))
+        return false;
+    if (code != 200) {
+        error = MessageOf(body, code);
+        return false;
+    }
+    if (followed) {
+        if (auto artist = json::GetObject(body, L"artist"); artist && artist->HasKey(L"followed"))
+            *followed = json::GetBool(*artist, L"followed");
+    }
+    if (more) *more = json::GetBool(body, L"more");
+    if (auto albums = json::GetArray(body, L"hotAlbums")) {
         for (const auto& object : json::Objects(*albums)) {
             Album album = ParseAlbum(object);
             if (album.id) out.push_back(std::move(album));
         }
-        if (!json::GetBool(body, L"more") || albums->Size() == 0) break;
-        offset += static_cast<int>(albums->Size());
     }
     return true;
 }

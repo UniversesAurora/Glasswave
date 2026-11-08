@@ -143,6 +143,7 @@ public:
     void ContextMenu(HWND owner, POINT screen) override;
     metadb_handle_list SelectedItems() const override { return {}; }
     void SetFilter(std::wstring_view filterLower) override;
+    void AppendAlbums(std::vector<netease::Album> albums);  // next artist page
 
 private:
     std::wstring m_artistName;

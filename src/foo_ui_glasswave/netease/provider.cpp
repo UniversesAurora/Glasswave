@@ -673,8 +673,8 @@ void Provider::FetchPlaylist(int64_t playlistId, DetailCallback done) {
     });
 }
 
-void Provider::FetchArtist(int64_t artistId, std::function<void(Artist artist)> header, ArtistCallback done) {
-    m_tasks.Post([this, artistId, header = std::move(header), done = std::move(done)] {
+void Provider::FetchArtistDetail(int64_t artistId, ArtistDetailCallback done) {
+    m_tasks.Post([this, artistId, done = std::move(done)] {
         if (m_stopping) return;
         abort_callback_impl abort;
         std::wstring error;
@@ -684,28 +684,42 @@ void Provider::FetchArtist(int64_t artistId, std::function<void(Artist artist)> 
             });
             return;
         }
-        ArtistPage page;
-        if (!m_client.GetArtistDetail(artistId, abort, page.info, error)) {
+        Artist artist;
+        if (!m_client.GetArtistDetail(artistId, abort, artist, error)) {
             PostMain([done = std::move(done), error] {
                 if (done) done({}, ErrorOf(error));
             });
             return;
         }
-        // Show the profile while the album list is still loading.
-        if (header)
-            PostMain([header = std::move(header), info = page.info] { header(info); });
-        std::wstring albumError;
-        bool followed = false;
-        if (m_client.GetArtistAlbums(artistId, abort, page.albums, &followed, albumError)) {
-            page.info.followed = followed;
-            page.info.followKnown = true;
-        } else {
-            Log(L"artist: album list failed for " + std::to_wstring(artistId) + L": " + albumError);
+        Catalog::Get().Put(artist);
+        PostMain([done = std::move(done), artist] {
+            if (done) done(artist, {});
+        });
+    });
+}
+
+void Provider::FetchArtistAlbumsPage(int64_t artistId, int offset, int limit, ArtistAlbumsCallback done) {
+    m_tasks.Post([this, artistId, offset, limit, done = std::move(done)] {
+        if (m_stopping) return;
+        abort_callback_impl abort;
+        std::wstring error;
+        if (!m_service.EnsureStarted(abort, &error)) {
+            PostMain([done = std::move(done), error] {
+                if (done) done({}, false, false, false, ErrorOf(error));
+            });
+            return;
         }
-        Catalog::Get().Put(page.info);
-        Catalog::Get().Put(page.albums);
-        PostMain([done = std::move(done), page = std::move(page), albumError = std::move(albumError)]() mutable {
-            if (done) done(std::move(page), albumError);
+        std::vector<Album> albums;
+        bool followed = false, more = false;
+        if (!m_client.GetArtistAlbumsPage(artistId, offset, limit, abort, albums, &followed, &more, error)) {
+            PostMain([done = std::move(done), error] {
+                if (done) done({}, false, false, false, ErrorOf(error));
+            });
+            return;
+        }
+        Catalog::Get().Put(albums);
+        PostMain([done = std::move(done), albums = std::move(albums), more, followed]() mutable {
+            if (done) done(std::move(albums), more, true, followed, {});
         });
     });
 }

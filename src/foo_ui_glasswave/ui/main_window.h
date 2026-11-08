@@ -143,11 +143,11 @@ private:
     std::vector<metadb_handle_ptr> LocalFavoriteHandles() const;
     void ShowNeteaseSongs(const View& view, std::vector<netease::Song> songs, std::wstring error);
     void ShowNeteasePlaylists(const View& view, std::vector<netease::Playlist> playlists, std::wstring error);
-    void ShowNeteaseArtist(const View& view, netease::Artist artist, std::vector<netease::Album> albums,
-                           std::wstring error);
-    void ShowNeteaseArtistHeader(const View& view, netease::Artist artist);
-    void LoadNeteaseArtistSongs(const View& view);
-    void LoadAlbumPage(bool collected);
+    void ShowNeteaseArtistDetail(const View& view, netease::Artist artist, std::wstring error);
+    void ContinueArtistLoad();
+    void LoadArtistAlbumPage();
+    void LoadArtistTrackPage();
+    void LoadCollectedAlbumPage();
     void OnListNearEnd();
     void EnsureCollectedAlbums();
     void ShowNeteaseArtists(const View& view, std::vector<netease::Artist> artists, std::wstring error);
@@ -266,8 +266,11 @@ private:
     std::vector<netease::Album> m_artistAlbums;  // its albums, kept for the view-style switch
     std::vector<netease::Song> m_artistSongs;    // expanded-tile contents, cached per artist
     std::wstring m_artistSongsId;
-    size_t m_artistAlbumOffset = 0;  // next album not yet loaded into m_artistSongs
+    size_t m_artistAlbumOffset = 0;     // API offset for the next album metadata page
+    size_t m_artistTracksLoaded = 0;    // albums whose tracks are in m_artistSongs
+    bool m_artistAlbumsMore = true;
     bool m_artistAlbumsLoading = false;
+    bool m_artistTracksLoading = false;
     std::vector<netease::Album> m_collectedAlbums;  // snapshot for the collected-albums page
     std::vector<netease::Song> m_collectedSongs;
     size_t m_collectedAlbumOffset = 0;

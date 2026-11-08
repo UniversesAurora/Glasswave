@@ -165,15 +165,17 @@ Updated: 2026-11-08
     albums' tracks in pages of 12 as the list nears its end (six workers) and lists them
     grouped by album, like a playlist's expanded tile; the choice is remembered per view.
     Icon views no longer draw a column header (it did not line up with the tiles).
-  - The artist page offers the same two layouts: its Expanded tile pages through the
-    artist's album tracks (12 albums per page, six workers) and caches what is loaded per
-    artist, so switching back and forth keeps the pages already fetched. The artist header
-    appears as soon as the profile request returns, while the album list (one 1000-album
-    request) is still loading. Browse pages offer only their real layouts in the view
-    menu, with no grayed entries. In an expanded album view, sorting applies inside each
-    album only and never reorders the album groups, so the order stays stable while pages
-    load. The maximum scroll position aligns the last line with the bottom of the list
-    instead of letting the transport band cut it.
+  - The artist page offers Icon and Expanded tile. Album metadata is fetched 24 albums at
+    a time; the Icon grid appends the next page as the list nears its end. Expanded tile
+    loads 12 albums' tracks per page (six workers per track page) and appends them without
+    moving existing rows or clearing the selection; the header still shows the official
+    album/song counts from the artist profile, so a 5000-album artist shows the first
+    albums quickly instead of waiting for the whole catalogue. Loaded pages are cached
+    per artist. Browse pages offer only their real layouts in the view menu, with no
+    grayed entries. In expanded album views, sorting applies inside each album only and
+    never reorders the album groups. Icon views no longer draw a column header. The
+    maximum scroll position aligns the last line with the bottom of the list instead of
+    letting the transport band cut it.
   - Not implemented yet: NetEase full-catalog search UI, adding songs to NetEase playlists,
     a combined All Music browse beyond Favorites, and an album view reached from anywhere
     other than an artist page or the collected albums page.

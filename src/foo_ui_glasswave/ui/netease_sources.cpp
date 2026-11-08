@@ -528,6 +528,12 @@ void NeteaseAlbumGridSource::SetFilter(std::wstring_view filterLower) {
     m_focus = SIZE_MAX;
 }
 
+void NeteaseAlbumGridSource::AppendAlbums(std::vector<netease::Album> albums) {
+    if (albums.empty()) return;
+    m_albums.insert(m_albums.end(), std::make_move_iterator(albums.begin()), std::make_move_iterator(albums.end()));
+    SetFilter(m_filter);
+}
+
 // ---- followed artists -------------------------------------------------------------------
 
 NeteaseArtistListSource::NeteaseArtistListSource(std::vector<netease::Artist> artists, std::wstring emptyText,
