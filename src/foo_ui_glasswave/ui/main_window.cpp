@@ -2573,6 +2573,9 @@ void MainWindow::ShowNeteaseArtistDetail(const View& view, netease::Artist artis
             break;
         }
     m_detailActionPending = false;
+    // The avatar URL arrived with the profile; drop a placeholder/old thumbnail that a
+    // pre-detail header paint may have cached.
+    ArtCache::Get().Invalidate(L"ncm:artist:" + std::to_wstring(m_artist->id));
     // The profile's briefDesc is only a summary; the full article comes from /artist/desc.
     const int64_t artistId = m_artist->id;
     netease::Provider::Get().FetchArtistDescription(
@@ -2891,7 +2894,9 @@ MainWindow::DetailHeader MainWindow::BuildDetailHeader() const {
         d.brief = m_artist ? m_artist->brief : std::wstring();
         const int64_t id = m_artist ? m_artist->id
                                     : static_cast<int64_t>(_wcstoi64(m_view.remoteId.c_str(), nullptr, 10));
-        if (id) {
+        // Only ask for the avatar once the profile is in the catalog; requesting it from
+        // the view id before the detail arrives would cache a Missing thumbnail forever.
+        if (m_artist && id) {
             d.artKey = L"ncm:artist:" + std::to_wstring(id);
             d.artTrack = netease::Catalog::Get().ArtistHandle(id);
         }
