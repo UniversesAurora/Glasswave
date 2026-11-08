@@ -53,11 +53,21 @@ void WriteCache(const std::filesystem::path& path, const std::string& bytes) {
 
 }  // namespace
 
+class EmptyArtPaths : public album_art_path_list {
+public:
+    const char* get_path(t_size) const override { return ""; }
+    t_size get_count() const override { return 0; }
+};
+
 class NcmArtInstance : public album_art_extractor_instance_v2 {
 public:
     explicit NcmArtInstance(std::string path) : m_path(std::move(path)) {}
 
-    album_art_path_list::ptr query_paths(const GUID&, abort_callback&) override { return nullptr; }
+    album_art_path_list::ptr query_paths(const GUID&, abort_callback&) override {
+        album_art_path_list::ptr paths;
+        paths ^= fb2k::service_new<EmptyArtPaths>();
+        return paths;
+    }
 
     album_art_data_ptr query(const GUID& what, abort_callback& abort) override {
         if (what != album_art_ids::cover_front) throw exception_album_art_not_found();
@@ -163,7 +173,7 @@ public:
                 return instance;
             }
         }
-        return nullptr;
+        throw exception_album_art_not_found();
     }
 };
 
