@@ -43,17 +43,19 @@ public:
 
     album_art_data_ptr query(const GUID& what, abort_callback& abort) override {
         if (what != album_art_ids::cover_front) throw exception_album_art_not_found();
-        bool playlist = false;
+        CoverKind kind = CoverKind::Song;
         int64_t id = 0;
-        if (!ParseCoverPath(m_path.c_str(), playlist, id)) {
-            playlist = false;
+        if (!ParseCoverPath(m_path.c_str(), kind, id)) {
+            kind = CoverKind::Song;
             if (!ParseSongPath(m_path.c_str(), id)) throw exception_album_art_not_found();
         }
 
         std::wstring url;
-        if (playlist) {
-            url = Catalog::Get().PlaylistCover(id);
-        } else {
+        switch (kind) {
+        case CoverKind::Playlist: url = Catalog::Get().PlaylistCover(id); break;
+        case CoverKind::Artist: url = Catalog::Get().ArtistCover(id); break;
+        case CoverKind::Album: url = Catalog::Get().AlbumCover(id); break;
+        case CoverKind::Song:
             url = Catalog::Get().SongCover(id);
             if (url.empty()) {
                 auto& provider = Provider::Get();
@@ -66,6 +68,7 @@ public:
                     }
                 }
             }
+            break;
         }
         url = CoverUrl(url);
         if (url.empty()) {
@@ -103,9 +106,9 @@ class NcmArtExtractor : public album_art_extractor_v2 {
 public:
     bool is_our_path(const char* path, const char* extension) override {
         (void)extension;
-        bool playlist = false;
+        CoverKind kind = CoverKind::Song;
         int64_t id = 0;
-        if (ParseCoverPath(path, playlist, id)) return true;
+        if (ParseCoverPath(path, kind, id)) return true;
         return ParseSongPath(path, id);
     }
 
@@ -135,9 +138,9 @@ public:
         (void)abort;
         for (t_size i = 0; i < items.get_count(); ++i) {
             const char* path = items[i].is_valid() ? items[i]->get_path() : nullptr;
-            bool playlist = false;
+            CoverKind kind = CoverKind::Song;
             int64_t id = 0;
-            if (ParseCoverPath(path, playlist, id) || ParseSongPath(path, id)) {
+            if (ParseCoverPath(path, kind, id) || ParseSongPath(path, id)) {
                 Log(L"art: fallback for " + Wide(path ? path : ""));
                 album_art_extractor_instance_v2::ptr instance;
                 instance ^= fb2k::service_new<NcmArtInstance>(std::string(path ? path : ""));

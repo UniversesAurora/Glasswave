@@ -29,22 +29,32 @@ bool ParseSongPath(const char* path, int64_t& id) {
     return ParseDigits(text.substr(prefix.size()), id);
 }
 
-std::string CoverPath(bool playlist, int64_t id) {
-    return std::string("ncm://cover/") + (playlist ? "playlist/" : "song/") + std::to_string(id);
+std::string CoverPath(CoverKind kind, int64_t id) {
+    const char* name = kind == CoverKind::Playlist ? "playlist"
+                       : kind == CoverKind::Artist ? "artist"
+                       : kind == CoverKind::Album  ? "album"
+                                                   : "song";
+    return std::string("ncm://cover/") + name + "/" + std::to_string(id);
 }
 
-bool ParseCoverPath(const char* path, bool& playlist, int64_t& id) {
-    static constexpr std::string_view songPrefix = "ncm://cover/song/";
-    static constexpr std::string_view playlistPrefix = "ncm://cover/playlist/";
+bool ParseCoverPath(const char* path, CoverKind& kind, int64_t& id) {
+    struct Prefix {
+        const char* text;
+        CoverKind kind;
+    };
+    static constexpr Prefix kPrefixes[] = {{"ncm://cover/song/", CoverKind::Song},
+                                           {"ncm://cover/playlist/", CoverKind::Playlist},
+                                           {"ncm://cover/artist/", CoverKind::Artist},
+                                           {"ncm://cover/album/", CoverKind::Album}};
     if (!path) return false;
     const std::string_view text(path);
-    if (text.size() > songPrefix.size() && text.substr(0, songPrefix.size()) == songPrefix) {
-        playlist = false;
-        return ParseDigits(text.substr(songPrefix.size()), id);
-    }
-    if (text.size() > playlistPrefix.size() && text.substr(0, playlistPrefix.size()) == playlistPrefix) {
-        playlist = true;
-        return ParseDigits(text.substr(playlistPrefix.size()), id);
+    for (const auto& prefix : kPrefixes) {
+        const std::string_view value(prefix.text);
+        if (text.size() > value.size() && text.substr(0, value.size()) == value) {
+            if (!ParseDigits(text.substr(value.size()), id)) return false;
+            kind = prefix.kind;
+            return true;
+        }
     }
     return false;
 }

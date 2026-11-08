@@ -6,6 +6,11 @@
 
 namespace glasswave::netease {
 
+struct ArtistRef {
+    int64_t id = 0;
+    std::wstring name;
+};
+
 // A NetEase Cloud Music song, reduced to what the UI and file_info need.
 struct Song {
     int64_t id = 0;
@@ -13,6 +18,7 @@ struct Song {
     std::wstring album;
     std::wstring albumArtist;
     std::vector<std::wstring> artists;
+    std::vector<ArtistRef> artistRefs;  // ids for artist pages; may be empty in old caches
     int64_t albumId = 0;
     std::wstring coverUrl;
     int durationMs = 0;
@@ -31,6 +37,27 @@ struct Playlist {
     int trackCount = 0;
     int64_t creatorId = 0;
     bool subscribed = false;
+};
+
+// A NetEase Cloud Music artist page.
+struct Artist {
+    int64_t id = 0;
+    std::wstring name;
+    std::wstring avatarUrl;
+    std::wstring brief;
+    int albumCount = 0;
+    int songCount = 0;
+    bool followed = false;
+    bool followKnown = false;  // the API reported the follow state
+};
+
+// A NetEase Cloud Music album as shown on an artist page.
+struct Album {
+    int64_t id = 0;
+    std::wstring name;
+    std::wstring coverUrl;
+    int trackCount = 0;
+    int64_t publishTime = 0;  // epoch milliseconds
 };
 
 struct Account {

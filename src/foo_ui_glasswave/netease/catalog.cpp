@@ -61,6 +61,18 @@ void Catalog::Put(const Playlist& playlist) {
     m_playlists[playlist.id] = playlist;
 }
 
+void Catalog::Put(const Artist& artist) {
+    if (!artist.id) return;
+    std::lock_guard lock(m_mutex);
+    m_artists[artist.id] = artist;
+}
+
+void Catalog::Put(const std::vector<Album>& albums) {
+    std::lock_guard lock(m_mutex);
+    for (const auto& album : albums)
+        if (album.id) m_albums[album.id] = album;
+}
+
 std::optional<Song> Catalog::FindSong(int64_t id) const {
     std::lock_guard lock(m_mutex);
     const auto it = m_songs.find(id);
@@ -75,12 +87,34 @@ std::optional<Playlist> Catalog::FindPlaylist(int64_t id) const {
     return it->second;
 }
 
+std::optional<Artist> Catalog::FindArtist(int64_t id) const {
+    std::lock_guard lock(m_mutex);
+    const auto it = m_artists.find(id);
+    if (it == m_artists.end()) return std::nullopt;
+    return it->second;
+}
+
+std::optional<Album> Catalog::FindAlbum(int64_t id) const {
+    std::lock_guard lock(m_mutex);
+    const auto it = m_albums.find(id);
+    if (it == m_albums.end()) return std::nullopt;
+    return it->second;
+}
+
 metadb_handle_ptr Catalog::Handle(int64_t songId) const {
     return metadb::get()->handle_create(SongPath(songId).c_str(), 0);
 }
 
 metadb_handle_ptr Catalog::PlaylistHandle(int64_t playlistId) const {
-    return metadb::get()->handle_create(CoverPath(true, playlistId).c_str(), 0);
+    return metadb::get()->handle_create(CoverPath(CoverKind::Playlist, playlistId).c_str(), 0);
+}
+
+metadb_handle_ptr Catalog::ArtistHandle(int64_t artistId) const {
+    return metadb::get()->handle_create(CoverPath(CoverKind::Artist, artistId).c_str(), 0);
+}
+
+metadb_handle_ptr Catalog::AlbumHandle(int64_t albumId) const {
+    return metadb::get()->handle_create(CoverPath(CoverKind::Album, albumId).c_str(), 0);
 }
 
 std::wstring Catalog::SongCover(int64_t songId) const {
@@ -90,6 +124,16 @@ std::wstring Catalog::SongCover(int64_t songId) const {
 
 std::wstring Catalog::PlaylistCover(int64_t playlistId) const {
     if (const auto playlist = FindPlaylist(playlistId)) return playlist->coverUrl;
+    return {};
+}
+
+std::wstring Catalog::ArtistCover(int64_t artistId) const {
+    if (const auto artist = FindArtist(artistId)) return artist->avatarUrl;
+    return {};
+}
+
+std::wstring Catalog::AlbumCover(int64_t albumId) const {
+    if (const auto album = FindAlbum(albumId)) return album->coverUrl;
     return {};
 }
 
@@ -166,6 +210,25 @@ void Catalog::Load() {
             if (end == std::wstring::npos) break;
             pos = end + 1;
         }
+        if (fields.size() >= 13 && !fields[12].empty()) {  // artist ids added with the artist pages
+            std::vector<int64_t> ids;
+            const std::wstring values = Wide(fields[12]);
+            size_t idPos = 0;
+            while (idPos <= values.size()) {
+                const size_t idEnd = values.find(L'\x1f', idPos);
+                const std::wstring part =
+                    values.substr(idPos, idEnd == std::wstring::npos ? std::wstring::npos : idEnd - idPos);
+                ids.push_back(_wtoi64(part.c_str()));
+                if (idEnd == std::wstring::npos) break;
+                idPos = idEnd + 1;
+            }
+            for (size_t i = 0; i < song.artists.size(); ++i) {
+                ArtistRef ref;
+                ref.name = song.artists[i];
+                if (i < ids.size()) ref.id = ids[i];
+                song.artistRefs.push_back(std::move(ref));
+            }
+        }
         song.coverUrl = Wide(fields[10]);
         song.codec = Wide(fields[11]);
         loaded.push_back(std::move(song));
@@ -200,10 +263,15 @@ void Catalog::Save() const {
                 if (i) artists += L'\x1f';
                 artists += song.artists[i];
             }
+            std::wstring artistIds;
+            for (size_t i = 0; i < song.artists.size(); ++i) {
+                if (i) artistIds += L'\x1f';
+                artistIds += song.artistRefs.size() > i ? std::to_wstring(song.artistRefs[i].id) : L"0";
+            }
             out << song.id << '\t' << song.durationMs << '\t' << song.fee << '\t' << song.bitrate << '\t'
                 << song.sampleRate << '\t' << song.bitsPerSample << '\t' << Clean(song.title) << '\t'
                 << Clean(song.album) << '\t' << Clean(song.albumArtist) << '\t' << Clean(artists) << '\t'
-                << Clean(song.coverUrl) << '\t' << Clean(song.codec) << '\n';
+                << Clean(song.coverUrl) << '\t' << Clean(song.codec) << '\t' << Clean(artistIds) << '\n';
         }
     }
     MoveFileExW(tmp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);

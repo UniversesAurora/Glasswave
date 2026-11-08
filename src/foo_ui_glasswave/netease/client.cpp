@@ -55,23 +55,35 @@ std::wstring MessageOf(const json::Object& body, int code) {
     return message;
 }
 
-std::vector<std::wstring> ArtistNames(const json::Object& object) {
-    std::vector<std::wstring> out;
+std::vector<ArtistRef> ArtistRefs(const json::Object& object) {
+    auto parse = [](const json::Array& array) {
+        std::vector<ArtistRef> out;
+        for (const auto& artist : json::Objects(array)) {
+            ArtistRef ref;
+            ref.id = json::GetInt64(artist, L"id");
+            ref.name = json::GetString(artist, L"name");
+            if (ref.id || !ref.name.empty()) out.push_back(std::move(ref));
+        }
+        return out;
+    };
     if (auto artists = json::GetArray(object, L"ar")) {
-        for (const auto& artist : json::Objects(*artists)) {
-            const std::wstring name = json::GetString(artist, L"name");
-            if (!name.empty()) out.push_back(name);
-        }
+        auto out = parse(*artists);
+        if (!out.empty()) return out;
     }
-    if (out.empty()) {
-        if (auto artists = json::GetArray(object, L"artists")) {
-            for (const auto& artist : json::Objects(*artists)) {
-                const std::wstring name = json::GetString(artist, L"name");
-                if (!name.empty()) out.push_back(name);
-            }
-        }
-    }
-    return out;
+    if (auto artists = json::GetArray(object, L"artists")) return parse(*artists);
+    return {};
+}
+
+Album ParseAlbum(const json::Object& object) {
+    Album album;
+    album.id = json::GetInt64(object, L"id");
+    album.name = json::GetString(object, L"name");
+    album.coverUrl = json::GetString(object, L"picUrl",
+                                     json::GetString(object, L"coverImgUrl", json::GetString(object, L"blurPicUrl")));
+    album.trackCount = json::GetInt(object, L"size", json::GetInt(object, L"trackCount"));
+    album.publishTime = json::GetInt64(object, L"publishTime");
+    if (album.name.empty()) album.name = L"Unknown";
+    return album;
 }
 
 std::vector<int64_t> IdsOf(const json::Array& array) {
@@ -124,7 +136,9 @@ Song ParseSong(const json::Object& object) {
     Song song;
     song.id = json::GetInt64(object, L"id");
     song.title = json::GetString(object, L"name");
-    song.artists = ArtistNames(object);
+    song.artistRefs = ArtistRefs(object);
+    for (const auto& ref : song.artistRefs)
+        if (!ref.name.empty()) song.artists.push_back(ref.name);
     song.albumArtist = song.artists.empty() ? std::wstring() : song.artists.front();
     song.durationMs = json::GetInt(object, L"dt", json::GetInt(object, L"duration", 0));
     song.fee = json::GetInt(object, L"fee");
@@ -534,6 +548,128 @@ bool Client::GetSongUrl(int64_t id, std::wstring_view level, abort_callback& abo
     out.message = json::GetString(item, L"message");
     if (out.url.empty()) {
         error = out.message.empty() ? L"No playable source for this song." : out.message;
+        return false;
+    }
+    return true;
+}
+
+bool Client::GetArtistDetail(int64_t artistId, abort_callback& abort, Artist& out, std::wstring& error) {
+    out = {};
+    json::Object body;
+    int code = 0;
+    if (!Request(L"/artist/detail", {{L"id", std::to_wstring(artistId)}}, false, abort, body, code, error))
+        return false;
+    if (code != 200) {
+        error = MessageOf(body, code);
+        return false;
+    }
+    std::optional<json::Object> artist;
+    if (auto data = json::GetObject(body, L"data")) artist = json::GetObject(*data, L"artist");
+    if (!artist) artist = json::GetObject(body, L"artist");
+    if (!artist) {
+        error = L"The artist response has no artist object.";
+        return false;
+    }
+    out.id = json::GetInt64(*artist, L"id");
+    if (!out.id) out.id = artistId;
+    out.name = json::GetString(*artist, L"name");
+    out.avatarUrl = json::GetString(*artist, L"avatar",
+                                    json::GetString(*artist, L"cover", json::GetString(*artist, L"picUrl")));
+    out.brief = json::GetString(*artist, L"briefDesc");
+    out.albumCount = json::GetInt(*artist, L"albumSize");
+    out.songCount = json::GetInt(*artist, L"musicSize");
+    if (out.name.empty()) out.name = L"Unknown";
+    return true;
+}
+
+bool Client::GetArtistAlbums(int64_t artistId, abort_callback& abort, std::vector<Album>& out, bool* followed,
+                             std::wstring& error) {
+    out.clear();
+    if (followed) *followed = false;
+    int offset = 0;
+    for (int page = 0; page < 10; ++page) {  // 1000 albums is well past any artist's catalogue
+        json::Object body;
+        int code = 0;
+        if (!Request(L"/artist/album",
+                     {{L"id", std::to_wstring(artistId)},
+                      {L"limit", L"100"},
+                      {L"offset", std::to_wstring(offset)}},
+                     false, abort, body, code, error))
+            return false;
+        if (code != 200) {
+            error = MessageOf(body, code);
+            return false;
+        }
+        if (followed && page == 0) {
+            if (auto artist = json::GetObject(body, L"artist"); artist && artist->HasKey(L"followed"))
+                *followed = json::GetBool(*artist, L"followed");
+        }
+        auto albums = json::GetArray(body, L"hotAlbums");
+        if (!albums) break;
+        for (const auto& object : json::Objects(*albums)) {
+            Album album = ParseAlbum(object);
+            if (album.id) out.push_back(std::move(album));
+        }
+        if (!json::GetBool(body, L"more") || albums->Size() == 0) break;
+        offset += static_cast<int>(albums->Size());
+    }
+    return true;
+}
+
+bool Client::GetArtistTopSongs(int64_t artistId, abort_callback& abort, std::vector<Song>& out,
+                               std::wstring& error) {
+    out.clear();
+    json::Object body;
+    int code = 0;
+    if (!Request(L"/artist/top/song", {{L"id", std::to_wstring(artistId)}}, false, abort, body, code, error))
+        return false;
+    if (code != 200) {
+        error = MessageOf(body, code);
+        return false;
+    }
+    if (auto songs = json::GetArray(body, L"songs")) {
+        for (const auto& object : json::Objects(*songs)) {
+            Song song = ParseSong(object);
+            if (song.id) out.push_back(std::move(song));
+        }
+    }
+    return true;
+}
+
+bool Client::GetAlbum(int64_t albumId, abort_callback& abort, Album& info, std::vector<Song>& songs,
+                      std::wstring& error) {
+    info = {};
+    songs.clear();
+    json::Object body;
+    int code = 0;
+    if (!Request(L"/album", {{L"id", std::to_wstring(albumId)}}, false, abort, body, code, error)) return false;
+    if (code != 200) {
+        error = MessageOf(body, code);
+        return false;
+    }
+    if (auto album = json::GetObject(body, L"album")) info = ParseAlbum(*album);
+    info.id = info.id ? info.id : albumId;
+    if (auto list = json::GetArray(body, L"songs")) {
+        for (const auto& object : json::Objects(*list)) {
+            Song song = ParseSong(object);
+            if (song.id) songs.push_back(std::move(song));
+        }
+    }
+    return true;
+}
+
+bool Client::SetArtistFollow(int64_t artistId, bool follow, abort_callback& abort, std::wstring& error) {
+    json::Object body;
+    int code = 0;
+    if (!Request(L"/artist/sub", {{L"id", std::to_wstring(artistId)}, {L"t", follow ? L"1" : L"0"}}, true, abort,
+                 body, code, error))
+        return false;
+    if (code == 301) {
+        error = L"Please sign in to NetEase Cloud Music.";
+        return false;
+    }
+    if (code != 200) {
+        error = MessageOf(body, code);
         return false;
     }
     return true;
