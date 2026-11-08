@@ -147,13 +147,14 @@ void CommandButton(ID2D1DeviceContext* dc, D2D1_SIZE_F size, Layer layer, std::w
     const D2D1_RECT_F rc{0, 0, Snap(dc, size.width), Snap(dc, size.height)};
     using win7::Module;
     const int state = layer == Layer::Pressed ? 2 : layer == Layer::Hover ? 1 : 0;
-    // WMP 12's command bar is Win7's shared one (as in Explorer): aero.msstyles CommandModule
-    // button 892 (empty / hot / pressed / outline, 7x26 each, premultiplied). Measured on the
-    // owner's WMP capture: hot is white to #E5ECF2 inside a #B1B1B2 border, pressed a darker
-    // border with an inner shadow. The arrow is a vector (DropArrow).
-    const bool art = win7::Resources::Get().Has(Module::Aero, 892);
+    // WMP 12's command bar buttons are Win7 toolbar buttons, neutral and glossy, not Explorer's
+    // bluer CommandModule: aero.msstyles Toolbar BUTTON 849 (premultiplied; 8 states of 7x26:
+    // normal, hot, pressed, disabled, checked, hot checked, near hot, other side hot). Matches
+    // the owner's capture: a #A1A8B0 border, a white highlight on top, a darker lower half.
+    // The arrow is a vector (DropArrow).
+    const bool art = win7::Resources::Get().Has(Module::Aero, 849);
     if (art && state > 0)
-        win7::DrawNineGrid(dc, Module::Aero, 892, {0, 26.0f * state, 7, 26.0f * state + 26}, {3, 3, 3, 3}, rc);
+        win7::DrawNineGrid(dc, Module::Aero, 849, {0, 26.0f * state, 7, 26.0f * state + 26}, {3, 3, 3, 3}, rc);
     if (text.empty() && dropDown) {
         DropArrow(dc, size.width / 2, size.height / 2 + 0.5f);
         return;
@@ -322,27 +323,28 @@ void PlayingMarker(ID2D1DeviceContext* dc, D2D1_POINT_2F c, bool paused) {
 }
 
 bool SplitButtonPlate(ID2D1DeviceContext* dc, D2D1_SIZE_F size, Layer layer, float splitX, int part, bool menuOpen) {
-    // Win7 command bar split button (Explorer and WMP 12): aero.msstyles CommandModule split
-    // (893, left part) and split drop-down (894, right part), 26 px states: empty / hot /
-    // pressed / outline / hot. The half under the mouse is hot, the other outlined; pressing
-    // shows the pressed half; with the menu open the arrow is pressed and the main half hot.
+    // Win7 toolbar split button as in WMP 12: aero.msstyles Toolbar SPLITBUTTON (852, left half)
+    // and SPLITBUTTONDROPDOWN (853, right half) join into one button with a single divider;
+    // 8 states of 26 px like BUTTON (849). The half under the mouse is hot (1), the other
+    // "other side hot" (7); pressing shows the pressed half (2); with the menu open the arrow
+    // is pressed and the main half state 7.
     using win7::Module;
-    if (!win7::Resources::Get().Has(Module::Aero, 893) || !win7::Resources::Get().Has(Module::Aero, 894)) return false;
+    if (!win7::Resources::Get().Has(Module::Aero, 852) || !win7::Resources::Get().Has(Module::Aero, 853)) return false;
     int mainState = 0, splitState = 0;
     if (layer == Layer::Hover) {
-        mainState = part == 0 ? 1 : 3;
-        splitState = part == 0 ? 3 : 1;
+        mainState = part == 0 ? 1 : 7;
+        splitState = part == 0 ? 7 : 1;
     } else if (layer == Layer::Pressed) {
         const bool arrow = menuOpen || part == 1;
-        mainState = arrow ? 1 : 2;
-        splitState = arrow ? 2 : 3;
+        mainState = arrow ? 7 : 2;
+        splitState = arrow ? 2 : 7;
     }
     const float h = Snap(dc, size.height), x = Snap(dc, splitX), w = Snap(dc, size.width);
     if (mainState)
-        win7::DrawNineGrid(dc, Module::Aero, 893, {0, 26.0f * mainState, 6, 26.0f * mainState + 26}, {3, 3, 2, 3},
+        win7::DrawNineGrid(dc, Module::Aero, 852, {0, 26.0f * mainState, 6, 26.0f * mainState + 26}, {2, 3, 2, 3},
                            {0, 0, x, h});
     if (splitState)
-        win7::DrawNineGrid(dc, Module::Aero, 894, {0, 26.0f * splitState, 5, 26.0f * splitState + 26}, {2, 3, 3, 3},
+        win7::DrawNineGrid(dc, Module::Aero, 853, {0, 26.0f * splitState, 5, 26.0f * splitState + 26}, {1, 3, 2, 3},
                            {x, 0, w, h});
     DropArrow(dc, (x + w) / 2, h / 2 + 0.5f);  // centred in the right part
     return true;
