@@ -154,7 +154,6 @@ bool Client::Request(std::wstring_view path, const std::vector<std::pair<std::ws
         query += UrlEncode(value);
     };
     for (const auto& [name, value] : params) append(name, value);
-    if (!cookie.empty()) append(L"cookie", cookie);
 
     const std::wstring url = Wide(base) + std::wstring(path) + (query.empty() ? L"" : L"?" + Wide(query));
     const std::wstring method = post ? L"POST" : L"GET";
@@ -166,6 +165,7 @@ bool Client::Request(std::wstring_view path, const std::vector<std::pair<std::ws
     options.timeoutMs = 25000;
     options.maxBodyBytes = 48u * 1024u * 1024u;
     options.headers = {{L"Accept", L"application/json"}};
+    if (!cookie.empty()) options.headers.emplace_back(L"Cookie", cookie);
     const HttpResponse response = SendHttp(url, options, abort);
     const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
                              std::chrono::steady_clock::now() - started)
