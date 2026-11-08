@@ -161,6 +161,9 @@ Updated: 2026-11-08
     labelled Local Music, and the Chinese terminology follows WMP (艺术家 / 唱片集). The
     account refresh prefetches followed artists, collected albums and recommended
     playlists so the menus are populated.
+  - The collected albums page offers Icon and Expanded tile. Expanded fetches the saved
+    albums' tracks (four workers, first 120 albums) and lists them grouped by album, like
+    a playlist's expanded tile; the choice is remembered per view.
   - Not implemented yet: NetEase full-catalog search UI, adding songs to NetEase playlists,
     a combined All Music browse beyond Favorites, and an album view reached from anywhere
     other than an artist page or the collected albums page.
