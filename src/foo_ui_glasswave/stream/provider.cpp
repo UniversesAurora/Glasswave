@@ -62,6 +62,10 @@ void Provider::NotifyFavoritesChanged() {
 
 const std::vector<Provider*>& Providers() { return Registry(); }
 
+void StartProviders() {
+    for (Provider* provider : Registry()) provider->Start();
+}
+
 void Register(Provider& provider) {
     auto& providers = Registry();
     if (std::find(providers.begin(), providers.end(), &provider) == providers.end()) providers.push_back(&provider);

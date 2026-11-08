@@ -146,11 +146,18 @@ Session::DoneCallback Adapt(stream::Provider::Done done) {
     };
 }
 
-// Started at foobar2000 start-up on the main thread, whichever UI is active, so ncm://
-// items can play; stopped before the component is unloaded (no joins in static destructors).
+// Registered while the component loads, so the UI finds it however early it is created.
+// Started by the UI or at foobar2000 start-up on the main thread, whichever comes first, so
+// ncm:// items also play with another UI; stopped before the component is unloaded (no
+// joins in static destructors).
+const bool g_registered = [] {
+    stream::Register(StreamProvider::Get());
+    return true;
+}();
+
 class StreamProviderInit : public initquit {
 public:
-    void on_init() override { StreamProvider::Get().Initialize(); }
+    void on_init() override { StreamProvider::Get().Start(); }
     void on_quit() override { StreamProvider::Get().Shutdown(); }
 };
 FB2K_SERVICE_FACTORY(StreamProviderInit);
@@ -162,7 +169,9 @@ StreamProvider& StreamProvider::Get() {
     return provider;
 }
 
-void StreamProvider::Initialize() {
+void StreamProvider::Start() {
+    if (m_started) return;
+    m_started = true;
     Ncm().Initialize();
     m_signedIn = Ncm().LoggedIn();
     // The session reports sign-in changes and account refreshes the same way; only a
@@ -170,13 +179,9 @@ void StreamProvider::Initialize() {
     Ncm().SetStateCallback([this] { OnSessionChanged(); });
     Ncm().SetLibraryCallback([this] { NotifyLibraryChanged(); });
     Ncm().SetLikesCallback([this] { NotifyFavoritesChanged(); });
-    if (!m_registered) stream::Register(*this);
-    m_registered = true;
 }
 
 void StreamProvider::Shutdown() {
-    if (m_registered) stream::Unregister(*this);
-    m_registered = false;
     Ncm().SetStateCallback({});
     Ncm().SetLibraryCallback({});
     Ncm().SetLikesCallback({});

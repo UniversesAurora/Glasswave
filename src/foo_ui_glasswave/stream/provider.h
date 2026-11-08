@@ -61,6 +61,10 @@ public:
 
     virtual ~Provider() = default;
 
+    // Starts the provider's session (main thread, idempotent). Called before the UI reads
+    // anything from it and at foobar2000 start-up, whichever comes first.
+    virtual void Start() = 0;
+
     // Stable short key used in saved views, cache keys and play history ("ncm").
     virtual std::wstring_view Key() const = 0;
     // Display name, untranslated (the UI passes it through Tr).
@@ -142,8 +146,10 @@ private:
     std::vector<Listener*> m_listeners;
 };
 
-// The providers compiled into the component, in navigation order. Main thread only.
+// The providers compiled into the component, in navigation order. Providers register
+// themselves while the component loads; Providers() is safe from then on (main thread).
 const std::vector<Provider*>& Providers();
+void StartProviders();  // Start() on every provider
 void Register(Provider& provider);
 void Unregister(Provider& provider);
 Provider* FindProvider(std::wstring_view key);

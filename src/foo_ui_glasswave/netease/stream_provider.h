@@ -10,9 +10,8 @@ class StreamProvider final : public stream::Provider {
 public:
     static StreamProvider& Get();
 
-    // Starts the session and registers the provider; Shutdown undoes both.
-    void Initialize();
-    void Shutdown();
+    void Start() override;
+    void Shutdown();  // stops the session and its helper
 
     std::wstring_view Key() const override { return L"ncm"; }
     std::wstring Name() const override { return L"NetEase Cloud Music"; }
@@ -68,7 +67,7 @@ private:
     StreamProvider() = default;
     void OnSessionChanged();
 
-    bool m_registered = false;
+    bool m_started = false;
     bool m_signedIn = false;
 };
 

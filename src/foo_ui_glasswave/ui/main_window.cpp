@@ -418,6 +418,7 @@ MainWindow::~MainWindow() {
 }
 
 HWND MainWindow::Create(user_interface::HookProc_t hook) {
+    stream::StartProviders();  // the UI can come up before foobar2000's initquit services
     m_hook = hook;
     const HINSTANCE inst = core_api::get_my_instance();
 
