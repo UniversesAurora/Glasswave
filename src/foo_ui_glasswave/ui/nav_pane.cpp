@@ -608,9 +608,9 @@ void NavPane::Paint() {
                                         it.target == Target::AllFavorites || it.target == Target::NeteaseLiked
                                     ? 29526
                                 : it.target == Target::Queue        ? 29513
-                                : it.target == Target::AllRecentPlayed || it.target == Target::AllMostPlayed ||
-                                          it.target == Target::SmartHeader
-                                      ? 29572
+                                : it.target == Target::AllRecentPlayed ? 575   // clock with a music note
+                                : it.target == Target::AllMostPlayed   ? 550   // pie chart
+                                : it.target == Target::SmartHeader     ? 29572
                                 : it.target == Target::Category ? CategoryIcon(static_cast<media::GroupKind>(it.playlist))
                                                                 : 0;
             bool drewCover = false;

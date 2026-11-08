@@ -4963,14 +4963,12 @@ void MainWindow::OnPlaybackOrderChanged() {
 }
 
 void MainWindow::UpdateShuffleRepeat(bool shuffle, Repeat repeat) {
-    if (shuffle != m_shuffle) {
-        m_shuffle = shuffle;
-        if (auto* w = WidgetById(kShuffle)) w->Invalidate();
-    }
-    if (repeat != m_repeat) {
-        m_repeat = repeat;
-        if (auto* w = WidgetById(kRepeat)) w->Invalidate();
-    }
+    m_shuffle = shuffle;
+    m_repeat = repeat;
+    // Repaint even when the values did not change: at startup they come from cfg after the
+    // buttons were first painted, and the toggles must show the restored state.
+    for (int id : {kShuffle, kRepeat})
+        if (auto* w = WidgetById(id)) w->Invalidate();
     cfg_shuffle = shuffle ? 1 : 0;
     cfg_repeat = static_cast<int>(repeat);
 }
