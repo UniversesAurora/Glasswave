@@ -140,15 +140,12 @@ void ScrollBar(ID2D1DeviceContext* dc, D2D1_SIZE_F size, float thumbTop, float t
     const int trackState = pressed == ScrollBarPart::Track ? 2 : 0;
     const D2D1_RECT_F trackRect{0, arrow, W, H - arrow};
     if (aero) {
-        // IMAGE 728 is 14x1 per state with fixed 10 px left / 3 px right margins; stretch
-        // only the middle column to the 17 DIP scrollbar width.
-        const UINT sy = static_cast<UINT>(trackState);
-        win7::DrawPartTo(dc, Module::Aero, 728, {0, sy, 10, sy + 1},
-                         {0, trackRect.top, 10, trackRect.bottom}, 1.0f);
-        win7::DrawPartTo(dc, Module::Aero, 728, {10, sy, 11, sy + 1},
-                         {10, trackRect.top, W - 3, trackRect.bottom}, 1.0f);
-        win7::DrawPartTo(dc, Module::Aero, 728, {11, sy, 14, sy + 1},
-                         {W - 3, trackRect.top, W, trackRect.bottom}, 1.0f);
+        // IMAGE 728 is 14x1 per state with fixed 10 px left / 3 px right margins; the theme
+        // nine-grids it to the 17/21/26 px scrollbar width so the edges stay one device pixel
+        // sharp at every DPI.
+        win7::DrawNineGrid(dc, Module::Aero, 728, {0.0f, static_cast<float>(trackState), 14.0f,
+                                                    static_cast<float>(trackState + 1)},
+                           {10.0f, 0.0f, 3.0f, 0.0f}, trackRect, 1.0f);
     } else {
         dc->FillRectangle({0, 0, W, H}, Solid(dc, Hex(0xF2F6FA)).get());
         dc->FillRectangle({0, 0, L, H}, Solid(dc, Hex(0xC9D5E1)).get());
@@ -166,11 +163,13 @@ void ScrollBar(ID2D1DeviceContext* dc, D2D1_SIZE_F size, float thumbTop, float t
         const D2D1_RECT_F r{0, down ? H - arrow : 0, W, down ? H : arrow};
         if (aero) {
             // IMAGE 717: 20 states of 17x17; states 1-4 up, 5-8 down (normal/hot/pressed/
-            // disabled), and the matching hover variants after them.
+            // disabled), and the matching hover variants after them. The 8 px border is
+            // fixed, as the theme nine-grids it to 21/26 px at 120/144 dpi.
             const int index = (down ? 4 : 0) + s;
-            win7::DrawPartTo(dc, Module::Aero, 717,
-                             {0, static_cast<UINT>(index * 17), 17, static_cast<UINT>((index + 1) * 17)}, r,
-                             1.0f);
+            win7::DrawNineGrid(dc, Module::Aero, 717,
+                               {0.0f, static_cast<float>(index * 17), 17.0f,
+                                static_cast<float>((index + 1) * 17)},
+                               {8.0f, 8.0f, 8.0f, 8.0f}, r, 1.0f);
         } else {
             const bool press = s == 2;
             const bool hotPart = s == 1;
@@ -220,16 +219,11 @@ void ScrollBar(ID2D1DeviceContext* dc, D2D1_SIZE_F size, float thumbTop, float t
             win7::DrawPartTo(dc, Module::Aero, 733,
                              {0, static_cast<UINT>(sy), 17, static_cast<UINT>(sy + 22)}, t, 1.0f);
         } else {
-            const float cap = 5.0f;
-            win7::DrawPartTo(dc, Module::Aero, 733, {0, static_cast<UINT>(sy), 17,
-                                                     static_cast<UINT>(sy + 5)},
-                             {0, t.top, W, t.top + cap}, 1.0f);
-            win7::DrawPartTo(dc, Module::Aero, 733,
-                             {0, static_cast<UINT>(sy + 5), 17, static_cast<UINT>(sy + 17)},
-                             {0, t.top + cap, W, t.bottom - cap}, 1.0f);
-            win7::DrawPartTo(dc, Module::Aero, 733,
-                             {0, static_cast<UINT>(sy + 17), 17, static_cast<UINT>(sy + 22)},
-                             {0, t.bottom - cap, W, t.bottom}, 1.0f);
+            // Nine-grid: 8 px side borders, 5 px top/bottom caps (the baked track rows stay
+            // in the caps), so the thumb corners stay sharp when the theme scales it.
+            win7::DrawNineGrid(dc, Module::Aero, 733,
+                               {0.0f, sy, 17.0f, sy + 22.0f},
+                               {8.0f, 5.0f, 8.0f, 5.0f}, t, 1.0f);
         }
     } else {
         const D2D1_RECT_F f{2, t.top, W - 2, t.bottom};

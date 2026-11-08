@@ -515,21 +515,24 @@ void NavPane::OnMouseMove(POINT pt) {
     if (m_pressPending) {
         if (!m_dragging) {
             const int moved = std::abs(pt.x - m_pressPt.x) + std::abs(pt.y - m_pressPt.y);
-            if (moved > std::lround(4 * m_scale) && MovableItem(m_press)) m_dragging = true;
+            if (moved > std::lround(4 * m_scale) && MovableItem(m_press)) {
+                m_dragging = true;
+                m_dragPt = pt;
+            }
         }
         if (m_dragging) {
+            m_dragPt = pt;
             const int rowH = RowHeightPx();
             const int header = std::lround(6 * m_scale);
             const size_t visible =
                 std::max<size_t>(1, (m_bounds.bottom - m_bounds.top - header) / std::max(rowH, 1));
             if (pt.y < m_bounds.top + header + rowH && m_top > 0) {
                 --m_top;
-                Paint();
             } else if (pt.y > m_bounds.bottom - rowH && m_top + visible < m_items.size()) {
                 ++m_top;
-                Paint();
             }
             UpdateDropTarget(pt);
+            Paint();
             return;
         }
     }
@@ -574,33 +577,7 @@ void NavPane::Paint() {
         // Divider against the list
         const float L = std::max(1.0f, std::floor(s)) / s;
         dc->FillRectangle({width - L, 0, width, h / s}, sep.get());
-        float y = 6;
-        for (size_t i = m_top; i < m_items.size(); ++i, y += rowH) {
-            const Item& it = m_items[i];
-            const bool selected =
-                it.target == m_selTarget &&
-                (it.target == Target::Playlist || it.target == Target::Category
-                     ? it.playlist == m_selPlaylist
-                     : it.target == Target::NeteaseRemotePlaylist ? it.remoteId == m_selRemoteId : true);
-            const bool hot = i == m_hot;
-            if (selected || hot)
-                wp::RowPlate(dc, {4, y, width - 6, y + rowH},
-                             selected ? (hot ? wp::RowState::SelectedHot : wp::RowState::Selected) : wp::RowState::Hot,
-                             m_focused);
-            const float x = 8 + it.level * kIndent;
-            if (it.expandable) {
-                const bool expanded = it.target == Target::PlaylistsHeader ? m_playlistsExpanded
-                                      : it.target == Target::SmartHeader   ? m_smartExpanded
-                                      : it.target == Target::Music         ? m_musicExpanded
-                                      : it.target == Target::LibraryAll    ? m_allExpanded
-                                      : it.target == Target::LibraryLocal  ? m_localExpanded
-                                      : it.target == Target::LibraryNetease ? m_neteaseExpanded
-                                      : it.target == Target::NeteaseCreatedHeader ? m_createdExpanded
-                                      : it.target == Target::NeteaseCollectedHeader ? m_collectedExpanded
-                                                                           : false;
-                // Win7 tree expander as vectors (the 16 px theme glyph went soft at 200 %).
-                wp::Disclosure(dc, {x + 2, y + rowH / 2}, expanded, i == m_hotExpander);
-            }
+        auto drawRowContent = [&](const Item& it, float x, float y) {
             const bool autoPlaylist = it.target == Target::Playlist && media::IsAutoPlaylist(it.playlist);
             // Favorites: star; queue: WMP's playlist icon with the orbit; smart header: auto playlist.
             const int special = (it.target == Target::Playlist && it.text == L"Favorites") ||
@@ -632,6 +609,59 @@ void NavPane::Paint() {
                 wp::NavGlyph(dc, {x + 16, y + rowH / 2}, it.icon);
             auto layout = MakeText(Tr(it.text), 12.0f, DWRITE_FONT_WEIGHT_NORMAL, width - x - 34, rowH);
             dc->DrawTextLayout({x + 26, y}, layout.get(), ink.get());
+        };
+        float y = 6;
+        for (size_t i = m_top; i < m_items.size(); ++i, y += rowH) {
+            const Item& it = m_items[i];
+            const bool selected =
+                it.target == m_selTarget &&
+                (it.target == Target::Playlist || it.target == Target::Category
+                     ? it.playlist == m_selPlaylist
+                     : it.target == Target::NeteaseRemotePlaylist ? it.remoteId == m_selRemoteId : true);
+            const bool hot = i == m_hot;
+            if (selected || hot)
+                wp::RowPlate(dc, {4, y, width - 6, y + rowH},
+                             selected ? (hot ? wp::RowState::SelectedHot : wp::RowState::Selected) : wp::RowState::Hot,
+                             m_focused);
+            const float x = 8 + it.level * kIndent;
+            if (it.expandable) {
+                const bool expanded = it.target == Target::PlaylistsHeader ? m_playlistsExpanded
+                                      : it.target == Target::SmartHeader   ? m_smartExpanded
+                                      : it.target == Target::Music         ? m_musicExpanded
+                                      : it.target == Target::LibraryAll    ? m_allExpanded
+                                      : it.target == Target::LibraryLocal  ? m_localExpanded
+                                      : it.target == Target::LibraryNetease ? m_neteaseExpanded
+                                      : it.target == Target::NeteaseCreatedHeader ? m_createdExpanded
+                                      : it.target == Target::NeteaseCollectedHeader ? m_collectedExpanded
+                                                                           : false;
+                // Win7 tree expander as vectors (the 16 px theme glyph went soft at 200 %).
+                wp::Disclosure(dc, {x + 2, y + rowH / 2}, expanded, i == m_hotExpander);
+            }
+            drawRowContent(it, x, y);
+        }
+        if (m_dragging && m_press < m_items.size()) {
+            // The drag preview is the whole row, drawn semi-transparent under the cursor.
+            const Item& it = m_items[m_press];
+            const float gx = 4;
+            float gy = (m_dragPt.y - m_bounds.top) / s - rowH / 2;
+            gy = std::clamp(gy, 0.0f, std::max(0.0f, h / s - rowH));
+            winrt::com_ptr<ID2D1Layer> layer;
+            if (SUCCEEDED(dc->CreateLayer(nullptr, layer.put()))) {
+                D2D1_LAYER_PARAMETERS params{};
+                params.contentBounds = D2D1::InfiniteRect();
+                params.opacity = 0.72f;
+                params.maskAntialiasMode = D2D1_ANTIALIAS_MODE_PER_PRIMITIVE;
+                params.maskTransform = D2D1::IdentityMatrix();
+                dc->PushLayer(params, layer.get());
+                winrt::com_ptr<ID2D1SolidColorBrush> fill, edge;
+                dc->CreateSolidColorBrush(D2D1::ColorF(0xFFFFFF), fill.put());
+                dc->CreateSolidColorBrush(D2D1::ColorF(0x7DA2CE), edge.put());
+                const D2D1_ROUNDED_RECT r{{gx, gy, width - 6, gy + rowH}, 3, 3};
+                dc->FillRoundedRectangle(r, fill.get());
+                dc->DrawRoundedRectangle(r, edge.get(), 1.0f);
+                drawRowContent(it, gx + 4 + it.level * kIndent, gy);
+                dc->PopLayer();
+            }
         }
         if (m_dragging && m_drop != SIZE_MAX && m_drop >= m_top && m_drop < m_items.size()) {
             const float lineY = 6 + static_cast<float>(m_drop - m_top) * rowH + (m_dropAfter ? rowH : 0);

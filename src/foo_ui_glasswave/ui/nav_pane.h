@@ -95,6 +95,7 @@ private:
     std::map<std::wstring, std::vector<std::wstring>> m_staticOrder;
     size_t m_press = SIZE_MAX;
     POINT m_pressPt{};
+    POINT m_dragPt{};
     bool m_pressPending = false;
     bool m_dragging = false;
     size_t m_drop = SIZE_MAX;
