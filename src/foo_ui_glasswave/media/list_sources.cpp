@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "media/list_sources.h"
+#include "ui/win7_menu.h"
 #include "media/source_identity.h"
 #include "ui/text.h"
 
@@ -261,7 +262,7 @@ void PlaylistSource::Activate(size_t row) {
 
 void PlaylistSource::ContextMenu(HWND owner, POINT screen) {
     playlist_manager::get()->set_active_playlist(m_playlist);
-    contextmenu_manager::win32_run_menu_context_playlist(owner, &screen);
+    ui::RunPlaylistContextMenu(owner, screen);
 }
 
 bool PlaylistSource::DeleteSelected() {
@@ -451,7 +452,7 @@ void TrackSource::Activate(size_t row) {
 
 void TrackSource::ContextMenu(HWND owner, POINT screen) {
     auto items = SelectedItems();
-    if (items.get_count()) contextmenu_manager::win32_run_menu_context(owner, items, &screen);
+    if (items.get_count()) ui::RunContextMenu(owner, items, screen);
 }
 
 metadb_handle_list TrackSource::SelectedItems() const {
@@ -604,7 +605,7 @@ void GroupSource::Activate(size_t row) {
 
 void GroupSource::ContextMenu(HWND owner, POINT screen) {
     auto items = SelectedItems();
-    if (items.get_count()) contextmenu_manager::win32_run_menu_context(owner, items, &screen);
+    if (items.get_count()) ui::RunContextMenu(owner, items, screen);
 }
 
 metadb_handle_list GroupSource::SelectedItems() const {

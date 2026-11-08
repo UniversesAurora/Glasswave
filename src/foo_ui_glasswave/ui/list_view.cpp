@@ -4,6 +4,7 @@
 #include "ui/art_cache.h"
 #include "ui/text.h"
 #include "win7/win7_resources.h"
+#include "ui/win7_menu.h"
 #include "wmp/wmp_painter.h"
 
 namespace glasswave::ui {
@@ -1242,7 +1243,7 @@ void ListView::ShowHeaderMenu(HWND owner, POINT pt, size_t displayCol) {
     AppendMenuW(menu, MF_STRING, kReset, L"&Reset columns");
     POINT screen = pt;
     ClientToScreen(owner, &screen);
-    const UINT cmd = TrackPopupMenuEx(menu, TPM_RETURNCMD | TPM_NONOTIFY, screen.x, screen.y, owner, nullptr);
+    const UINT cmd = TrackWin7Menu(menu, TPM_RETURNCMD | TPM_NONOTIFY, screen.x, screen.y, owner);
     DestroyMenu(menu);  // also destroys the submenu
     if (cmd == kSort) {
         SortBy(src);

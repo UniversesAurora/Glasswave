@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "ui/main_menu.h"
+#include "ui/win7_menu.h"
 
 namespace glasswave::ui {
 
@@ -38,7 +39,7 @@ void ShowMainMenu(HWND owner, POINT pt, const std::vector<MenuAction>& actions) 
     }
 
     SetForegroundWindow(owner);
-    const UINT cmd = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_NONOTIFY, pt.x, pt.y, 0, owner, nullptr);
+    const UINT cmd = TrackWin7Menu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_NONOTIFY, pt.x, pt.y, owner);
     DestroyMenu(menu);  // also destroys the submenus
 
     if (cmd >= kActionBase) {
@@ -59,8 +60,7 @@ void ShowActionMenu(HWND owner, POINT pt, const std::vector<MenuAction>& actions
         else
             AppendMenuW(menu, MF_STRING | (i == checked ? MF_CHECKED : 0), 1 + i, actions[i].label.c_str());
     }
-    const UINT cmd = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_NONOTIFY | TPM_LEFTALIGN | TPM_TOPALIGN, pt.x, pt.y, 0,
-                                    owner, nullptr);
+    const UINT cmd = TrackWin7Menu(menu, TPM_RETURNCMD | TPM_NONOTIFY | TPM_LEFTALIGN | TPM_TOPALIGN, pt.x, pt.y, owner);
     DestroyMenu(menu);
     if (cmd >= 1 && cmd <= actions.size() && actions[cmd - 1].run) actions[cmd - 1].run();
 }

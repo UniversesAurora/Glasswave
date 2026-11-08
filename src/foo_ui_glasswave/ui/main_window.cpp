@@ -11,6 +11,7 @@
 #include "ui/main_menu.h"
 #include "ui/shell_glue.h"
 #include "ui/taskbar.h"
+#include "ui/win7_menu.h"
 #include "ui/text.h"
 #include "wmp/wmp_painter.h"
 #include "wmp/wmp_transport.h"
@@ -1510,8 +1511,7 @@ void MainWindow::ShowViewMenu() {
     CheckMenuRadioItem(menu, 1, 3, current, MF_BYCOMMAND);
     POINT pt{m_layout.viewOptions.left, m_layout.viewOptions.bottom};
     ClientToScreen(m_hwnd, &pt);
-    const UINT cmd = TrackPopupMenuEx(menu, TPM_RETURNCMD | TPM_NONOTIFY | TPM_LEFTALIGN | TPM_TOPALIGN, pt.x, pt.y,
-                                      m_hwnd, nullptr);
+    const UINT cmd = TrackWin7Menu(menu, TPM_RETURNCMD | TPM_NONOTIFY | TPM_LEFTALIGN | TPM_TOPALIGN, pt.x, pt.y, m_hwnd);
     DestroyMenu(menu);
     if (cmd == 0 || cmd == current) return;
     ApplyViewStyle(static_cast<media::ViewStyle>(cmd - 1));

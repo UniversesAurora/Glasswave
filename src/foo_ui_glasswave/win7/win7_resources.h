@@ -41,6 +41,8 @@ public:
     const std::wstring& Folder() const { return m_folder; }
     // An icon group resource at `size` pixels (caller destroys it); nullptr when missing.
     HICON Icon(Module module, int id, int size) const;
+    // The decoded image (premultiplied BGRA after conversion by the caller); nullptr if missing.
+    IWICBitmapSource* Image(Module module, int id) { return Decode(module, L"#" + std::to_wstring(id)); }
     // An RT_BITMAP resource as a DIB section (caller deletes it); nullptr when missing.
     HBITMAP DibBitmap(Module module, int id) const;
 
