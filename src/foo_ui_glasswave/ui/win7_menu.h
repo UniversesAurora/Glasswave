@@ -1,5 +1,9 @@
 #pragma once
 
+#include <functional>
+#include <string>
+#include <vector>
+
 namespace glasswave::ui {
 
 // Popup menus in Windows 7 style, drawn with aero.msstyles' own Menu parts (background
@@ -20,5 +24,13 @@ UINT TrackWin7Menu(HMENU menu, UINT flags, int x, int y, HWND owner, const std::
 void RunContextMenu(HWND owner, metadb_handle_list_cref items, POINT pt);
 // foobar2000's context menu for the active playlist's selection (playlist commands included).
 void RunPlaylistContextMenu(HWND owner, POINT pt);
+
+// A destination for the context menus' "Go to artist" command. The main window supplies
+// them (local artist groups, NetEase artist ids); several entries become a submenu.
+struct ArtistLink {
+    std::wstring name;
+    std::function<void()> open;
+};
+void SetArtistLinkProvider(std::function<std::vector<ArtistLink>(metadb_handle_list_cref)> provider);
 
 }  // namespace glasswave::ui

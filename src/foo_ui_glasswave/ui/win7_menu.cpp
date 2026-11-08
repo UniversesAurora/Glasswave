@@ -362,7 +362,33 @@ UINT TrackWin7Menu(HMENU menu, UINT flags, int x, int y, HWND owner, const std::
 namespace {
 
 // Queue and Favorites commands above foobar2000's own context menu (ids past its range).
-enum : UINT { kPlay = 0x8001, kPlayNext, kAddToQueue, kFavoriteAdd, kFavoriteRemove, kClearQueue };
+enum : UINT { kPlay = 0x8001, kPlayNext, kAddToQueue, kFavoriteAdd, kFavoriteRemove, kClearQueue, kArtistBase = 0x8100 };
+
+std::function<std::vector<ArtistLink>(metadb_handle_list_cref)> g_artistLinks;
+
+std::vector<ArtistLink> ArtistLinksFor(metadb_handle_list_cref items) {
+    if (!g_artistLinks || items.get_count() == 0) return {};
+    return g_artistLinks(items);
+}
+
+void AppendArtistCommands(HMENU menu, const std::vector<ArtistLink>& links) {
+    if (links.empty()) return;
+    if (links.size() == 1) {
+        AppendMenuW(menu, MF_STRING, kArtistBase, TrC(L"Go to artist"));
+    } else {
+        HMENU sub = CreatePopupMenu();
+        for (size_t i = 0; i < links.size(); ++i)
+            AppendMenuW(sub, MF_STRING, kArtistBase + static_cast<UINT>(i), links[i].name.c_str());
+        AppendMenuW(menu, MF_POPUP | MF_STRING, reinterpret_cast<UINT_PTR>(sub), TrC(L"Go to artist"));
+    }
+    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+}
+
+bool RunArtistCommand(UINT cmd, const std::vector<ArtistLink>& links) {
+    if (cmd < kArtistBase || cmd >= kArtistBase + links.size()) return false;
+    if (links[cmd - kArtistBase].open) links[cmd - kArtistBase].open();
+    return true;
+}
 
 void AppendQueueCommands(HMENU menu, metadb_handle_list_cref items, bool inQueue) {
     if (!inQueue) {
@@ -388,6 +414,10 @@ bool RunQueueCommand(UINT cmd, metadb_handle_list_cref items) {
 
 }  // namespace
 
+void SetArtistLinkProvider(std::function<std::vector<ArtistLink>(metadb_handle_list_cref)> provider) {
+    g_artistLinks = std::move(provider);
+}
+
 void RunContextMenu(HWND owner, metadb_handle_list_cref items, POINT pt) {
     if (items.get_count() == 0) return;
     auto cm = contextmenu_manager::get();
@@ -395,9 +425,12 @@ void RunContextMenu(HWND owner, metadb_handle_list_cref items, POINT pt) {
     constexpr int kBase = 1;
     HMENU menu = CreatePopupMenu();
     AppendQueueCommands(menu, items, false);
+    const auto artists = ArtistLinksFor(items);
+    AppendArtistCommands(menu, artists);
     cm->win32_build_menu(menu, kBase, 0x7FFF);
     const UINT cmd = TrackWin7Menu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_NONOTIFY, pt.x, pt.y, owner);
     DestroyMenu(menu);
+    if (RunArtistCommand(cmd, artists)) return;
     if (RunQueueCommand(cmd, items)) return;
     if (cmd >= kBase) cm->execute_by_id(cmd - kBase);
 }
@@ -417,6 +450,8 @@ void RunPlaylistContextMenu(HWND owner, POINT pt) {
         AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     }
     if (items.get_count()) AppendQueueCommands(menu, items, queue);
+    const auto artists = ArtistLinksFor(items);
+    AppendArtistCommands(menu, artists);
     cm->win32_build_menu(menu, kBase, 0x7FFF);
     const UINT cmd = TrackWin7Menu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_NONOTIFY, pt.x, pt.y, owner);
     DestroyMenu(menu);
@@ -427,6 +462,7 @@ void RunPlaylistContextMenu(HWND owner, POINT pt) {
         }
         return;
     }
+    if (RunArtistCommand(cmd, artists)) return;
     if (RunQueueCommand(cmd, items)) return;
     if (cmd >= kBase) cm->execute_by_id(cmd - kBase);
 }

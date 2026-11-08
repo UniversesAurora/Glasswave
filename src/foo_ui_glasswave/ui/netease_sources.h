@@ -19,6 +19,7 @@ struct SongTableRow {
     std::wstring albumKey;  // album grouping key
     std::wstring artKey;
     std::wstring search;    // lower-cased title/artist/album for filtering
+    int64_t artistId = 0;   // first artist, for the album column's artist link
     bool favorite = false;
 };
 

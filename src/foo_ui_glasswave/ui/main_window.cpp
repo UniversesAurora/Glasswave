@@ -516,6 +516,7 @@ void MainWindow::InitComposition() {
     m_nav->SetCategories(LoadNavCategories());
     m_nav->SetNeteaseState(netease::Provider::Get().LoggedIn(), netease::Provider::Get().CurrentAccount().nickname);
     netease::Provider::Get().SetStateCallback([this] { OnNeteaseLoginChanged(); });
+    SetArtistLinkProvider([this](metadb_handle_list_cref items) { return BuildArtistLinks(items); });
     m_list = std::make_unique<ListView>(m_contentLayer);
     m_list->onLink = [this](size_t group, size_t line) { OnAlbumLink(group, line); };
     m_search = std::make_unique<SearchBox>(m_contentLayer);
@@ -1679,6 +1680,7 @@ void MainWindow::Navigate(const View& requested, bool push) {
     if (view.kind == View::Kind::Playlist && view.playlist >= pm->get_playlist_count()) view.kind = View::Kind::AllMusic;
     if (view.kind != View::Kind::NeteaseArtist || view.remoteId != m_view.remoteId) {
         m_artist.reset();
+        m_artistHeaderSize = {};  // repaint the band with the new artist's placeholder
         m_followPending = false;
     }
     switch (view.kind) {
@@ -2105,6 +2107,59 @@ void MainWindow::ToggleArtistFollow() {
     });
 }
 
+std::vector<ArtistLink> MainWindow::BuildArtistLinks(metadb_handle_list_cref items) {
+    std::vector<ArtistLink> links;
+    if (items.get_count() == 0) return links;
+    const metadb_handle_ptr& first = items[0];
+    if (!first.is_valid()) return links;
+
+    int64_t songId = 0;
+    if (netease::ParseSongPath(first->get_path(), songId)) {
+        const auto song = netease::Catalog::Get().FindSong(songId);
+        if (!song) return links;
+        std::vector<int64_t> seen;
+        for (const auto& ref : song->artistRefs) {
+            if (!ref.id || ref.name.empty()) continue;
+            if (std::find(seen.begin(), seen.end(), ref.id) != seen.end()) continue;
+            seen.push_back(ref.id);
+            links.push_back({ref.name, [this, id = ref.id, name = ref.name] { OpenNeteaseArtist(id, name); }});
+        }
+        return links;
+    }
+
+    const media::Track* track = m_library.FindTrack(first);
+    if (!track) return links;
+    auto add = [this, &links](media::GroupKind kind, const std::wstring& key, const std::wstring& label) {
+        for (const auto& link : links)
+            if (link.name == label) return;
+        links.push_back({label, [this, kind, key, label] {
+                             View view;
+                             view.library = View::Library::Local;
+                             view.kind = View::Kind::Group;
+                             view.group = kind;
+                             view.key = key;
+                             view.name = label;
+                             Navigate(view, true);
+                         }});
+    };
+    size_t pos = 0;
+    while (pos <= track->artist.size()) {
+        const size_t end = track->artist.find(L"; ", pos);
+        std::wstring name = track->artist.substr(pos, end == std::wstring::npos ? std::wstring::npos : end - pos);
+        const size_t begin = name.find_first_not_of(L" \t");
+        const size_t last = name.find_last_not_of(L" \t");
+        name = begin == std::wstring::npos ? std::wstring() : name.substr(begin, last - begin + 1);
+        if (!name.empty() && m_library.FindGroup(media::GroupKind::ContributingArtist, name))
+            add(media::GroupKind::ContributingArtist, name, name);
+        if (end == std::wstring::npos) break;
+        pos = end + 2;
+    }
+    if (links.empty() && !track->albumArtist.empty() &&
+        m_library.FindGroup(media::GroupKind::Artist, track->albumArtist))
+        add(media::GroupKind::Artist, track->albumArtist, track->albumArtist);
+    return links;
+}
+
 
 void MainWindow::ShowNeteaseLogin() {
     ui::ShowNeteaseLogin(m_hwnd, [this] { OnNeteaseLoginChanged(); });
@@ -2228,6 +2283,11 @@ void MainWindow::OnAlbumLink(size_t group, size_t line) {
     const auto* groups = m_source ? m_source->Groups() : nullptr;
     if (!groups || group >= groups->size() || line > 2) return;
     const auto& g = (*groups)[group];
+    if (g.linkKeys[line].rfind(L"ncm:", 0) == 0) {  // NetEase album column: artist page
+        const int64_t id = _wcstoi64(g.linkKeys[line].c_str() + 4, nullptr, 10);
+        if (id) OpenNeteaseArtist(id, g.lines[line]);
+        return;
+    }
     View v;
     v.kind = View::Kind::Group;
     v.group = line == 0 ? media::GroupKind::Album : line == 1 ? media::GroupKind::Artist : media::GroupKind::Genre;
@@ -3446,6 +3506,7 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
         m_playCallback.reset();
         if (auto* cache = ArtCache::Existing()) cache->Unsubscribe(m_artistArtToken);
         m_artistArtToken = 0;
+        SetArtistLinkProvider({});
         m_hover = m_pressed = nullptr;
         m_list.reset();
         m_nav.reset();

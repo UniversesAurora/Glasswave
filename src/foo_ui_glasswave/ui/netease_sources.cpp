@@ -98,6 +98,11 @@ SongTableRow MakeNeteaseRow(const netease::Song& song) {
     row.albumKey = song.albumId ? std::to_wstring(song.albumId) : L"t:" + std::to_wstring(song.id);
     row.artKey = L"ncm:" + std::to_wstring(song.albumId ? song.albumId : song.id);
     row.search = Lower(row.title) + L"\n" + Lower(row.artist) + L"\n" + Lower(row.album);
+    for (const auto& ref : song.artistRefs)
+        if (ref.id) {
+            row.artistId = ref.id;
+            break;
+        }
     row.favorite = netease::Provider::Get().IsLiked(song.id);
     return row;
 }
@@ -316,7 +321,10 @@ void SongTableSource::BuildGroups() {
         group.art = item.handle;
         group.header = std::move(header);
         group.lines[0] = group.header;
-        if (tiles) group.lines[1] = ArtistLabel(item);
+        if (tiles) {
+            group.lines[1] = ArtistLabel(item);
+            if (item.artistId) group.linkKeys[1] = L"ncm:" + std::to_wstring(item.artistId);
+        }
         m_groups.push_back(std::move(group));
     }
 }

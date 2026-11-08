@@ -10,6 +10,7 @@
 #include "ui/nav_pane.h"
 #include "ui/search_box.h"
 #include "ui/widget.h"
+#include "ui/win7_menu.h"
 
 #include <optional>
 
@@ -133,6 +134,8 @@ private:
     void PaintArtistHeader();
     void RepaintArtistHeader();
     void ToggleArtistFollow();
+    // Context-menu "Go to artist" destinations for the first item (NetEase or local).
+    std::vector<ArtistLink> BuildArtistLinks(metadb_handle_list_cref items);
     int ViewStyles() const;  // view options the current source offers
     void OnNavItem(const NavPane::Item& item);
     void AddDroppedFiles(IDataObject* data);
