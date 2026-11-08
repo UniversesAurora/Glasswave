@@ -2055,6 +2055,7 @@ void MainWindow::Navigate(const View& requested, bool push) {
         const bool sameDetail = m_playlistDetail && m_playlistDetail->id == id;
         m_playlistDetail.reset();
         if (!sameDetail) m_detailBriefExpanded = false;
+        m_detailHeaderSize = {};  // repaint the band for this page, not the previous one
         if (auto cached = netease::Catalog::Get().FindPlaylist(id)) m_playlistDetail = std::move(*cached);
         const View requestedView = view;
         netease::Provider::Get().FetchPlaylist(
@@ -2197,6 +2198,7 @@ void MainWindow::Navigate(const View& requested, bool push) {
         const bool sameDetail = m_albumDetail && m_albumDetail->id == id;
         m_albumDetail.reset();
         if (!sameDetail) m_detailBriefExpanded = false;
+        m_detailHeaderSize = {};  // repaint the band for this page, not the previous one
         if (auto cached = netease::Catalog::Get().FindAlbum(id)) m_albumDetail = std::move(*cached);
         const View requestedView = view;
         netease::Provider::Get().FetchAlbumDetail(
@@ -4740,6 +4742,7 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
                 case NavPane::Target::NeteaseArtists:
                 case NavPane::Target::NeteaseAlbums:
                 case NavPane::Target::NeteaseLiked:
+                case NavPane::Target::LibraryNetease:
                     ShowNeteaseNavMenu(item->target, screen);
                     return 0;
                 case NavPane::Target::NeteaseRemotePlaylist: {
