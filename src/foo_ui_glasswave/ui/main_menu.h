@@ -3,8 +3,10 @@
 namespace glasswave::ui {
 
 struct MenuAction {
-    std::wstring label;          // empty = separator
+    std::wstring label;  // empty = separator
     std::function<void()> run;
+    std::vector<MenuAction> children;  // non-empty: a submenu
+    bool checked = false;              // radio-style check mark
 };
 
 // Pop up a menu at screen point pt: optional custom actions first, then the complete

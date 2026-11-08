@@ -13,8 +13,11 @@
     merges the answers into lang\<Lang>.json (kept in the repo; run-dev.ps1 deploys it).
     Existing translations are kept, so hand corrections survive re-runs.
 
-    The API key is read from the DEEPSEEK_API_KEY environment variable; it is never written
-    anywhere. Set it in your own shell before running:  $env:DEEPSEEK_API_KEY = '...'
+    The API key comes from the DEEPSEEK_API_KEY environment variable or, if unset, from
+    -KeyFile (default .local\refs\deepseek.txt, never committed); it is never printed or
+    written anywhere. The model defaults to the account's "flash" model if /models lists one.
+    All strings go to the model in one request so it sees the whole UI as context; only if
+    the list is very long is it split, each part still sent with the full list as context.
 
 .PARAMETER DryRun
     List what would be translated without calling the API.
@@ -23,8 +26,9 @@
 param(
     [string]$ProfileDir = (Join-Path $PSScriptRoot '..\.local\fb2k-dev\profile'),
     [string]$Lang = 'zh-CN',
-    [string]$Model = 'deepseek-chat',
-    [int]$BatchSize = 60,
+    [string]$Model,
+    [string]$KeyFile = (Join-Path $PSScriptRoot '..\.local\refs\deepseek.txt'),
+    [int]$BatchSize = 600,
     [switch]$DryRun
 )
 $ErrorActionPreference = 'Stop'
@@ -43,7 +47,11 @@ if (Test-Path -LiteralPath $export) {
 }
 $patterns = @(
     'Tr[C]?\(L"((?:[^"\\]|\\.)+)"\)',           # Tr(L"...") / TrC(L"...")
-    '\{L"((?:[^"\\]|\\.)+)",\s*(?:\[|go\(|\d)',  # {L"label", [lambda] / go(view) / column width
+    '\{L"((?:[^"\\]|\\.)+)",\s*(?:\[|go\(|\d|nullptr|\{)',  # {L"label", [lambda] / go(view) / width / submenu
+    '\{"((?:[^"\\]|\\.)+)",\s*(?:"|nullptr)',     # smart playlist presets {"name", "query"
+    'mainmenu_groups::\w+, L"((?:[^"\\]|\\.)+)"',  # foobar2000 main menu roots
+    'L"((?:[^"\\]|\\.)+)"\s*:\s*L"((?:[^"\\]|\\.)+)"',  # ternary labels (first)
+    ':\s*L"((?:[^"\\]|\\.)+)"\);',                 # ternary labels (last)
     'push_back\(\{L"((?:[^"\\]|\\.)+)"',         # menu / crumb / nav items
     'CommandButton\(dc, [^,]+, [^,]+, L"((?:[^"\\]|\\.)+)"',  # command bar labels
     'fit\(L"((?:[^"\\]|\\.)+)"'                 # command bar widths
@@ -68,11 +76,19 @@ if (Test-Path -LiteralPath $target) {
     foreach ($k in ($json.Keys | Sort-Object)) { $existing[$k] = $json[$k] }
 }
 $todo = @($keys | Where-Object { -not $existing.Contains($_) -or -not $existing[$_] })
-Write-Host "$($keys.Count) strings, $($existing.Count) translated, $($todo.Count) to translate"
+Write-Host "$($keys.Count) strings, $($existing.Keys.Count) translated, $($todo.Count) to translate"
 if ($DryRun -or $todo.Count -eq 0) { $todo | Select-Object -First 50; return }
 
 $apiKey = $env:DEEPSEEK_API_KEY
-if (-not $apiKey) { throw 'Set DEEPSEEK_API_KEY in this shell first.' }
+if (-not $apiKey -and (Test-Path -LiteralPath $KeyFile)) { $apiKey = (Get-Content -LiteralPath $KeyFile -Raw).Trim() }
+if (-not $apiKey) { throw 'No DeepSeek key: set DEEPSEEK_API_KEY or pass -KeyFile.' }
+$headers = @{ Authorization = "Bearer $apiKey" }
+if (-not $Model) {
+    $models = (Invoke-RestMethod -Uri 'https://api.deepseek.com/models' -Headers $headers -TimeoutSec 60).data.id
+    $Model = ($models | Where-Object { $_ -match 'flash' } | Select-Object -First 1)
+    if (-not $Model) { $Model = 'deepseek-chat' }
+    Write-Host "Models: $($models -join ', ') -> using $Model"
+}
 
 # --- Translate ------------------------------------------------------------------------
 $system = @'
@@ -102,16 +118,17 @@ Rules:
 Answer with a JSON object mapping every input string exactly to its translation.
 '@
 $uri = 'https://api.deepseek.com/chat/completions'
-$headers = @{ Authorization = "Bearer $apiKey" }
+$context = ($keys | ConvertTo-Json -Compress -AsArray)
 for ($i = 0; $i -lt $todo.Count; $i += $BatchSize) {
     $batch = $todo[$i..([Math]::Min($i + $BatchSize, $todo.Count) - 1)]
     $body = @{
         model           = $Model
         temperature     = 0.2
+        max_tokens      = 8192
         response_format = @{ type = 'json_object' }
         messages        = @(
             @{ role = 'system'; content = $system },
-            @{ role = 'user'; content = ($batch | ConvertTo-Json -Compress -AsArray) }
+            @{ role = 'user'; content = "All strings of the UI, for context:`n$context`n`nTranslate these (answer with a JSON object mapping each of them):`n" + ($batch | ConvertTo-Json -Compress -AsArray) }
         )
     } | ConvertTo-Json -Depth 6
     $attempt = 0
@@ -137,4 +154,4 @@ for ($i = 0; $i -lt $todo.Count; $i += $BatchSize) {
     foreach ($k in ($existing.Keys | Sort-Object -CaseSensitive)) { $sorted[$k] = $existing[$k] }
     [IO.File]::WriteAllText($target, ($sorted | ConvertTo-Json -Depth 2), [Text.UTF8Encoding]::new($false))
 }
-Write-Host "Wrote $target. Run scripts/run-dev.ps1 to deploy it, then choose Organize > Language: Chinese."
+Write-Host "Wrote $target. Run scripts/run-dev.ps1 to deploy it (Organize > Language picks the language)."

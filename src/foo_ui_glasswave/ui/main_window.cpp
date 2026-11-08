@@ -229,6 +229,13 @@ bool KeyDown(int vk) { return (GetKeyState(vk) & 0x8000) != 0; }
 // Shuffle and repeat are independent like in current players; foobar2000 has one playback
 // order, so the pair is kept here and mapped onto it (see ApplyPlaybackOrder).
 // {8D2F6A13-4B7C-4E19-9F3A-2C6E8B1D5A70} / {8D2F6A14-...}
+// Playback to resume on the next start: playlist name, item index, file path, position (s).
+// {4B9E2D71-6A3C-4F58-8D10-2E7C5A9B3F46} .. {4B9E2D74-...}
+cfg_var_modern::cfg_string cfg_resumePlaylist({0x4b9e2d71, 0x6a3c, 0x4f58, {0x8d, 0x10, 0x2e, 0x7c, 0x5a, 0x9b, 0x3f, 0x46}}, "");
+cfg_var_modern::cfg_int cfg_resumeIndex({0x4b9e2d72, 0x6a3c, 0x4f58, {0x8d, 0x10, 0x2e, 0x7c, 0x5a, 0x9b, 0x3f, 0x46}}, -1);
+cfg_var_modern::cfg_string cfg_resumePath({0x4b9e2d73, 0x6a3c, 0x4f58, {0x8d, 0x10, 0x2e, 0x7c, 0x5a, 0x9b, 0x3f, 0x46}}, "");
+cfg_var_modern::cfg_string cfg_resumePosition({0x4b9e2d74, 0x6a3c, 0x4f58, {0x8d, 0x10, 0x2e, 0x7c, 0x5a, 0x9b, 0x3f, 0x46}}, "0");
+
 cfg_var_modern::cfg_int cfg_shuffle({0x8d2f6a13, 0x4b7c, 0x4e19, {0x9f, 0x3a, 0x2c, 0x6e, 0x8b, 0x1d, 0x5a, 0x70}}, 0);
 cfg_var_modern::cfg_int cfg_repeat({0x8d2f6a14, 0x4b7c, 0x4e19, {0x9f, 0x3a, 0x2c, 0x6e, 0x8b, 0x1d, 0x5a, 0x70}}, 0);
 
@@ -250,6 +257,10 @@ struct MainWindow::PlayCallback : play_callback_impl_base {
         window.OnPlaybackStateChanged();
     }
     void on_playback_new_track(metadb_handle_ptr) override {
+        if (window.m_resumeSeek > 0) {  // the track restored at start-up: to its position
+            playback_control::get()->playback_seek(window.m_resumeSeek);
+            window.m_resumeSeek = 0;
+        }
         window.OnShuffleTrack();
         window.OnTrackChanged();
         window.OnPlaybackStateChanged();
@@ -559,8 +570,8 @@ void MainWindow::CreateWidgets() {
             RunSplitMenu(kNewPlaylist, [this] {
                 POINT pt{m_layout.newPlaylist.left, m_layout.newPlaylist.bottom};
                 ClientToScreen(m_hwnd, &pt);
-                ShowActionMenu(m_hwnd, pt, {{L"Create playlist", [this] { CreatePlaylist(false); }},
-                                            {L"Create auto playlist", [this] { CreatePlaylist(true); }}});
+                auto add = AddPlaylistActions();
+                ShowActionMenu(m_hwnd, pt, add.front().children);  // new playlist / smart / presets
             });
         else
             CreatePlaylist(false);
@@ -1342,8 +1353,7 @@ void MainWindow::BuildCrumbs() {
         }
     }
 
-    // Lay out: name with 4 DIP padding, arrow 12 DIP; the root crumb is an arrow only. WMP draws
-    // its 22 px crumb plates 1:1, barely taller than the text: 17 DIP here.
+    // Lay out: name with 4 DIP padding, arrow 12 DIP; the root crumb is an arrow only.
     float x = 0;
     for (auto& c : m_crumbs) {
         c.x0 = x;
@@ -1364,7 +1374,8 @@ void MainWindow::PaintBreadcrumb() {
     auto& host = gfx::CompositionHost::Get();
     const int w = PxI(900), h = PxI(NavBarHeight() - 1);
     host.Repaint(m_breadcrumb, w, h, m_scale, [&](ID2D1DeviceContext* dc) {
-        const float H = h / m_scale, top = std::round((H - 17) / 2 * m_scale) / m_scale, bottom = top + 17;
+        // Plates 21 DIP high (owner: 17 was too low), centred with the text in the bar.
+        const float H = h / m_scale, top = std::round((H - 21) / 2 * m_scale) / m_scale, bottom = top + 21;
         com_ptr<ID2D1SolidColorBrush> ink, divider;
         dc->CreateSolidColorBrush(Hex(0x1E395B), ink.put());
         dc->CreateSolidColorBrush(Hex(0x8DB2E3, 0.8f), divider.put());
@@ -1723,21 +1734,13 @@ void MainWindow::ShowOrganizeMenu() {
                   {L"Add folder...", [] { standard_commands::main_add_directory(); }},
                   {L"Add location...", [] { standard_commands::run_main(standard_commands::guid_main_add_location); }},
                   {L"", nullptr},
-                  {L"Restore smart playlists", [this] {
-                       media::EnsureSpecialPlaylists(true);
-                       m_nav->Rebuild();
-                   }},
-                  {L"", nullptr},
-                  {L"Language: follow Windows", [this] { ApplyLanguage(Language::Auto); }},
-                  {L"Language: English", [this] { ApplyLanguage(Language::English); }},
-                  {L"Language: Chinese", [this] { ApplyLanguage(Language::Chinese); }},
-                  {L"Export strings for translation...", [this] {
-                       const metadb_handle_list sample = m_source ? m_source->SelectedItems() : metadb_handle_list{};
-                       const std::wstring path = ExportStrings(sample);
-                       const std::wstring note =
-                           L"Saved to " + path + L"\nRun scripts/translate-deepseek.ps1 to translate it.";
-                       popup_message::g_show(pfc::stringcvt::string_utf8_from_wide(note.c_str()), "Glasswave");
-                   }},
+                  {L"Language", nullptr,
+                   {{L"Follow Windows", [this] { ApplyLanguage(Language::Auto); }, {},
+                     CurrentLanguageSetting() == Language::Auto},
+                    {L"English", [this] { ApplyLanguage(Language::English); }, {},
+                     CurrentLanguageSetting() == Language::English},
+                    {L"中文 (Chinese)", [this] { ApplyLanguage(Language::Chinese); }, {},
+                     CurrentLanguageSetting() == Language::Chinese}}},
                   {L"", nullptr},
                   {L"Preferences...", [] { standard_commands::run_main(standard_commands::guid_main_preferences); }}});
     SetHoverWidget(nullptr);  // the menu loop swallowed the mouse leave
@@ -1754,23 +1757,55 @@ void MainWindow::ShowPlaylistMenu(size_t playlist, POINT screen) {
                                if (p->playlist_get_item_count(playlist))
                                    p->playlist_execute_default_action(playlist, focus == SIZE_MAX ? 0 : focus);
                            }});
-        actions.push_back({L"Rename...", [playlist] {
-                               playlist_manager::get()->set_active_playlist(playlist);
-                               standard_commands::run_main(standard_commands::guid_main_rename_playlist);
-                           }});
-        actions.push_back({L"Remove", [playlist] { playlist_manager::get()->remove_playlist(playlist); }});
+        if (media::IsSmart(playlist))
+            actions.push_back({L"Edit smart playlist...", [playlist] {
+                                   if (auto c = autoplaylist_manager::get()->query_client(playlist); c.is_valid())
+                                       c->show_ui(playlist);
+                               }});
+        // The queue and Favorites are built in: no renaming or removing.
+        if (!media::IsQueue(playlist) && playlist != media::FavoritesPlaylist(false)) {
+            actions.push_back({L"Rename...", [playlist] {
+                                   playlist_manager::get()->set_active_playlist(playlist);
+                                   standard_commands::run_main(standard_commands::guid_main_rename_playlist);
+                               }});
+            actions.push_back({L"Remove", [playlist] { playlist_manager::get()->remove_playlist(playlist); }});
+        }
         actions.push_back({L"", nullptr});
     }
-    actions.push_back({L"New playlist", [this] {
-                           auto p = playlist_manager::get();
-                           const t_size i = p->create_playlist("New Playlist", SIZE_MAX, SIZE_MAX);
-                           if (i == SIZE_MAX) return;
-                           View v;
-                           v.kind = View::Kind::Playlist;
-                           v.playlist = i;
-                           Navigate(v, true);
+    for (auto& a : AddPlaylistActions()) actions.push_back(std::move(a));
+    actions.push_back({L"", nullptr});
+    actions.push_back({L"Load playlist...", [] { standard_commands::main_load_playlist(); }});
+    actions.push_back({L"Save all playlists...", [] { standard_commands::main_save_all_playlists(); }});
+    actions.push_back({L"Restore smart playlists", [this] {
+                           media::EnsureSpecialPlaylists(true);
+                           m_nav->Rebuild();
                        }});
-    ShowMainMenu(m_hwnd, screen, actions);
+    ShowActionMenu(m_hwnd, screen, actions);
+}
+
+std::vector<MenuAction> MainWindow::AddPlaylistActions() {
+    // As in the owner's localized foobar2000: Add > New playlist / New smart playlist /
+    // Preset smart playlists > (library, never played, history, most played, recently
+    // added | Favorites | rated 5..1, unrated).
+    auto open = [this](t_size p) {
+        if (p == SIZE_MAX) return;
+        m_nav->Rebuild();
+        View v;
+        v.kind = View::Kind::Playlist;
+        v.playlist = p;
+        Navigate(v, true);
+    };
+    std::vector<MenuAction> presets;
+    int group = 0;
+    for (const auto& preset : media::SmartPresets()) {
+        if (preset.group != group && !presets.empty()) presets.push_back({L"", nullptr});
+        group = preset.group;
+        presets.push_back({Wide(preset.name), [open, &preset] { open(media::AddSmartPreset(preset)); }});
+    }
+    return {{L"Add", nullptr,
+             {{L"New playlist", [this] { CreatePlaylist(false); }},
+              {L"New smart playlist", [open] { open(media::NewSmartPlaylist()); }},
+              {L"Preset smart playlists", nullptr, std::move(presets)}}}};
 }
 
 void MainWindow::AddDroppedFiles(IDataObject* data) {
@@ -1869,6 +1904,7 @@ void MainWindow::OnTrackChanged() {
     metadb_handle_ptr playing;
     if (pc->get_now_playing(playing)) LoadLyrics(playing);
     else m_lyrics.clear();
+    RememberPlayback();
     RepaintStreamInfo();
     UpdateFavoriteState();
     RepaintNowPlaying();
@@ -1881,9 +1917,42 @@ void MainWindow::OnTrackChanged() {
     SetWindowTextW(m_hwnd, caption.c_str());
 }
 
+void MainWindow::RememberPlayback() {
+    // Where playback is, for the next start (written to the config by foobar2000 on exit).
+    auto pm = playlist_manager::get();
+    t_size playlist = SIZE_MAX, index = SIZE_MAX;
+    metadb_handle_ptr now;
+    if (!playback_control::get()->get_now_playing(now) || !pm->get_playing_item_location(&playlist, &index)) return;
+    pfc::string8 name;
+    pm->playlist_get_name(playlist, name);
+    cfg_resumePlaylist = name.c_str();
+    cfg_resumeIndex = static_cast<int64_t>(index);
+    cfg_resumePath = now->get_path();
+}
+
+void MainWindow::RestorePlayback() {
+    // Back to the song and position of the last session, paused, like a current player.
+    auto pc = playback_control::get();
+    if (pc->is_playing() || cfg_resumeIndex.get() < 0 || cfg_resumePath.get().is_empty()) return;
+    auto pm = playlist_manager::get();
+    const t_size p = pm->find_playlist(cfg_resumePlaylist.get().c_str());
+    const t_size index = static_cast<t_size>(cfg_resumeIndex.get());
+    if (p == SIZE_MAX || index >= pm->playlist_get_item_count(p)) return;
+    metadb_handle_ptr item;
+    if (!pm->playlist_get_item_handle(item, p, index) || pfc::strcmp_ex(item->get_path(), SIZE_MAX, cfg_resumePath.get().c_str(), SIZE_MAX) != 0)
+        return;  // the list changed since: do not play something else
+    m_resumeSeek = std::max(0.0, atof(cfg_resumePosition.get().c_str()));
+    pm->set_playing_playlist(p);
+    pm->playlist_set_focus_item(p, index);
+    pm->queue_flush();
+    pm->queue_add_item_playlist(p, index);
+    pc->start(playback_control::track_command_play, true);  // paused
+}
+
 void MainWindow::OnPlaybackTime() {
     auto pc = playback_control::get();
     m_position = pc->playback_get_position();
+    cfg_resumePosition = pfc::format_float(m_position, 0, 1).c_str();
     m_length = pc->playback_get_length();
     if (!m_seeking)
         if (auto* w = WidgetById(kSeek)) w->Invalidate();
@@ -2223,6 +2292,14 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
         m_shadow.Create(hwnd);
         media::EnsureSpecialPlaylists(false);  // queue, Favorites (protected), smart playlists
         if (m_nav) m_nav->Rebuild();
+        fb2k::inMainThread([this] {  // once start-up is done
+            RestorePlayback();
+            // Keep lang/strings-en.txt current for scripts/translate-deepseek.ps1: our strings
+            // and foobar2000's main menu plus a song's context menu.
+            metadb_handle_list sample;
+            if (!m_library.Tracks().empty()) sample.add_item(m_library.Tracks().front().handle);
+            ExportStrings(sample);
+        });
         m_taskbar = std::make_unique<Taskbar>(hwnd);
         m_taskbar->onFavorite = [this] {
             metadb_handle_ptr now;

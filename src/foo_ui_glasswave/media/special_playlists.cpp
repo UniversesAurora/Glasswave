@@ -39,11 +39,18 @@ void Protect(t_size playlist) {
 const std::vector<SmartPreset>& SmartPresets() {
     // Fields from foobar2000's Playback Statistics; queries use its SORT syntax.
     static const std::vector<SmartPreset> presets = {
-        {"Recently Played", "%last_played% PRESENT SORT DESCENDING BY %last_played%"},
-        {"Most Played", "%play_count% GREATER 1 SORT DESCENDING BY %play_count%"},
-        {"Never Played", "NOT %play_count% GREATER 0"},
-        {"Recently Added", "%added% DURING LAST 4 WEEKS SORT DESCENDING BY %added%"},
-        {"Rated Songs", "%rating% PRESENT SORT DESCENDING BY %rating%"},
+        {"Library (Full)", "ALL", false, 0},
+        {"Never Played", "NOT %play_count% GREATER 0", true, 0},
+        {"Recently Played", "%last_played% DURING LAST 1 WEEK SORT DESCENDING BY %last_played%", true, 0},
+        {"Most Played", "%play_count% GREATER 1 SORT DESCENDING BY %play_count%", true, 0},
+        {"Recently Added", "%added% DURING LAST 4 WEEKS SORT DESCENDING BY %added%", true, 0},
+        {"Favorites", nullptr, true, 1},
+        {"Rated 5 Stars", "%rating% IS 5", false, 2},
+        {"Rated 4 Stars", "%rating% IS 4", false, 2},
+        {"Rated 3 Stars", "%rating% IS 3", false, 2},
+        {"Rated 2 Stars", "%rating% IS 2", false, 2},
+        {"Rated 1 Star", "%rating% IS 1", false, 2},
+        {"Unrated", "NOT %rating% PRESENT", false, 2},
     };
     return presets;
 }
@@ -55,38 +62,56 @@ t_size QueuePlaylist(bool create) {
 
 bool IsQueue(t_size playlist) { return playlist != SIZE_MAX && playlist == QueuePlaylist(false); }
 
-bool IsSmartName(const char* name) {
-    for (const auto& p : SmartPresets())
-        if (pfc::stricmp_ascii(p.name, name) == 0) return true;
-    return false;
+bool IsSmart(t_size playlist) {
+    if (playlist == SIZE_MAX) return false;
+    try {
+        return autoplaylist_manager::get()->is_client_present(playlist);
+    } catch (...) {
+        return false;
+    }
 }
 
 bool IsSpecial(t_size playlist) {
     if (playlist == SIZE_MAX) return false;
-    pfc::string8 name;
-    playlist_manager::get()->playlist_get_name(playlist, name);
-    return pfc::stricmp_ascii(name, kQueueName) == 0 || pfc::stricmp_ascii(name, kFavoritesName) == 0 ||
-           IsSmartName(name);
+    return IsQueue(playlist) || playlist == FavoritesPlaylist(false) || IsSmart(playlist);
 }
 
-void EnsureSpecialPlaylists(bool restoreSmart) {
+t_size AddSmartPreset(const SmartPreset& preset) {
+    if (!preset.query) return FavoritesPlaylist(true);
     auto pm = playlist_manager::get();
+    if (const t_size existing = pm->find_playlist(preset.name); existing != SIZE_MAX) return existing;
+    const t_size p = pm->create_playlist(preset.name, SIZE_MAX, SIZE_MAX);
+    if (p == SIZE_MAX) return SIZE_MAX;
+    try {
+        autoplaylist_manager::get()->add_client_simple(preset.query, "", p, 0);
+    } catch (const std::exception& e) {
+        console::print("Glasswave: smart playlist \"", preset.name, "\" failed: ", e.what());
+    }
+    return p;
+}
+
+t_size NewSmartPlaylist() {
+    auto pm = playlist_manager::get();
+    const t_size p = pm->create_playlist("New Smart Playlist", SIZE_MAX, SIZE_MAX);
+    if (p == SIZE_MAX) return p;
+    try {
+        auto apm = autoplaylist_manager::get();
+        apm->add_client_simple("ALL", "", p, 0);
+        if (auto client = apm->query_client(p); client.is_valid()) client->show_ui(p);
+    } catch (const std::exception& e) {
+        popup_message::g_show(e.what(), "Smart playlist");
+    }
+    return p;
+}
+
+void EnsureSpecialPlaylists(bool restore) {
     Protect(QueuePlaylist(true));
     Protect(FavoritesPlaylist(true));
-    if (cfg_smartCreated.get() && !restoreSmart) return;
+    if (cfg_smartCreated.get() && !restore) return;
     cfg_smartCreated = 1;
-    for (const auto& preset : SmartPresets()) {
-        if (pm->find_playlist(preset.name) != SIZE_MAX) continue;
-        const t_size p = pm->create_playlist(preset.name, SIZE_MAX, SIZE_MAX);
-        if (p == SIZE_MAX) continue;
-        try {
-            autoplaylist_manager::get()->add_client_simple(preset.query, "", p, 0);
-        } catch (const std::exception& e) {
-            console::print("Glasswave: smart playlist \"", preset.name, "\" failed: ", e.what());
-        }
-    }
+    for (const auto& preset : SmartPresets())
+        if (preset.byDefault) AddSmartPreset(preset);
 }
-
 void PlayQueue(const metadb_handle_list& items, size_t start) {
     if (items.get_count() == 0) return;
     auto pm = playlist_manager::get();

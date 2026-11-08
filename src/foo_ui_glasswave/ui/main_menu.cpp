@@ -4,6 +4,28 @@
 
 namespace glasswave::ui {
 
+namespace {
+
+// Appends `actions` (submenus included) to `menu`; ids are base + index into `flat`.
+void Append(HMENU menu, const std::vector<MenuAction>& actions, UINT base, std::vector<const MenuAction*>& flat) {
+    for (const auto& a : actions) {
+        if (a.label.empty()) {
+            AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+        } else if (!a.children.empty()) {
+            HMENU sub = CreatePopupMenu();
+            Append(sub, a.children, base, flat);
+            AppendMenuW(menu, MF_POPUP | MF_STRING, reinterpret_cast<UINT_PTR>(sub), a.label.c_str());
+        } else {
+            flat.push_back(&a);
+            const UINT id = base + static_cast<UINT>(flat.size() - 1);
+            AppendMenuW(menu, MF_STRING, id, a.label.c_str());
+            if (a.checked) CheckMenuRadioItem(menu, id, id, id, MF_BYCOMMAND);
+        }
+    }
+}
+
+}  // namespace
+
 void ShowMainMenu(HWND owner, POINT pt, const std::vector<MenuAction>& actions) {
     struct Root {
         const GUID* guid;
@@ -18,12 +40,8 @@ void ShowMainMenu(HWND owner, POINT pt, const std::vector<MenuAction>& actions) 
     constexpr uint32_t kActionBase = 0x10000;
 
     HMENU menu = CreatePopupMenu();
-    for (size_t i = 0; i < actions.size(); ++i) {
-        if (actions[i].label.empty())
-            AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-        else
-            AppendMenuW(menu, MF_STRING, kActionBase + i, actions[i].label.c_str());
-    }
+    std::vector<const MenuAction*> flat;
+    Append(menu, actions, kActionBase, flat);
     if (!actions.empty()) AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
 
     std::vector<service_ptr_t<mainmenu_manager>> managers;
@@ -44,7 +62,7 @@ void ShowMainMenu(HWND owner, POINT pt, const std::vector<MenuAction>& actions) 
 
     if (cmd >= kActionBase) {
         const size_t i = cmd - kActionBase;
-        if (i < actions.size() && actions[i].run) actions[i].run();
+        if (i < flat.size() && flat[i]->run) flat[i]->run();
     } else if (cmd >= 1) {
         const uint32_t index = (cmd - 1) / kIdsPerRoot;
         if (index < managers.size()) managers[index]->execute_command(cmd - (1 + index * kIdsPerRoot));
@@ -53,16 +71,14 @@ void ShowMainMenu(HWND owner, POINT pt, const std::vector<MenuAction>& actions) 
 
 void ShowActionMenu(HWND owner, POINT pt, const std::vector<MenuAction>& actions, size_t checked) {
     if (actions.empty()) return;
+    std::vector<MenuAction> copy = actions;
+    if (checked < copy.size()) copy[checked].checked = true;
     HMENU menu = CreatePopupMenu();
-    for (size_t i = 0; i < actions.size(); ++i) {
-        if (actions[i].label.empty())
-            AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-        else
-            AppendMenuW(menu, MF_STRING | (i == checked ? MF_CHECKED : 0), 1 + i, actions[i].label.c_str());
-    }
+    std::vector<const MenuAction*> flat;
+    Append(menu, copy, 1, flat);
     const UINT cmd = TrackWin7Menu(menu, TPM_RETURNCMD | TPM_NONOTIFY | TPM_LEFTALIGN | TPM_TOPALIGN, pt.x, pt.y, owner);
     DestroyMenu(menu);
-    if (cmd >= 1 && cmd <= actions.size() && actions[cmd - 1].run) actions[cmd - 1].run();
+    if (cmd >= 1 && cmd <= flat.size() && flat[cmd - 1]->run) flat[cmd - 1]->run();
 }
 
 }  // namespace glasswave::ui

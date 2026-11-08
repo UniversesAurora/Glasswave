@@ -101,9 +101,12 @@ void NavPane::Rebuild() {
     if (m_smartExpanded) {
         if (const t_size fav = media::FavoritesPlaylist(false); fav != SIZE_MAX)
             m_items.push_back({Target::Playlist, fav, 1, L"Favorites", wp::NavIcon::Playlist, false});
-        for (const auto& preset : media::SmartPresets())
-            if (const t_size p = pm->find_playlist(preset.name); p != SIZE_MAX)
-                m_items.push_back({Target::Playlist, p, 1, Wide(preset.name), wp::NavIcon::Playlist, false});
+        pfc::string8 smartName;  // every auto playlist, presets and the user's own
+        for (t_size p = 0, n = pm->get_playlist_count(); p < n; ++p)
+            if (media::IsSmart(p)) {
+                pm->playlist_get_name(p, smartName);
+                m_items.push_back({Target::Playlist, p, 1, Wide(smartName), wp::NavIcon::Playlist, false});
+            }
     }
     m_items.push_back({Target::Music, 0, 0, L"Music", wp::NavIcon::Music, true});
     if (m_musicExpanded) {

@@ -97,6 +97,7 @@ private:
     void ApplyViewStyle(media::ViewStyle style);
     void CycleViewStyle();
     void CreatePlaylist(bool autoPlaylist);
+    std::vector<MenuAction> AddPlaylistActions();  // Add > new / smart / preset playlists
     void OnAlbumLink(size_t group, size_t line);
     cfg_var_modern::cfg_int* ViewStyleSetting(int viewKind) const;
     int ViewStyles() const;  // view options the current source offers
@@ -138,6 +139,9 @@ private:
     void JumpToPlaying();
     void ShowDeviceMenu();
     void UpdateFavoriteState();  // taskbar Favorite button for the playing song
+    void RememberPlayback();     // song / position for the next start
+    void RestorePlayback();
+    double m_resumeSeek = 0;     // seek here when the restored track starts
     void ApplyLanguage(Language language);
     void SetVolumeFromX(int x);
     void ShowVolumeTip(float thumbX);  // Win7 tooltip bubble with the volume while dragging
