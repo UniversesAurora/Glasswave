@@ -21,6 +21,8 @@ public:
 
     void Initialize();
     void Shutdown();
+    // Called on the main thread when the account/session state changes.
+    void SetStateCallback(std::function<void()> callback);
 
     TaskQueue& Tasks() { return m_tasks; }
     Client& Api() { return m_client; }
@@ -58,6 +60,7 @@ private:
     Provider& operator=(const Provider&) = delete;
 
     void PostMain(std::function<void()> fn);
+    void NotifyChanged();
     bool EnsureAccount(abort_callback& abort, int64_t& userId, std::wstring& error);
     void SetAccountLocked(const Account& account);
 
@@ -68,6 +71,7 @@ private:
     std::atomic_bool m_initialized{false};
 
     mutable std::mutex m_mutex;
+    std::function<void()> m_stateCallback;
     Account m_account;
     std::vector<Playlist> m_myPlaylists;
     int64_t m_likedPlaylist = 0;

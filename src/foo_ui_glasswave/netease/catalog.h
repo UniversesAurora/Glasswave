@@ -31,6 +31,11 @@ public:
     // Main thread: store and feed file_info to metadb in one batch.
     void PutAndHint(const std::vector<Song>& songs);
 
+    // Restart cache: <profile>\glasswave\netease\cache\songs.tsv. Load also pushes the
+    // cached tags into metadb so persisted ncm:// playlist entries format correctly.
+    void Load();
+    void Save() const;
+
 private:
     Catalog() = default;
     void Hint(const std::vector<Song>& songs);

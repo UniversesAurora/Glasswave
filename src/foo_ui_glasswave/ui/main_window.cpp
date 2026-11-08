@@ -500,6 +500,7 @@ void MainWindow::InitComposition() {
     m_nav = std::make_unique<NavPane>(m_contentLayer);
     m_nav->SetCategories(LoadNavCategories());
     m_nav->SetNeteaseState(netease::Provider::Get().LoggedIn(), netease::Provider::Get().CurrentAccount().nickname);
+    netease::Provider::Get().SetStateCallback([this] { OnNeteaseLoginChanged(); });
     m_list = std::make_unique<ListView>(m_contentLayer);
     m_list->onLink = [this](size_t group, size_t line) { OnAlbumLink(group, line); };
     m_search = std::make_unique<SearchBox>(m_contentLayer);

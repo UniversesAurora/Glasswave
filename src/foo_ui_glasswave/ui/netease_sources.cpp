@@ -40,7 +40,7 @@ NeteaseSongSource::NeteaseSongSource(std::vector<netease::Song> songs, std::wstr
     : m_songs(std::move(songs)), m_emptyText(std::move(emptyText)) {
     m_columns = {
         {L"#", 34, false, true},
-        media::ArtColumn(true),
+        media::ArtColumn(false),
         {L"Title", 0, true},
         {L"Length", 56, false, true},
         {L"Artist", 170},

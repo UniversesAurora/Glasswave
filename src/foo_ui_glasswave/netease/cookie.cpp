@@ -4,6 +4,7 @@
 #include "netease/profile.h"
 
 #include <dpapi.h>
+#include <cwctype>
 #include <filesystem>
 #include <fstream>
 #include <mutex>
@@ -125,6 +126,71 @@ void ClearSessionCookie() {
 std::wstring SessionCookiePath() {
     const auto path = SessionPath();
     return path.empty() ? std::wstring() : path.wstring();
+}
+
+namespace {
+
+std::wstring Trim(std::wstring_view text) {
+    size_t start = 0, end = text.size();
+    while (start < end && (text[start] == L' ' || text[start] == L'\t')) ++start;
+    while (end > start && (text[end - 1] == L' ' || text[end - 1] == L'\t' || text[end - 1] == L'\r' ||
+                           text[end - 1] == L'\n'))
+        --end;
+    return std::wstring(text.substr(start, end - start));
+}
+
+std::wstring Lower(std::wstring_view text) {
+    std::wstring out(text);
+    for (auto& c : out) c = static_cast<wchar_t>(std::towlower(static_cast<wint_t>(c)));
+    return out;
+}
+
+bool IsAttribute(const std::wstring& name) {
+    const std::wstring key = Lower(name);
+    return key == L"max-age" || key == L"expires" || key == L"path" || key == L"domain" || key == L"httponly" ||
+           key == L"secure" || key == L"samesite" || key == L"priority" || key == L"version" || key == L"comment";
+}
+
+}  // namespace
+
+std::wstring NormalizeCookie(std::wstring_view raw) {
+    std::map<std::wstring, std::wstring> values;
+    size_t start = 0;
+    while (start <= raw.size()) {
+        const size_t end = raw.find(L';', start);
+        const std::wstring part = Trim(raw.substr(start, end == std::wstring_view::npos ? raw.size() - start
+                                                                                       : end - start));
+        const size_t eq = part.find(L'=');
+        if (eq != std::wstring::npos && eq > 0) {
+            const std::wstring name = Trim(part.substr(0, eq));
+            const std::wstring value = Trim(part.substr(eq + 1));
+            if (!value.empty() && !IsAttribute(name)) values[name] = value;
+        }
+        if (end == std::wstring_view::npos) break;
+        start = end + 1;
+    }
+    std::wstring out;
+    for (const auto& [name, value] : values) {
+        if (!out.empty()) out += L"; ";
+        out += name;
+        out += L"=";
+        out += value;
+    }
+    return out;
+}
+
+bool CookieHasMusicU(std::wstring_view cookie) {
+    const std::wstring normalized = NormalizeCookie(cookie);
+    const std::wstring key = L"MUSIC_U=";
+    size_t start = 0;
+    while (start < normalized.size()) {
+        const size_t end = normalized.find(L';', start);
+        const std::wstring part = normalized.substr(start, end == std::wstring::npos ? std::wstring::npos : end - start);
+        if (part.rfind(key, 0) == 0 && part.size() > key.size()) return true;
+        if (end == std::wstring::npos) break;
+        start = end + 1;
+    }
+    return false;
 }
 
 }  // namespace glasswave::netease

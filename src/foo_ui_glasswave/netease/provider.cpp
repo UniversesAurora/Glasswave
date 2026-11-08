@@ -27,12 +27,14 @@ void Provider::Initialize() {
     if (m_initialized.exchange(true)) return;
     m_stopping = false;
     LoadSessionCookie();
+    if (!CookieHasMusicU(SessionCookie())) ClearSessionCookie();
     m_service.Initialize();
+    Catalog::Get().Load();
     std::lock_guard lock(m_mutex);
     m_account = {};
     m_account.nickname = GetAccountName();
     m_account.userId = GetAccountId();
-    m_account.loggedIn = !SessionCookie().empty();
+    m_account.loggedIn = CookieHasMusicU(SessionCookie());
     if (!m_account.loggedIn) {
         m_account = {};
         ClearAccount();
@@ -52,7 +54,7 @@ void Provider::Shutdown() {
     m_liked.clear();
 }
 
-bool Provider::LoggedIn() const { return !SessionCookie().empty(); }
+bool Provider::LoggedIn() const { return CookieHasMusicU(SessionCookie()); }
 
 Account Provider::CurrentAccount() const {
     std::lock_guard lock(m_mutex);
@@ -86,6 +88,20 @@ void Provider::PostMain(std::function<void()> fn) {
     });
 }
 
+void Provider::SetStateCallback(std::function<void()> callback) {
+    std::lock_guard lock(m_mutex);
+    m_stateCallback = std::move(callback);
+}
+
+void Provider::NotifyChanged() {
+    std::function<void()> callback;
+    {
+        std::lock_guard lock(m_mutex);
+        callback = m_stateCallback;
+    }
+    if (callback) PostMain([callback = std::move(callback)] { callback(); });
+}
+
 bool Provider::EnsureAccount(abort_callback& abort, int64_t& userId, std::wstring& error) {
     {
         std::lock_guard lock(m_mutex);
@@ -97,6 +113,13 @@ bool Provider::EnsureAccount(abort_callback& abort, int64_t& userId, std::wstrin
     Account account;
     if (!m_client.GetAccount(abort, account, error)) return false;
     if (!account.loggedIn) {
+        ClearSessionCookie();
+        ClearAccount();
+        {
+            std::lock_guard lock(m_mutex);
+            m_account = {};
+        }
+        NotifyChanged();
         error = L"Please sign in to NetEase Cloud Music.";
         return false;
     }
@@ -151,6 +174,7 @@ void Provider::RefreshAccount(DoneCallback done) {
             PostMain([done = std::move(done)] {
                 if (done) done(false, L"Please sign in to NetEase Cloud Music.");
             });
+            NotifyChanged();
             return;
         }
         {
@@ -167,6 +191,7 @@ void Provider::RefreshAccount(DoneCallback done) {
         PostMain([done = std::move(done)] {
             if (done) done(true, {});
         });
+        NotifyChanged();
     });
 }
 
@@ -418,19 +443,27 @@ void Provider::ToggleLike(int64_t songId, bool like, DoneCallback done) {
 }
 
 void Provider::OnLoginCookie(std::wstring cookie, DoneCallback done) {
-    SaveSessionCookie(cookie);
+    const std::wstring normalized = NormalizeCookie(cookie);
+    if (!CookieHasMusicU(normalized)) {
+        if (done) done(false, L"The login response did not contain a MUSIC_U session.");
+        return;
+    }
+    SaveSessionCookie(normalized);
     RefreshAccount(std::move(done));
 }
 
 void Provider::Logout() {
     ClearSessionCookie();
     ClearAccount();
-    std::lock_guard lock(m_mutex);
-    m_account = {};
-    m_myPlaylists.clear();
-    m_likedPlaylist = 0;
-    std::lock_guard liked(m_likedMutex);
-    m_liked.clear();
+    {
+        std::lock_guard lock(m_mutex);
+        m_account = {};
+        m_myPlaylists.clear();
+        m_likedPlaylist = 0;
+        std::lock_guard liked(m_likedMutex);
+        m_liked.clear();
+    }
+    NotifyChanged();
 }
 
 }  // namespace glasswave::netease

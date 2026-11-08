@@ -17,6 +17,10 @@ struct Song {
     std::wstring coverUrl;
     int durationMs = 0;
     int fee = 0;
+    std::wstring codec;
+    int bitrate = 0;
+    int sampleRate = 0;
+    int bitsPerSample = 0;
 };
 
 // A NetEase playlist (created, subscribed or the liked "我喜欢的音乐" list).

@@ -121,6 +121,27 @@ Song ParseSong(const json::Object& object) {
         song.coverUrl = json::GetString(*albumObject, L"picUrl");
     }
     if (song.title.empty()) song.title = L"Unknown";
+
+    const auto setQuality = [&song](const json::Object& quality, const wchar_t* codec, int bits) {
+        const int bitrate = json::GetInt(quality, L"br");
+        const int sampleRate = json::GetInt(quality, L"sr");
+        if (bitrate > 0) {
+            song.codec = codec;
+            song.bitrate = bitrate;
+            song.sampleRate = sampleRate;
+            song.bitsPerSample = bits;
+        }
+    };
+    if (auto hr = json::GetObject(object, L"hr"))
+        setQuality(*hr, L"FLAC", 24);
+    else if (auto sq = json::GetObject(object, L"sq"))
+        setQuality(*sq, L"FLAC", 16);
+    else if (auto high = json::GetObject(object, L"h"))
+        setQuality(*high, L"MP3", 0);
+    else if (auto medium = json::GetObject(object, L"m"))
+        setQuality(*medium, L"MP3", 0);
+    else if (auto low = json::GetObject(object, L"l"))
+        setQuality(*low, L"MP3", 0);
     return song;
 }
 
@@ -247,18 +268,17 @@ QrStatus Client::QrCheck(std::wstring_view key, abort_callback& abort) {
     }
     status.code = code;
     status.message = json::GetString(body, L"message", json::GetString(body, L"msg"));
-    status.cookie = json::GetString(body, L"cookie");
-    if (status.cookie.empty()) {
-        if (auto cookies = json::GetArray(body, L"cookie")) {
-            for (uint32_t i = 0, n = cookies->Size(); i < n; ++i) {
-                const IJsonValue value = cookies->GetAt(i);
-                if (value && value.ValueType() == JsonValueType::String) {
-                    if (!status.cookie.empty()) status.cookie += L"; ";
-                    status.cookie += value.GetString().c_str();
-                }
+    std::wstring rawCookie = json::GetString(body, L"cookie");
+    if (auto cookies = json::GetArray(body, L"cookie")) {
+        for (uint32_t i = 0, n = cookies->Size(); i < n; ++i) {
+            const IJsonValue value = cookies->GetAt(i);
+            if (value && value.ValueType() == JsonValueType::String) {
+                if (!rawCookie.empty()) rawCookie += L"; ";
+                rawCookie += value.GetString().c_str();
             }
         }
     }
+    status.cookie = NormalizeCookie(rawCookie);
     return status;
 }
 
@@ -272,14 +292,12 @@ bool Client::GetAccount(abort_callback& abort, Account& out, std::wstring& error
     }
     auto account = json::GetObject(body, L"account");
     auto profile = json::GetObject(body, L"profile");
-    out.loggedIn = account && account->Size() != 0;
-    if (out.loggedIn) {
-        out.userId = json::GetInt64(*account, L"id");
-        if (out.userId == 0 && profile) out.userId = json::GetInt64(*profile, L"userId");
-        if (profile) out.nickname = json::GetString(*profile, L"nickname");
-    } else {
-        out = {};
-    }
+    out = {};
+    if (!account || account->Size() == 0 || !profile || json::GetBool(*account, L"anonimousUser")) return true;
+    out.loggedIn = true;
+    out.userId = json::GetInt64(*account, L"id");
+    if (out.userId == 0) out.userId = json::GetInt64(*profile, L"userId");
+    out.nickname = json::GetString(*profile, L"nickname");
     return true;
 }
 
@@ -305,12 +323,13 @@ bool Client::UserPlaylists(int64_t userId, abort_callback& abort, std::vector<Pl
         if (!list) break;
         for (const auto& object : json::Objects(*list)) {
             const int special = json::GetInt(object, L"specialType");
+            Playlist playlist = ParsePlaylist(object);
             if (special == 5) {
-                likedPlaylist = json::GetInt64(object, L"id");
+                const bool own = playlist.creatorId == userId;
+                if (own || likedPlaylist == 0) likedPlaylist = playlist.id;
                 continue;
             }
             if (special != 0) continue;
-            Playlist playlist = ParsePlaylist(object);
             if (playlist.id) out.push_back(std::move(playlist));
         }
         if (!json::GetBool(body, L"more")) break;
