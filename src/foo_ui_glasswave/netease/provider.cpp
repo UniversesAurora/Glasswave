@@ -9,6 +9,8 @@
 #include <atomic>
 #include <chrono>
 #include <thread>
+#include <unordered_map>
+#include <unordered_set>
 
 namespace glasswave::netease {
 
@@ -745,33 +747,48 @@ void Provider::FetchLiked(SongsCallback done) {
             }
         }
 
-        PlaylistDetail detail;
-        bool haveDetail = false;
-        if (likedPlaylist) haveDetail = m_client.GetPlaylist(likedPlaylist, abort, detail, error);
-
+        std::vector<int64_t> ids;
+        if (!m_client.Likelist(userId, abort, ids, error)) {
+            PostMain([done = std::move(done), error] {
+                if (done) done({}, ErrorOf(error));
+            });
+            return;
+        }
+        // /likelist is authoritative for the like state; the liked playlist detail can lag
+        // behind changes made in the official client. Filter the detail by the likelist and
+        // append likes the detail has not picked up yet, keeping the playlist's order.
+        std::unordered_set<int64_t> liked(ids.begin(), ids.end());
         std::vector<Song> songs;
-        if (haveDetail) {
-            songs = std::move(detail.songs);
-        } else {
-            std::vector<int64_t> ids;
-            if (!m_client.Likelist(userId, abort, ids, error)) {
-                PostMain([done = std::move(done), error] {
-                    if (done) done({}, ErrorOf(error));
-                });
-                return;
+        std::unordered_set<int64_t> have;
+        if (likedPlaylist) {
+            PlaylistDetail detail;
+            std::wstring detailError;
+            if (m_client.GetPlaylist(likedPlaylist, abort, detail, detailError)) {
+                for (auto& song : detail.songs)
+                    if (song.id && liked.count(song.id) && have.insert(song.id).second)
+                        songs.push_back(std::move(song));
             }
-            for (size_t start = 0; start < ids.size(); start += 200) {
-                const size_t end = std::min(start + 200, ids.size());
-                std::vector<int64_t> batch(ids.begin() + static_cast<std::ptrdiff_t>(start),
-                                           ids.begin() + static_cast<std::ptrdiff_t>(end));
-                std::vector<Song> part;
-                if (!m_client.SongDetails(batch, abort, part, error)) break;
-                songs.insert(songs.end(), part.begin(), part.end());
-            }
+        }
+        std::vector<int64_t> missing;
+        for (const int64_t id : ids)
+            if (!have.count(id)) missing.push_back(id);
+        std::unordered_map<int64_t, Song> fetched;
+        for (size_t start = 0; start < missing.size(); start += 200) {
+            const size_t end = std::min(start + 200, missing.size());
+            std::vector<int64_t> batch(missing.begin() + static_cast<std::ptrdiff_t>(start),
+                                       missing.begin() + static_cast<std::ptrdiff_t>(end));
+            std::vector<Song> part;
+            if (!m_client.SongDetails(batch, abort, part, error)) break;
+            for (auto& song : part)
+                if (song.id) fetched.emplace(song.id, std::move(song));
+        }
+        for (const int64_t id : missing) {
+            auto it = fetched.find(id);
+            if (it != fetched.end()) songs.push_back(it->second);
         }
 
         {
-            std::lock_guard liked(m_likedMutex);
+            std::lock_guard likedLock(m_likedMutex);
             m_liked.clear();
             for (const auto& song : songs) m_liked.insert(song.id);
         }
