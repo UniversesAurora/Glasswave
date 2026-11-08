@@ -82,6 +82,7 @@ public:
 
     void decode_initialize(unsigned p_flags, abort_callback& p_abort) {
         if (m_decoder.is_valid()) return;
+        Log(L"input: decoding song " + std::to_wstring(m_id));
         auto& provider = Provider::Get();
         provider.Initialize();
         if (!provider.LoggedIn())
@@ -102,17 +103,42 @@ public:
             throw exception_io_data(Utf8(error.empty() ? L"No playable source for this song." : error).c_str());
         if (resolved.trial)
             Log(L"input: playing a free trial for song " + std::to_wstring(m_id));
+        const std::string url = Utf8(resolved.url);
+        const std::string extension = ExtensionFor(resolved);
+        const std::wstring diagnostics = L"input: song " + std::to_wstring(m_id) + L", level " + resolved.level +
+                                         L", type " + resolved.type + L", ext " + Wide(extension.c_str());
+        Log(diagnostics);
+        const size_t query = url.find('?');
+        const std::string path = query == std::string::npos ? url : url.substr(0, query);
+        const bool extensionMatches =
+            path.size() > extension.size() && path[path.size() - extension.size() - 1] == '.' &&
+            _stricmp(path.substr(path.size() - extension.size()).c_str(), extension.c_str()) == 0;
 
-        auto request = http_client::get()->create_request("GET");
-        request->add_header("User-Agent",
-                            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
-                            "Glasswave/0.1");
-        request->add_header("Referer", "https://music.163.com/");
-        file::ptr stream = request->run(Utf8(resolved.url).c_str(), p_abort);
-        const std::string fakePath = "ncm://decode/" + std::to_string(m_id) + "." + ExtensionFor(resolved);
-        input_entry::g_open_for_decoding(m_decoder, stream, fakePath.c_str(), p_abort, true);
+        bool opened = false;
+        if (extensionMatches) {
+            try {
+                // The CDN URL already has the right extension; let the core HTTP reader and
+                // FLAC/MP3 decoder handle it directly.
+                input_entry::g_open_for_decoding(m_decoder, nullptr, url.c_str(), p_abort, true);
+                opened = true;
+            } catch (const exception_aborted&) {
+                throw;
+            } catch (const std::exception& e) {
+                Log(L"input: direct URL open failed: " + Wide(e.what()));
+            }
+        }
+        if (!opened) {
+            auto request = http_client::get()->create_request("GET");
+            request->add_header("User-Agent",
+                                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
+                                "Glasswave/0.1");
+            request->add_header("Referer", "https://music.163.com/");
+            file::ptr stream = request->run(url.c_str(), p_abort);
+            const std::string fakePath = "ncm://decode/" + std::to_string(m_id) + "." + extension;
+            input_entry::g_open_for_decoding(m_decoder, stream, fakePath.c_str(), p_abort, true);
+        }
         m_decoder->initialize(0, p_flags, p_abort);
-        Log(L"input: opened song " + std::to_wstring(m_id) + L" as " + Wide(ExtensionFor(resolved).c_str()));
+        Log(L"input: opened song " + std::to_wstring(m_id) + L" as " + Wide(extension.c_str()));
     }
 
     bool decode_run(audio_chunk& p_chunk, abort_callback& p_abort) {
