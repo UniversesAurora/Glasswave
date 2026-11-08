@@ -2280,44 +2280,6 @@ std::vector<metadb_handle_ptr> MainWindow::LocalFavoriteHandles() const {
     return handles;
 }
 
-namespace {
-
-// Hot songs arrive in popularity order. Group them by album, rank the albums by the summed
-// popularity of their songs, and keep each album's songs in their original order, so one
-// album appears once and the hottest albums come first.
-void OrderHotSongsByAlbum(std::vector<netease::Song>& songs) {
-    if (songs.size() < 2) return;
-    struct AlbumGroup {
-        std::vector<netease::Song> songs;
-        double heat = 0;
-        size_t bestRank = SIZE_MAX;
-    };
-    std::map<std::wstring, AlbumGroup> groups;
-    const double count = static_cast<double>(songs.size());
-    for (size_t i = 0; i < songs.size(); ++i) {
-        auto& song = songs[i];
-        const std::wstring key = song.albumId ? L"id:" + std::to_wstring(song.albumId)
-                                              : L"name:" + song.album + L"\x1f" + song.albumArtist;
-        auto& group = groups[key];
-        if (group.songs.empty()) group.bestRank = i;
-        group.heat += count - static_cast<double>(i);
-        group.songs.push_back(std::move(song));
-    }
-    std::vector<AlbumGroup> ordered;
-    ordered.reserve(groups.size());
-    for (auto& entry : groups) ordered.push_back(std::move(entry.second));
-    std::stable_sort(ordered.begin(), ordered.end(), [](const AlbumGroup& a, const AlbumGroup& b) {
-        if (a.heat != b.heat) return a.heat > b.heat;
-        return a.bestRank < b.bestRank;
-    });
-    songs.clear();
-    songs.reserve(static_cast<size_t>(count));
-    for (auto& group : ordered)
-        for (auto& song : group.songs) songs.push_back(std::move(song));
-}
-
-}  // namespace
-
 void MainWindow::ShowNeteaseSongs(const View& view, std::vector<netease::Song> songs, std::wstring error) {
     if (m_view.kind != view.kind || m_view.library != view.library || m_view.remoteId != view.remoteId) return;
     if (view.kind == View::Kind::AllFavorites) {
@@ -2329,9 +2291,9 @@ void MainWindow::ShowNeteaseSongs(const View& view, std::vector<netease::Song> s
         m_list->SetSource(m_source.get(), false);
         return;
     }
-    if (view.kind == View::Kind::NeteaseArtistSongs) OrderHotSongsByAlbum(songs);
+    const bool hotSongs = view.kind == View::Kind::NeteaseArtistSongs;
     auto source = std::make_unique<ui::NeteaseSongSource>(
-        std::move(songs), error.empty() ? L"No songs." : std::move(error));
+        std::move(songs), error.empty() ? L"No songs." : std::move(error), hotSongs);
     m_source = std::move(source);
     if (auto* style = ViewStyleSetting(view);
         style && m_source->SupportsViewStyle(static_cast<media::ViewStyle>(style->get())))

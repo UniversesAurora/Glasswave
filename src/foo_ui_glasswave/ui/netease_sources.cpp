@@ -146,11 +146,12 @@ std::vector<SongTableRow> FavoriteRows(const std::vector<metadb_handle_ptr>& loc
 }  // namespace
 
 SongTableSource::SongTableSource(std::vector<SongTableRow> rows, bool showSource, std::wstring emptyText,
-                                 std::wstring columnKey)
+                                 std::wstring columnKey, bool albumHeatOrder)
     : m_all(std::move(rows)),
       m_emptyText(std::move(emptyText)),
       m_columnKey(std::move(columnKey)),
-      m_showSource(showSource) {
+      m_showSource(showSource),
+      m_albumHeatOrder(albumHeatOrder) {
     m_order.resize(m_all.size());
     for (size_t i = 0; i < m_order.size(); ++i) m_order[i] = i;
     SetViewStyle(media::ViewStyle::Details);
@@ -243,42 +244,63 @@ std::pair<std::wstring, std::wstring> SongTableSource::GroupInfo(size_t row) con
 void SongTableSource::SortOrder() {
     m_order.resize(m_all.size());
     for (size_t i = 0; i < m_order.size(); ++i) m_order[i] = i;
-    if (m_sortColumn != SIZE_MAX && m_sortColumn < m_fields.size()) {
-        const bool desc = m_sortDescending;
-        const bool tiles = m_style == media::ViewStyle::Tiles;
-        const int field = m_fields[m_sortColumn];
-        auto key = [&](size_t index) {
-            const SongTableRow& item = m_all[index];
-            switch (field) {
-            case kNumber: {
-                wchar_t pad[32];
-                swprintf_s(pad, L"%06zu", index + 1);
-                return std::wstring(pad);
-            }
-            case kTitle: return item.title;
-            case kLength: {
-                wchar_t pad[32];
-                swprintf_s(pad, L"%012d", item.lengthMs);
-                return std::wstring(pad);
-            }
-            case kArtist: return ArtistLabel(item);
-            case kAlbum: return AlbumLabel(item);
-            case kSource: return item.source;
-            case kFavorite: return std::wstring(item.favorite ? L"1" : L"0");
-            default: return std::wstring();
-            }
-        };
-        std::stable_sort(m_order.begin(), m_order.end(), [&](size_t a, size_t b) {
-            if (tiles) {
-                // Albums keep the order they were added in; only rows inside one album sort.
-                if (m_all[a].albumKey != m_all[b].albumKey) return a < b;
-                const int c = CompareText(key(a), key(b));
-                return c ? (desc ? c > 0 : c < 0) : a < b;
-            }
-            const int c = CompareText(key(a), key(b));
-            return desc ? c > 0 : c < 0;
-        });
+    const bool tiles = m_style == media::ViewStyle::Tiles;
+    const bool heatOrder = tiles && m_albumHeatOrder;
+    const bool columnSort = m_sortColumn != SIZE_MAX && m_sortColumn < m_fields.size();
+    if (!heatOrder && !columnSort) return;
+    const bool desc = m_sortDescending;
+    const int field = columnSort ? m_fields[m_sortColumn] : -1;
+    auto key = [&](size_t index) {
+        const SongTableRow& item = m_all[index];
+        switch (field) {
+        case kNumber: {
+            wchar_t pad[32];
+            swprintf_s(pad, L"%06zu", index + 1);
+            return std::wstring(pad);
+        }
+        case kTitle: return item.title;
+        case kLength: {
+            wchar_t pad[32];
+            swprintf_s(pad, L"%012d", item.lengthMs);
+            return std::wstring(pad);
+        }
+        case kArtist: return ArtistLabel(item);
+        case kAlbum: return AlbumLabel(item);
+        case kSource: return item.source;
+        case kFavorite: return std::wstring(item.favorite ? L"1" : L"0");
+        default: return std::wstring();
+        }
+    };
+    std::map<std::wstring, double> heat;
+    std::map<std::wstring, size_t> bestRank;
+    if (heatOrder) {
+        const double count = static_cast<double>(m_all.size());
+        for (size_t i = 0; i < m_all.size(); ++i) {
+            const std::wstring& album = m_all[i].albumKey;
+            heat[album] += count - static_cast<double>(i);
+            auto it = bestRank.find(album);
+            if (it == bestRank.end() || i < it->second) bestRank[album] = i;
+        }
     }
+    std::stable_sort(m_order.begin(), m_order.end(), [&](size_t a, size_t b) {
+        if (heatOrder) {
+            const std::wstring& ka = m_all[a].albumKey;
+            const std::wstring& kb = m_all[b].albumKey;
+            if (ka != kb) {
+                const double ha = heat[ka], hb = heat[kb];
+                if (ha != hb) return ha > hb;
+                return bestRank[ka] < bestRank[kb];
+            }
+        } else if (tiles && m_all[a].albumKey != m_all[b].albumKey) {
+            return a < b;  // albums keep the order they were added in
+        }
+        if (columnSort) {
+            const int c = CompareText(key(a), key(b));
+            if (!tiles) return desc ? c > 0 : c < 0;
+            if (c) return desc ? c > 0 : c < 0;
+        }
+        return a < b;
+    });
 }
 
 void SongTableSource::ApplySort() {
@@ -439,8 +461,8 @@ void SongTableSource::SetFilter(std::wstring_view filterLower) {
     RebuildVisible();
 }
 
-NeteaseSongSource::NeteaseSongSource(std::vector<netease::Song> songs, std::wstring emptyText)
-    : SongTableSource(NeteaseRows(songs), false, std::move(emptyText), L"netease-songs") {}
+NeteaseSongSource::NeteaseSongSource(std::vector<netease::Song> songs, std::wstring emptyText, bool albumHeatOrder)
+    : SongTableSource(NeteaseRows(songs), false, std::move(emptyText), L"netease-songs", albumHeatOrder) {}
 
 void NeteaseSongSource::AppendSongs(const std::vector<netease::Song>& songs) { Append(NeteaseRows(songs)); }
 
