@@ -1,6 +1,6 @@
 # Status
 
-Updated: 2026-11-08
+Updated: 2026-11-08 (evening)
 
 ## Where things stand
 
@@ -354,13 +354,36 @@ Updated: 2026-11-08
   - Not implemented yet: NetEase full-catalog search UI and a combined All Music browse
     beyond Favorites.
 
+- 2026-11-08 (review of the NetEase work, owner request): reviewed with the Muxora review
+  checklist and restructured (ADR 0009). Providers sit behind `stream::Provider`; NetEase is
+  `netease::StreamProvider` over `netease::Session`; provider pages are `ui::Page` objects
+  (`ui/remote_pages`), song tables and tile grids are provider-neutral; `MainWindow` went
+  from 6300 to about 4600 lines. Fixed on the way: two pairs of config GUIDs used twice,
+  Details header sort doing nothing in song tables, the description scroll resetting every
+  second while playing, stale page results corrupting album paging, failed refreshes
+  emptying lists, writes reloading the open page, a lock-order deadlock between sign-out and
+  account refresh, shutdown waiting for network requests, the cover cache evicting what it
+  had just written, truncated downloads being cached, plain-list covers not repainting.
+  New Preferences > Display > Glasswave page: language, volume bubble delay, cover caches
+  and threads, play history size and rows, and NetEase account, audio quality, cover disk
+  cache size/clear and service address. The play history file and the saved last page use
+  new formats (old ones are ignored once).
+
 ## Next
 
-1. Owner tests everything from 2026-11-08 (list in the session reply); fix what they report.
-2. Glass blur stays the host backdrop + color matrix (legacy accent tried, no gain).
-3. Remaining tuning from the Win7 captures.
-4. Stacked covers for artists.
-5. Playlist editing: drag to reorder, drag from library to playlists, rename inline.
+1. Owner tests the restructured NetEase pages and the preferences page (list in the session
+   reply); fix what they report.
+2. Open review items not fixed yet: playlist views and history hold foobar2000 playlist
+   indices (wrong page after a playlist is deleted before it); "Remove from Now Playing"
+   removes every copy of a song; a NetEase stream URL expires after ~20 minutes of pause;
+   the helper's loopback binding is not verified after start (ADR 0008 says it is); an
+   external service address over plain http sends the session cookie in clear text.
+3. Glass blur stays the host backdrop + color matrix (legacy accent tried, no gain).
+4. Remaining tuning from the Win7 captures.
+5. Stacked covers for artists.
+6. Playlist editing: drag to reorder, drag from library to playlists, rename inline.
+7. Split main_window.cpp further (detail band, breadcrumb, menus) and list_view.cpp
+   (1700 lines) by responsibility.
 
 ## Known issues
 

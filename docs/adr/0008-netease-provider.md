@@ -60,7 +60,5 @@ Use NeteaseCloudMusicApi Enhanced v4.41.1 as a locally managed helper:
 
 ## Future providers
 
-Navigation gains a `Library` enum (All / Local / Netease) and provider-specific source
-factories. A full provider plugin interface is deliberately deferred until a second
-remote provider (Apple Music) exists; the current seam keeps local behaviour unchanged
-without speculative abstraction.
+Superseded by [ADR 0009](0009-streaming-provider-interface.md): providers implement
+`stream::Provider` and the UI works only with that interface.

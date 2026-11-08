@@ -12,10 +12,14 @@ foobar2000.exe (core: decoding, playlists, library, DSP, output, components)
      ├─ aero::paint           Direct2D painters for Win7 frame / caption / transport elements
      ├─ wmp::paint            Direct2D painters for WMP 12 client chrome (lists, nav, bars)
      ├─ ui::ListView          virtualized list over media::ListSource (header, rows, scrollbar)
-     ├─ ui::NavPane           playlists + Music (All / Artist / Album / Genre)
+     ├─ ui::NavPane           Now Playing, All Music, Local Music, one section per provider
+     ├─ ui::Page              the asynchronous page on screen (provider pages, All Favorites)
+     ├─ ui settings page      Preferences > Display > Glasswave (app/settings, settings::Field)
      ├─ ui::SearchBox         self-drawn search field (WM_CHAR + IME)
      ├─ media::LibraryModel   library snapshot: dedup, sort, artist/album/genre groups
      ├─ media::*Source        PlaylistSource / TrackSource / GroupSource behind the list
+     ├─ ui::SongTableSource   song tables over local and provider tracks; tile grids for providers
+     ├─ stream::Provider      a streaming provider (ADR 0009); netease::StreamProvider is the first
      └─ gfx::CompositionHost  DispatcherQueue, Compositor, D3D11/D2D devices, surfaces, animations
 ```
 
@@ -28,6 +32,19 @@ foobar2000.exe (core: decoding, playlists, library, DSP, output, components)
   view and plays from that track; groups (artist/album/genre) drill down.
 - `MainWindow` owns navigation history (`View` records) and rebuilds the source on
   navigation, library changes (debounced 400 ms) and playlist callbacks.
+
+## Streaming providers (ADR 0009)
+
+- `stream/` is the provider-neutral model and interface; nothing in `ui/` or `media/`
+  includes a provider's own headers (only its sign-in dialog lives under `ui/`).
+- A provider registers itself while the component loads and is started by the window (or
+  by its `initquit` service under another UI). Its tracks are metadb items handled by its
+  own input, so playlists, the queue and play history mix them with local files.
+- Provider pages are `ui::Page` objects created by `MakeRemotePage`. The window keeps the
+  one on screen; a page's callbacks are wrapped with `Page::Guard`, so results for a page
+  that was left are dropped. Album browsing state (`AlbumPager`) is cached for Back/Forward.
+- Provider notifications: account changes re-open the provider's page; library changes
+  update the navigation lists and the page in place; favorite changes refresh the stars.
 
 ## Window
 
