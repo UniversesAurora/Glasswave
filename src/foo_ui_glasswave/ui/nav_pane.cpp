@@ -141,6 +141,8 @@ void NavPane::Rebuild() {
     if (m_neteaseExpanded) {
         if (m_neteaseLoggedIn) {
             m_items.push_back({Target::NeteaseLiked, 0, 1, L"Favorites", wp::NavIcon::Playlist, false});
+            m_items.push_back({Target::NeteaseArtists, 0, 1, L"Artists", wp::NavIcon::Artist, false});
+            m_items.push_back({Target::NeteaseAlbums, 0, 1, L"Albums", wp::NavIcon::Album, false});
             m_items.push_back(
                 {Target::NeteaseCreatedHeader, 0, 1, L"Created playlists", wp::NavIcon::Playlist, true});
             if (m_createdExpanded) {

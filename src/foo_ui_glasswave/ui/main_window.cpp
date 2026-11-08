@@ -1396,7 +1396,8 @@ void MainWindow::BuildCrumbs() {
 
 void MainWindow::LayoutCrumbs() {
     float x = 0;
-    for (auto& c : m_crumbs) {
+    for (size_t i = 0; i < m_crumbs.size(); ++i) {
+        Crumb& c = m_crumbs[i];
         c.x0 = x;
         if (!c.text.empty()) {
             auto t = MakeText(Tr(c.text), 12.0f, DWRITE_FONT_WEIGHT_NORMAL, 400, 20);
@@ -1405,7 +1406,8 @@ void MainWindow::LayoutCrumbs() {
             x += std::ceil(tm.widthIncludingTrailingWhitespace) + 8;
         }
         c.split = x;
-        if (c.children) x += 12;
+        // Every level is separated by an arrow; only levels with children open a menu from it.
+        if (c.children || i + 1 < m_crumbs.size()) x += 12;
         c.x1 = x;
     }
     if (m_crumbHot >= static_cast<int>(m_crumbs.size())) m_crumbHot = -1;
@@ -1460,6 +1462,12 @@ std::vector<MenuAction> MainWindow::NeteaseSectionsMenu() {
     View liked;
     liked.library = View::Library::Netease;
     liked.kind = View::Kind::NeteaseLiked;
+    View artists;
+    artists.library = View::Library::Netease;
+    artists.kind = View::Kind::NeteaseArtists;
+    View albums;
+    albums.library = View::Library::Netease;
+    albums.kind = View::Kind::NeteaseAlbums;
     View created;
     created.library = View::Library::Netease;
     created.kind = View::Kind::NeteasePlaylists;
@@ -1470,9 +1478,51 @@ std::vector<MenuAction> MainWindow::NeteaseSectionsMenu() {
     View recommended = created;
     recommended.neteaseScope = View::NeteaseScope::Recommended;
     return {{L"Favorites", go(liked)},
+            {L"Artists", go(artists)},
+            {L"Albums", go(albums)},
             {L"Created playlists", go(created)},
             {L"Collected playlists", go(collected)},
             {L"Recommended", go(recommended)}};
+}
+
+std::vector<MenuAction> MainWindow::FollowedArtistsMenu() {
+    auto go = [this](View v) { return [this, v] { Navigate(v, true); }; };
+    std::vector<MenuAction> out;
+    for (const auto& artist : netease::Provider::Get().FollowedArtists()) {
+        View v;
+        v.library = View::Library::Netease;
+        v.kind = View::Kind::NeteaseArtist;
+        v.remoteId = std::to_wstring(artist.id);
+        v.name = artist.name;
+        out.push_back({artist.name, go(v)});
+    }
+    if (out.empty()) {
+        View page;
+        page.library = View::Library::Netease;
+        page.kind = View::Kind::NeteaseArtists;
+        out.push_back({L"Artists", go(page)});
+    }
+    return out;
+}
+
+std::vector<MenuAction> MainWindow::CollectedAlbumsMenu() {
+    auto go = [this](View v) { return [this, v] { Navigate(v, true); }; };
+    std::vector<MenuAction> out;
+    for (const auto& album : netease::Provider::Get().CollectedAlbums()) {
+        View v;
+        v.library = View::Library::Netease;
+        v.kind = View::Kind::NeteaseAlbum;
+        v.remoteId = std::to_wstring(album.id);
+        v.name = album.name;
+        out.push_back({album.name, go(v)});
+    }
+    if (out.empty()) {
+        View page;
+        page.library = View::Library::Netease;
+        page.kind = View::Kind::NeteaseAlbums;
+        out.push_back({L"Albums", go(page)});
+    }
+    return out;
 }
 
 std::vector<MenuAction> MainWindow::PlaylistListMenu(bool smart) {
@@ -1645,15 +1695,57 @@ std::vector<MainWindow::Crumb> MainWindow::BuildCrumbPath() {
             path.push_back({m_view.name.empty() ? L"Playlist" : m_view.name, go(m_view), {}});
             break;
         }
-        case View::Kind::NeteaseArtist:
+        case View::Kind::NeteaseArtists: {
+            path.push_back({L"Artists", go(m_view), [this] { return FollowedArtistsMenu(); }});
+            break;
+        }
+        case View::Kind::NeteaseAlbums: {
+            path.push_back({L"Albums", go(m_view), [this] { return CollectedAlbumsMenu(); }});
+            break;
+        }
+        case View::Kind::NeteaseArtist: {
+            View artistsPage;
+            artistsPage.library = View::Library::Netease;
+            artistsPage.kind = View::Kind::NeteaseArtists;
+            path.push_back({L"Artists", go(artistsPage), [this] { return FollowedArtistsMenu(); }});
             path.push_back({m_view.name.empty() ? L"Artist" : m_view.name, go(m_view), {}});
             break;
-        case View::Kind::NeteaseAlbum:
+        }
+        case View::Kind::NeteaseAlbum: {
+            if (!m_view.parentId.empty()) {
+                View artistsPage;
+                artistsPage.library = View::Library::Netease;
+                artistsPage.kind = View::Kind::NeteaseArtists;
+                path.push_back({L"Artists", go(artistsPage), [this] { return FollowedArtistsMenu(); }});
+                const int64_t artistId = _wcstoi64(m_view.parentId.c_str(), nullptr, 10);
+                const std::wstring artistName = m_view.parentName;
+                path.push_back({artistName.empty() ? L"Artist" : artistName,
+                                [this, artistId, artistName] {
+                                    if (artistId) OpenNeteaseArtist(artistId, artistName);
+                                },
+                                {}});
+            } else {
+                View albumsPage;
+                albumsPage.library = View::Library::Netease;
+                albumsPage.kind = View::Kind::NeteaseAlbums;
+                path.push_back({L"Albums", go(albumsPage), [this] { return CollectedAlbumsMenu(); }});
+            }
             path.push_back({m_view.name.empty() ? L"Album" : m_view.name, go(m_view), {}});
             break;
+        }
         case View::Kind::NeteaseArtistSongs: {
-            const std::wstring label = Tr(L"Hot songs");
-            path.push_back({m_view.name.empty() ? label : m_view.name + L" · " + label, go(m_view), {}});
+            View artistsPage;
+            artistsPage.library = View::Library::Netease;
+            artistsPage.kind = View::Kind::NeteaseArtists;
+            path.push_back({L"Artists", go(artistsPage), [this] { return FollowedArtistsMenu(); }});
+            const int64_t artistId = _wcstoi64(m_view.remoteId.c_str(), nullptr, 10);
+            const std::wstring artistName = m_view.name;
+            path.push_back({artistName.empty() ? L"Artist" : artistName,
+                            [this, artistId, artistName] {
+                                if (artistId) OpenNeteaseArtist(artistId, artistName);
+                            },
+                            {}});
+            path.push_back({L"Hot songs", go(m_view), {}});
             break;
         }
         case View::Kind::Search:
@@ -1679,6 +1771,7 @@ void MainWindow::PaintBreadcrumb() {
         dc->CreateSolidColorBrush(Hex(0x8DB2E3, 0.8f), divider.put());
         for (int i = 0; i < static_cast<int>(m_crumbs.size()); ++i) {
             const Crumb& c = m_crumbs[i];
+            const bool hasArrow = c.children || i + 1 < static_cast<int>(m_crumbs.size());
             const bool hot = i == m_crumbHot, open = i == m_crumbOpen;
             // Hover lights the whole crumb. WMP 12 art (WMP_BREADCRUMB_MAINBUTTON / _SPLITBUTTON,
             // states empty / hot / pressed / grey): the part under the mouse is hot, the
@@ -1721,7 +1814,7 @@ void MainWindow::PaintBreadcrumb() {
                 t->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);  // centered in the bar, like WMP
                 dc->DrawTextLayout({c.x0 + 4, 0}, t.get(), ink.get());
             }
-            if (c.children) {  // small black triangle: right, or down while the menu is open
+            if (hasArrow) {  // small black triangle: right, or down while the menu is open
                 const float cx = std::round(((c.split + c.x1) / 2) * m_scale) / m_scale;
                 const float cy = std::round((H / 2) * m_scale) / m_scale;
                 com_ptr<ID2D1Factory> f;
@@ -1877,6 +1970,46 @@ void MainWindow::Navigate(const View& requested, bool push) {
             id, [this, requestedView](netease::PlaylistDetail detail, std::wstring error) {
                 ShowNeteaseSongs(requestedView, std::move(detail.songs), std::move(error));
             });
+        break;
+    }
+    case View::Kind::NeteaseArtists: {
+        m_nav->Select(NavPane::Target::NeteaseArtists, 0);
+        auto make = [this](std::vector<netease::Artist> artists, std::wstring empty) {
+            return std::make_unique<ui::NeteaseArtistListSource>(
+                std::move(artists), std::move(empty),
+                [this](int64_t id, std::wstring name) { OpenNeteaseArtist(id, std::move(name)); });
+        };
+        const auto cached = netease::Provider::Get().FollowedArtists();
+        if (!cached.empty()) {
+            source = make(cached, L"No artists.");
+        } else {
+            source = make({}, L"Loading artists...");
+            const View requestedView = view;
+            netease::Provider::Get().FetchFollowedArtists(
+                [this, requestedView](std::vector<netease::Artist> artists, std::wstring error) {
+                    ShowNeteaseArtists(requestedView, std::move(artists), std::move(error));
+                });
+        }
+        break;
+    }
+    case View::Kind::NeteaseAlbums: {
+        m_nav->Select(NavPane::Target::NeteaseAlbums, 0);
+        auto make = [this](std::vector<netease::Album> albums, std::wstring empty) {
+            return std::make_unique<ui::NeteaseAlbumGridSource>(
+                std::wstring(), std::move(albums), std::move(empty),
+                [this](bool, int64_t id, std::wstring name) { OpenNeteaseAlbum(id, std::move(name)); });
+        };
+        const auto cached = netease::Provider::Get().CollectedAlbums();
+        if (!cached.empty()) {
+            source = make(cached, L"No albums.");
+        } else {
+            source = make({}, L"Loading albums...");
+            const View requestedView = view;
+            netease::Provider::Get().FetchCollectedAlbums(
+                [this, requestedView](std::vector<netease::Album> albums, std::wstring error) {
+                    ShowNeteaseAlbums(requestedView, std::move(albums), std::move(error));
+                });
+        }
         break;
     }
     case View::Kind::NeteaseArtist: {
@@ -2081,12 +2214,14 @@ void MainWindow::OpenNeteaseArtist(int64_t id, std::wstring name) {
     Navigate(view, true);
 }
 
-void MainWindow::OpenNeteaseAlbum(int64_t id, std::wstring name) {
+void MainWindow::OpenNeteaseAlbum(int64_t id, std::wstring name, std::wstring parentId, std::wstring parentName) {
     View view;
     view.library = View::Library::Netease;
     view.kind = View::Kind::NeteaseAlbum;
     view.remoteId = std::to_wstring(id);
     view.name = std::move(name);
+    view.parentId = std::move(parentId);
+    view.parentName = std::move(parentName);
     Navigate(view, true);
 }
 
@@ -2121,19 +2256,42 @@ void MainWindow::ShowNeteaseArtist(const View& view, netease::Artist artist, std
     m_artist = artist;
     m_followPending = false;
     const int64_t artistId = artist.id;
-    auto source = std::make_unique<ui::NeteaseArtistSource>(
-        artist.name, std::move(albums), error.empty() ? L"No albums." : std::move(error),
-        [this, artistId](bool hotSongs, int64_t id, std::wstring name) {
+    const std::wstring artistName = artist.name;
+    auto source = std::make_unique<ui::NeteaseAlbumGridSource>(
+        artistName, std::move(albums), error.empty() ? L"No albums." : std::move(error),
+        [this, artistId, artistName](bool hotSongs, int64_t id, std::wstring name) {
             if (hotSongs)
                 OpenNeteaseArtistSongs(artistId, std::move(name));
             else
-                OpenNeteaseAlbum(id, std::move(name));
+                OpenNeteaseAlbum(id, std::move(name), std::to_wstring(artistId), artistName);
         });
     if (!m_filter.empty()) source->SetFilter(m_filter);
     m_source = std::move(source);
     m_list->SetSource(m_source.get(), false);
     RepaintBreadcrumb();
     RepaintArtistHeader();
+}
+
+void MainWindow::ShowNeteaseArtists(const View& view, std::vector<netease::Artist> artists, std::wstring error) {
+    if (m_view.kind != view.kind || m_view.library != view.library) return;
+    auto source = std::make_unique<ui::NeteaseArtistListSource>(
+        std::move(artists), error.empty() ? L"No artists." : std::move(error),
+        [this](int64_t id, std::wstring name) { OpenNeteaseArtist(id, std::move(name)); });
+    if (!m_filter.empty()) source->SetFilter(m_filter);
+    m_source = std::move(source);
+    m_list->SetSource(m_source.get(), false);
+    RepaintBreadcrumb();
+}
+
+void MainWindow::ShowNeteaseAlbums(const View& view, std::vector<netease::Album> albums, std::wstring error) {
+    if (m_view.kind != view.kind || m_view.library != view.library) return;
+    auto source = std::make_unique<ui::NeteaseAlbumGridSource>(
+        std::wstring(), std::move(albums), error.empty() ? L"No albums." : std::move(error),
+        [this](bool, int64_t id, std::wstring name) { OpenNeteaseAlbum(id, std::move(name)); });
+    if (!m_filter.empty()) source->SetFilter(m_filter);
+    m_source = std::move(source);
+    m_list->SetSource(m_source.get(), false);
+    RepaintBreadcrumb();
 }
 
 void MainWindow::PaintArtistHeader() {
@@ -2331,6 +2489,8 @@ cfg_var_modern::cfg_int* MainWindow::ViewStyleSetting(const View& view) {
     case View::Kind::NeteaseArtistSongs:
     case View::Kind::Search: return &cfg_viewNcmSongs;
     case View::Kind::NeteaseArtist: return nullptr;
+    case View::Kind::NeteaseArtists:
+    case View::Kind::NeteaseAlbums: return nullptr;
     case View::Kind::Category:
         switch (view.group) {
         case media::GroupKind::Album: return &cfg_viewAlbums;
@@ -2534,6 +2694,14 @@ void MainWindow::OnNavItem(const NavPane::Item& item) {
     case NavPane::Target::NeteaseLiked:
         v.library = View::Library::Netease;
         v.kind = View::Kind::NeteaseLiked;
+        break;
+    case NavPane::Target::NeteaseArtists:
+        v.library = View::Library::Netease;
+        v.kind = View::Kind::NeteaseArtists;
+        break;
+    case NavPane::Target::NeteaseAlbums:
+        v.library = View::Library::Netease;
+        v.kind = View::Kind::NeteaseAlbums;
         break;
     case NavPane::Target::NeteaseLogin:
         ShowNeteaseLogin();

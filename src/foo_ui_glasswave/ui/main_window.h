@@ -64,7 +64,7 @@ private:
         enum class Kind {
             Playlist, AllMusic, Category, Group, Playlists, SmartPlaylists,
             AllFavorites, NeteasePlaylists, NeteasePlaylist, NeteaseLiked,
-            NeteaseArtist, NeteaseAlbum, NeteaseArtistSongs, Search
+            NeteaseArtists, NeteaseAlbums, NeteaseArtist, NeteaseAlbum, NeteaseArtistSongs, Search
         };
         Library library = Library::Local;
         Kind kind = Kind::AllMusic;
@@ -103,6 +103,8 @@ private:
     std::vector<MenuAction> MusicMenu();
     std::vector<MenuAction> GroupListMenu(media::GroupKind kind);
     std::vector<MenuAction> NeteaseScopeMenu(View::NeteaseScope scope);
+    std::vector<MenuAction> FollowedArtistsMenu();
+    std::vector<MenuAction> CollectedAlbumsMenu();
     static const wchar_t* ScopeLabel(View::NeteaseScope scope);
     void PaintBreadcrumb();
     bool CrumbAt(POINT pt, int* index, int* part) const;
@@ -143,9 +145,11 @@ private:
     void ShowNeteasePlaylists(const View& view, std::vector<netease::Playlist> playlists, std::wstring error);
     void ShowNeteaseArtist(const View& view, netease::Artist artist, std::vector<netease::Album> albums,
                            std::wstring error);
+    void ShowNeteaseArtists(const View& view, std::vector<netease::Artist> artists, std::wstring error);
+    void ShowNeteaseAlbums(const View& view, std::vector<netease::Album> albums, std::wstring error);
     void OpenNeteasePlaylist(int64_t id, std::wstring name, View::NeteaseScope scope);
     void OpenNeteaseArtist(int64_t id, std::wstring name);
-    void OpenNeteaseAlbum(int64_t id, std::wstring name);
+    void OpenNeteaseAlbum(int64_t id, std::wstring name, std::wstring parentId = {}, std::wstring parentName = {});
     void OpenNeteaseArtistSongs(int64_t artistId, std::wstring name);
     void PaintArtistHeader();
     void RepaintArtistHeader();

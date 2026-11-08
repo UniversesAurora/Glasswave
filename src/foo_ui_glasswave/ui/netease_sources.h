@@ -105,13 +105,14 @@ public:
     AllFavoritesSource(std::vector<metadb_handle_ptr> local, std::vector<netease::Song> remote);
 };
 
-// One artist's albums as cover tiles, preceded by a tile for the hot songs.
-class NeteaseArtistSource : public media::ListSource {
+// Albums as cover tiles. A non-empty hotArtist adds the synthetic Hot songs tile first;
+// the collected-albums page uses the same source without it.
+class NeteaseAlbumGridSource : public media::ListSource {
 public:
     // hotSongs = true: the Hot songs tile; otherwise the album (id, name).
     using Open = std::function<void(bool hotSongs, int64_t id, std::wstring name)>;
-    NeteaseArtistSource(std::wstring artistName, std::vector<netease::Album> albums, std::wstring emptyText,
-                        Open open);
+    NeteaseAlbumGridSource(std::wstring hotArtist, std::vector<netease::Album> albums, std::wstring emptyText,
+                           Open open);
 
     const std::vector<media::Column>& Columns() const override { return m_columns; }
     std::wstring ColumnSetKey() const override { return L"netease-artist"; }
@@ -139,6 +140,45 @@ private:
     std::wstring m_artistName;
     std::vector<netease::Album> m_albums;
     std::vector<size_t> m_rows;  // 0 = Hot songs, i + 1 = m_albums[i]
+    std::vector<uint8_t> m_selected;
+    size_t m_focus = SIZE_MAX;
+    std::wstring m_emptyText;
+    std::wstring m_filter;
+    std::vector<media::Column> m_columns;
+    Open m_open;
+};
+
+// Followed artists as cover tiles.
+class NeteaseArtistListSource : public media::ListSource {
+public:
+    using Open = std::function<void(int64_t id, std::wstring name)>;
+    NeteaseArtistListSource(std::vector<netease::Artist> artists, std::wstring emptyText, Open open);
+
+    const std::vector<media::Column>& Columns() const override { return m_columns; }
+    std::wstring ColumnSetKey() const override { return L"netease-artists"; }
+    size_t Count() const override { return m_rows.size(); }
+    std::wstring Cell(size_t row, size_t column) const override;
+    std::wstring EmptyText() const override { return m_emptyText; }
+    media::TileStyle Tiles() const override { return media::TileStyle::Album; }
+    media::TileInfo Tile(size_t row) const override;
+    bool SupportsViewStyle(media::ViewStyle style) const override { return style == media::ViewStyle::Icons; }
+    media::ViewStyle GetViewStyle() const override { return media::ViewStyle::Icons; }
+    bool IsSelected(size_t row) const override { return row < m_selected.size() && m_selected[row]; }
+    void SelectOnly(size_t row) override;
+    void Toggle(size_t row) override;
+    void SelectRange(size_t a, size_t b, bool keepOthers) override;
+    void SelectAll() override;
+    void SetSelection(const std::vector<size_t>& rows) override;
+    size_t Focus() const override { return m_focus; }
+    void SetFocus(size_t row) override { m_focus = row; }
+    void Activate(size_t row) override;
+    void ContextMenu(HWND owner, POINT screen) override;
+    metadb_handle_list SelectedItems() const override { return {}; }
+    void SetFilter(std::wstring_view filterLower) override;
+
+private:
+    std::vector<netease::Artist> m_artists;
+    std::vector<size_t> m_rows;
     std::vector<uint8_t> m_selected;
     size_t m_focus = SIZE_MAX;
     std::wstring m_emptyText;

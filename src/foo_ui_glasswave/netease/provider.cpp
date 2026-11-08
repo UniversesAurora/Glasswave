@@ -776,6 +776,19 @@ void Provider::SetArtistFollow(int64_t artistId, bool follow, DoneCallback done)
         bool ok = false;
         if (m_service.EnsureStarted(abort, &error))
             ok = m_client.SetArtistFollow(artistId, follow, abort, error);
+        if (ok) {
+            // Keep the followed-artists list (used by the navigation menus) in step.
+            if (auto artist = Catalog::Get().FindArtist(artistId)) {
+                artist->followed = follow;
+                std::lock_guard lock(m_mutex);
+                auto it = std::find_if(m_followedArtists.begin(), m_followedArtists.end(),
+                                       [artistId](const Artist& a) { return a.id == artistId; });
+                if (follow && it == m_followedArtists.end())
+                    m_followedArtists.insert(m_followedArtists.begin(), *artist);
+                else if (!follow && it != m_followedArtists.end())
+                    m_followedArtists.erase(it);
+            }
+        }
         PostMain([done = std::move(done), ok, error] {
             if (done) done(ok, ok ? std::wstring() : ErrorOf(error));
         });

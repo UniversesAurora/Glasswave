@@ -430,15 +430,15 @@ AllFavoritesSource::AllFavoritesSource(std::vector<metadb_handle_ptr> local, std
 
 // ---- artist page ------------------------------------------------------------------------
 
-NeteaseArtistSource::NeteaseArtistSource(std::wstring artistName, std::vector<netease::Album> albums,
-                                         std::wstring emptyText, Open open)
-    : m_artistName(std::move(artistName)), m_albums(std::move(albums)), m_emptyText(std::move(emptyText)),
+NeteaseAlbumGridSource::NeteaseAlbumGridSource(std::wstring hotArtist, std::vector<netease::Album> albums,
+                                               std::wstring emptyText, Open open)
+    : m_artistName(std::move(hotArtist)), m_albums(std::move(albums)), m_emptyText(std::move(emptyText)),
       m_open(std::move(open)) {
     m_columns = {{L"Album", 0, true}, {L"Release year", 80, false, true}, {L"Songs", 60, false, true}};
     SetFilter({});
 }
 
-std::wstring NeteaseArtistSource::Cell(size_t row, size_t column) const {
+std::wstring NeteaseAlbumGridSource::Cell(size_t row, size_t column) const {
     if (row >= m_rows.size() || column > 2) return {};
     const size_t index = m_rows[row];
     if (!index) return column == 0 ? Tr(L"Hot songs") : std::wstring();
@@ -451,7 +451,7 @@ std::wstring NeteaseArtistSource::Cell(size_t row, size_t column) const {
     }
 }
 
-media::TileInfo NeteaseArtistSource::Tile(size_t row) const {
+media::TileInfo NeteaseAlbumGridSource::Tile(size_t row) const {
     media::TileInfo tile;
     if (row >= m_rows.size()) return tile;
     const size_t index = m_rows[row];
@@ -466,32 +466,32 @@ media::TileInfo NeteaseArtistSource::Tile(size_t row) const {
     return tile;
 }
 
-void NeteaseArtistSource::SelectOnly(size_t row) {
+void NeteaseAlbumGridSource::SelectOnly(size_t row) {
     std::fill(m_selected.begin(), m_selected.end(), uint8_t{0});
     if (row < m_rows.size()) m_selected[row] = 1;
     m_focus = row;
 }
 
-void NeteaseArtistSource::Toggle(size_t row) {
+void NeteaseAlbumGridSource::Toggle(size_t row) {
     if (row < m_selected.size()) m_selected[row] ^= 1;
     m_focus = row;
 }
 
-void NeteaseArtistSource::SelectRange(size_t a, size_t b, bool keepOthers) {
+void NeteaseAlbumGridSource::SelectRange(size_t a, size_t b, bool keepOthers) {
     if (!keepOthers) std::fill(m_selected.begin(), m_selected.end(), uint8_t{0});
     if (a > b) std::swap(a, b);
     for (size_t r = a; r <= b && r < m_selected.size(); ++r) m_selected[r] = 1;
 }
 
-void NeteaseArtistSource::SelectAll() { std::fill(m_selected.begin(), m_selected.end(), uint8_t{1}); }
+void NeteaseAlbumGridSource::SelectAll() { std::fill(m_selected.begin(), m_selected.end(), uint8_t{1}); }
 
-void NeteaseArtistSource::SetSelection(const std::vector<size_t>& rows) {
+void NeteaseAlbumGridSource::SetSelection(const std::vector<size_t>& rows) {
     std::fill(m_selected.begin(), m_selected.end(), uint8_t{0});
     for (size_t row : rows)
         if (row < m_selected.size()) m_selected[row] = 1;
 }
 
-void NeteaseArtistSource::Activate(size_t row) {
+void NeteaseAlbumGridSource::Activate(size_t row) {
     if (row >= m_rows.size() || !m_open) return;
     const size_t index = m_rows[row];
     if (!index) {
@@ -502,14 +502,85 @@ void NeteaseArtistSource::Activate(size_t row) {
     m_open(false, album.id, album.name);
 }
 
-void NeteaseArtistSource::ContextMenu(HWND, POINT) {}
+void NeteaseAlbumGridSource::ContextMenu(HWND, POINT) {}
 
-void NeteaseArtistSource::SetFilter(std::wstring_view filterLower) {
+void NeteaseAlbumGridSource::SetFilter(std::wstring_view filterLower) {
     m_filter.assign(filterLower);
     m_rows.clear();
-    m_rows.push_back(0);  // the Hot songs tile is always offered
+    if (!m_artistName.empty()) m_rows.push_back(0);  // the Hot songs tile is always offered
     for (size_t i = 0; i < m_albums.size(); ++i)
         if (m_filter.empty() || Contains(Lower(m_albums[i].name), m_filter)) m_rows.push_back(i + 1);
+    m_selected.assign(m_rows.size(), 0);
+    m_focus = SIZE_MAX;
+}
+
+// ---- followed artists -------------------------------------------------------------------
+
+NeteaseArtistListSource::NeteaseArtistListSource(std::vector<netease::Artist> artists, std::wstring emptyText,
+                                                 Open open)
+    : m_artists(std::move(artists)), m_emptyText(std::move(emptyText)), m_open(std::move(open)) {
+    m_columns = {{L"Artist", 0, true}, {L"Albums", 70, false, true}, {L"Songs", 70, false, true}};
+    SetFilter({});
+}
+
+std::wstring NeteaseArtistListSource::Cell(size_t row, size_t column) const {
+    if (row >= m_rows.size()) return {};
+    const auto& artist = m_artists[m_rows[row]];
+    switch (column) {
+    case 0: return artist.name;
+    case 1: return std::to_wstring(artist.albumCount);
+    case 2: return std::to_wstring(artist.songCount);
+    default: return {};
+    }
+}
+
+media::TileInfo NeteaseArtistListSource::Tile(size_t row) const {
+    media::TileInfo tile;
+    if (row >= m_rows.size()) return tile;
+    const auto& artist = m_artists[m_rows[row]];
+    tile.art = netease::Catalog::Get().ArtistHandle(artist.id);
+    tile.lines = {artist.name, std::to_wstring(artist.albumCount) + L" " + Tr(L"albums")};
+    return tile;
+}
+
+void NeteaseArtistListSource::SelectOnly(size_t row) {
+    std::fill(m_selected.begin(), m_selected.end(), uint8_t{0});
+    if (row < m_rows.size()) m_selected[row] = 1;
+    m_focus = row;
+}
+
+void NeteaseArtistListSource::Toggle(size_t row) {
+    if (row < m_selected.size()) m_selected[row] ^= 1;
+    m_focus = row;
+}
+
+void NeteaseArtistListSource::SelectRange(size_t a, size_t b, bool keepOthers) {
+    if (!keepOthers) std::fill(m_selected.begin(), m_selected.end(), uint8_t{0});
+    if (a > b) std::swap(a, b);
+    for (size_t r = a; r <= b && r < m_selected.size(); ++r) m_selected[r] = 1;
+}
+
+void NeteaseArtistListSource::SelectAll() { std::fill(m_selected.begin(), m_selected.end(), uint8_t{1}); }
+
+void NeteaseArtistListSource::SetSelection(const std::vector<size_t>& rows) {
+    std::fill(m_selected.begin(), m_selected.end(), uint8_t{0});
+    for (size_t row : rows)
+        if (row < m_selected.size()) m_selected[row] = 1;
+}
+
+void NeteaseArtistListSource::Activate(size_t row) {
+    if (row >= m_rows.size() || !m_open) return;
+    const auto& artist = m_artists[m_rows[row]];
+    m_open(artist.id, artist.name);
+}
+
+void NeteaseArtistListSource::ContextMenu(HWND, POINT) {}
+
+void NeteaseArtistListSource::SetFilter(std::wstring_view filterLower) {
+    m_filter.assign(filterLower);
+    m_rows.clear();
+    for (size_t i = 0; i < m_artists.size(); ++i)
+        if (m_filter.empty() || Contains(Lower(m_artists[i].name), m_filter)) m_rows.push_back(i);
     m_selected.assign(m_rows.size(), 0);
     m_focus = SIZE_MAX;
 }

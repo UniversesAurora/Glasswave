@@ -17,7 +17,7 @@ public:
         None, Queue, PlaylistsHeader, Playlist, SmartHeader, Music, Category,
         LibraryAll, AllFavorites, LibraryLocal, LibraryNetease,
         NeteaseCreatedHeader, NeteaseCollectedHeader, NeteaseRemotePlaylist,
-        NeteaseRecommended, NeteaseLiked, NeteaseLogin
+        NeteaseRecommended, NeteaseLiked, NeteaseArtists, NeteaseAlbums, NeteaseLogin
     };
     struct RemotePlaylist {
         int64_t id = 0;
