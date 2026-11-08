@@ -431,9 +431,9 @@ AllFavoritesSource::AllFavoritesSource(std::vector<metadb_handle_ptr> local, std
 // ---- artist page ------------------------------------------------------------------------
 
 NeteaseAlbumGridSource::NeteaseAlbumGridSource(std::wstring hotArtist, std::vector<netease::Album> albums,
-                                               std::wstring emptyText, Open open)
+                                               std::wstring emptyText, Open open, bool expandedStyle)
     : m_artistName(std::move(hotArtist)), m_albums(std::move(albums)), m_emptyText(std::move(emptyText)),
-      m_open(std::move(open)) {
+      m_open(std::move(open)), m_expandedStyle(expandedStyle) {
     m_columns = {{L"Album", 0, true}, {L"Release year", 80, false, true}, {L"Songs", 60, false, true}};
     SetFilter({});
 }

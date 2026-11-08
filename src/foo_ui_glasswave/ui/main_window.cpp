@@ -84,14 +84,17 @@ cfg_var_modern::cfg_int cfg_viewPlaylist({0x6a1f3c5e, 0x2b7e, 0x4d90, {0x8c, 0x1
 // The other Music categories (Year, Rating, Composer, ...) share one view option.
 cfg_var_modern::cfg_int cfg_viewCategories({0x6a1f3c5c, 0x2b7e, 0x4d90, {0x8c, 0x15, 0x3e, 0x9a, 0x7b, 0x2d, 0x4f, 0x61}},
                                            static_cast<int>(media::ViewStyle::Tiles));
-// All Music > Favorites; NetEase playlists; NetEase songs.
-// {6A1F3C5F-2B7E-4D90-8C15-3E9A7B2D4F61} .. {6A1F3C61-...}
+// All Music > Favorites; NetEase playlists; NetEase songs; NetEase collected albums.
+// {6A1F3C5F-2B7E-4D90-8C15-3E9A7B2D4F61} .. {6A1F3C62-...}
 cfg_var_modern::cfg_int cfg_viewAllFavorites({0x6a1f3c5f, 0x2b7e, 0x4d90, {0x8c, 0x15, 0x3e, 0x9a, 0x7b, 0x2d, 0x4f, 0x61}},
                                              static_cast<int>(media::ViewStyle::Details));
 cfg_var_modern::cfg_int cfg_viewNcmPlaylists({0x6a1f3c60, 0x2b7e, 0x4d90, {0x8c, 0x15, 0x3e, 0x9a, 0x7b, 0x2d, 0x4f, 0x61}},
                                              static_cast<int>(media::ViewStyle::Icons));
 cfg_var_modern::cfg_int cfg_viewNcmSongs({0x6a1f3c61, 0x2b7e, 0x4d90, {0x8c, 0x15, 0x3e, 0x9a, 0x7b, 0x2d, 0x4f, 0x61}},
                                          static_cast<int>(media::ViewStyle::Details));
+// Collected albums: cover tiles, or the saved albums' songs grouped by album.
+cfg_var_modern::cfg_int cfg_viewNcmAlbums({0x6a1f3c62, 0x2b7e, 0x4d90, {0x8c, 0x15, 0x3e, 0x9a, 0x7b, 0x2d, 0x4f, 0x61}},
+                                          static_cast<int>(media::ViewStyle::Icons));
 // Music categories shown in the navigation pane, in order: media::GroupKind values as digits.
 // {6A1F3C5D-2B7E-4D90-8C15-3E9A7B2D4F61}
 cfg_var_modern::cfg_string cfg_navCategories({0x6a1f3c5d, 0x2b7e, 0x4d90, {0x8c, 0x15, 0x3e, 0x9a, 0x7b, 0x2d, 0x4f, 0x61}},
@@ -1997,8 +2000,19 @@ void MainWindow::Navigate(const View& requested, bool push) {
         auto make = [this](std::vector<netease::Album> albums, std::wstring empty) {
             return std::make_unique<ui::NeteaseAlbumGridSource>(
                 std::wstring(), std::move(albums), std::move(empty),
-                [this](bool, int64_t id, std::wstring name) { OpenNeteaseAlbum(id, std::move(name)); });
+                [this](bool, int64_t id, std::wstring name) { OpenNeteaseAlbum(id, std::move(name)); }, true);
         };
+        auto* style = ViewStyleSetting(view);
+        const bool expanded = style && static_cast<media::ViewStyle>(style->get()) == media::ViewStyle::Tiles;
+        if (expanded) {  // the saved albums' songs, grouped by album like a playlist
+            source = std::make_unique<ui::NeteaseSongSource>(std::vector<netease::Song>{}, L"Loading album songs...");
+            const View requestedView = view;
+            netease::Provider::Get().FetchCollectedAlbumSongs(
+                [this, requestedView](std::vector<netease::Song> songs, std::wstring error) {
+                    ShowNeteaseSongs(requestedView, std::move(songs), std::move(error));
+                });
+            break;
+        }
         const auto cached = netease::Provider::Get().CollectedAlbums();
         if (!cached.empty()) {
             source = make(cached, L"No albums.");
@@ -2287,7 +2301,7 @@ void MainWindow::ShowNeteaseAlbums(const View& view, std::vector<netease::Album>
     if (m_view.kind != view.kind || m_view.library != view.library) return;
     auto source = std::make_unique<ui::NeteaseAlbumGridSource>(
         std::wstring(), std::move(albums), error.empty() ? L"No albums." : std::move(error),
-        [this](bool, int64_t id, std::wstring name) { OpenNeteaseAlbum(id, std::move(name)); });
+        [this](bool, int64_t id, std::wstring name) { OpenNeteaseAlbum(id, std::move(name)); }, true);
     if (!m_filter.empty()) source->SetFilter(m_filter);
     m_source = std::move(source);
     m_list->SetSource(m_source.get(), false);
@@ -2488,9 +2502,9 @@ cfg_var_modern::cfg_int* MainWindow::ViewStyleSetting(const View& view) {
     case View::Kind::NeteaseAlbum:
     case View::Kind::NeteaseArtistSongs:
     case View::Kind::Search: return &cfg_viewNcmSongs;
-    case View::Kind::NeteaseArtist: return nullptr;
-    case View::Kind::NeteaseArtists:
-    case View::Kind::NeteaseAlbums: return nullptr;
+    case View::Kind::NeteaseArtist:
+    case View::Kind::NeteaseArtists: return nullptr;
+    case View::Kind::NeteaseAlbums: return &cfg_viewNcmAlbums;
     case View::Kind::Category:
         switch (view.group) {
         case media::GroupKind::Album: return &cfg_viewAlbums;
@@ -2515,9 +2529,11 @@ void MainWindow::ShowViewMenu() {
     const std::pair<media::ViewStyle, const wchar_t*> items[] = {
         {media::ViewStyle::Icons, L"&Icon"}, {media::ViewStyle::Tiles, L"&Expanded tile"},
         {media::ViewStyle::Details, L"&Details"}};
+    const bool albumsPage = m_view.kind == View::Kind::NeteaseAlbums;
     for (const auto& [style, label] : items) {
         UINT flags = MF_STRING;
-        if (!m_source->SupportsViewStyle(style)) flags |= MF_GRAYED;
+        if (albumsPage ? style == media::ViewStyle::Details : !m_source->SupportsViewStyle(style))
+            flags |= MF_GRAYED;
         AppendMenuW(menu, flags, static_cast<UINT_PTR>(style) + 1, label);
     }
     // WMP 12: each view with its icon (strip 331 slots 57 icon, 56 expanded tile, 55 details),
@@ -2537,6 +2553,15 @@ void MainWindow::ShowViewMenu() {
 }
 
 void MainWindow::ApplyViewStyle(media::ViewStyle style) {
+    // The collected-albums page swaps between the album grid and a song list grouped by
+    // album, so it rebuilds the view instead of restyling the current source.
+    if (m_view.kind == View::Kind::NeteaseAlbums) {
+        if (style == media::ViewStyle::Details) return;
+        if (auto* setting = ViewStyleSetting(m_view)) setting->set(static_cast<int>(style));
+        Navigate(m_view, false);
+        if (auto* w = WidgetById(kViewOptions)) w->Invalidate();
+        return;
+    }
     m_source->SetViewStyle(style);
     if (auto* setting = ViewStyleSetting(m_view)) setting->set(static_cast<int>(style));
     m_list->SetSource(m_source.get(), true);
@@ -2547,6 +2572,11 @@ void MainWindow::CycleViewStyle() {
     // WMP 12: clicking the view icon steps Icon -> Expanded tile -> Details -> Icon,
     // skipping styles the current view does not offer.
     if (!m_source) return;
+    if (m_view.kind == View::Kind::NeteaseAlbums) {
+        const bool expanded = m_source->GetViewStyle() == media::ViewStyle::Tiles;
+        ApplyViewStyle(expanded ? media::ViewStyle::Icons : media::ViewStyle::Tiles);
+        return;
+    }
     int s = static_cast<int>(m_source->GetViewStyle());
     for (int i = 0; i < 3; ++i) {
         s = (s + 1) % 3;

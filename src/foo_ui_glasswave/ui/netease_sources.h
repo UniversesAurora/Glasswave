@@ -111,8 +111,10 @@ class NeteaseAlbumGridSource : public media::ListSource {
 public:
     // hotSongs = true: the Hot songs tile; otherwise the album (id, name).
     using Open = std::function<void(bool hotSongs, int64_t id, std::wstring name)>;
+    // expandedStyle: the collected-albums page offers Expanded tile as an alternative
+    // representation (a song list grouped by album, built by the caller).
     NeteaseAlbumGridSource(std::wstring hotArtist, std::vector<netease::Album> albums, std::wstring emptyText,
-                           Open open);
+                           Open open, bool expandedStyle = false);
 
     const std::vector<media::Column>& Columns() const override { return m_columns; }
     std::wstring ColumnSetKey() const override { return L"netease-artist"; }
@@ -121,7 +123,9 @@ public:
     std::wstring EmptyText() const override { return m_emptyText; }
     media::TileStyle Tiles() const override { return media::TileStyle::Album; }
     media::TileInfo Tile(size_t row) const override;
-    bool SupportsViewStyle(media::ViewStyle style) const override { return style == media::ViewStyle::Icons; }
+    bool SupportsViewStyle(media::ViewStyle style) const override {
+        return style == media::ViewStyle::Icons || (m_expandedStyle && style == media::ViewStyle::Tiles);
+    }
     media::ViewStyle GetViewStyle() const override { return media::ViewStyle::Icons; }
     bool IsSelected(size_t row) const override { return row < m_selected.size() && m_selected[row]; }
     void SelectOnly(size_t row) override;
@@ -146,6 +150,7 @@ private:
     std::wstring m_filter;
     std::vector<media::Column> m_columns;
     Open m_open;
+    bool m_expandedStyle = false;
 };
 
 // Followed artists as cover tiles.

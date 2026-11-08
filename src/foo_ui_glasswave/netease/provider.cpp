@@ -6,6 +6,9 @@
 #include "netease/log.h"
 #include "netease/provider.h"
 
+#include <atomic>
+#include <thread>
+
 namespace glasswave::netease {
 
 namespace {
@@ -289,24 +292,30 @@ void Provider::RefreshAccount(DoneCallback done) {
         // Prefetch the account's saved artists/albums and the recommended list once per
         // refresh, so the navigation pane's breadcrumb menus can list them immediately.
         std::wstring listError;
+        size_t followedCount = 0, albumCount = 0, recommendedCount = 0;
         std::vector<Artist> artists;
         if (m_client.GetFollowedArtists(abort, artists, listError)) {
+            followedCount = artists.size();
             for (const auto& artist : artists) Catalog::Get().Put(artist);
             std::lock_guard lock(m_mutex);
             m_followedArtists = std::move(artists);
         }
         std::vector<Album> albums;
         if (m_client.GetCollectedAlbums(abort, albums, listError)) {
+            albumCount = albums.size();
             Catalog::Get().Put(albums);
             std::lock_guard lock(m_mutex);
             m_collectedAlbums = std::move(albums);
         }
         std::vector<Playlist> recommended;
         if (m_client.RecommendPlaylists(abort, recommended, listError)) {
+            recommendedCount = recommended.size();
             for (const auto& playlist : recommended) Catalog::Get().Put(playlist);
             std::lock_guard lock(m_mutex);
             m_recommendedPlaylists = std::move(recommended);
         }
+        Log(L"account: saved lists: " + std::to_wstring(followedCount) + L" artists, " +
+            std::to_wstring(albumCount) + L" albums, " + std::to_wstring(recommendedCount) + L" recommended");
         PostMain([done = std::move(done)] {
             if (done) done(true, {});
         });
@@ -504,6 +513,74 @@ void Provider::FetchCollectedAlbums(AlbumsCallback done) {
         }
         PostMain([done = std::move(done), albums = std::move(albums)]() mutable {
             if (done) done(std::move(albums), {});
+        });
+    });
+}
+
+void Provider::FetchCollectedAlbumSongs(SongsCallback done) {
+    m_tasks.Post([this, done = std::move(done)] {
+        if (m_stopping) return;
+        abort_callback_impl abort;
+        std::wstring error;
+        if (!RequireLogin(error)) {
+            PostMain([done = std::move(done), error] {
+                if (done) done({}, ErrorOf(error));
+            });
+            return;
+        }
+        if (!m_service.EnsureStarted(abort, &error)) {
+            PostMain([done = std::move(done), error] {
+                if (done) done({}, ErrorOf(error));
+            });
+            return;
+        }
+        std::vector<Album> albums;
+        {
+            std::lock_guard lock(m_mutex);
+            albums = m_collectedAlbums;
+        }
+        if (albums.empty()) {
+            if (!m_client.GetCollectedAlbums(abort, albums, error)) {
+                PostMain([done = std::move(done), error] {
+                    if (done) done({}, ErrorOf(error));
+                });
+                return;
+            }
+            Catalog::Get().Put(albums);
+            std::lock_guard lock(m_mutex);
+            m_collectedAlbums = albums;
+        }
+        if (albums.size() > 120) albums.resize(120);  // a browse page, not the whole library
+        std::vector<std::vector<Song>> tracks(albums.size());
+        std::atomic<size_t> next{0};
+        auto fetch = [this, &albums, &tracks, &next] {
+            for (;;) {
+                const size_t i = next.fetch_add(1);
+                if (i >= albums.size() || m_stopping) return;
+                abort_callback_impl albumAbort;
+                Album info;
+                std::vector<Song> songs;
+                std::wstring ignored;
+                if (m_client.GetAlbum(albums[i].id, albumAbort, info, songs, ignored))
+                    tracks[i] = std::move(songs);
+            }
+        };
+        std::vector<std::thread> threads;
+        const size_t count = std::min<size_t>(4, albums.size());
+        for (size_t t = 0; t < count; ++t) threads.emplace_back(fetch);
+        for (auto& thread : threads) thread.join();
+        if (m_stopping) return;
+        std::vector<Song> all;
+        for (auto& list : tracks) all.insert(all.end(), list.begin(), list.end());
+        if (all.empty()) {
+            PostMain([done = std::move(done)] {
+                if (done) done({}, L"No songs in the collected albums.");
+            });
+            return;
+        }
+        PostMain([done = std::move(done), all = std::move(all)]() mutable {
+            Catalog::Get().PutAndHint(all);
+            if (done) done(std::move(all), {});
         });
     });
 }
