@@ -93,6 +93,8 @@
     <ClCompile Include="ui\text.cpp" />
     <ClCompile Include="ui\list_view.cpp" />
     <ClCompile Include="ui\nav_pane.cpp" />
+    <ClCompile Include="ui\netease_login.cpp" />
+    <ClCompile Include="ui\netease_sources.cpp" />
     <ClCompile Include="ui\taskbar.cpp" />
     <ClCompile Include="ui\i18n.cpp" />
     <ClCompile Include="media\favorites.cpp" />
@@ -109,11 +111,13 @@
     <ClCompile Include="media\list_sources.cpp" />
     <ClCompile Include="media\source_identity.cpp" />
     <ClCompile Include="netease\config.cpp" />
+    <ClCompile Include="netease\album_art_ncm.cpp" />
     <ClCompile Include="netease\catalog.cpp" />
     <ClCompile Include="netease\client.cpp" />
     <ClCompile Include="netease\cookie.cpp" />
     <ClCompile Include="netease\handle.cpp" />
     <ClCompile Include="netease\http.cpp" />
+    <ClCompile Include="netease\input_ncm.cpp" />
     <ClCompile Include="netease\json.cpp" />
     <ClCompile Include="netease\log.cpp" />
     <ClCompile Include="netease\profile.cpp" />
@@ -136,6 +140,8 @@
     <ClInclude Include="ui\text.h" />
     <ClInclude Include="ui\list_view.h" />
     <ClInclude Include="ui\nav_pane.h" />
+    <ClInclude Include="ui\netease_login.h" />
+    <ClInclude Include="ui\netease_sources.h" />
     <ClInclude Include="ui\taskbar.h" />
     <ClInclude Include="ui\i18n.h" />
     <ClInclude Include="media\favorites.h" />

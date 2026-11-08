@@ -13,7 +13,11 @@ int CategoryIcon(media::GroupKind kind);
 class NavPane {
 public:
     // Category: a way to browse Music; playlist holds its media::GroupKind.
-    enum class Target { None, Queue, PlaylistsHeader, Playlist, SmartHeader, Music, Category };
+    enum class Target {
+        None, Queue, PlaylistsHeader, Playlist, SmartHeader, Music, Category,
+        LibraryAll, AllFavorites, LibraryLocal, LibraryNetease,
+        NeteaseMyPlaylists, NeteaseRecommended, NeteaseLiked, NeteaseLogin
+    };
     struct Item {
         Target target = Target::None;
         size_t playlist = 0;
@@ -27,6 +31,8 @@ public:
     ~NavPane();
 
     void Rebuild();  // playlists changed
+    // The NetEase account shown under its library node (logged out: a sign-in entry).
+    void SetNeteaseState(bool loggedIn, std::wstring name);
     // The Music categories shown (WMP's "Customize navigation pane"), in order.
     void SetCategories(std::vector<media::GroupKind> kinds);
     const std::vector<media::GroupKind>& Categories() const { return m_categories; }
@@ -50,7 +56,10 @@ private:
 
     winrt::Windows::UI::Composition::SpriteVisual m_visual{nullptr};
     std::vector<Item> m_items;
+    bool m_allExpanded = true, m_localExpanded = true, m_neteaseExpanded = true;
     bool m_playlistsExpanded = true, m_smartExpanded = true, m_musicExpanded = true;
+    bool m_neteaseLoggedIn = false;
+    std::wstring m_neteaseName;
     Target m_selTarget = Target::Music;
     size_t m_selPlaylist = 0;
     size_t m_hot = SIZE_MAX;

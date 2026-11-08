@@ -3,6 +3,7 @@
 #include "aero/shadow_frame.h"
 #include "media/library_model.h"
 #include "media/list_sources.h"
+#include "netease/types.h"
 #include "ui/list_view.h"
 #include "ui/main_menu.h"
 #include "ui/i18n.h"
@@ -37,6 +38,7 @@ public:
     void OnPlaylistsChanged();
     void OnPlaylistLockChanged();  // auto playlists attach as locks, also after start-up
     void ScheduleLibraryReload();
+    void OnNeteaseLoginChanged();
 
 private:
     struct Layout {
@@ -53,10 +55,19 @@ private:
 
     struct View {
         // Category: every group of `group` (Artist, Album, ...); Group: the songs of one of them.
-        enum class Kind { Playlist, AllMusic, Category, Group, Playlists, SmartPlaylists } kind = Kind::AllMusic;
+        enum class Library { All, Local, Netease };
+        enum class Kind {
+            Playlist, AllMusic, Category, Group, Playlists, SmartPlaylists,
+            AllFavorites, NeteasePlaylists, NeteasePlaylist, NeteaseLiked, Search
+        };
+        Library library = Library::Local;
+        Kind kind = Kind::AllMusic;
         size_t playlist = 0;
         media::GroupKind group = media::GroupKind::Artist;
         std::wstring key, name;
+        bool recommended = false;  // NeteasePlaylists: My playlists / Recommended
+        std::wstring remoteId;     // NetEase playlist id
+        std::wstring query;        // Search
     };
 
     // Breadcrumb (WMP 12 address bar): each level is a name that navigates there and, if
@@ -104,6 +115,10 @@ private:
     static cfg_var_modern::cfg_int* ViewStyleSetting(const View& view);
     void ShowNavCustomizeMenu(POINT screen);
     void SetNavCategories(std::vector<media::GroupKind> kinds);
+    void ShowNeteaseLogin();
+    void ShowNeteaseSongs(const View& view, std::vector<netease::Song> songs, std::wstring error);
+    void ShowNeteasePlaylists(const View& view, std::vector<netease::Playlist> playlists, std::wstring error);
+    void OpenNeteasePlaylist(int64_t id, std::wstring name);
     int ViewStyles() const;  // view options the current source offers
     void OnNavItem(const NavPane::Item& item);
     void AddDroppedFiles(IDataObject* data);

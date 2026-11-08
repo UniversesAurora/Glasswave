@@ -100,32 +100,56 @@ void NavPane::Rebuild() {
     auto pm = playlist_manager::get();
     // The play queue on top, like the "Up Next" / "Playing" list of current players.
     m_items.push_back({Target::Queue, media::QueuePlaylist(false), 0, L"Now Playing", wp::NavIcon::NowPlaying, false});
-    m_items.push_back({Target::PlaylistsHeader, 0, 0, L"Playlists", wp::NavIcon::Playlist, true});
-    if (m_playlistsExpanded) {
-        pfc::string8 name;
-        for (t_size i = 0, n = pm->get_playlist_count(); i < n; ++i) {
-            if (media::IsSpecial(i)) continue;  // queue, Favorites and smart lists have their places
-            pm->playlist_get_name(i, name);
-            m_items.push_back({Target::Playlist, i, 1, Wide(name), wp::NavIcon::Playlist, false});
-        }
-    }
-    m_items.push_back({Target::SmartHeader, 0, 0, L"Smart playlists", wp::NavIcon::Playlist, true});
-    if (m_smartExpanded) {
-        if (const t_size fav = media::FavoritesPlaylist(false); fav != SIZE_MAX)
-            m_items.push_back({Target::Playlist, fav, 1, L"Favorites", wp::NavIcon::Playlist, false});
-        pfc::string8 smartName;  // every auto playlist, presets and the user's own
-        for (t_size p = 0, n = pm->get_playlist_count(); p < n; ++p)
-            if (media::IsAutoPlaylist(p)) {
-                pm->playlist_get_name(p, smartName);
-                m_items.push_back({Target::Playlist, p, 1, Wide(smartName), wp::NavIcon::Playlist, false});
+    m_items.push_back({Target::LibraryAll, 0, 0, L"All Music", wp::NavIcon::Library, true});
+    if (m_allExpanded)
+        m_items.push_back({Target::AllFavorites, 0, 1, L"Favorites", wp::NavIcon::Playlist, false});
+    m_items.push_back({Target::LibraryLocal, 0, 0, L"Local Music", wp::NavIcon::Music, true});
+    if (m_localExpanded) {
+        m_items.push_back({Target::PlaylistsHeader, 0, 1, L"Playlists", wp::NavIcon::Playlist, true});
+        if (m_playlistsExpanded) {
+            pfc::string8 name;
+            for (t_size i = 0, n = pm->get_playlist_count(); i < n; ++i) {
+                if (media::IsSpecial(i)) continue;  // queue, Favorites and smart lists have their places
+                pm->playlist_get_name(i, name);
+                m_items.push_back({Target::Playlist, i, 2, Wide(name), wp::NavIcon::Playlist, false});
             }
+        }
+        m_items.push_back({Target::SmartHeader, 0, 1, L"Smart playlists", wp::NavIcon::Playlist, true});
+        if (m_smartExpanded) {
+            if (const t_size fav = media::FavoritesPlaylist(false); fav != SIZE_MAX)
+                m_items.push_back({Target::Playlist, fav, 2, L"Favorites", wp::NavIcon::Playlist, false});
+            pfc::string8 smartName;  // every auto playlist, presets and the user's own
+            for (t_size p = 0, n = pm->get_playlist_count(); p < n; ++p)
+                if (media::IsAutoPlaylist(p)) {
+                    pm->playlist_get_name(p, smartName);
+                    m_items.push_back({Target::Playlist, p, 2, Wide(smartName), wp::NavIcon::Playlist, false});
+                }
+        }
+        m_items.push_back({Target::Music, 0, 1, L"Music", wp::NavIcon::Music, true});
+        if (m_musicExpanded)
+            for (auto kind : m_categories)
+                m_items.push_back(
+                    {Target::Category, static_cast<size_t>(kind), 2, CategoryLabel(kind), wp::NavIcon::Artist, false});
     }
-    m_items.push_back({Target::Music, 0, 0, L"Music", wp::NavIcon::Music, true});
-    if (m_musicExpanded)
-        for (auto kind : m_categories)
-            m_items.push_back({Target::Category, static_cast<size_t>(kind), 1, CategoryLabel(kind), wp::NavIcon::Artist, false});
+    m_items.push_back({Target::LibraryNetease, 0, 0, L"NetEase Cloud Music", wp::NavIcon::Library, true});
+    if (m_neteaseExpanded) {
+        m_items.push_back({Target::NeteaseMyPlaylists, 0, 1, L"My playlists", wp::NavIcon::Playlist, false});
+        m_items.push_back({Target::NeteaseRecommended, 0, 1, L"Recommended", wp::NavIcon::Playlist, false});
+        m_items.push_back({Target::NeteaseLiked, 0, 1, L"Favorites", wp::NavIcon::Playlist, false});
+        const std::wstring account = m_neteaseLoggedIn
+                                         ? (m_neteaseName.empty() ? std::wstring(L"NetEase account") : m_neteaseName)
+                                         : std::wstring(L"Sign in to NetEase Cloud Music...");
+        m_items.push_back({Target::NeteaseLogin, 0, 1, account, wp::NavIcon::Playlist, false});
+    }
     m_hot = SIZE_MAX;
     Paint();
+}
+
+void NavPane::SetNeteaseState(bool loggedIn, std::wstring name) {
+    if (m_neteaseLoggedIn == loggedIn && m_neteaseName == name) return;
+    m_neteaseLoggedIn = loggedIn;
+    m_neteaseName = std::move(name);
+    Rebuild();
 }
 
 void NavPane::SetBounds(const RECT& px, float scale) {
@@ -170,6 +194,9 @@ const NavPane::Item* NavPane::OnLButtonDown(POINT pt) {
         if (item->target == Target::PlaylistsHeader) m_playlistsExpanded = !m_playlistsExpanded;
         if (item->target == Target::SmartHeader) m_smartExpanded = !m_smartExpanded;
         if (item->target == Target::Music) m_musicExpanded = !m_musicExpanded;
+        if (item->target == Target::LibraryAll) m_allExpanded = !m_allExpanded;
+        if (item->target == Target::LibraryLocal) m_localExpanded = !m_localExpanded;
+        if (item->target == Target::LibraryNetease) m_neteaseExpanded = !m_neteaseExpanded;
         Rebuild();
         return nullptr;
     }
@@ -232,17 +259,23 @@ void NavPane::Paint() {
             if (it.expandable) {
                 const bool expanded = it.target == Target::PlaylistsHeader ? m_playlistsExpanded
                                       : it.target == Target::SmartHeader   ? m_smartExpanded
-                                                                           : m_musicExpanded;
+                                      : it.target == Target::Music         ? m_musicExpanded
+                                      : it.target == Target::LibraryAll    ? m_allExpanded
+                                      : it.target == Target::LibraryLocal  ? m_localExpanded
+                                      : it.target == Target::LibraryNetease ? m_neteaseExpanded
+                                                                           : false;
                 // Win7 tree expander as vectors (the 16 px theme glyph went soft at 200 %).
                 wp::Disclosure(dc, {x + 2, y + rowH / 2}, expanded, i == m_hotExpander);
             }
             const bool autoPlaylist = it.target == Target::Playlist && media::IsAutoPlaylist(it.playlist);
             // Favorites: star; queue: WMP's playlist icon with the orbit; smart header: auto playlist.
-            const int special = it.target == Target::Playlist && it.text == L"Favorites" ? 29526
-                                : it.target == Target::Queue                            ? 29513
-                                : it.target == Target::SmartHeader                      ? 29572
+            const int special = (it.target == Target::Playlist && it.text == L"Favorites") ||
+                                        it.target == Target::AllFavorites || it.target == Target::NeteaseLiked
+                                    ? 29526
+                                : it.target == Target::Queue        ? 29513
+                                : it.target == Target::SmartHeader  ? 29572
                                 : it.target == Target::Category ? CategoryIcon(static_cast<media::GroupKind>(it.playlist))
-                                                                                        : 0;
+                                                                : 0;
             if (!DrawWmpIcon(dc, {x + 16, y + rowH / 2}, it.icon, autoPlaylist, s, special))
                 wp::NavGlyph(dc, {x + 16, y + rowH / 2}, it.icon);
             auto layout = MakeText(Tr(it.text), 12.0f, DWRITE_FONT_WEIGHT_NORMAL, width - x - 34, rowH);

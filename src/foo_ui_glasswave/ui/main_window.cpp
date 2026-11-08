@@ -1,6 +1,7 @@
 #include "pch.h"
 #include <filesystem>
 #include <fstream>
+#include <cwchar>
 #include <cwctype>
 #include "ui/main_window.h"
 #include "aero/aero_atlas.h"
@@ -15,6 +16,9 @@
 #include "ui/i18n.h"
 #include "media/favorites.h"
 #include "media/special_playlists.h"
+#include "netease/provider.h"
+#include "ui/netease_login.h"
+#include "ui/netease_sources.h"
 #include "ui/text.h"
 #include "wmp/wmp_painter.h"
 #include "wmp/wmp_transport.h"
@@ -73,6 +77,14 @@ cfg_var_modern::cfg_int cfg_viewPlaylist({0x6a1f3c5e, 0x2b7e, 0x4d90, {0x8c, 0x1
 // The other Music categories (Year, Rating, Composer, ...) share one view option.
 cfg_var_modern::cfg_int cfg_viewCategories({0x6a1f3c5c, 0x2b7e, 0x4d90, {0x8c, 0x15, 0x3e, 0x9a, 0x7b, 0x2d, 0x4f, 0x61}},
                                            static_cast<int>(media::ViewStyle::Tiles));
+// All Music > Favorites; NetEase playlists; NetEase songs.
+// {6A1F3C5F-2B7E-4D90-8C15-3E9A7B2D4F61} .. {6A1F3C61-...}
+cfg_var_modern::cfg_int cfg_viewAllFavorites({0x6a1f3c5f, 0x2b7e, 0x4d90, {0x8c, 0x15, 0x3e, 0x9a, 0x7b, 0x2d, 0x4f, 0x61}},
+                                             static_cast<int>(media::ViewStyle::Details));
+cfg_var_modern::cfg_int cfg_viewNcmPlaylists({0x6a1f3c60, 0x2b7e, 0x4d90, {0x8c, 0x15, 0x3e, 0x9a, 0x7b, 0x2d, 0x4f, 0x61}},
+                                             static_cast<int>(media::ViewStyle::Icons));
+cfg_var_modern::cfg_int cfg_viewNcmSongs({0x6a1f3c61, 0x2b7e, 0x4d90, {0x8c, 0x15, 0x3e, 0x9a, 0x7b, 0x2d, 0x4f, 0x61}},
+                                         static_cast<int>(media::ViewStyle::Details));
 // Music categories shown in the navigation pane, in order: media::GroupKind values as digits.
 // {6A1F3C5D-2B7E-4D90-8C15-3E9A7B2D4F61}
 cfg_var_modern::cfg_string cfg_navCategories({0x6a1f3c5d, 0x2b7e, 0x4d90, {0x8c, 0x15, 0x3e, 0x9a, 0x7b, 0x2d, 0x4f, 0x61}},
@@ -337,6 +349,7 @@ MainWindow::~MainWindow() {
 }
 
 HWND MainWindow::Create(user_interface::HookProc_t hook) {
+    netease::Provider::Get().Initialize();
     m_hook = hook;
     const HINSTANCE inst = core_api::get_my_instance();
 
@@ -486,6 +499,7 @@ void MainWindow::InitComposition() {
 
     m_nav = std::make_unique<NavPane>(m_contentLayer);
     m_nav->SetCategories(LoadNavCategories());
+    m_nav->SetNeteaseState(netease::Provider::Get().LoggedIn(), netease::Provider::Get().CurrentAccount().nickname);
     m_list = std::make_unique<ListView>(m_contentLayer);
     m_list->onLink = [this](size_t group, size_t line) { OnAlbumLink(group, line); };
     m_search = std::make_unique<SearchBox>(m_contentLayer);
@@ -1364,6 +1378,57 @@ void MainWindow::BuildCrumbs() {
     nowPlaying.kind = View::Kind::Playlist;
     nowPlaying.playlist = playlist_manager::get()->get_active_playlist();
 
+    View allLibrary;
+    allLibrary.library = View::Library::All;
+    allLibrary.kind = View::Kind::AllMusic;
+    View localLibrary;
+    localLibrary.library = View::Library::Local;
+    localLibrary.kind = View::Kind::AllMusic;
+    View neteaseHome;
+    neteaseHome.library = View::Library::Netease;
+    neteaseHome.kind = View::Kind::NeteasePlaylists;
+    auto libraries = [go, allLibrary, localLibrary, neteaseHome] {
+        return std::vector<MenuAction>{{L"All Music", go(allLibrary)},
+                                       {L"Local Music", go(localLibrary)},
+                                       {L"NetEase Cloud Music", go(neteaseHome)}};
+    };
+    auto neteaseMenu = [go, neteaseHome] {
+        View mine = neteaseHome;
+        View recommended = neteaseHome;
+        recommended.recommended = true;
+        View liked;
+        liked.library = View::Library::Netease;
+        liked.kind = View::Kind::NeteaseLiked;
+        return std::vector<MenuAction>{{L"My playlists", go(mine)},
+                                       {L"Recommended", go(recommended)},
+                                       {L"Favorites", go(liked)}};
+    };
+
+    if (m_view.library == View::Library::All) {
+        m_crumbs.clear();
+        m_crumbs.push_back({L"", {}, libraries});
+        m_crumbs.push_back({L"All Music", go(allLibrary), {}});
+        if (m_view.kind == View::Kind::AllFavorites) m_crumbs.push_back({L"Favorites", go(m_view), {}});
+        if (m_view.kind == View::Kind::Search) m_crumbs.push_back({L"Search results", go(m_view), {}});
+        return;
+    }
+    if (m_view.library == View::Library::Netease) {
+        m_crumbs.clear();
+        m_crumbs.push_back({L"", {}, libraries});
+        m_crumbs.push_back({L"NetEase Cloud Music", go(neteaseHome), neteaseMenu});
+        if (m_view.kind == View::Kind::NeteasePlaylists) {
+            m_crumbs.push_back({m_view.recommended ? L"Recommended" : L"My playlists", go(m_view), neteaseMenu});
+        } else if (m_view.kind == View::Kind::NeteasePlaylist) {
+            m_crumbs.push_back({L"My playlists", go(neteaseHome), neteaseMenu});
+            m_crumbs.push_back({m_view.name.empty() ? L"Playlist" : m_view.name, go(m_view), {}});
+        } else if (m_view.kind == View::Kind::NeteaseLiked) {
+            m_crumbs.push_back({L"Favorites", go(m_view), neteaseMenu});
+        } else if (m_view.kind == View::Kind::Search) {
+            m_crumbs.push_back({L"Search results", go(m_view), neteaseMenu});
+        }
+        return;
+    }
+
     m_crumbs.clear();
     m_crumbs.push_back({L"", {}, [go, all] { return std::vector<MenuAction>{{L"Library", go(all)}}; }});
     m_crumbs.push_back({L"Library", go(all), [go, all, playlistsPage, smartPage] {
@@ -1545,6 +1610,54 @@ void MainWindow::Navigate(const View& requested, bool push) {
 
     if (view.kind == View::Kind::Playlist && view.playlist >= pm->get_playlist_count()) view.kind = View::Kind::AllMusic;
     switch (view.kind) {
+    case View::Kind::NeteaseLiked: {
+        source = std::make_unique<ui::NeteaseSongSource>(std::vector<netease::Song>{},
+                                                         L"Loading your NetEase favorites...");
+        m_nav->Select(NavPane::Target::NeteaseLiked, 0);
+        const View requestedView = view;
+        netease::Provider::Get().FetchLiked(
+            [this, requestedView](std::vector<netease::Song> songs, std::wstring error) {
+                ShowNeteaseSongs(requestedView, std::move(songs), std::move(error));
+            });
+        break;
+    }
+    case View::Kind::AllFavorites: {
+        source = std::make_unique<ui::NeteaseSongSource>(std::vector<netease::Song>{},
+                                                         L"Loading your NetEase favorites...");
+        m_nav->Select(NavPane::Target::AllFavorites, 0);
+        const View requestedView = view;
+        netease::Provider::Get().FetchLiked(
+            [this, requestedView](std::vector<netease::Song> songs, std::wstring error) {
+                ShowNeteaseSongs(requestedView, std::move(songs), std::move(error));
+            });
+        break;
+    }
+    case View::Kind::NeteasePlaylists: {
+        source = std::make_unique<ui::NeteasePlaylistSource>(
+            std::vector<netease::Playlist>{}, L"Loading NetEase playlists...",
+            [this](int64_t id, std::wstring name) { OpenNeteasePlaylist(id, std::move(name)); });
+        m_nav->Select(view.recommended ? NavPane::Target::NeteaseRecommended : NavPane::Target::NeteaseMyPlaylists, 0);
+        const View requestedView = view;
+        auto done = [this, requestedView](std::vector<netease::Playlist> playlists, std::wstring error) {
+            ShowNeteasePlaylists(requestedView, std::move(playlists), std::move(error));
+        };
+        if (view.recommended)
+            netease::Provider::Get().FetchRecommended(done);
+        else
+            netease::Provider::Get().FetchMyPlaylists(done);
+        break;
+    }
+    case View::Kind::NeteasePlaylist: {
+        source = std::make_unique<ui::NeteaseSongSource>(std::vector<netease::Song>{}, L"Loading playlist...");
+        m_nav->Select(NavPane::Target::NeteaseMyPlaylists, 0);
+        const View requestedView = view;
+        const int64_t id = static_cast<int64_t>(_wcstoi64(view.remoteId.c_str(), nullptr, 10));
+        netease::Provider::Get().FetchPlaylist(
+            id, [this, requestedView](netease::PlaylistDetail detail, std::wstring error) {
+                ShowNeteaseSongs(requestedView, std::move(detail.songs), std::move(error));
+            });
+        break;
+    }
     case View::Kind::Playlist: {
         pfc::string8 name;
         pm->playlist_get_name(view.playlist, name);
@@ -1560,7 +1673,7 @@ void MainWindow::Navigate(const View& requested, bool push) {
         source = std::make_unique<media::TrackSource>(
             m_library, std::move(all),
             L"Your library is empty. Use Organize ▸ Manage music library to add your music folders.");
-        m_nav->Select(NavPane::Target::Music, 0);
+        m_nav->Select(view.library == View::Library::All ? NavPane::Target::LibraryAll : NavPane::Target::Music, 0);
         break;
     }
     case View::Kind::Playlists:         // WMP's Playlists page: every playlist as an icon
@@ -1600,8 +1713,10 @@ void MainWindow::Navigate(const View& requested, bool push) {
     }
     }
 
-    const bool sameView = view.kind == m_view.kind && view.playlist == m_view.playlist && view.key == m_view.key &&
-                          view.group == m_view.group;
+    const bool sameView = view.kind == m_view.kind && view.library == m_view.library && view.playlist == m_view.playlist &&
+                          view.key == m_view.key && view.group == m_view.group &&
+                          view.recommended == m_view.recommended && view.remoteId == m_view.remoteId &&
+                          view.query == m_view.query;
     if (push && !sameView) {
         // A new view clears the search, like WMP.
         m_filter.clear();
@@ -1633,11 +1748,62 @@ void MainWindow::Navigate(const View& requested, bool push) {
     RepaintBreadcrumb();  // also re-applies the layout (view options button)
 }
 
+void MainWindow::ShowNeteaseSongs(const View& view, std::vector<netease::Song> songs, std::wstring error) {
+    if (m_view.kind != view.kind || m_view.library != view.library || m_view.remoteId != view.remoteId ||
+        m_view.recommended != view.recommended)
+        return;
+    auto source = std::make_unique<ui::NeteaseSongSource>(
+        std::move(songs), error.empty() ? L"No songs." : std::move(error));
+    m_source = std::move(source);
+    if (auto* style = ViewStyleSetting(view);
+        style && m_source->SupportsViewStyle(static_cast<media::ViewStyle>(style->get())))
+        m_source->SetViewStyle(static_cast<media::ViewStyle>(style->get()));
+    m_list->SetSource(m_source.get(), false);
+}
+
+void MainWindow::ShowNeteasePlaylists(const View& view, std::vector<netease::Playlist> playlists,
+                                      std::wstring error) {
+    if (m_view.kind != view.kind || m_view.library != view.library || m_view.recommended != view.recommended) return;
+    auto source = std::make_unique<ui::NeteasePlaylistSource>(
+        std::move(playlists), error.empty() ? L"No playlists." : std::move(error),
+        [this](int64_t id, std::wstring name) { OpenNeteasePlaylist(id, std::move(name)); });
+    m_source = std::move(source);
+    if (auto* style = ViewStyleSetting(view);
+        style && m_source->SupportsViewStyle(static_cast<media::ViewStyle>(style->get())))
+        m_source->SetViewStyle(static_cast<media::ViewStyle>(style->get()));
+    m_list->SetSource(m_source.get(), false);
+}
+
+void MainWindow::OpenNeteasePlaylist(int64_t id, std::wstring name) {
+    View view;
+    view.library = View::Library::Netease;
+    view.kind = View::Kind::NeteasePlaylist;
+    view.remoteId = std::to_wstring(id);
+    view.name = std::move(name);
+    Navigate(view, true);
+}
+
+void MainWindow::ShowNeteaseLogin() {
+    ui::ShowNeteaseLogin(m_hwnd, [this] { OnNeteaseLoginChanged(); });
+}
+
+void MainWindow::OnNeteaseLoginChanged() {
+    m_nav->SetNeteaseState(netease::Provider::Get().LoggedIn(), netease::Provider::Get().CurrentAccount().nickname);
+    if (m_view.library == View::Library::Netease || m_view.kind == View::Kind::AllFavorites)
+        Navigate(m_view, false);
+    RepaintBreadcrumb();
+}
+
 cfg_var_modern::cfg_int* MainWindow::ViewStyleSetting(const View& view) {
     switch (view.kind) {
     case View::Kind::AllMusic:
     case View::Kind::Group: return &cfg_viewSongs;
     case View::Kind::Playlist: return &cfg_viewPlaylist;
+    case View::Kind::AllFavorites: return &cfg_viewAllFavorites;
+    case View::Kind::NeteasePlaylists: return &cfg_viewNcmPlaylists;
+    case View::Kind::NeteasePlaylist:
+    case View::Kind::NeteaseLiked:
+    case View::Kind::Search: return &cfg_viewNcmSongs;
     case View::Kind::Category:
         switch (view.group) {
         case media::GroupKind::Album: return &cfg_viewAlbums;
@@ -1763,6 +1929,35 @@ void MainWindow::OnNavItem(const NavPane::Item& item) {
         v.group = static_cast<media::GroupKind>(item.playlist);
         break;
     case NavPane::Target::PlaylistsHeader: v.kind = View::Kind::Playlists; break;  // WMP's Playlists page
+    case NavPane::Target::LibraryAll:
+        v.library = View::Library::All;
+        v.kind = View::Kind::AllMusic;
+        break;
+    case NavPane::Target::AllFavorites:
+        v.library = View::Library::All;
+        v.kind = View::Kind::AllFavorites;
+        break;
+    case NavPane::Target::LibraryLocal: v.kind = View::Kind::AllMusic; break;
+    case NavPane::Target::LibraryNetease:
+        v.library = View::Library::Netease;
+        v.kind = View::Kind::NeteasePlaylists;
+        break;
+    case NavPane::Target::NeteaseMyPlaylists:
+        v.library = View::Library::Netease;
+        v.kind = View::Kind::NeteasePlaylists;
+        break;
+    case NavPane::Target::NeteaseRecommended:
+        v.library = View::Library::Netease;
+        v.kind = View::Kind::NeteasePlaylists;
+        v.recommended = true;
+        break;
+    case NavPane::Target::NeteaseLiked:
+        v.library = View::Library::Netease;
+        v.kind = View::Kind::NeteaseLiked;
+        break;
+    case NavPane::Target::NeteaseLogin:
+        ShowNeteaseLogin();
+        return;
     default: return;
     }
     Navigate(v, true);
