@@ -160,8 +160,15 @@ Updated: 2026-11-08
     are swapped in without losing the selection or the top song. The loading text appears
     only for a page that has never been loaded.
   - Song context menus keep View artist and View album together at the top; the extra
-    divider between the artist group and the actions is gone, and page-specific removals
-    (Now Playing / Recently / Most Played) moved below the add actions.
+    divider between the artist group and the actions is gone, and Add to Favorites now sits
+    with Add to playlist / Add to NetEase playlist. Page-specific removals moved below the
+    add actions and a divider separates our commands from foobar2000's. Add to NetEase
+    omits the playlist being viewed, and View album is hidden on that album's own page.
+  - Song list pages also offer Play / Play next / Add to queue / Add to playlist for their
+    whole (filtered) contents from the empty-area menu, alongside Select all; the queue
+    keeps Clear Now Playing and the history pages keep their clears. Album tiles offer
+    Collect/Uncollect and Go to artist. Navigation rows without their own actions no
+    longer open the unrelated playlist management menu.
   - NetEase song lists and the combined favorites share SongTableSource (columns, sorting,
     filtering, selection, expanded tiles, context menus); both offer Details and expanded
     tiles, with a bounded LFU cover cache.
