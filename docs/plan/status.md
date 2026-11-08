@@ -261,12 +261,13 @@ Updated: 2026-11-08
     `<profile>\glasswave\play-stats.txt` (newest 2000 kept, written atomically), and the
     two pages mix local and NetEase rows with a Source column. The lists refresh when the
     page is opened, not live while it is on screen.
-  - The shared song tables (NetEase lists and the cross-source Favorites / play history)
-    offer a Play count column fed by our play history: hidden by default under Choose
-    columns, visible by default on Most Played. Local library lists keep their existing
-    Play count column, which reads foobar2000's Playback Statistics (%play_count%). A
-    track that starts while a song table is on screen updates its count immediately; the
-    row order changes only when the page is rebuilt.
+  - Every song list — the shared song tables, the local library and playlists — offers a
+    Play count column fed by our cross-source play history: hidden by default under
+    Choose columns, visible by default on Most Played. The local sources read the store
+    while painting instead of foobar2000's %play_count%, so the column works without
+    Playback Statistics and also counts NetEase rows inside playlists. A track that
+    starts while a list is on screen updates its count immediately; the row order changes
+    only when the page is rebuilt.
   - Clicking the NetEase Cloud Music library row (and its breadcrumb) opens the liked
     Favorites page instead of the Created playlists section.
   - The Now Playing, Recently Played and Most Played pages add removal actions to the
