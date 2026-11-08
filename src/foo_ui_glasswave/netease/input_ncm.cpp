@@ -44,33 +44,102 @@ std::string ExtensionFor(const SongUrl& url) {
     return "mp3";
 }
 
+// The decoder's view of a song's CDN stream. NetEase signs each URL for a limited time
+// (expireSeconds, about 20 minutes): after a long pause a seek or a dropped connection
+// would fail with 403. The stream then asks for a fresh URL of the same quality and
+// continues at the same byte.
 class NcmHttpFile : public file {
 public:
-    NcmHttpFile(file::ptr inner, std::string contentType)
-        : m_inner(std::move(inner)), m_contentType(std::move(contentType)) {}
+    using Resolve = std::function<file::ptr(abort_callback&)>;
+
+    NcmHttpFile(file::ptr inner, std::string contentType, Resolve resolve, int expireSeconds)
+        : m_inner(std::move(inner)),
+          m_contentType(std::move(contentType)),
+          m_resolve(std::move(resolve)),
+          m_lifetimeMs(static_cast<uint64_t>(std::max(expireSeconds, 120)) * 1000),
+          m_since(GetTickCount64()) {}
 
     t_size read(void* buffer, t_size bytes, abort_callback& abort) override {
-        return m_inner->read(buffer, bytes, abort);
+        t_size done = 0;
+        try {
+            done = m_inner->read(buffer, bytes, abort);
+        } catch (const exception_aborted&) {
+            throw;
+        } catch (const std::exception&) {
+            if (!Renew(abort)) throw;
+            done = m_inner->read(buffer, bytes, abort);
+        }
+        m_position += done;
+        return done;
     }
     void write(const void* buffer, t_size bytes, abort_callback& abort) override {
         m_inner->write(buffer, bytes, abort);
     }
     t_filesize get_size(abort_callback& abort) override { return m_inner->get_size(abort); }
-    t_filesize get_position(abort_callback& abort) override { return m_inner->get_position(abort); }
+    t_filesize get_position(abort_callback&) override { return m_position; }
     void resize(t_filesize size, abort_callback& abort) override { m_inner->resize(size, abort); }
-    void seek(t_filesize position, abort_callback& abort) override { m_inner->seek(position, abort); }
+    void seek(t_filesize position, abort_callback& abort) override {
+        m_position = position;
+        if (Expired()) Renew(abort);  // a seek opens a new range request with the URL
+        try {
+            m_inner->seek(position, abort);
+        } catch (const exception_aborted&) {
+            throw;
+        } catch (const std::exception&) {
+            if (!Renew(abort)) throw;
+        }
+    }
     bool can_seek() override { return m_inner->can_seek(); }
     bool get_content_type(pfc::string_base& out) override {
         out = m_contentType.c_str();
         return true;
     }
-    void reopen(abort_callback& abort) override { m_inner->reopen(abort); }
+    void reopen(abort_callback& abort) override {
+        m_position = 0;
+        if (Expired()) Renew(abort);
+        else m_inner->reopen(abort);
+    }
     bool is_remote() override { return m_inner->is_remote(); }
+    void on_idle(abort_callback& abort) override { m_inner->on_idle(abort); }
+    t_filetimestamp get_timestamp(abort_callback& abort) override { return m_inner->get_timestamp(abort); }
 
 private:
+    bool Expired() const { return GetTickCount64() - m_since + 60'000 > m_lifetimeMs; }
+
+    // A fresh URL, positioned where the decoder is. False when none can be had.
+    bool Renew(abort_callback& abort) {
+        file::ptr fresh;
+        try {
+            fresh = m_resolve(abort);
+            if (m_position) fresh->seek(m_position, abort);
+        } catch (const exception_aborted&) {
+            throw;
+        } catch (const std::exception&) {
+            return false;
+        }
+        m_inner = std::move(fresh);
+        m_since = GetTickCount64();
+        Log(L"input: renewed the stream URL at byte " + std::to_wstring(m_position));
+        return true;
+    }
+
     file::ptr m_inner;
     std::string m_contentType;
+    Resolve m_resolve;
+    uint64_t m_lifetimeMs;
+    uint64_t m_since;
+    t_filesize m_position = 0;
 };
+
+// Opens the song's CDN stream with the headers the CDN expects.
+file::ptr OpenStream(const std::wstring& url, abort_callback& abort) {
+    auto request = http_client::get()->create_request("GET");
+    request->add_header("User-Agent",
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
+                        "Glasswave/0.1");
+    request->add_header("Referer", "https://music.163.com/");
+    return request->run(Utf8(url).c_str(), abort);
+}
 
 }  // namespace
 
@@ -134,16 +203,19 @@ public:
         const std::string extension = ExtensionFor(resolved);
         Log(L"input: song " + std::to_wstring(m_id) + L", level " + resolved.level + L", type " + resolved.type +
             L", ext " + Wide(extension.c_str()));
-        auto request = http_client::get()->create_request("GET");
-        request->add_header("User-Agent",
-                            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
-                            "Glasswave/0.1");
-        request->add_header("Referer", "https://music.163.com/");
-        file::ptr inner = request->run(Utf8(resolved.url).c_str(), p_abort);
+        file::ptr inner = OpenStream(resolved.url, p_abort);
         const std::string contentType =
             extension == "flac" ? "audio/flac" : extension == "m4a" ? "audio/mp4" : "audio/mpeg";
+        // The same quality level again: the stream's format must not change mid-song.
+        auto resolve = [id = m_id, level = resolved.level](abort_callback& abort) {
+            SongUrl fresh;
+            std::wstring urlError;
+            if (!Session::Get().Api().GetSongUrl(id, level, abort, fresh, urlError) || fresh.url.empty())
+                throw exception_io_data(Utf8(urlError.empty() ? L"Cannot renew the stream URL." : urlError).c_str());
+            return OpenStream(fresh.url, abort);
+        };
         file::ptr typed;
-        typed ^= fb2k::service_new<NcmHttpFile>(inner, contentType);
+        typed ^= fb2k::service_new<NcmHttpFile>(inner, contentType, std::move(resolve), resolved.expireSeconds);
         const std::string fakePath = "ncm://decode/" + std::to_string(m_id) + "." + extension;
         input_entry::g_open_for_decoding(m_decoder, typed, fakePath.c_str(), p_abort, true);
         m_decoder->initialize(0, p_flags, p_abort);
