@@ -3611,14 +3611,25 @@ void MainWindow::RemoveFromNowPlaying(metadb_handle_list_cref items) {
     pm->playlist_undo_backup(queue);
     pm->playlist_remove_items(queue, mask);
     if (!removesPlaying) return;
-    // Removing the playing song continues with the one that moved into its place;
-    // when the queue is empty, playback stops.
+    // Find the first surviving song after the old playing position and map its index
+    // through the removals; if the playing song was last, continue with the new last.
     const t_size remaining = pm->playlist_get_item_count(queue);
     if (!remaining) {
         playback_control::get()->stop();
         return;
     }
-    const t_size next = std::min<t_size>(playingIndex, remaining - 1);
+    t_size removedBefore = 0;
+    for (t_size i = 0; i <= playingIndex && i < count; ++i)
+        if (mask[i]) ++removedBefore;
+    t_size next = SIZE_MAX;
+    for (t_size i = playingIndex + 1; i < count; ++i) {
+        if (!mask[i]) {
+            next = i - removedBefore;
+            break;
+        }
+        ++removedBefore;
+    }
+    if (next == SIZE_MAX) next = remaining - 1;
     pm->playlist_set_focus_item(queue, next);
     pm->playlist_execute_default_action(queue, next);
 }
