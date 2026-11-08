@@ -247,6 +247,11 @@ Updated: 2026-11-08
     Play, Play next, Add to queue, Add to playlist (the local playlists) and Add to NetEase
     playlist for the whole contents; local playlist tiles get the same queue and copy
     actions. NetEase contents are fetched on demand and become ncm:// items.
+  - Single-song context menus in every list (local, NetEase, the queue and the play
+    history) also offer Add to playlist, a submenu of the regular foobar2000 playlists;
+    those accept local and ncm:// tracks alike. NetEase rows keep their separate Add to
+    NetEase playlist submenu, and the playlist being viewed is omitted from its own copy
+    target.
   - Playlists and smart playlists separated: a foobar2000 playlist holds local and ncm://
     tracks alike, so regular playlists live under All Music; smart playlists are auto
     playlists over the Media Library (which never contains NetEase tracks), so they live
