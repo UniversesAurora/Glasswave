@@ -85,13 +85,29 @@ IWICBitmapSource* Resources::Decode(Module module, const std::wstring& name) {
     winrt::com_ptr<IWICBitmapFrameDecode> frame;
     winrt::com_ptr<IWICFormatConverter> converter;
     winrt::com_ptr<IWICBitmap> bitmap;
+    // The theme's IMAGE resources (aero.msstyles) store premultiplied colour in plain PNGs
+    // (73 % white is B9B9B9 at alpha B9); taken as straight alpha they came out grey and dark.
+    // Their pixels are read unconverted and labelled premultiplied. WMP's PNGs and the DWM
+    // atlas use straight alpha and are converted as usual.
+    const bool premultiplied = module == Module::Aero;
     if (FAILED(wic->CreateStream(stream.put())) || FAILED(stream->InitializeFromMemory(bytes, size)) ||
         FAILED(wic->CreateDecoderFromStream(stream.get(), nullptr, WICDecodeMetadataCacheOnDemand, decoder.put())) ||
         FAILED(decoder->GetFrame(0, frame.put())) || FAILED(wic->CreateFormatConverter(converter.put())) ||
-        FAILED(converter->Initialize(frame.get(), GUID_WICPixelFormat32bppPBGRA, WICBitmapDitherTypeNone, nullptr,
-                                     0, WICBitmapPaletteTypeMedianCut)) ||
-        FAILED(wic->CreateBitmapFromSource(converter.get(), WICBitmapCacheOnLoad, bitmap.put())))
+        FAILED(converter->Initialize(frame.get(),
+                                     premultiplied ? GUID_WICPixelFormat32bppBGRA : GUID_WICPixelFormat32bppPBGRA,
+                                     WICBitmapDitherTypeNone, nullptr, 0, WICBitmapPaletteTypeMedianCut)))
         return nullptr;
+    if (premultiplied) {
+        UINT w = 0, h = 0;
+        converter->GetSize(&w, &h);
+        std::vector<BYTE> px(static_cast<size_t>(w) * h * 4);
+        if (FAILED(converter->CopyPixels(nullptr, w * 4, static_cast<UINT>(px.size()), px.data())) ||
+            FAILED(wic->CreateBitmapFromMemory(w, h, GUID_WICPixelFormat32bppPBGRA, w * 4,
+                                               static_cast<UINT>(px.size()), px.data(), bitmap.put())))
+            return nullptr;
+    } else if (FAILED(wic->CreateBitmapFromSource(converter.get(), WICBitmapCacheOnLoad, bitmap.put()))) {
+        return nullptr;
+    }
     slot = bitmap;
     return slot.get();
 }
