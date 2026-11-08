@@ -3,6 +3,8 @@
 #include "gfx/composition_host.h"
 #include "ui/text.h"
 #include "win7/win7_resources.h"
+#include "media/favorites.h"
+#include "media/special_playlists.h"
 
 namespace glasswave::ui {
 
@@ -82,14 +84,25 @@ int NavPane::RowHeightPx() const { return static_cast<int>(std::lround(kRowHeigh
 
 void NavPane::Rebuild() {
     m_items.clear();
+    auto pm = playlist_manager::get();
+    // The play queue on top, like the "Up Next" / "Playing" list of current players.
+    m_items.push_back({Target::Queue, media::QueuePlaylist(false), 0, L"Now Playing", wp::NavIcon::NowPlaying, false});
     m_items.push_back({Target::PlaylistsHeader, 0, 0, L"Playlists", wp::NavIcon::Playlist, true});
     if (m_playlistsExpanded) {
-        auto pm = playlist_manager::get();
         pfc::string8 name;
         for (t_size i = 0, n = pm->get_playlist_count(); i < n; ++i) {
+            if (media::IsSpecial(i)) continue;  // queue, Favorites and smart lists have their places
             pm->playlist_get_name(i, name);
             m_items.push_back({Target::Playlist, i, 1, Wide(name), wp::NavIcon::Playlist, false});
         }
+    }
+    m_items.push_back({Target::SmartHeader, 0, 0, L"Smart playlists", wp::NavIcon::Playlist, true});
+    if (m_smartExpanded) {
+        if (const t_size fav = media::FavoritesPlaylist(false); fav != SIZE_MAX)
+            m_items.push_back({Target::Playlist, fav, 1, L"Favorites", wp::NavIcon::Playlist, false});
+        for (const auto& preset : media::SmartPresets())
+            if (const t_size p = pm->find_playlist(preset.name); p != SIZE_MAX)
+                m_items.push_back({Target::Playlist, p, 1, Wide(preset.name), wp::NavIcon::Playlist, false});
     }
     m_items.push_back({Target::Music, 0, 0, L"Music", wp::NavIcon::Music, true});
     if (m_musicExpanded) {
@@ -130,6 +143,7 @@ const NavPane::Item* NavPane::OnLButtonDown(POINT pt) {
     const float x = (pt.x - m_bounds.left) / m_scale;
     if (item->expandable && x < 16 + item->level * kIndent) {
         if (item->target == Target::PlaylistsHeader) m_playlistsExpanded = !m_playlistsExpanded;
+        if (item->target == Target::SmartHeader) m_smartExpanded = !m_smartExpanded;
         if (item->target == Target::Music) m_musicExpanded = !m_musicExpanded;
         Rebuild();
         return nullptr;
@@ -186,15 +200,18 @@ void NavPane::Paint() {
                              true);
             const float x = 8 + it.level * kIndent;
             if (it.expandable) {
-                const bool expanded = it.target == Target::PlaylistsHeader ? m_playlistsExpanded : m_musicExpanded;
-                // Win7 tree expander (aero Explorer::TreeView glyph 928: closed / open, 16x16).
-                const float gy = std::round((y + rowH / 2 - 8) * s) / s, gx = std::round((x - 6) * s) / s;
-                if (!win7::DrawPartTo(dc, win7::Module::Aero, 928, D2D1::RectU(0, expanded ? 16 : 0, 16, expanded ? 32 : 16),
-                                      {gx, gy, gx + 16, gy + 16}))
-                    wp::Disclosure(dc, {x + 2, y + rowH / 2}, expanded);
+                const bool expanded = it.target == Target::PlaylistsHeader ? m_playlistsExpanded
+                                      : it.target == Target::SmartHeader   ? m_smartExpanded
+                                                                           : m_musicExpanded;
+                // Win7 tree expander as vectors (the 16 px theme glyph went soft at 200 %).
+                wp::Disclosure(dc, {x + 2, y + rowH / 2}, expanded);
             }
             const bool autoPlaylist = it.target == Target::Playlist && autoplaylist_manager::get()->is_client_present(it.playlist);
-            const int special = it.target == Target::Playlist && it.text == L"Favorites" ? 29526 : 0;  // star
+            // Favorites: star; queue: WMP's playlist icon with the orbit; smart header: auto playlist.
+            const int special = it.target == Target::Playlist && it.text == L"Favorites" ? 29526
+                                : it.target == Target::Queue                            ? 29513
+                                : it.target == Target::SmartHeader                      ? 29572
+                                                                                        : 0;
             if (!DrawWmpIcon(dc, {x + 16, y + rowH / 2}, it.icon, autoPlaylist, s, special))
                 wp::NavGlyph(dc, {x + 16, y + rowH / 2}, it.icon);
             auto layout = MakeText(it.text, 12.0f, DWRITE_FONT_WEIGHT_NORMAL, width - x - 34, rowH);

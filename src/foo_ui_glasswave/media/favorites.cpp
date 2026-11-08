@@ -37,4 +37,16 @@ void ToggleFavorite(const metadb_handle_ptr& track) {
     pm->playlist_add_items(p, add, pfc::bit_array_false());
 }
 
+bool AllFavorite(metadb_handle_list_cref tracks) {
+    if (tracks.get_count() == 0) return false;
+    for (t_size i = 0; i < tracks.get_count(); ++i)
+        if (!IsFavorite(tracks[i])) return false;
+    return true;
+}
+
+void SetFavorite(metadb_handle_list_cref tracks, bool favorite) {
+    for (t_size i = 0; i < tracks.get_count(); ++i)
+        if (IsFavorite(tracks[i]) != favorite) ToggleFavorite(tracks[i]);
+}
+
 }  // namespace glasswave::media

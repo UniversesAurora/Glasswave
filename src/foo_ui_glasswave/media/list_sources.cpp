@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "media/list_sources.h"
+#include "media/special_playlists.h"
 #include "ui/win7_menu.h"
 #include "media/source_identity.h"
 #include "ui/text.h"
@@ -49,18 +50,7 @@ void RangeSelect(size_t count, size_t a, size_t b, bool keepOthers, IsSel, SetSe
 
 }  // namespace
 
-void PlayItems(const metadb_handle_list& items, size_t start) {
-    if (items.get_count() == 0) return;
-    auto pm = playlist_manager::get();
-    const t_size p = pm->find_or_create_playlist("Now Playing");
-    pm->playlist_undo_backup(p);
-    pm->playlist_clear(p);
-    pm->playlist_add_items(p, items, pfc::bit_array_false());
-    pm->set_active_playlist(p);
-    pm->set_playing_playlist(p);
-    pm->playlist_set_focus_item(p, std::min<t_size>(start, items.get_count() - 1));
-    pm->playlist_execute_default_action(p, std::min<t_size>(start, items.get_count() - 1));
-}
+void PlayItems(const metadb_handle_list& items, size_t start) { PlayQueue(items, start); }
 
 // ---- PlaylistSource ---------------------------------------------------------------------
 
@@ -256,8 +246,15 @@ void PlaylistSource::SetFocus(size_t row) {
 
 void PlaylistSource::Activate(size_t row) {
     auto pm = playlist_manager::get();
-    pm->set_active_playlist(m_playlist);
-    pm->playlist_execute_default_action(m_playlist, m_rows[row]);
+    if (IsQueue(m_playlist)) {  // in the queue itself: just play that song
+        pm->set_playing_playlist(m_playlist);
+        pm->playlist_execute_default_action(m_playlist, m_rows[row]);
+        return;
+    }
+    // Any other playlist: the queue becomes this list (as shown) and plays from the song.
+    metadb_handle_list items;
+    for (size_t r : m_rows) items.add_item(pm->playlist_get_item_handle(m_playlist, r));
+    PlayQueue(items, row);
 }
 
 void PlaylistSource::ContextMenu(HWND owner, POINT screen) {

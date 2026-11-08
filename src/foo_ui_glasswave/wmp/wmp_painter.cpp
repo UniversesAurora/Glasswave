@@ -133,23 +133,29 @@ void ScrollBar(ID2D1DeviceContext* dc, D2D1_SIZE_F size, float thumbTop, float t
         }
 }
 
+// Small black drop-down triangle, drawn as a vector so it stays sharp at any DPI (the 14x20
+// WW_SPLIT bitmap went soft when scaled).
+void DropArrow(ID2D1DeviceContext* dc, float cx, float cy) {
+    cx = Snap(dc, cx);
+    dc->FillGeometry(Polygon(dc, {{cx - 3.5f, cy - 1.5f}, {cx + 3.5f, cy - 1.5f}, {cx, cy + 2.0f}}).get(),
+                     Solid(dc, Hex(0x1E395B)).get());
+}
+
 void CommandButton(ID2D1DeviceContext* dc, D2D1_SIZE_F size, Layer layer, std::wstring_view text, bool dropDown) {
     const float L = Hairline(dc);
     const D2D1_RECT_F rc{0, 0, Snap(dc, size.width), Snap(dc, size.height)};
     using win7::Module;
     const int state = layer == Layer::Pressed ? 2 : layer == Layer::Hover ? 1 : 0;
-    // Original WMP 12 art: WMP_TOOLBARBUTTON plates (empty / hot / pressed, 17x22, nine-grid)
-    // for every button and both halves of split buttons; the arrow alone is the first cell
-    // of WW_SPLIT (14x20), drawn 1:1 so it never scales with the plate.
-    const bool art = win7::Resources::Get().Has(Module::Wmploc, L"WMP_TOOLBARBUTTON.PNG");
-    if (art && state > 0) {
-        win7::DrawNineGrid(dc, Module::Wmploc, L"WMP_TOOLBARBUTTON.PNG", {17.0f * state, 0, 17.0f * state + 17, 22},
-                           {3, 3, 3, 3}, rc);
-    }
-    if (art && text.empty() && dropDown) {
-        const float ax = Snap(dc, size.width / 2 - 7), ay = Snap(dc, size.height / 2 - 10);
-        if (win7::DrawPartTo(dc, Module::Wmploc, L"WW_SPLIT.PNG", D2D1::RectU(0, 0, 14, 20), {ax, ay, ax + 14, ay + 20}))
-            return;
+    // WMP 12's command bar buttons are Win7 toolbar buttons: aero.msstyles Toolbar BUTTON (849,
+    // 8 states of 7x26: normal, hot, pressed, disabled, checked, hot checked, near hot, other
+    // side hot). Measured on the owner's WMP capture: hot is white to #E5ECF2 inside a #B1B1B2
+    // border, pressed a darker border with an inner shadow. The arrow is a vector (DropArrow).
+    const bool art = win7::Resources::Get().Has(Module::Aero, 849);
+    if (art && state > 0)
+        win7::DrawNineGrid(dc, Module::Aero, 849, {0, 26.0f * state, 7, 26.0f * state + 26}, {3, 3, 3, 3}, rc);
+    if (text.empty() && dropDown) {
+        DropArrow(dc, size.width / 2, size.height / 2 + 0.5f);
+        return;
     }
     if (art) {
     } else if (layer == Layer::Hover || layer == Layer::Pressed) {
@@ -315,30 +321,29 @@ void PlayingMarker(ID2D1DeviceContext* dc, D2D1_POINT_2F c, bool paused) {
 }
 
 bool SplitButtonPlate(ID2D1DeviceContext* dc, D2D1_SIZE_F size, Layer layer, float splitX, int part, bool menuOpen) {
-    // WMP 12 split button: WMP_BREADCRUMB_MAINBUTTON (left part, open right edge) and
-    // _SPLITBUTTON (right part), states empty / hot / pressed / grey. The part under the mouse
-    // is hot and the other grey; pressed shows the pressed part and the other grey.
+    // Win7 toolbar split button: aero.msstyles Toolbar SPLITBUTTON (852, left part) and
+    // SPLITBUTTONDROPDOWN (853, right part), 8 states of 26 px like BUTTON (849). The half
+    // under the mouse is hot (1), the other half "other side hot" (7); pressing shows the
+    // pressed half (2); with the menu open the arrow is pressed and the main half state 7.
     using win7::Module;
-    if (!win7::Resources::Get().Has(Module::Wmploc, L"WMP_BREADCRUMB_MAINBUTTON.PNG")) return false;
+    if (!win7::Resources::Get().Has(Module::Aero, 852) || !win7::Resources::Get().Has(Module::Aero, 853)) return false;
     int mainState = 0, splitState = 0;
     if (layer == Layer::Hover) {
-        mainState = part == 0 ? 1 : 3;
-        splitState = part == 0 ? 3 : 1;
+        mainState = part == 0 ? 1 : 7;
+        splitState = part == 0 ? 7 : 1;
     } else if (layer == Layer::Pressed) {
         const bool arrow = menuOpen || part == 1;
-        mainState = arrow ? 3 : 2;
-        splitState = arrow ? 2 : 3;
+        mainState = arrow ? 7 : 2;
+        splitState = arrow ? 2 : 7;
     }
     const float h = Snap(dc, size.height), x = Snap(dc, splitX), w = Snap(dc, size.width);
     if (mainState)
-        win7::DrawNineGrid(dc, Module::Wmploc, L"WMP_BREADCRUMB_MAINBUTTON.PNG",
-                           {16.0f * mainState, 0, 16.0f * mainState + 16, 22}, {3, 3, 3, 3}, {0, 0, x, h});
+        win7::DrawNineGrid(dc, Module::Aero, 852, {0, 26.0f * mainState, 6, 26.0f * mainState + 26}, {3, 3, 2, 3},
+                           {0, 0, x, h});
     if (splitState)
-        win7::DrawNineGrid(dc, Module::Wmploc, L"WMP_BREADCRUMB_SPLITBUTTON.PNG",
-                           {10.0f * splitState, 0, 10.0f * splitState + 10, 22}, {3, 3, 3, 3}, {x, 0, w, h});
-    // The arrow (first cell of WW_SPLIT, 1:1) centred in the right part.
-    const float ax = Snap(dc, (x + w) / 2 - 7), ay = Snap(dc, h / 2 - 10);
-    win7::DrawPartTo(dc, Module::Wmploc, L"WW_SPLIT.PNG", D2D1::RectU(0, 0, 14, 20), {ax, ay, ax + 14, ay + 20});
+        win7::DrawNineGrid(dc, Module::Aero, 853, {0, 26.0f * splitState, 5, 26.0f * splitState + 26}, {2, 3, 3, 3},
+                           {x, 0, w, h});
+    DropArrow(dc, (x + w) / 2, h / 2 + 0.5f);  // centred in the right part
     return true;
 }
 

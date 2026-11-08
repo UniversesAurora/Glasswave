@@ -3,11 +3,11 @@
 
 namespace glasswave::ui {
 
-// WMP 12 navigation pane: Playlists (one entry per foobar2000 playlist) and Music
-// (All music / Artist / Album / Genre).
+// Navigation pane: the play queue (Now Playing), the user's playlists, smart playlists
+// (Favorites and foobar2000 auto playlists) and Music (Artist / Album / Genre).
 class NavPane {
 public:
-    enum class Target { None, PlaylistsHeader, Playlist, Music, Artists, Albums, Genres };
+    enum class Target { None, Queue, PlaylistsHeader, Playlist, SmartHeader, Music, Artists, Albums, Genres };
     struct Item {
         Target target = Target::None;
         size_t playlist = 0;
@@ -39,7 +39,7 @@ private:
 
     winrt::Windows::UI::Composition::SpriteVisual m_visual{nullptr};
     std::vector<Item> m_items;
-    bool m_playlistsExpanded = true, m_musicExpanded = true;
+    bool m_playlistsExpanded = true, m_smartExpanded = true, m_musicExpanded = true;
     Target m_selTarget = Target::Music;
     size_t m_selPlaylist = 0;
     size_t m_hot = SIZE_MAX;

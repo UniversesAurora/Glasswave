@@ -2,6 +2,8 @@
 #include "ui/win7_menu.h"
 #include "gfx/composition_host.h"
 #include "win7/win7_resources.h"
+#include "media/favorites.h"
+#include "media/special_playlists.h"
 
 #include <commctrl.h>
 #pragma comment(lib, "comctl32.lib")
@@ -289,26 +291,62 @@ UINT TrackWin7Menu(HMENU menu, UINT flags, int x, int y, HWND owner) {
     return result;
 }
 
+namespace {
+
+// Queue and Favorites commands above foobar2000's own context menu (ids past its range).
+enum : UINT { kPlay = 0x8001, kPlayNext, kAddToQueue, kFavoriteAdd, kFavoriteRemove };
+
+void AppendQueueCommands(HMENU menu, metadb_handle_list_cref items, bool inQueue) {
+    if (!inQueue) {
+        AppendMenuW(menu, MF_STRING, kPlay, L"Play");
+        AppendMenuW(menu, MF_STRING, kPlayNext, L"Play next");
+        AppendMenuW(menu, MF_STRING, kAddToQueue, L"Add to queue");
+    }
+    const bool fav = media::AllFavorite(items);
+    AppendMenuW(menu, MF_STRING, fav ? kFavoriteRemove : kFavoriteAdd, fav ? L"Remove from Favorites" : L"Add to Favorites");
+    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+}
+
+bool RunQueueCommand(UINT cmd, metadb_handle_list_cref items) {
+    switch (cmd) {
+    case kPlay: media::PlayQueue(items, 0); return true;
+    case kPlayNext: media::PlayNext(items); return true;
+    case kAddToQueue: media::AddToQueue(items); return true;
+    case kFavoriteAdd: media::SetFavorite(items, true); return true;
+    case kFavoriteRemove: media::SetFavorite(items, false); return true;
+    default: return false;
+    }
+}
+
+}  // namespace
+
 void RunContextMenu(HWND owner, metadb_handle_list_cref items, POINT pt) {
     if (items.get_count() == 0) return;
     auto cm = contextmenu_manager::get();
     cm->init_context(items, contextmenu_manager::flag_show_shortcuts);
     constexpr int kBase = 1;
     HMENU menu = CreatePopupMenu();
+    AppendQueueCommands(menu, items, false);
     cm->win32_build_menu(menu, kBase, 0x7FFF);
     const UINT cmd = TrackWin7Menu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_NONOTIFY, pt.x, pt.y, owner);
     DestroyMenu(menu);
+    if (RunQueueCommand(cmd, items)) return;
     if (cmd >= kBase) cm->execute_by_id(cmd - kBase);
 }
 
 void RunPlaylistContextMenu(HWND owner, POINT pt) {
+    auto pm = playlist_manager::get();
+    metadb_handle_list items;
+    pm->activeplaylist_get_selected_items(items);
     auto cm = contextmenu_manager::get();
     cm->init_context_playlist(contextmenu_manager::flag_show_shortcuts);
     constexpr int kBase = 1;
     HMENU menu = CreatePopupMenu();
+    if (items.get_count()) AppendQueueCommands(menu, items, media::IsQueue(pm->get_active_playlist()));
     cm->win32_build_menu(menu, kBase, 0x7FFF);
     const UINT cmd = TrackWin7Menu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_NONOTIFY, pt.x, pt.y, owner);
     DestroyMenu(menu);
+    if (RunQueueCommand(cmd, items)) return;
     if (cmd >= kBase) cm->execute_by_id(cmd - kBase);
 }
 

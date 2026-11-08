@@ -13,6 +13,7 @@
 #include "ui/taskbar.h"
 #include "ui/win7_menu.h"
 #include "media/favorites.h"
+#include "media/special_playlists.h"
 #include "ui/text.h"
 #include "wmp/wmp_painter.h"
 #include "wmp/wmp_transport.h"
@@ -526,7 +527,13 @@ void MainWindow::CreateWidgets() {
 
     // Command bar
     add(kOrganize, [](auto* dc, D2D1_SIZE_F s, Layer l) { wp::CommandButton(dc, s, l, L"Organize", true); }, {})
-        ->onClick = [this] { ShowOrganizeMenu(); };
+        ->onClick = [this] {
+              // Pressed while its menu is up, like WMP's drop-down buttons.
+              Widget* w = WidgetById(kOrganize);
+              if (w) w->SetPressed(true);
+              ShowOrganizeMenu();
+              if (w) w->SetPressed(false);
+          };
     add(kAddFiles, [](auto* dc, D2D1_SIZE_F s, Layer l) { wp::CommandButton(dc, s, l, L"Add files", false); }, {})
         ->onClick = [] { standard_commands::main_add_files(); };
     add(kAddFolder, [](auto* dc, D2D1_SIZE_F s, Layer l) { wp::CommandButton(dc, s, l, L"Add folder", false); }, {})
@@ -1309,7 +1316,9 @@ void MainWindow::BuildCrumbs() {
     m_crumbs.push_back({L"Library", go(all), [go, all, nowPlaying] {
                             return std::vector<MenuAction>{{L"Playlists", go(nowPlaying)}, {L"Music", go(all)}};
                         }});
-    if (m_view.kind == View::Kind::Playlist) {
+    if (m_view.kind == View::Kind::Playlist && media::IsQueue(m_view.playlist)) {
+        m_crumbs.push_back({L"Now Playing", go(m_view), {}});  // the queue sits beside Playlists
+    } else if (m_view.kind == View::Kind::Playlist) {
         m_crumbs.push_back({L"Playlists", go(nowPlaying), playlists});
         m_crumbs.push_back({m_view.name, go(m_view), {}});
     } else {
@@ -1405,10 +1414,6 @@ void MainWindow::PaintBreadcrumb() {
             if (c.children) {  // small black triangle: right, or down while the menu is open
                 const float cx = std::round(((c.split + c.x1) / 2) * m_scale) / m_scale;
                 const float cy = std::round((H / 2) * m_scale) / m_scale;
-                // WMP 12's 9x9 arrows: 5235 right, 5237 down.
-                if (win7::Draw(dc, win7::Module::Wmploc, open ? 5237 : 5235,
-                               {std::round(cx - 4.5f), std::round(cy - 4.5f)}))
-                    continue;
                 com_ptr<ID2D1Factory> f;
                 dc->GetFactory(f.put());
                 com_ptr<ID2D1PathGeometry> tri;
@@ -1427,7 +1432,7 @@ void MainWindow::PaintBreadcrumb() {
                 sink->EndFigure(D2D1_FIGURE_END_CLOSED);
                 sink->Close();
                 com_ptr<ID2D1SolidColorBrush> arrow;
-                dc->CreateSolidColorBrush(Hex(0x1A1A1A), arrow.put());
+                dc->CreateSolidColorBrush(Hex(0x1E3250), arrow.put());  // WMP's dark navy, as a vector
                 dc->FillGeometry(tri.get(), arrow.get());
             }
         }
@@ -1493,7 +1498,7 @@ void MainWindow::Navigate(const View& requested, bool push) {
         view.name = Wide(name);
         if (pm->get_active_playlist() != view.playlist) pm->set_active_playlist(view.playlist);
         source = std::make_unique<media::PlaylistSource>(view.playlist);
-        m_nav->Select(NavPane::Target::Playlist, view.playlist);
+        m_nav->Select(media::IsQueue(view.playlist) ? NavPane::Target::Queue : NavPane::Target::Playlist, view.playlist);
         break;
     }
     case View::Kind::AllMusic: {
@@ -1678,6 +1683,17 @@ void MainWindow::OnNavItem(const NavPane::Item& item) {
     View v;
     switch (item.target) {
     case NavPane::Target::Playlist: v.kind = View::Kind::Playlist; v.playlist = item.playlist; break;
+    case NavPane::Target::Queue:
+        v.kind = View::Kind::Playlist;
+        v.playlist = media::QueuePlaylist(true);
+        break;
+    case NavPane::Target::SmartHeader: {  // opens Favorites
+        const t_size fav = media::FavoritesPlaylist(true);
+        if (fav == SIZE_MAX) return;
+        v.kind = View::Kind::Playlist;
+        v.playlist = fav;
+        break;
+    }
     case NavPane::Target::Music: v.kind = View::Kind::AllMusic; break;
     case NavPane::Target::Artists: v.kind = View::Kind::Artists; break;
     case NavPane::Target::Albums: v.kind = View::Kind::Albums; break;
@@ -1705,6 +1721,11 @@ void MainWindow::ShowOrganizeMenu() {
                   {L"Add files...", [] { standard_commands::main_add_files(); }},
                   {L"Add folder...", [] { standard_commands::main_add_directory(); }},
                   {L"Add location...", [] { standard_commands::run_main(standard_commands::guid_main_add_location); }},
+                  {L"", nullptr},
+                  {L"Restore smart playlists", [this] {
+                       media::EnsureSpecialPlaylists(true);
+                       m_nav->Rebuild();
+                   }},
                   {L"", nullptr},
                   {L"Preferences...", [] { standard_commands::run_main(standard_commands::guid_main_preferences); }}});
     SetHoverWidget(nullptr);  // the menu loop swallowed the mouse leave
@@ -2178,6 +2199,8 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
         CreateWidgets();
         RepaintScaleDependent();
         m_shadow.Create(hwnd);
+        media::EnsureSpecialPlaylists(false);  // queue, Favorites (protected), smart playlists
+        if (m_nav) m_nav->Rebuild();
         m_taskbar = std::make_unique<Taskbar>(hwnd);
         m_taskbar->onFavorite = [this] {
             metadb_handle_ptr now;
