@@ -11,6 +11,8 @@
 #include "ui/search_box.h"
 #include "ui/widget.h"
 
+#include <optional>
+
 namespace glasswave::ui {
 
 // The Glasswave main window, laid out like WMP 12 library mode: Aero glass caption and
@@ -48,6 +50,7 @@ private:
         RECT back{}, forward{}, breadcrumb{}, navGroove{};
         RECT organize{}, addFiles{}, addFolder{}, newPlaylist{}, search{}, viewOptions{};
         RECT navPane{}, list{};
+        RECT artistHeader{}, artistFollow{};  // NetEase artist pages
         RECT seek{}, capsule{}, divider{}, shuffle{}, repeat{}, stop{}, prev{}, next{}, play{}, mute{}, volume{};
         RECT nowPlaying{}, time{}, stream{};
         POINT cluster{};  // origin of the WMP 12 transport cluster bitmap
@@ -127,6 +130,9 @@ private:
     void OpenNeteaseArtist(int64_t id, std::wstring name);
     void OpenNeteaseAlbum(int64_t id, std::wstring name);
     void OpenNeteaseArtistSongs(int64_t artistId, std::wstring name);
+    void PaintArtistHeader();
+    void RepaintArtistHeader();
+    void ToggleArtistFollow();
     int ViewStyles() const;  // view options the current source offers
     void OnNavItem(const NavPane::Item& item);
     void AddDroppedFiles(IDataObject* data);
@@ -225,6 +231,11 @@ private:
     winrt::Windows::UI::Composition::SpriteVisual m_title{nullptr};
     winrt::Windows::UI::Composition::SpriteVisual m_nowPlaying{nullptr};
     winrt::Windows::UI::Composition::SpriteVisual m_breadcrumb{nullptr};
+    winrt::Windows::UI::Composition::SpriteVisual m_artistHeader{nullptr};
+    SIZE m_artistHeaderSize{};
+    std::optional<netease::Artist> m_artist;  // the NetEase artist page on screen
+    bool m_followPending = false;
+    int m_artistArtToken = 0;
     winrt::com_ptr<IWICBitmapSource> m_icon, m_art;
 
     std::vector<std::unique_ptr<Widget>> m_widgets;
