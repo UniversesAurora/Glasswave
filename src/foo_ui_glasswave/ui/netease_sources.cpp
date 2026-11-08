@@ -58,7 +58,7 @@ bool SameHandle(const metadb_handle_ptr& a, const metadb_handle_ptr& b) {
 }  // namespace
 
 namespace {
-enum SongField { kAlbumColumn, kNumber, kArt, kTitle, kLength, kArtist, kAlbum, kSource, kFavorite };
+enum SongField { kAlbumColumn, kNumber, kArt, kTitle, kLength, kArtist, kAlbum, kPlayCount, kSource, kFavorite };
 
 int CompareText(const std::wstring& a, const std::wstring& b) {
     return CompareStringEx(LOCALE_NAME_USER_DEFAULT, LINGUISTIC_IGNORECASE | SORT_DIGITSASNUMBERS, a.c_str(),
@@ -91,6 +91,7 @@ std::wstring ArtistLabel(const SongTableRow& row) {
 SongTableRow MakeNeteaseRow(const netease::Song& song) {
     SongTableRow row;
     row.handle = netease::Catalog::Get().Handle(song.id);
+    row.playCount = media::PlayStats::Get().CountFor(row.handle);
     row.title = song.title;
     row.artist = ArtistText(song);
     row.album = song.album;
@@ -126,6 +127,7 @@ std::vector<SongTableRow> FavoriteRows(const std::vector<metadb_handle_ptr>& loc
         if (!track.is_valid()) continue;
         SongTableRow row;
         row.handle = track;
+        row.playCount = media::PlayStats::Get().CountFor(track);
         row.title = LocalField(track, "%title%");
         row.artist = LocalField(track, "%artist%");
         row.album = LocalField(track, "%album%");
@@ -152,6 +154,7 @@ std::wstring WideUtf8(const std::string& text) {
 
 SongTableRow MakePlayStatRow(const media::PlayRecord& record) {
     SongTableRow row;
+    row.playCount = record.count;
     row.title = WideUtf8(record.title);
     row.artist = WideUtf8(record.artist);
     row.album = WideUtf8(record.album);
@@ -221,6 +224,8 @@ void SongTableSource::SetViewStyle(media::ViewStyle style) {
         m_columns.push_back({L"Source", 140});
         m_fields.push_back(kSource);
     }
+    m_columns.push_back({L"Play count", 70, false, true, !m_showPlayCount});
+    m_fields.push_back(kPlayCount);
     m_columns.push_back({L"Favorite", 58, false, false, false, "<favorite>"});
     m_fields.push_back(kFavorite);
     m_sortColumn = SIZE_MAX;  // columns changed: back to the view's own order
@@ -249,6 +254,11 @@ void SongTableSource::SetGrouping(bool enabled) {
     BuildGroups();
 }
 
+void SongTableSource::ShowPlayCount() {
+    m_showPlayCount = true;
+    SetViewStyle(m_style);
+}
+
 std::pair<std::wstring, std::wstring> SongTableSource::GroupInfo(size_t row) const {
     if (m_sortColumn >= m_fields.size()) return {L"", L""};
     const SongTableRow& item = m_all[row];
@@ -273,6 +283,10 @@ std::pair<std::wstring, std::wstring> SongTableSource::GroupInfo(size_t row) con
         return {label, label};
     }
     case kSource: return {item.source, item.source};
+    case kPlayCount: {
+        const std::wstring v = std::to_wstring(item.playCount);
+        return {v, v};
+    }
     case kFavorite:
         return {item.favorite ? L"1" : L"0", Tr(item.favorite ? L"Favorite" : L"Not in Favorites")};
     default: return {L"", L""};  // # is the row number itself: nothing to group by
@@ -418,6 +432,7 @@ std::wstring SongTableSource::Cell(size_t row, size_t column) const {
     case kLength: return item.length;
     case kArtist: return item.artist;
     case kAlbum: return item.album;
+    case kPlayCount: return std::to_wstring(item.playCount);
     case kSource: return item.source;
     default: return {};  // the album, art and favorite columns are drawn by the list
     }
@@ -514,7 +529,9 @@ AllFavoritesSource::AllFavoritesSource(std::vector<metadb_handle_ptr> local, std
     : SongTableSource(FavoriteRows(local, remote), true, L"No favorites.", L"all-favorites") {}
 
 PlayStatsSource::PlayStatsSource(std::vector<media::PlayRecord> records, std::wstring emptyText)
-    : SongTableSource(PlayStatRows(records), true, std::move(emptyText), L"all-play-stats") {}
+    : SongTableSource(PlayStatRows(records), true, std::move(emptyText), L"all-play-stats") {
+    ShowPlayCount();
+}
 
 // ---- artist page ------------------------------------------------------------------------
 

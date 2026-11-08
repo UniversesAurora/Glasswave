@@ -23,6 +23,7 @@ struct SongTableRow {
     int64_t artistId = 0;   // first artist, for the album column's artist link
     int64_t albumId = 0;    // for the album column's album link
     int popularity = 0;     // NetEase pop score, used for album heat
+    uint32_t playCount = 0;  // our cross-source play history
     bool favorite = false;
     bool remote = false;
 };
@@ -73,6 +74,8 @@ public:
 protected:
     // Removes rows (a playlist edit) and returns how many disappeared.
     size_t RemoveRows(const std::function<bool(const SongTableRow&)>& remove);
+    // Shows the Play count column by default (the Most Played page).
+    void ShowPlayCount();
     // Expanded tile always groups an album's songs into one column, in first-appearance order.
     SongTableSource(std::vector<SongTableRow> rows, bool showSource, std::wstring emptyText,
                     std::wstring columnKey);
@@ -99,6 +102,7 @@ private:
     size_t m_sortColumn = SIZE_MAX;
     bool m_sortDescending = false;
     bool m_showSource = false;
+    bool m_showPlayCount = false;
     bool m_grouping = true;
 };
 

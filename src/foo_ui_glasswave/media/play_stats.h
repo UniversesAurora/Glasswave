@@ -29,6 +29,8 @@ public:
     static PlayStats& Get();
 
     void Record(const metadb_handle_ptr& track);  // a track started playing
+    // The stored count of this track (0 when it has never been recorded).
+    uint32_t CountFor(const metadb_handle_ptr& track);
     std::vector<PlayRecord> Recent(size_t limit);
     std::vector<PlayRecord> MostPlayed(size_t limit);
 

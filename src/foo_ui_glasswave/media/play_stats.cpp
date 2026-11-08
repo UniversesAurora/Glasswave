@@ -85,6 +85,23 @@ std::string LocalField(const metadb_handle_ptr& track, const char* script) {
 
 int64_t ToInt(std::string_view text) { return std::strtoll(std::string(text).c_str(), nullptr, 10); }
 
+// The stable identity of a track, shared by Record and CountFor. Returns false for
+// tracks that should not be tracked (empty paths, internet streams).
+bool RecordKey(const metadb_handle_ptr& track, std::string& key, std::string& path, bool& remote, int64_t& songId) {
+    const char* rawPath = track->get_path();
+    if (!rawPath || !*rawPath) return false;
+    path = rawPath;
+    songId = 0;
+    remote = netease::ParseSongPath(rawPath, songId);
+    if (remote) {
+        key = "ncm:" + std::to_string(songId);
+        return true;
+    }
+    if (path.starts_with("http://") || path.starts_with("https://")) return false;
+    key = path + '\x1f' + std::to_string(track->get_subsong_index());
+    return true;
+}
+
 }  // namespace
 
 PlayStats& PlayStats::Get() {
@@ -161,18 +178,10 @@ void PlayStats::Prune() {
 void PlayStats::Record(const metadb_handle_ptr& track) {
     if (!track.is_valid()) return;
     if (!m_loaded) Load();
-    const char* rawPath = track->get_path();
-    if (!rawPath || !*rawPath) return;
-    const std::string path = rawPath;
+    std::string key, path;
+    bool remote = false;
     int64_t songId = 0;
-    const bool remote = netease::ParseSongPath(rawPath, songId);
-    std::string key;
-    if (remote) {
-        key = "ncm:" + std::to_string(songId);
-    } else {
-        if (path.starts_with("http://") || path.starts_with("https://")) return;  // streams
-        key = path + '\x1f' + std::to_string(track->get_subsong_index());
-    }
+    if (!RecordKey(track, key, path, remote, songId)) return;
     PlayRecord* record = nullptr;
     for (auto& entry : m_records)
         if (entry.key == key) {
@@ -216,8 +225,19 @@ void PlayStats::Record(const metadb_handle_ptr& track) {
     Save();
 }
 
-std::vector<PlayRecord> PlayStats::Recent(size_t limit) {
+uint32_t PlayStats::CountFor(const metadb_handle_ptr& track) {
+    if (!track.is_valid()) return 0;
     if (!m_loaded) Load();
+    std::string key, path;
+    bool remote = false;
+    int64_t songId = 0;
+    if (!RecordKey(track, key, path, remote, songId)) return 0;
+    for (const auto& record : m_records)
+        if (record.key == key) return record.count;
+    return 0;
+}
+
+std::vector<PlayRecord> PlayStats::Recent(size_t limit) {    if (!m_loaded) Load();
     std::vector<PlayRecord> out = m_records;
     std::sort(out.begin(), out.end(), [](const PlayRecord& a, const PlayRecord& b) {
         return a.lastPlayed != b.lastPlayed ? a.lastPlayed > b.lastPlayed : a.count > b.count;
