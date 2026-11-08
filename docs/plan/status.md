@@ -276,6 +276,12 @@ Updated: 2026-11-08
     under Collected playlists and survive account refreshes; the interested page still
     shows the service's daily title and cover. specialType 5 (the liked songs playlist) is
     still kept apart, and the other special types (yearly reviews, ...) stay excluded.
+  - The personal radar (playlist 3136952023) carries a different cover in
+    /recommend/resource (its recommended image) than in /user/playlist and
+    /playlist/detail (the first song's cover). The recommended image is pinned in the
+    catalog, so the navigation, recommended grid, collected grid and page header keep one
+    cover instead of alternating with whichever list was fetched last. The pin is dropped
+    on sign-out.
   - Clicking the NetEase Cloud Music library row (and its breadcrumb) opens the liked
     Favorites page instead of the Created playlists section.
   - The Now Playing, Recently Played and Most Played pages add removal actions to the
