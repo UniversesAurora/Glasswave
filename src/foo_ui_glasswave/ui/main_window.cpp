@@ -2383,9 +2383,11 @@ void MainWindow::Navigate(const View& requested, bool push) {
         }
         m_detailHeaderSize = {};  // repaint the band for this page, not the previous one
         if (auto cached = netease::Catalog::Get().FindAlbum(id)) m_albumDetail = std::move(*cached);
+        const std::wstring previousCover = m_albumDetail ? m_albumDetail->coverUrl : std::wstring();
         const View requestedView = view;
         netease::Provider::Get().FetchAlbumDetail(
-            id, [this, requestedView](netease::Album album, std::vector<netease::Song> songs, std::wstring error) {
+            id, [this, requestedView, previousCover](netease::Album album, std::vector<netease::Song> songs,
+                                                     std::wstring error) {
                 if (m_view.kind != requestedView.kind || m_view.library != requestedView.library ||
                     m_view.remoteId != requestedView.remoteId)
                     return;
@@ -2397,9 +2399,11 @@ void MainWindow::Navigate(const View& requested, bool push) {
                             m_history[m_historyPos].remoteId == requestedView.remoteId)
                             m_history[m_historyPos].name = m_view.name;
                     }
-                    // The cover URL arrived with the detail; a placeholder tried before it
-                    // must not stay cached as Missing.
-                    ArtCache::Get().Invalidate(L"ncm:album:" + std::to_wstring(m_albumDetail->id));
+                    // Only a different URL needs a reload; the grid tile already decoded this
+                    // cover and the list rows reuse it. An empty previous URL means a
+                    // placeholder may have been cached as missing before the detail arrived.
+                    if (previousCover != m_albumDetail->coverUrl)
+                        ArtCache::Get().Invalidate(L"ncm:album:" + std::to_wstring(m_albumDetail->id));
                 }
                 ShowNeteaseSongs(requestedView, std::move(songs), std::move(error));
                 RepaintBreadcrumb();
