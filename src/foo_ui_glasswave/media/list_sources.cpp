@@ -5,6 +5,7 @@
 #include "media/favorites.h"
 #include "ui/win7_menu.h"
 #include "media/source_identity.h"
+#include "netease/handle.h"
 #include "ui/text.h"
 #include "ui/i18n.h"
 #include <cwctype>
@@ -155,8 +156,25 @@ void PlaylistsSource::SetFilter(std::wstring_view filterLower) {
 // ---- PlaylistSource ---------------------------------------------------------------------
 
 namespace {
-enum PlaylistField { kPlAlbumColumn, kPlNumber, kPlArt, kPlTitle, kPlArtist, kPlAlbum, kPlLength, kPlFormat };
+enum PlaylistField {
+    kPlAlbumColumn,
+    kPlNumber,
+    kPlArt,
+    kPlTitle,
+    kPlArtist,
+    kPlAlbum,
+    kPlLength,
+    kPlSource,
+    kPlFormat
+};
+
+// The library a track comes from, for lists that mix providers (the queue and playlists).
+std::wstring SourceLabel(const metadb_handle_ptr& track) {
+    int64_t id = 0;
+    return track.is_valid() && netease::ParseSongPath(track->get_path(), id) ? ui::Tr(L"NetEase Cloud Music")
+                                                                            : ui::Tr(L"Local Music");
 }
+}  // namespace
 
 PlaylistSource::PlaylistSource(size_t playlist) : m_playlist(playlist) { SetViewStyle(ViewStyle::Details); }
 
@@ -168,26 +186,28 @@ void PlaylistSource::SetViewStyle(ViewStyle style) {
                      {L"Title", 0, true},
                      {L"Length", 56, false, true},
                      {L"Contributing artist", 190},
+                     {L"Source", 140},
                      {L"Genre", 110, false, false, false, "[%genre%]"},
                      {L"Release year", 80, false, false, true, "[$year(%date%)]"}};
-        m_fields = {kPlAlbumColumn, kPlNumber, kPlTitle, kPlLength, kPlArtist, kPlFormat, kPlFormat};
+        m_fields = {kPlAlbumColumn, kPlNumber, kPlTitle, kPlLength, kPlArtist, kPlSource, kPlFormat, kPlFormat};
     } else {
         m_columns = {{L"#", 34, false, true},
                      ArtColumn(false),
                      {L"Title", 0, true},
                      {L"Contributing artist", 170},
                      {L"Album", 170},
+                     {L"Source", 140},
                      {L"Length", 56, false, true},
                      {L"Genre", 110, false, false, true, "[%genre%]"},
                      {L"Release year", 80, false, false, true, "[$year(%date%)]"}};
-        m_fields = {kPlNumber, kPlArt, kPlTitle, kPlArtist, kPlAlbum, kPlLength, kPlFormat, kPlFormat};
+        m_fields = {kPlNumber, kPlArt, kPlTitle, kPlArtist, kPlAlbum, kPlSource, kPlLength, kPlFormat, kPlFormat};
     }
     for (auto& extra : ExtraColumns()) {
         m_fields.push_back(kPlFormat);
         m_columns.push_back(std::move(extra));
     }
     static const char* const kScripts[] = {nullptr, nullptr, nullptr, "$if2(%title%,%filename%)", "[%artist%]",
-                                           "[%album%]", "[%length%]", nullptr};
+                                           "[%album%]", "[%length%]", nullptr, nullptr};
     m_scripts.clear();
     for (size_t c = 0; c < m_columns.size(); ++c) {
         const char* f = m_fields[c] == kPlFormat ? m_columns[c].format : kScripts[m_fields[c]];
@@ -326,6 +346,8 @@ std::wstring PlaylistSource::Cell(size_t row, size_t column) const {
             if (!v.empty()) return v;
         }
     }
+    if (field == kPlSource)
+        return SourceLabel(playlist_manager::get()->playlist_get_item_handle(m_playlist, item));
     if (field == kPlFormat && IsPlayCountColumn(m_columns[column]))
         return std::to_wstring(
             PlayStats::Get().CountFor(playlist_manager::get()->playlist_get_item_handle(m_playlist, item)));
@@ -366,11 +388,18 @@ void PlaylistSource::Sort(size_t column, bool descending) {
     // Sort lengths by duration, play counts by value, the album column by album, everything
     // else by its text.
     const bool byLength = m_fields[column] == kPlLength;
+    const bool bySource = m_fields[column] == kPlSource;
     const bool byPlayCount = m_fields[column] == kPlFormat && IsPlayCountColumn(m_columns[column]);
     titleformat_object::ptr script = byLength                             ? Compile("%length_seconds_fp%")
                                      : m_fields[column] == kPlAlbumColumn ? Compile("[%album%]")
                                                                           : m_scripts[column];
     for (t_size i = 0; i < n; ++i) {
+        if (bySource) {  // local first, then NetEase
+            int64_t id = 0;
+            const auto track = pm->playlist_get_item_handle(m_playlist, i);
+            keys[i] = track.is_valid() && netease::ParseSongPath(track->get_path(), id) ? L"1" : L"0";
+            continue;
+        }
         if (byPlayCount) {  // zero-pad so the text compare orders numbers
             wchar_t pad[32];
             swprintf_s(pad, L"%010u", PlayStats::Get().CountFor(pm->playlist_get_item_handle(m_playlist, i)));
