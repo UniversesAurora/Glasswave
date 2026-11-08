@@ -35,6 +35,7 @@ public:
     void OnPlaylistContentChanged(size_t playlist);
     void OnPlaylistSelectionChanged(size_t playlist);
     void OnPlaylistsChanged();
+    void OnPlaylistLockChanged();  // auto playlists attach as locks, also after start-up
     void ScheduleLibraryReload();
 
 private:
@@ -51,7 +52,8 @@ private:
     };
 
     struct View {
-        enum class Kind { Playlist, AllMusic, Artists, Albums, Genres, Group, Playlists } kind = Kind::AllMusic;
+        // Category: every group of `group` (Artist, Album, ...); Group: the songs of one of them.
+        enum class Kind { Playlist, AllMusic, Category, Group, Playlists, SmartPlaylists } kind = Kind::AllMusic;
         size_t playlist = 0;
         media::GroupKind group = media::GroupKind::Artist;
         std::wstring key, name;
@@ -99,7 +101,9 @@ private:
     void CreatePlaylist(bool autoPlaylist);
     std::vector<MenuAction> AddPlaylistActions();  // Add > new / smart / preset playlists
     void OnAlbumLink(size_t group, size_t line);
-    cfg_var_modern::cfg_int* ViewStyleSetting(int viewKind) const;
+    static cfg_var_modern::cfg_int* ViewStyleSetting(const View& view);
+    void ShowNavCustomizeMenu(POINT screen);
+    void SetNavCategories(std::vector<media::GroupKind> kinds);
     int ViewStyles() const;  // view options the current source offers
     void OnNavItem(const NavPane::Item& item);
     void AddDroppedFiles(IDataObject* data);

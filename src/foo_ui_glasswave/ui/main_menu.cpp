@@ -19,7 +19,10 @@ void Append(HMENU menu, const std::vector<MenuAction>& actions, UINT base, std::
             flat.push_back(&a);
             const UINT id = base + static_cast<UINT>(flat.size() - 1);
             AppendMenuW(menu, MF_STRING, id, a.label.c_str());
-            if (a.checked) CheckMenuRadioItem(menu, id, id, id, MF_BYCOMMAND);
+            if (a.checked && a.checkbox)
+                CheckMenuItem(menu, id, MF_BYCOMMAND | MF_CHECKED);
+            else if (a.checked)
+                CheckMenuRadioItem(menu, id, id, id, MF_BYCOMMAND);
         }
     }
 }

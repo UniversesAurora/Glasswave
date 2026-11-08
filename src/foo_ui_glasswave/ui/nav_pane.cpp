@@ -73,6 +73,18 @@ bool DrawWmpIcon(ID2D1DeviceContext* dc, D2D1_POINT_2F center, wmp::paint::NavIc
 }
 }  // namespace
 
+// Label and WMP icon (wmploc icon group) of each Music category.
+std::wstring CategoryLabel(media::GroupKind kind) {
+    static const wchar_t* const kLabels[] = {L"Artist", L"Album",  L"Genre", L"Year", L"Rating", L"Contributing artist",
+                                             L"Composer", L"Folder"};
+    return kLabels[std::min(static_cast<size_t>(kind), std::size(kLabels) - 1)];
+}
+
+int CategoryIcon(media::GroupKind kind) {
+    static const int kIcons[] = {29514, 29510, 29517, 29530, 29526, 29537, 29515, 29519};
+    return kIcons[std::min(static_cast<size_t>(kind), std::size(kIcons) - 1)];
+}
+
 NavPane::NavPane(const winrt::Windows::UI::Composition::ContainerVisual& parent) {
     m_visual = gfx::CompositionHost::Get().Compositor().CreateSpriteVisual();
     parent.Children().InsertAtTop(m_visual);
@@ -109,11 +121,9 @@ void NavPane::Rebuild() {
             }
     }
     m_items.push_back({Target::Music, 0, 0, L"Music", wp::NavIcon::Music, true});
-    if (m_musicExpanded) {
-        m_items.push_back({Target::Artists, 0, 1, L"Artist", wp::NavIcon::Artist, false});
-        m_items.push_back({Target::Albums, 0, 1, L"Album", wp::NavIcon::Album, false});
-        m_items.push_back({Target::Genres, 0, 1, L"Genre", wp::NavIcon::Genre, false});
-    }
+    if (m_musicExpanded)
+        for (auto kind : m_categories)
+            m_items.push_back({Target::Category, static_cast<size_t>(kind), 1, CategoryLabel(kind), wp::NavIcon::Artist, false});
     m_hot = SIZE_MAX;
     Paint();
 }
@@ -125,6 +135,11 @@ void NavPane::SetBounds(const RECT& px, float scale) {
     m_scale = scale;
     m_visual.Offset(float3{static_cast<float>(px.left), static_cast<float>(px.top), 0});
     if (changed) Paint();
+}
+
+void NavPane::SetCategories(std::vector<media::GroupKind> kinds) {
+    m_categories = std::move(kinds);
+    Rebuild();
 }
 
 void NavPane::SetFocused(bool focused) {
@@ -207,7 +222,7 @@ void NavPane::Paint() {
         for (size_t i = m_top; i < m_items.size(); ++i, y += rowH) {
             const Item& it = m_items[i];
             const bool selected = it.target == m_selTarget &&
-                                  (it.target != Target::Playlist || it.playlist == m_selPlaylist);
+                                  ((it.target != Target::Playlist && it.target != Target::Category) || it.playlist == m_selPlaylist);
             const bool hot = i == m_hot;
             if (selected || hot)
                 wp::RowPlate(dc, {4, y, width - 6, y + rowH},
@@ -226,6 +241,7 @@ void NavPane::Paint() {
             const int special = it.target == Target::Playlist && it.text == L"Favorites" ? 29526
                                 : it.target == Target::Queue                            ? 29513
                                 : it.target == Target::SmartHeader                      ? 29572
+                                : it.target == Target::Category ? CategoryIcon(static_cast<media::GroupKind>(it.playlist))
                                                                                         : 0;
             if (!DrawWmpIcon(dc, {x + 16, y + rowH / 2}, it.icon, autoPlaylist, s, special))
                 wp::NavGlyph(dc, {x + 16, y + rowH / 2}, it.icon);

@@ -228,6 +228,7 @@ private:
     const Group& At(size_t row) const { return m_model.Groups(m_kind)[m_rows[row]]; }
 
     const LibraryModel& m_model;
+    std::wstring Name(const Group& g) const;
     GroupKind m_kind;
     DrillDown m_onOpen;
     std::vector<size_t> m_rows;
@@ -246,12 +247,13 @@ class PlaylistsSource : public ListSource {
 public:
     using Open = std::function<void(size_t playlist)>;
     using Menu = std::function<void(size_t playlist, POINT screen)>;
-    PlaylistsSource(Open open, Menu menu);
+    // smart = false: the user's playlists; true: Favorites and the auto playlists.
+    PlaylistsSource(bool smart, Open open, Menu menu);
 
     const std::vector<Column>& Columns() const override { return m_columns; }
     size_t Count() const override { return m_rows.size(); }
     std::wstring Cell(size_t row, size_t column) const override;
-    std::wstring EmptyText() const override { return L"No playlists."; }
+    std::wstring EmptyText() const override { return m_smart ? L"No smart playlists." : L"No playlists."; }
     TileStyle Tiles() const override { return m_style == ViewStyle::Icons ? TileStyle::Album : TileStyle::None; }
     TileInfo Tile(size_t row) const override;
     bool SupportsViewStyle(ViewStyle s) const override { return s != ViewStyle::Tiles; }
@@ -271,6 +273,7 @@ public:
     void SetFilter(std::wstring_view filterLower) override;
 
 private:
+    bool m_smart;
     Open m_open;
     Menu m_menu;
     std::vector<Column> m_columns;

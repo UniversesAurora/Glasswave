@@ -9,6 +9,7 @@ namespace glasswave::media {
 struct Track {
     metadb_handle_ptr handle;
     std::wstring albumArtist, artist, album, genre, title, number, length, year;
+    std::wstring composer, rating, folderPath;  // rating "1".."5" or empty; folder as on disk
     std::wstring search;  // lower-cased "artist album title genre" for filtering
     std::wstring folder;  // lower-cased directory, groups compilations without ALBUM ARTIST
     bool hasAlbumArtist = false;
@@ -16,7 +17,9 @@ struct Track {
     size_t albumIndex = SIZE_MAX;  // into Groups(GroupKind::Album)
 };
 
-enum class GroupKind { Artist, Album, Genre };
+// Ways to browse Music, as WMP 12's navigation pane offers them (Artist = album artist).
+enum class GroupKind { Artist, Album, Genre, Year, Rating, ContributingArtist, Composer, Folder };
+inline constexpr size_t kGroupKinds = 8;
 
 struct Group {
     std::wstring key;        // unique within its kind
@@ -44,7 +47,7 @@ public:
 private:
     bool m_enabled = false;
     std::vector<Track> m_tracks;
-    std::vector<Group> m_artists, m_albums, m_genres;
+    std::array<std::vector<Group>, kGroupKinds> m_groups;
     std::vector<size_t> m_albumRank;
 };
 

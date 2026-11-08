@@ -12,7 +12,8 @@ constexpr wchar_t kSep = L'\x1F';
 // One titleformat pass per track, fields separated by U+001F.
 constexpr const char* kTrackScript =
     "[$meta(album artist)]\x1f[%artist%]\x1f[%album%]\x1f[%genre%]\x1f[%title%]\x1f[%tracknumber%]\x1f"
-    "[%length%]\x1f[$year(%date%)]\x1f$if2(%discnumber%,1)\x1f$directory_path(%path%)\x1f[%length_seconds_fp%]";
+    "[%length%]\x1f[$year(%date%)]\x1f$if2(%discnumber%,1)\x1f$directory_path(%path%)\x1f[%length_seconds_fp%]"
+    "\x1f[%composer%]\x1f[%rating%]";
 
 std::vector<std::wstring> Split(const std::wstring& s, size_t expected) {
     std::vector<std::wstring> out;
@@ -54,9 +55,7 @@ bool MatchesFilter(std::wstring_view haystack, std::wstring_view filter) {
 
 void LibraryModel::Reload() {
     m_tracks.clear();
-    m_artists.clear();
-    m_albums.clear();
-    m_genres.clear();
+    for (auto& g : m_groups) g.clear();
     m_albumRank.clear();
 
     auto lib = library_manager::get();
@@ -102,11 +101,14 @@ void LibraryModel::Reload() {
         if (!keep[i]) continue;
         const auto& h = items[i];
         h->format_title(nullptr, buf, script, nullptr);
-        auto f = Split(ui::Wide(buf), 11);
+        auto f = Split(ui::Wide(buf), 13);
         Sortable s;
         s.track.handle = h;
         s.track.hasAlbumArtist = !f[0].empty();
         s.track.folder = Lower(f[9]);
+        s.track.folderPath = f[9];
+        s.track.composer = f[11];
+        s.track.rating = (f[12].size() == 1 && f[12][0] >= L'1' && f[12][0] <= L'5') ? f[12] : std::wstring();
         s.track.albumArtist = f[0].empty() ? (f[1].empty() ? L"Unknown Artist" : f[1]) : f[0];
         s.track.artist = f[1].empty() ? s.track.albumArtist : f[1];
         s.track.album = f[2].empty() ? L"Unknown Album" : f[2];
@@ -191,6 +193,9 @@ void LibraryModel::Reload() {
         for (auto& g : out) g.search = Lower(g.name + L' ' + g.secondary);
     };
 
+    auto& m_artists = m_groups[static_cast<size_t>(GroupKind::Artist)];
+    auto& m_albums = m_groups[static_cast<size_t>(GroupKind::Album)];
+    auto& m_genres = m_groups[static_cast<size_t>(GroupKind::Genre)];
     build(m_artists, [](const Track& t) { return t.albumArtist; },
           [](Group& g, const Track& t) { g.name = t.albumArtist; });
     // Albums without an ALBUM ARTIST tag (compilations) are keyed by folder so their
@@ -215,9 +220,28 @@ void LibraryModel::Reload() {
             if (g.year.empty()) g.year = m_tracks[i].year;
     }
     build(m_genres, [](const Track& t) { return t.genre; }, [](Group& g, const Track& t) { g.name = t.genre; });
+    // The other ways WMP 12 browses Music.
+    build(m_groups[static_cast<size_t>(GroupKind::Year)], [](const Track& t) { return t.year; },
+          [](Group& g, const Track& t) { g.name = t.year.empty() ? L"Unknown Year" : t.year; });
+    build(m_groups[static_cast<size_t>(GroupKind::Rating)], [](const Track& t) { return t.rating; },
+          [](Group& g, const Track& t) {
+              // Literal names so scripts/translate-deepseek.ps1 finds them.
+              static const wchar_t* const kStars[] = {L"1 Star", L"2 Stars", L"3 Stars", L"4 Stars", L"5 Stars"};
+              const int n = t.rating.size() == 1 ? t.rating[0] - L'0' : 0;
+              g.name = t.rating.empty() ? L"Unrated" : n >= 1 && n <= 5 ? kStars[n - 1] : t.rating;
+          });
+    std::stable_sort(m_groups[static_cast<size_t>(GroupKind::Rating)].begin(),  // 5 stars first
+                     m_groups[static_cast<size_t>(GroupKind::Rating)].end(),
+                     [](const Group& a, const Group& b) { return a.key > b.key; });
+    build(m_groups[static_cast<size_t>(GroupKind::ContributingArtist)], [](const Track& t) { return t.artist; },
+          [](Group& g, const Track& t) { g.name = t.artist; });
+    build(m_groups[static_cast<size_t>(GroupKind::Composer)], [](const Track& t) { return t.composer; },
+          [](Group& g, const Track& t) { g.name = t.composer.empty() ? L"Unknown Composer" : t.composer; });
+    build(m_groups[static_cast<size_t>(GroupKind::Folder)], [](const Track& t) { return t.folder; },
+          [](Group& g, const Track& t) { g.name = t.folderPath; });
 
-    for (auto* groups : {&m_artists, &m_albums, &m_genres})
-        for (auto& g : *groups)
+    for (auto& groups : m_groups)
+        for (auto& g : groups)
             for (size_t i : g.tracks) g.seconds += m_tracks[i].seconds;
 
     // "All music" lists albums by album artist (compilations under "Various Artists"), year, title.
@@ -234,11 +258,7 @@ void LibraryModel::Reload() {
 }
 
 const std::vector<Group>& LibraryModel::Groups(GroupKind kind) const {
-    switch (kind) {
-    case GroupKind::Artist: return m_artists;
-    case GroupKind::Album: return m_albums;
-    default: return m_genres;
-    }
+    return m_groups[std::min(static_cast<size_t>(kind), kGroupKinds - 1)];
 }
 
 const Group* LibraryModel::FindGroup(GroupKind kind, std::wstring_view key) const {

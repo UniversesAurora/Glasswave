@@ -1,13 +1,19 @@
 #pragma once
 #include "wmp/wmp_painter.h"
+#include "media/library_model.h"
 
 namespace glasswave::ui {
+
+// Name (untranslated) and WMP icon (wmploc icon group) of a Music category.
+std::wstring CategoryLabel(media::GroupKind kind);
+int CategoryIcon(media::GroupKind kind);
 
 // Navigation pane: the play queue (Now Playing), the user's playlists, smart playlists
 // (Favorites and foobar2000 auto playlists) and Music (Artist / Album / Genre).
 class NavPane {
 public:
-    enum class Target { None, Queue, PlaylistsHeader, Playlist, SmartHeader, Music, Artists, Albums, Genres };
+    // Category: a way to browse Music; playlist holds its media::GroupKind.
+    enum class Target { None, Queue, PlaylistsHeader, Playlist, SmartHeader, Music, Category };
     struct Item {
         Target target = Target::None;
         size_t playlist = 0;
@@ -21,6 +27,9 @@ public:
     ~NavPane();
 
     void Rebuild();  // playlists changed
+    // The Music categories shown (WMP's "Customize navigation pane"), in order.
+    void SetCategories(std::vector<media::GroupKind> kinds);
+    const std::vector<media::GroupKind>& Categories() const { return m_categories; }
     void SetBounds(const RECT& px, float scale);
     void Select(Target target, size_t playlist);
     // Selection is blue while the pane has the focus, grey otherwise (Win7 tree view).
@@ -47,6 +56,7 @@ private:
     size_t m_hot = SIZE_MAX;
     size_t m_hotExpander = SIZE_MAX;  // item whose expander is under the mouse
     bool m_focused = false;
+    std::vector<media::GroupKind> m_categories{media::GroupKind::Artist, media::GroupKind::Album, media::GroupKind::Genre};
     size_t m_top = 0;
     RECT m_bounds{};
     float m_scale = 1.0f;

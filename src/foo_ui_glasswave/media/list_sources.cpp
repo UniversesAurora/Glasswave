@@ -5,6 +5,7 @@
 #include "ui/win7_menu.h"
 #include "media/source_identity.h"
 #include "ui/text.h"
+#include "ui/i18n.h"
 
 namespace glasswave::media {
 
@@ -55,7 +56,8 @@ void PlayItems(const metadb_handle_list& items, size_t start) { PlayQueue(items,
 
 // ---- PlaylistsSource --------------------------------------------------------------------
 
-PlaylistsSource::PlaylistsSource(Open open, Menu menu) : m_open(std::move(open)), m_menu(std::move(menu)) {
+PlaylistsSource::PlaylistsSource(bool smart, Open open, Menu menu)
+    : m_smart(smart), m_open(std::move(open)), m_menu(std::move(menu)) {
     m_columns = {{L"Title", 0, true}, {L"Count", 70, false, true}};
     SetFilter({});
 }
@@ -66,17 +68,19 @@ std::wstring PlaylistsSource::Cell(size_t row, size_t column) const {
     if (column == 1) return std::to_wstring(pm->playlist_get_item_count(m_rows[row]));
     pfc::string8 name;
     pm->playlist_get_name(m_rows[row], name);
-    return ui::Wide(name);
+    // Built-in names (Favorites, the smart presets) are shown in the UI language.
+    return IsSpecial(m_rows[row]) ? ui::Tr(ui::Wide(name)) : ui::Wide(name);
 }
 
 TileInfo PlaylistsSource::Tile(size_t row) const {
     TileInfo info;
     if (row >= m_rows.size()) return info;
     const t_size p = m_rows[row];
-    // WMP's 192 px icons: 29722 playlist, 29772 auto playlist, 29726 star (Favorites).
-    info.icon = p == FavoritesPlaylist(false) ? 29726 : IsSmart(p) ? 29772 : 29722;
+    // WMP's 192 px icons: 29722 playlist, 29726 star (Favorites). wmploc has no large auto
+    // playlist icon (29572 stops at 32 px), so smart playlists use the playlist one.
+    info.icon = p == FavoritesPlaylist(false) ? 29726 : 29722;
     const t_size n = playlist_manager::get()->playlist_get_item_count(p);
-    info.lines = {Cell(row, 0), std::to_wstring(n) + (n == 1 ? L" song" : L" songs"), {}};
+    info.lines = {Cell(row, 0), std::to_wstring(n) + ui::Tr(n == 1 ? L" song" : L" songs"), {}};
     return info;
 }
 
@@ -127,8 +131,10 @@ void PlaylistsSource::SetFilter(std::wstring_view filterLower) {
     auto pm = playlist_manager::get();
     m_rows.clear();
     pfc::string8 name;
+    const t_size favorites = FavoritesPlaylist(false);
     for (t_size p = 0, n = pm->get_playlist_count(); p < n; ++p) {
         if (IsQueue(p)) continue;  // the queue has its own place
+        if ((p == favorites || IsSmart(p)) != m_smart) continue;
         pm->playlist_get_name(p, name);
         if (!filterLower.empty() && Lower(ui::Wide(name)).find(filterLower) == std::wstring::npos) continue;
         m_rows.push_back(p);
@@ -591,18 +597,30 @@ GroupSource::GroupSource(const LibraryModel& model, GroupKind kind, DrillDown on
         m_columns = {{L"Album artist", 0, true}, {L"Count", 60, false, true}, {L"Length", 70, false, true}};
         m_style = ViewStyle::Tiles;  // WMP 12 opens artists as expanded tiles
         break;
-    default:
-        m_columns = {{L"Genre", 0, true}, {L"Count", 60, false, true}, {L"Length", 70, false, true}};
+    default: {
+        // Genre, year, rating, contributing artist, composer, folder: name, count, length.
+        static const wchar_t* const kTitles[] = {L"Album artist", L"Album",       L"Genre",    L"Year",
+                                                 L"Rating",       L"Contributing artist", L"Composer", L"Folder"};
+        m_columns = {{kTitles[std::min(static_cast<size_t>(kind), std::size(kTitles) - 1)], 0, true},
+                     {L"Count", 60, false, true},
+                     {L"Length", 70, false, true}};
         m_style = ViewStyle::Tiles;
         break;
+    }
     }
     m_selected.assign(m_model.Groups(kind).size(), 0);
     SetFilter({});
 }
 
+// Group names the model makes up (Unknown Year, Unrated, 3 Stars, ...) are translated; tag
+// values are shown as they are.
+std::wstring GroupSource::Name(const Group& g) const {
+    return g.key.empty() || m_kind == GroupKind::Rating ? ui::Tr(g.name) : g.name;
+}
+
 std::wstring GroupSource::Cell(size_t row, size_t column) const {
     const Group& g = At(row);
-    if (column == 0) return g.name;
+    if (column == 0) return Name(g);
     const size_t tail = m_columns.size() - column;  // Count and Length are the last two columns
     if (tail == 2) return std::to_wstring(g.tracks.size());
     if (tail == 1) return ui::FormatTime(g.seconds);
@@ -644,15 +662,15 @@ TileInfo GroupSource::Tile(size_t row) const {
     TileInfo info;
     if (!g.tracks.empty()) info.art = m_model.Tracks()[g.tracks.front()].handle;
     const auto songs = g.tracks.size();
-    const std::wstring count = std::to_wstring(songs) + (songs == 1 ? L" song" : L" songs");
+    const std::wstring count = std::to_wstring(songs) + ui::Tr(songs == 1 ? L" song" : L" songs");
     const long minutes = std::lround(g.seconds / 60.0);
-    const std::wstring length = std::to_wstring(minutes) + (minutes == 1 ? L" minute" : L" minutes");
+    const std::wstring length = std::to_wstring(minutes) + ui::Tr(minutes == 1 ? L" minute" : L" minutes");
     if (m_style == ViewStyle::Icons) {  // cover above: two lines
-        info.lines = {g.name, m_kind == GroupKind::Album ? g.secondary : count, {}};
+        info.lines = {Name(g), m_kind == GroupKind::Album ? g.secondary : count, {}};
     } else if (m_kind == GroupKind::Album) {  // cover beside: three lines
-        info.lines = {g.name, g.secondary, g.year};
+        info.lines = {Name(g), g.secondary, g.year};
     } else {
-        info.lines = {g.name, count, length};
+        info.lines = {Name(g), count, length};
     }
     return info;
 }

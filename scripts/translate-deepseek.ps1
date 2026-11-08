@@ -54,18 +54,24 @@ $patterns = @(
     ':\s*L"((?:[^"\\]|\\.)+)"\);',                 # ternary labels (last)
     'push_back\(\{L"((?:[^"\\]|\\.)+)"',         # menu / crumb / nav items
     'CommandButton\(dc, [^,]+, [^,]+, L"((?:[^"\\]|\\.)+)"',  # command bar labels
-    'fit\(L"((?:[^"\\]|\\.)+)"'                 # command bar widths
+    'fit\(L"((?:[^"\\]|\\.)+)"',                # command bar widths
+    '\?\s*L"((?:[^"\\]|\\.)+)"\s*:'             # ternary labels (made-up group names)
 )
+# Label tables: static const wchar_t* const kName[] = {L"...", L"...", ...};
+$tablePattern = 'wchar_t\*\s*const\s+k\w+\[\]\s*=\s*\{([^}]*)\}'
 Get-ChildItem (Join-Path $root 'src\foo_ui_glasswave') -Recurse -Include *.cpp, *.h | ForEach-Object {
     $text = Get-Content -LiteralPath $_.FullName -Raw
-    foreach ($p in $patterns) {
-        foreach ($m in [regex]::Matches($text, $p)) {
-            $s = $m.Groups[1].Value -replace '\\n', "`n" -replace '\\"', '"' -replace '\\\\', '\'
-            $s = [regex]::Replace($s, '\\u([0-9A-Fa-f]{4})', { param($x) [char][Convert]::ToInt32($x.Groups[1].Value, 16) })
-            if ($s -match '[A-Za-z]' -and $s -notmatch '^[#%\[$]' -and $s.Length -lt 200) {
-                # menu keys are stored without "&" accelerators
-                [void]$keys.Add(($s -replace '&&', "`u{1}" -replace '&', '' -replace "`u{1}", '&'))
-            }
+    $found = @(foreach ($p in $patterns) { [regex]::Matches($text, $p) | ForEach-Object { $_.Groups[1].Value } })
+    $found += @(foreach ($t in [regex]::Matches($text, $tablePattern)) {
+        [regex]::Matches($t.Groups[1].Value, 'L"((?:[^"\\]|\\.)+)"') | ForEach-Object { $_.Groups[1].Value }
+    })
+    foreach ($raw in $found) {
+        $s = $raw -replace '\\n', "`n" -replace '\\"', '"' -replace '\\\\', '\'
+        $s = [regex]::Replace($s, '\\u([0-9A-Fa-f]{4})', { param($x) [char][Convert]::ToInt32($x.Groups[1].Value, 16) })
+        # (all-lowercase words are identifiers such as module names, not labels)
+        if ($s -match '[A-Za-z]' -and $s -cnotmatch '^[a-z0-9_.]+$' -and $s -notmatch '^[#%\[$]' -and $s.Length -lt 200) {
+            # menu keys are stored without "&" accelerators
+            [void]$keys.Add(($s -replace '&&', "`u{1}" -replace '&', '' -replace "`u{1}", '&'))
         }
     }
 }

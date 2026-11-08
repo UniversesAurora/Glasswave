@@ -79,13 +79,21 @@ Updated: 2026-11-08
   format, output device menu, synced lyrics; star ratings (Playback Statistics) and a
   Favorites playlist; taskbar thumbnail buttons and jump list tasks; Win7 popup menus.
   waifu2x needs an explicit tile size (auto garbled wide bitmaps).
+- 2026-11-08 (later): Music categories are configurable like WMP's "Customize navigation
+  pane" (right-click Music): Artist, Album, Genre, Year, Rating, Contributing artist,
+  Composer, Folder; saved in cfg, default Artist/Album/Genre. Smart playlists header opens
+  its own page (Favorites + auto playlists); the Playlists page lists plain playlists only.
+  foobar2000 restores auto playlists after the UI is created, so the nav pane re-sorts on
+  `on_playlist_locked` (each auto playlist arrives as a lock). wmploc has no 192 px auto
+  playlist icon (29572 stops at 32 px; 29772 does not exist), smart lists use 29722.
+  translate-deepseek.ps1 also scans `k...[] = {L"..."}` label tables and ternaries.
 
 ## Next
 
 1. Owner tests everything from 2026-11-08 (list in the session reply); fix what they report.
 2. Glass blur stays the host backdrop + color matrix (legacy accent tried, no gain).
 3. Remaining tuning from the Win7 captures.
-4. Rating column (STARS_PNG), stacked covers for artists, year view.
+4. Stacked covers for artists.
 5. Playlist editing: drag to reorder, drag from library to playlists, rename inline.
 
 ## Known issues
