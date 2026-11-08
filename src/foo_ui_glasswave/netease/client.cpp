@@ -90,7 +90,10 @@ Artist ParseArtist(const json::Object& object) {
     Artist artist;
     artist.id = json::GetInt64(object, L"id");
     artist.name = json::GetString(object, L"name");
-    artist.avatarUrl = json::GetString(object, L"picUrl", json::GetString(object, L"img1v1Url"));
+    artist.avatarUrl = json::GetString(object, L"picUrl",
+                                       json::GetString(object, L"avatar",
+                                                       json::GetString(object, L"img1v1Url",
+                                                                       json::GetString(object, L"cover"))));
     artist.brief = json::GetString(object, L"briefDesc");
     artist.albumCount = json::GetInt(object, L"albumSize");
     artist.songCount = json::GetInt(object, L"musicSize");
@@ -687,7 +690,8 @@ bool Client::GetFollowedArtists(abort_callback& abort, std::vector<Artist>& out,
             error = MessageOf(body, code);
             return false;
         }
-        auto artists = json::GetArray(body, L"artists");
+        auto artists = json::GetArray(body, L"data");  // the helper returns followed artists here
+        if (!artists) artists = json::GetArray(body, L"artists");
         if (!artists) break;
         for (const auto& object : json::Objects(*artists)) {
             Artist artist = ParseArtist(object);
