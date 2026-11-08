@@ -236,9 +236,9 @@ Updated: 2026-11-08
     original theme art. Scrollbar hot/pressed states cross-fade over about 130 ms on a
     16 ms timer that stops once settled; holding an arrow repeats line steps and holding
     the track keeps paging toward the pointer until the thumb reaches it (350 ms delay,
-    then 50 ms), in both the list and the expanded description bar. The locally upscaled
-    scrollbar parts were rejected by the owner and are not installed; the upscaler stays
-    optional.
+    then 50 ms), in both the list and the expanded description bar. The locally generated
+    arrow-glyph upscales are installed in the dev profile; the thumb-gripper upscales were
+    rejected by the owner and are not installed. The upscaler stays optional.
   - Not implemented yet: NetEase full-catalog search UI and a combined All Music browse
     beyond Favorites.
 
