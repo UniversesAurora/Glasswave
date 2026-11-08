@@ -21,6 +21,10 @@ std::wstring CoverUrl(std::wstring url) {
     return url;
 }
 
+std::wstring Wide(const char* text) {
+    return text ? pfc::stringcvt::string_wide_from_utf8(text).get_ptr() : std::wstring();
+}
+
 std::filesystem::path CacheFile(const std::wstring& url) {
     const std::wstring key = url + std::to_wstring(std::hash<std::wstring>{}(url));
     const auto dir = CoverDir();
@@ -80,7 +84,11 @@ public:
             }
         }
         url = CoverUrl(url);
-        if (url.empty()) throw exception_album_art_not_found();
+        if (url.empty()) {
+            Log(L"art: no cover URL for " + Wide(m_path.c_str()));
+            throw exception_album_art_not_found();
+        }
+        Log(L"art: query " + Wide(m_path.c_str()));
 
         const auto cache = CacheFile(url);
         std::vector<BYTE> bytes;
@@ -121,6 +129,7 @@ public:
     album_art_extractor_instance_ptr open(file_ptr filehint, const char* path, abort_callback& abort) override {
         (void)filehint;
         (void)abort;
+        Log(L"art: open " + Wide(path ? path : ""));
         return fb2k::service_new<NcmArtInstance>(std::string(path ? path : ""));
     }
 
