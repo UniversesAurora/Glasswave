@@ -268,6 +268,9 @@ Updated: 2026-11-08
     Playback Statistics and also counts NetEase rows inside playlists. A track that
     starts while a list is on screen updates its count immediately; the row order changes
     only when the page is rebuilt.
+  - Mixed-source lists show a Source column: All Music > Favorites and the two play-history
+    pages already had one; the queue and every playlist now label each row Local Music or
+    NetEase Cloud Music as well, and the column sorts by source.
   - Clicking the NetEase Cloud Music library row (and its breadcrumb) opens the liked
     Favorites page instead of the Created playlists section.
   - The Now Playing, Recently Played and Most Played pages add removal actions to the
