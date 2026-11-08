@@ -93,14 +93,14 @@ Updated: 2026-11-08
   playlist Details, hidden in library Details (album headers already show the cover).
 
 - 2026-11-08 (resume / rows / translations):
-  - Resume now saves the playing item's playlist, index, path, subsong and active state
-    from a UI-thread timer, not from the playback callback; seeking to the saved position
-    is also done from that timer. Both operations bug-check foobar2000 when called from
-    `on_playback_new_track`. The state is saved again on shutdown; a user stop or the end
-    of the list restores paused, a shutdown while playing restores playing.
-  - The Album art column makes Details rows 40 DIP tall (42 DIP wide), so the cover is a
-    real thumbnail; grouped views keep WMP's 22 DIP because the album column already shows
-    the cover.
+  - The custom playback resume was removed. foobar2000's own Playback > Other option
+    ("Save playback state when closing foobar2000 and resume on next startup") was
+    confirmed by the owner to restore the track, position and play/pause state; keeping
+    our cfg_resume* state, UI timer and shutdown hook duplicated it and could race with
+    the core. Resume is now core-owned.
+  - The Album art column makes Details rows 40 DIP tall (42 DIP wide), including grouped
+    Details; Expanded tile keeps WMP's 22 DIP because its album column already shows the
+    cover.
   - Chinese UI: the search placeholder, view menu (Icon / Expanded tile / Details), column
     menu (Choose columns / Reset columns) and every empty-list message are translated.
   - Auto playlists restored after the UI could stay under Playlists when their lock event
