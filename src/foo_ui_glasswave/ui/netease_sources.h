@@ -241,6 +241,7 @@ class NeteasePlaylistSource : public media::ListSource {public:
     metadb_handle_list SelectedItems() const override { return {}; }
     void SetFilter(std::wstring_view filterLower) override;
     void RemovePlaylist(int64_t playlistId);  // uncollected on the collected-playlists page
+    void RenamePlaylist(int64_t playlistId, const std::wstring& name);
 
 private:
     std::vector<netease::Playlist> m_playlists;

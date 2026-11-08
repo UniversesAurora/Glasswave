@@ -23,6 +23,9 @@ public:
     void Shutdown();
     // Called on the main thread when the account/session state changes.
     void SetStateCallback(std::function<void()> callback);
+    // Called on the main thread after a playlist/album cache update that changes covers,
+    // names or counts but does not need the open page to be re-read.
+    void SetLibraryCallback(std::function<void()> callback);
 
     TaskQueue& Tasks() { return m_tasks; }
     Client& Api() { return m_client; }
@@ -82,6 +85,8 @@ public:
     void SetAlbumCollected(int64_t albumId, bool collected, DoneCallback done = {});
     void SetPlaylistSubscribed(int64_t playlistId, bool subscribed, DoneCallback done = {});
     void CreatePlaylist(std::wstring name, CreatePlaylistCallback done);
+    void RenamePlaylist(int64_t playlistId, std::wstring name, DoneCallback done = {});
+    void DeletePlaylist(int64_t playlistId, DoneCallback done = {});
 
     void OnLoginCookie(std::wstring cookie, DoneCallback done = {});
     void Logout();
@@ -94,6 +99,10 @@ private:
 
     void PostMain(std::function<void()> fn);
     void NotifyChanged();
+    void NotifyLibraryChanged();
+    // The service can regenerate a playlist cover a moment after an edit; one delayed
+    // summary read catches it without polling.
+    void SchedulePlaylistSummaryRefresh(int64_t playlistId);
     bool RequireLogin(std::wstring& error) const;
     bool EnsureAccount(abort_callback& abort, int64_t& userId, std::wstring& error);
     void SetAccountLocked(const Account& account);
@@ -111,6 +120,7 @@ private:
 
     mutable std::mutex m_mutex;
     std::function<void()> m_stateCallback;
+    std::function<void()> m_libraryCallback;
     Account m_account;
     std::vector<Playlist> m_createdPlaylists;
     std::vector<Playlist> m_collectedPlaylists;

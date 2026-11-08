@@ -7,6 +7,7 @@
 #include "netease/provider.h"
 
 #include <atomic>
+#include <chrono>
 #include <thread>
 
 namespace glasswave::netease {
@@ -168,11 +169,25 @@ void Provider::SetStateCallback(std::function<void()> callback) {
     m_stateCallback = std::move(callback);
 }
 
+void Provider::SetLibraryCallback(std::function<void()> callback) {
+    std::lock_guard lock(m_mutex);
+    m_libraryCallback = std::move(callback);
+}
+
 void Provider::NotifyChanged() {
     std::function<void()> callback;
     {
         std::lock_guard lock(m_mutex);
         callback = m_stateCallback;
+    }
+    if (callback) PostMain([callback = std::move(callback)] { callback(); });
+}
+
+void Provider::NotifyLibraryChanged() {
+    std::function<void()> callback;
+    {
+        std::lock_guard lock(m_mutex);
+        callback = m_libraryCallback;
     }
     if (callback) PostMain([callback = std::move(callback)] { callback(); });
 }
@@ -240,8 +255,7 @@ bool Provider::ReloadUserPlaylists(abort_callback& abort, int64_t userId, std::w
     return true;
 }
 
-void Provider::ApplyPlaylistInfo(const Playlist& info) {
-    if (!info.id) return;
+void Provider::ApplyPlaylistInfo(const Playlist& info) {    if (!info.id) return;
     Catalog::Get().Put(info);
     std::lock_guard lock(m_mutex);
     auto update = [&info](std::vector<Playlist>& list) {
@@ -260,6 +274,20 @@ void Provider::ApplyPlaylistInfo(const Playlist& info) {
     update(m_createdPlaylists);
     update(m_collectedPlaylists);
     update(m_recommendedPlaylists);
+}
+
+void Provider::SchedulePlaylistSummaryRefresh(int64_t playlistId) {
+    m_tasks.Post([this, playlistId] {
+        if (m_stopping) return;
+        std::this_thread::sleep_for(std::chrono::milliseconds(700));
+        if (m_stopping) return;
+        abort_callback_impl abort;
+        Playlist info;
+        std::wstring error;
+        if (!m_client.GetPlaylistInfo(playlistId, abort, info, error)) return;
+        ApplyPlaylistInfo(info);
+        NotifyLibraryChanged();
+    });
 }
 
 void Provider::RefreshAccount(DoneCallback done) {
@@ -1025,6 +1053,7 @@ void Provider::RemoveFromPlaylist(int64_t playlistId, std::vector<int64_t> songI
                 Playlist info;
                 std::wstring infoError;
                 if (m_client.GetPlaylistInfo(playlistId, abort, info, infoError)) ApplyPlaylistInfo(info);
+                SchedulePlaylistSummaryRefresh(playlistId);
             }
         }
         PostMain([done = std::move(done), ok, error] {
@@ -1055,7 +1084,7 @@ void Provider::SetAlbumCollected(int64_t albumId, bool collected, DoneCallback d
             if (!collected && it != m_collectedAlbums.end())
                 m_collectedAlbums.erase(it);
             else if (collected && it == m_collectedAlbums.end() && album)
-                m_collectedAlbums.push_back(*album);
+                m_collectedAlbums.insert(m_collectedAlbums.begin(), *album);  // newest first, like the service
         }
         PostMain([done = std::move(done), ok, error] {
             if (done) done(ok, ok ? std::wstring() : ErrorOf(error));
@@ -1106,7 +1135,7 @@ void Provider::SetPlaylistSubscribed(int64_t playlistId, bool subscribed, DoneCa
                 auto it = std::find_if(m_collectedPlaylists.begin(), m_collectedPlaylists.end(),
                                        [playlistId](const Playlist& playlist) { return playlist.id == playlistId; });
                 if (subscribed && it == m_collectedPlaylists.end() && known.creatorId != userId)
-                    m_collectedPlaylists.push_back(known);
+                    m_collectedPlaylists.insert(m_collectedPlaylists.begin(), known);  // the service puts new ones first
                 else if (!subscribed && it != m_collectedPlaylists.end())
                     m_collectedPlaylists.erase(it);
             }
@@ -1158,6 +1187,80 @@ void Provider::CreatePlaylist(std::wstring name, CreatePlaylistCallback done) {
             if (done) done(true, id, {});
         });
         NotifyChanged();
+    });
+}
+
+void Provider::RenamePlaylist(int64_t playlistId, std::wstring name, DoneCallback done) {
+    if (name.empty()) {
+        if (done) done(false, L"The playlist name is empty.");
+        return;
+    }
+    std::wstring loginError;
+    if (!RequireLogin(loginError)) {
+        if (done) done(false, loginError);
+        return;
+    }
+    m_tasks.Post([this, playlistId, name = std::move(name), done = std::move(done)]() mutable {
+        if (m_stopping) return;
+        abort_callback_impl abort;
+        std::wstring error;
+        bool ok = false;
+        if (m_service.EnsureStarted(abort, &error)) {
+            ok = m_client.RenamePlaylist(playlistId, name, abort, error);
+            if (ok) {
+                Playlist info;
+                std::wstring infoError;
+                if (m_client.GetPlaylistInfo(playlistId, abort, info, infoError)) {
+                    info.name = name;
+                    ApplyPlaylistInfo(info);
+                } else {
+                    std::lock_guard lock(m_mutex);
+                    auto rename = [&](std::vector<Playlist>& list) {
+                        for (auto& playlist : list)
+                            if (playlist.id == playlistId) playlist.name = name;
+                    };
+                    rename(m_createdPlaylists);
+                    rename(m_collectedPlaylists);
+                    rename(m_recommendedPlaylists);
+                }
+            }
+        }
+        PostMain([done = std::move(done), ok, error] {
+            if (done) done(ok, ok ? std::wstring() : ErrorOf(error));
+        });
+        if (ok) NotifyLibraryChanged();
+    });
+}
+
+void Provider::DeletePlaylist(int64_t playlistId, DoneCallback done) {
+    std::wstring loginError;
+    if (!RequireLogin(loginError)) {
+        if (done) done(false, loginError);
+        return;
+    }
+    m_tasks.Post([this, playlistId, done = std::move(done)] {
+        if (m_stopping) return;
+        abort_callback_impl abort;
+        std::wstring error;
+        bool ok = false;
+        if (m_service.EnsureStarted(abort, &error)) ok = m_client.DeletePlaylist(playlistId, abort, error);
+        if (ok) {
+            std::lock_guard lock(m_mutex);
+            auto remove = [playlistId](std::vector<Playlist>& list) {
+                list.erase(std::remove_if(list.begin(), list.end(),
+                                          [playlistId](const Playlist& playlist) {
+                                              return playlist.id == playlistId;
+                                          }),
+                           list.end());
+            };
+            remove(m_createdPlaylists);
+            remove(m_collectedPlaylists);
+            remove(m_recommendedPlaylists);
+        }
+        PostMain([done = std::move(done), ok, error] {
+            if (done) done(ok, ok ? std::wstring() : ErrorOf(error));
+        });
+        if (ok) NotifyLibraryChanged();
     });
 }
 

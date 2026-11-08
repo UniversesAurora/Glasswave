@@ -206,8 +206,16 @@ Updated: 2026-11-08
     top song, and collecting an album/playlist or following an artist no longer reloads the
     song list. Jump-to-playing now decides visibility from the track's row, not its group
     header. Playlist tiles drop both decoded art copies when a cover changes.
-  - Not implemented yet: NetEase full-catalog search UI, a combined All Music browse beyond
-    Favorites, and playlist rename/delete.
+  - The Refresh command appears only on NetEase pages and is hidden on the recommended
+    section (a daily set), where re-reading changes nothing; F5 follows the same rule. Its
+    label is centred and the button is sized to the text. Empty-list and detail-header
+    context menus also offer Refresh. Created playlists can be renamed and deleted from the
+    playlist page, its tiles and the navigation. New collected playlists and albums are
+    inserted at the top of the cached lists, matching the service order. After a removal a
+    single delayed summary read catches the server's regenerated cover and count without
+    reloading the page.
+  - Not implemented yet: NetEase full-catalog search UI and a combined All Music browse
+    beyond Favorites.
 
 ## Next
 

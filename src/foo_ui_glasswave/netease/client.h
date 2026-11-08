@@ -83,6 +83,8 @@ public:
                             std::wstring& error);
     bool SetAlbumCollect(int64_t albumId, bool collect, abort_callback& abort, std::wstring& error);
     bool CreatePlaylist(std::wstring_view name, abort_callback& abort, int64_t& id, std::wstring& error);
+    bool RenamePlaylist(int64_t playlistId, std::wstring_view name, abort_callback& abort, std::wstring& error);
+    bool DeletePlaylist(int64_t playlistId, abort_callback& abort, std::wstring& error);
 
 private:
     bool Request(std::wstring_view path, const std::vector<std::pair<std::wstring, std::wstring>>& params,

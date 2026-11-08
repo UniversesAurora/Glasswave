@@ -754,4 +754,13 @@ void NeteasePlaylistSource::RemovePlaylist(int64_t playlistId) {
     SetFilter(m_filter);
 }
 
+void NeteasePlaylistSource::RenamePlaylist(int64_t playlistId, const std::wstring& name) {
+    for (auto& playlist : m_playlists)
+        if (playlist.id == playlistId) {
+            playlist.name = name;
+            SetFilter(m_filter);
+            return;
+        }
+}
+
 }  // namespace glasswave::ui

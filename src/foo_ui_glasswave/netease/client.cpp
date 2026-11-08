@@ -919,6 +919,41 @@ bool Client::SetPlaylistSubscribed(int64_t playlistId, bool subscribed, abort_ca
     return true;
 }
 
+bool Client::RenamePlaylist(int64_t playlistId, std::wstring_view name, abort_callback& abort,
+                            std::wstring& error) {
+    json::Object body;
+    int code = 0;
+    if (!Request(L"/playlist/name/update",
+                 {{L"id", std::to_wstring(playlistId)}, {L"name", std::wstring(name)}}, true, abort, body, code,
+                 error))
+        return false;
+    if (code == 301) {
+        error = L"Please sign in to NetEase Cloud Music.";
+        return false;
+    }
+    if (code != 200) {
+        error = MessageOf(body, code);
+        return false;
+    }
+    return true;
+}
+
+bool Client::DeletePlaylist(int64_t playlistId, abort_callback& abort, std::wstring& error) {
+    json::Object body;
+    int code = 0;
+    if (!Request(L"/playlist/delete", {{L"id", std::to_wstring(playlistId)}}, true, abort, body, code, error))
+        return false;
+    if (code == 301) {
+        error = L"Please sign in to NetEase Cloud Music.";
+        return false;
+    }
+    if (code != 200) {
+        error = MessageOf(body, code);
+        return false;
+    }
+    return true;
+}
+
 bool Client::CreatePlaylist(std::wstring_view name, abort_callback& abort, int64_t& id, std::wstring& error) {
     id = 0;
     json::Object body;

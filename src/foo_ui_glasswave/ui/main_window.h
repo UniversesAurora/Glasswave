@@ -232,6 +232,10 @@ private:
     void UpdateFavoriteState();  // taskbar Favorite button for the playing song
     void ApplyLanguage(Language language);
     void RefreshCurrentPage();  // art + account lists + the current page re-read from the service
+    bool CanRefreshPage() const;  // pages whose data can be re-read meaningfully
+    void OnNeteaseLibraryChanged();  // covers/names changed; no page reload
+    void RenameNeteasePlaylist(int64_t id, std::wstring name);
+    void DeleteNeteasePlaylist(int64_t id, std::wstring name, View::NeteaseScope scope);
     void SetVolumeFromX(int x);
     float VolumeThumbX() const;  // centre of the volume thumb in client pixels
     void ShowVolumeTip(float thumbX);  // Win7 tooltip bubble with the volume while dragging
