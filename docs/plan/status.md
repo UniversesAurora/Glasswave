@@ -155,6 +155,13 @@ Updated: 2026-11-08
   - Navigating away and back restores the page's previous top row: the window remembers
     the top row per view identity and replays it when the source is set, including after an
     asynchronous page replaces its loading placeholder.
+  - The NetEase liked, playlist and album pages keep their last song list. Returning to
+    them shows those rows immediately while the fresh fetch runs; when it arrives the rows
+    are swapped in without losing the selection or the top song. The loading text appears
+    only for a page that has never been loaded.
+  - Song context menus keep View artist and View album together at the top; the extra
+    divider between the artist group and the actions is gone, and page-specific removals
+    (Now Playing / Recently / Most Played) moved below the add actions.
   - NetEase song lists and the combined favorites share SongTableSource (columns, sorting,
     filtering, selection, expanded tiles, context menus); both offer Details and expanded
     tiles, with a bounded LFU cover cache.
