@@ -251,7 +251,9 @@ Updated: 2026-11-08
     history) also offer Add to playlist, a submenu of the regular foobar2000 playlists;
     those accept local and ncm:// tracks alike. NetEase rows keep their separate Add to
     NetEase playlist submenu, and the playlist being viewed is omitted from its own copy
-    target.
+    target. The built-in Favorites playlist is not a copy target: songs use the top-level
+    Add to Favorites action, which routes to the local playlist or the NetEase liked list,
+    and whole playlists or albums are never added to Favorites.
   - Playlists and smart playlists separated: a foobar2000 playlist holds local and ncm://
     tracks alike, so regular playlists live under All Music; smart playlists are auto
     playlists over the Media Library (which never contains NetEase tracks), so they live
