@@ -148,7 +148,13 @@ Updated: 2026-11-08
     sorted and gains a sortable Source column. The NetEase liked page re-reads /likelist on
     every entry (the authoritative like state) and uses the liked playlist detail only for
     its order and metadata, so likes and unlikes made in the official client appear without
-    a restart; likes the detail has not picked up yet are appended.
+    a restart; likes the detail has not picked up yet are appended. Liking or unliking in
+    the app no longer rebuilds the open page: the two Favorites views drop the unliked rows
+    in place (keeping the top song), and other song tables only refresh their hidden
+    favorite flag.
+  - Navigating away and back restores the page's previous top row: the window remembers
+    the top row per view identity and replays it when the source is set, including after an
+    asynchronous page replaces its loading placeholder.
   - NetEase song lists and the combined favorites share SongTableSource (columns, sorting,
     filtering, selection, expanded tiles, context menus); both offer Details and expanded
     tiles, with a bounded LFU cover cache.
