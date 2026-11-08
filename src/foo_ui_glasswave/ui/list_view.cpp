@@ -170,8 +170,9 @@ ListView::ListView(const wuc::ContainerVisual& parent) {
     m_root.Children().InsertAtTop(m_header);
     m_root.Children().InsertAtTop(m_scroll);
     parent.Children().InsertAtTop(m_root);
+    // A plain list draws covers only in its Album art column.
     m_artToken = ArtCache::Get().Subscribe([this] {
-        if (m_mode != Mode::Plain) PaintRows();
+        if (m_mode != Mode::Plain || ArtColumnVisible()) PaintRows();
     });
 }
 
@@ -1126,7 +1127,10 @@ ListView::Hit ListView::HitAt(POINT pt) const {
     }
     hit.part = Part::Empty;
     if (!m_source) return hit;
-    const size_t line = LineAtDip(ContentPoint(pt).y);
+    // Below the last grouped line is empty space; LineAtDip would clamp it to the last row.
+    const float contentY = ContentPoint(pt).y;
+    if (m_mode == Mode::Grouped && !m_lineTop.empty() && contentY >= m_lineTop.back()) return hit;
+    const size_t line = LineAtDip(contentY);
     switch (m_mode) {
     case Mode::Tiles: {
         const size_t cols = TileColumns();
