@@ -6,6 +6,7 @@
 #include "netease/handle.h"
 #include "netease/provider.h"
 
+#include <ctime>
 #include <cwctype>
 
 namespace glasswave::ui {
@@ -31,6 +32,20 @@ std::wstring LengthText(int milliseconds) {
     wchar_t buffer[16];
     swprintf_s(buffer, L"%d:%02d", total / 60, total % 60);
     return buffer;
+}
+
+std::wstring AlbumYear(int64_t publishTimeMs) {
+    if (publishTimeMs <= 0) return {};
+    const time_t seconds = static_cast<time_t>(publishTimeMs / 1000);
+    std::tm local{};
+    if (localtime_s(&local, &seconds) != 0) return {};
+    return std::to_wstring(local.tm_year + 1900);
+}
+
+std::wstring AlbumSubtitle(const netease::Album& album) {
+    const std::wstring count = std::to_wstring(album.trackCount) + L" " + Tr(L"songs");
+    const std::wstring year = AlbumYear(album.publishTime);
+    return year.empty() ? count : year + L" · " + count;
 }
 
 std::wstring ArtistText(const netease::Song& song) { return netease::JoinArtists(song.artists); }
@@ -397,6 +412,92 @@ NeteaseSongSource::NeteaseSongSource(std::vector<netease::Song> songs, std::wstr
 
 AllFavoritesSource::AllFavoritesSource(std::vector<metadb_handle_ptr> local, std::vector<netease::Song> remote)
     : SongTableSource(FavoriteRows(local, remote), true, L"No favorites.", L"all-favorites") {}
+
+// ---- artist page ------------------------------------------------------------------------
+
+NeteaseArtistSource::NeteaseArtistSource(std::wstring artistName, std::vector<netease::Album> albums,
+                                         std::wstring emptyText, Open open)
+    : m_artistName(std::move(artistName)), m_albums(std::move(albums)), m_emptyText(std::move(emptyText)),
+      m_open(std::move(open)) {
+    m_columns = {{L"Album", 0, true}, {L"Release year", 80, false, true}, {L"Songs", 60, false, true}};
+    SetFilter({});
+}
+
+std::wstring NeteaseArtistSource::Cell(size_t row, size_t column) const {
+    if (row >= m_rows.size() || column > 2) return {};
+    const size_t index = m_rows[row];
+    if (!index) return column == 0 ? Tr(L"Hot songs") : std::wstring();
+    const auto& album = m_albums[index - 1];
+    switch (column) {
+    case 0: return album.name;
+    case 1: return AlbumYear(album.publishTime);
+    case 2: return std::to_wstring(album.trackCount);
+    default: return {};
+    }
+}
+
+media::TileInfo NeteaseArtistSource::Tile(size_t row) const {
+    media::TileInfo tile;
+    if (row >= m_rows.size()) return tile;
+    const size_t index = m_rows[row];
+    if (!index) {
+        tile.icon = 29522;
+        tile.lines = {Tr(L"Hot songs"), m_artistName};
+        return tile;
+    }
+    const auto& album = m_albums[index - 1];
+    tile.art = netease::Catalog::Get().AlbumHandle(album.id);
+    tile.lines = {album.name, AlbumSubtitle(album)};
+    return tile;
+}
+
+void NeteaseArtistSource::SelectOnly(size_t row) {
+    std::fill(m_selected.begin(), m_selected.end(), uint8_t{0});
+    if (row < m_rows.size()) m_selected[row] = 1;
+    m_focus = row;
+}
+
+void NeteaseArtistSource::Toggle(size_t row) {
+    if (row < m_selected.size()) m_selected[row] ^= 1;
+    m_focus = row;
+}
+
+void NeteaseArtistSource::SelectRange(size_t a, size_t b, bool keepOthers) {
+    if (!keepOthers) std::fill(m_selected.begin(), m_selected.end(), uint8_t{0});
+    if (a > b) std::swap(a, b);
+    for (size_t r = a; r <= b && r < m_selected.size(); ++r) m_selected[r] = 1;
+}
+
+void NeteaseArtistSource::SelectAll() { std::fill(m_selected.begin(), m_selected.end(), uint8_t{1}); }
+
+void NeteaseArtistSource::SetSelection(const std::vector<size_t>& rows) {
+    std::fill(m_selected.begin(), m_selected.end(), uint8_t{0});
+    for (size_t row : rows)
+        if (row < m_selected.size()) m_selected[row] = 1;
+}
+
+void NeteaseArtistSource::Activate(size_t row) {
+    if (row >= m_rows.size() || !m_open) return;
+    const size_t index = m_rows[row];
+    if (!index) {
+        m_open(true, 0, m_artistName);
+        return;
+    }
+    const auto& album = m_albums[index - 1];
+    m_open(false, album.id, album.name);
+}
+
+void NeteaseArtistSource::ContextMenu(HWND, POINT) {}
+
+void NeteaseArtistSource::SetFilter(std::wstring_view filterLower) {
+    m_filter.assign(filterLower);
+    m_rows.clear();
+    m_rows.push_back(0);  // the Hot songs tile is always offered
+    for (size_t i = 0; i < m_albums.size(); ++i)
+        if (m_filter.empty() || Contains(Lower(m_albums[i].name), m_filter)) m_rows.push_back(i + 1);
+    m_selected.assign(m_rows.size(), 0);
+    m_focus = SIZE_MAX;
+}
 
 // ---- playlists --------------------------------------------------------------------------
 

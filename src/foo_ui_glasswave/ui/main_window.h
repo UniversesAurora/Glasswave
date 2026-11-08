@@ -59,7 +59,8 @@ private:
         enum class NeteaseScope { Created, Collected, Recommended };
         enum class Kind {
             Playlist, AllMusic, Category, Group, Playlists, SmartPlaylists,
-            AllFavorites, NeteasePlaylists, NeteasePlaylist, NeteaseLiked, Search
+            AllFavorites, NeteasePlaylists, NeteasePlaylist, NeteaseLiked,
+            NeteaseArtist, NeteaseAlbum, NeteaseArtistSongs, Search
         };
         Library library = Library::Local;
         Kind kind = Kind::AllMusic;
@@ -120,7 +121,12 @@ private:
     std::vector<metadb_handle_ptr> LocalFavoriteHandles() const;
     void ShowNeteaseSongs(const View& view, std::vector<netease::Song> songs, std::wstring error);
     void ShowNeteasePlaylists(const View& view, std::vector<netease::Playlist> playlists, std::wstring error);
+    void ShowNeteaseArtist(const View& view, netease::Artist artist, std::vector<netease::Album> albums,
+                           std::wstring error);
     void OpenNeteasePlaylist(int64_t id, std::wstring name);
+    void OpenNeteaseArtist(int64_t id, std::wstring name);
+    void OpenNeteaseAlbum(int64_t id, std::wstring name);
+    void OpenNeteaseArtistSongs(int64_t artistId, std::wstring name);
     int ViewStyles() const;  // view options the current source offers
     void OnNavItem(const NavPane::Item& item);
     void AddDroppedFiles(IDataObject* data);

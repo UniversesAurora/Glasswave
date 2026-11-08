@@ -1450,6 +1450,13 @@ void MainWindow::BuildCrumbs() {
             m_crumbs.push_back({label, go(m_view), neteaseMenu});
         } else if (m_view.kind == View::Kind::NeteasePlaylist) {
             m_crumbs.push_back({m_view.name.empty() ? L"Playlist" : m_view.name, go(m_view), {}});
+        } else if (m_view.kind == View::Kind::NeteaseArtist) {
+            m_crumbs.push_back({m_view.name.empty() ? L"Artist" : m_view.name, go(m_view), {}});
+        } else if (m_view.kind == View::Kind::NeteaseAlbum) {
+            m_crumbs.push_back({m_view.name.empty() ? L"Album" : m_view.name, go(m_view), {}});
+        } else if (m_view.kind == View::Kind::NeteaseArtistSongs) {
+            const std::wstring label = Tr(L"Hot songs");
+            m_crumbs.push_back({m_view.name.empty() ? label : m_view.name + L" · " + label, go(m_view), {}});
         } else if (m_view.kind == View::Kind::NeteaseLiked) {
             m_crumbs.push_back({L"Favorites", go(m_view), neteaseMenu});
         } else if (m_view.kind == View::Kind::Search) {
@@ -1697,6 +1704,39 @@ void MainWindow::Navigate(const View& requested, bool push) {
             });
         break;
     }
+    case View::Kind::NeteaseArtist: {
+        source = std::make_unique<ui::NeteaseSongSource>(std::vector<netease::Song>{}, L"Loading artist...");
+        m_nav->Select(NavPane::Target::None, 0);
+        const int64_t id = static_cast<int64_t>(_wcstoi64(view.remoteId.c_str(), nullptr, 10));
+        const View requestedView = view;
+        netease::Provider::Get().FetchArtist(
+            id, [this, requestedView](netease::Provider::ArtistPage page, std::wstring error) {
+                ShowNeteaseArtist(requestedView, std::move(page.info), std::move(page.albums), std::move(error));
+            });
+        break;
+    }
+    case View::Kind::NeteaseAlbum: {
+        source = std::make_unique<ui::NeteaseSongSource>(std::vector<netease::Song>{}, L"Loading album...");
+        m_nav->Select(NavPane::Target::None, 0);
+        const int64_t id = static_cast<int64_t>(_wcstoi64(view.remoteId.c_str(), nullptr, 10));
+        const View requestedView = view;
+        netease::Provider::Get().FetchAlbumSongs(
+            id, [this, requestedView](std::vector<netease::Song> songs, std::wstring error) {
+                ShowNeteaseSongs(requestedView, std::move(songs), std::move(error));
+            });
+        break;
+    }
+    case View::Kind::NeteaseArtistSongs: {
+        source = std::make_unique<ui::NeteaseSongSource>(std::vector<netease::Song>{}, L"Loading hot songs...");
+        m_nav->Select(NavPane::Target::None, 0);
+        const int64_t id = static_cast<int64_t>(_wcstoi64(view.remoteId.c_str(), nullptr, 10));
+        const View requestedView = view;
+        netease::Provider::Get().FetchArtistTopSongs(
+            id, [this, requestedView](std::vector<netease::Song> songs, std::wstring error) {
+                ShowNeteaseSongs(requestedView, std::move(songs), std::move(error));
+            });
+        break;
+    }
     case View::Kind::Playlist: {
         pfc::string8 name;
         pm->playlist_get_name(view.playlist, name);
@@ -1852,6 +1892,65 @@ void MainWindow::OpenNeteasePlaylist(int64_t id, std::wstring name) {
     Navigate(view, true);
 }
 
+void MainWindow::OpenNeteaseArtist(int64_t id, std::wstring name) {
+    View view;
+    view.library = View::Library::Netease;
+    view.kind = View::Kind::NeteaseArtist;
+    view.remoteId = std::to_wstring(id);
+    view.name = std::move(name);
+    Navigate(view, true);
+}
+
+void MainWindow::OpenNeteaseAlbum(int64_t id, std::wstring name) {
+    View view;
+    view.library = View::Library::Netease;
+    view.kind = View::Kind::NeteaseAlbum;
+    view.remoteId = std::to_wstring(id);
+    view.name = std::move(name);
+    Navigate(view, true);
+}
+
+void MainWindow::OpenNeteaseArtistSongs(int64_t artistId, std::wstring name) {
+    View view;
+    view.library = View::Library::Netease;
+    view.kind = View::Kind::NeteaseArtistSongs;
+    view.remoteId = std::to_wstring(artistId);
+    view.name = std::move(name);
+    Navigate(view, true);
+}
+
+void MainWindow::ShowNeteaseArtist(const View& view, netease::Artist artist, std::vector<netease::Album> albums,
+                                   std::wstring error) {
+    if (m_view.kind != view.kind || m_view.library != view.library || m_view.remoteId != view.remoteId) return;
+    if (artist.name.empty()) artist.name = view.name;
+    if (!artist.name.empty()) {
+        m_view.name = artist.name;
+        if (m_historyPos < m_history.size() && m_history[m_historyPos].kind == View::Kind::NeteaseArtist &&
+            m_history[m_historyPos].remoteId == view.remoteId)
+            m_history[m_historyPos].name = artist.name;
+    }
+    if (!artist.id) {  // the profile request failed: show the message in the list
+        m_source = std::make_unique<ui::NeteaseSongSource>(
+            std::vector<netease::Song>{}, error.empty() ? L"Cannot load this artist." : std::move(error));
+        m_list->SetSource(m_source.get(), false);
+        RepaintBreadcrumb();
+        return;
+    }
+    const int64_t artistId = artist.id;
+    auto source = std::make_unique<ui::NeteaseArtistSource>(
+        artist.name, std::move(albums), error.empty() ? L"No albums." : std::move(error),
+        [this, artistId](bool hotSongs, int64_t id, std::wstring name) {
+            if (hotSongs)
+                OpenNeteaseArtistSongs(artistId, std::move(name));
+            else
+                OpenNeteaseAlbum(id, std::move(name));
+        });
+    if (!m_filter.empty()) source->SetFilter(m_filter);
+    m_source = std::move(source);
+    m_list->SetSource(m_source.get(), false);
+    RepaintBreadcrumb();
+}
+
 void MainWindow::ShowNeteaseLogin() {
     ui::ShowNeteaseLogin(m_hwnd, [this] { OnNeteaseLoginChanged(); });
 }
@@ -1880,7 +1979,10 @@ cfg_var_modern::cfg_int* MainWindow::ViewStyleSetting(const View& view) {
     case View::Kind::NeteasePlaylists: return &cfg_viewNcmPlaylists;
     case View::Kind::NeteasePlaylist:
     case View::Kind::NeteaseLiked:
+    case View::Kind::NeteaseAlbum:
+    case View::Kind::NeteaseArtistSongs:
     case View::Kind::Search: return &cfg_viewNcmSongs;
+    case View::Kind::NeteaseArtist: return nullptr;
     case View::Kind::Category:
         switch (view.group) {
         case media::GroupKind::Album: return &cfg_viewAlbums;
