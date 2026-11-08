@@ -13,6 +13,7 @@ struct HttpResponse {
     unsigned long status = 0;
     std::string body;
     std::wstring contentType;
+    std::vector<std::wstring> setCookies;
     std::wstring error;
 
     bool ok() const { return error.empty() && status >= 200 && status < 300; }

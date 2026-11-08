@@ -159,7 +159,8 @@ Playlist ParsePlaylist(const json::Object& object) {
 }
 
 bool Client::Request(std::wstring_view path, const std::vector<std::pair<std::wstring, std::wstring>>& params,
-                     bool post, abort_callback& abort, json::Object& out, int& apiCode, std::wstring& error) {
+                     bool post, abort_callback& abort, json::Object& out, int& apiCode, std::wstring& error,
+                     std::vector<std::wstring>* responseCookies) {
     const std::string base = m_service.BaseUrl();
     if (base.empty()) {
         error = L"The NetEase service is not running.";
@@ -196,6 +197,7 @@ bool Client::Request(std::wstring_view path, const std::vector<std::pair<std::ws
                              .count();
     LogHttp(method, path, response.status, elapsed);
 
+    if (responseCookies) *responseCookies = response.setCookies;
     if (response.status == 0) {
         error = response.error.empty() ? L"Cannot reach the NetEase service." : response.error;
         return false;
@@ -265,7 +267,9 @@ QrStatus Client::QrCheck(std::wstring_view key, abort_callback& abort) {
     json::Object body;
     int code = 0;
     std::wstring error;
-    if (!Request(L"/login/qr/check", {{L"key", std::wstring(key)}}, false, abort, body, code, error)) {
+    std::vector<std::wstring> responseCookies;
+    if (!Request(L"/login/qr/check", {{L"key", std::wstring(key)}}, false, abort, body, code, error,
+                 &responseCookies)) {
         status.message = error;
         return status;
     }
@@ -281,7 +285,16 @@ QrStatus Client::QrCheck(std::wstring_view key, abort_callback& abort) {
             }
         }
     }
+    for (const auto& cookie : responseCookies) {
+        if (!rawCookie.empty()) rawCookie += L"; ";
+        rawCookie += cookie;
+    }
     status.cookie = NormalizeCookie(rawCookie);
+    if (code == 803 || !status.cookie.empty()) {
+        Log(L"login: qr check code " + std::to_wstring(code) + L", json/header cookies " +
+            std::to_wstring(responseCookies.size()) + L", normalized " + std::to_wstring(status.cookie.size()) +
+            (CookieHasMusicU(status.cookie) ? L", MUSIC_U ok" : L", MUSIC_U missing"));
+    }
     return status;
 }
 

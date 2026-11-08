@@ -66,7 +66,8 @@ public:
 
 private:
     bool Request(std::wstring_view path, const std::vector<std::pair<std::wstring, std::wstring>>& params,
-                 bool post, abort_callback& abort, json::Object& out, int& apiCode, std::wstring& error);
+                 bool post, abort_callback& abort, json::Object& out, int& apiCode, std::wstring& error,
+                 std::vector<std::wstring>* responseCookies = nullptr);
 
     ServiceManager& m_service;
 };

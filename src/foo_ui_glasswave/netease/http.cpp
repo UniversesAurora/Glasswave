@@ -3,6 +3,8 @@
 
 #include <winhttp.h>
 
+#include <cwchar>
+
 namespace glasswave::netease {
 
 namespace {
@@ -129,6 +131,29 @@ HttpResponse SendHttp(std::wstring_view url, const HttpOptions& options, abort_c
     if (!QueryNumber(request.get(), WINHTTP_QUERY_STATUS_CODE, result.status))
         result.error = L"Cannot read the HTTP status";
     result.contentType = QueryString(request.get(), WINHTTP_QUERY_CONTENT_TYPE);
+
+    DWORD rawSize = 0;
+    WinHttpQueryHeaders(request.get(), WINHTTP_QUERY_RAW_HEADERS_CRLF, WINHTTP_HEADER_NAME_BY_INDEX,
+                        WINHTTP_NO_OUTPUT_BUFFER, &rawSize, WINHTTP_NO_HEADER_INDEX);
+    if (rawSize > sizeof(wchar_t)) {
+        std::wstring raw(rawSize / sizeof(wchar_t), L'\0');
+        if (WinHttpQueryHeaders(request.get(), WINHTTP_QUERY_RAW_HEADERS_CRLF, WINHTTP_HEADER_NAME_BY_INDEX,
+                                raw.data(), &rawSize, WINHTTP_NO_HEADER_INDEX)) {
+            size_t lineStart = 0;
+            while (lineStart < raw.size()) {
+                const size_t lineEnd = raw.find(L"\r\n", lineStart);
+                const std::wstring line =
+                    raw.substr(lineStart, lineEnd == std::wstring::npos ? std::wstring::npos : lineEnd - lineStart);
+                const std::wstring prefix = L"set-cookie:";
+                if (line.size() > prefix.size() &&
+                    _wcsnicmp(line.c_str(), prefix.c_str(), prefix.size()) == 0) {
+                    result.setCookies.push_back(line.substr(prefix.size()));
+                }
+                if (lineEnd == std::wstring::npos) break;
+                lineStart = lineEnd + 2;
+            }
+        }
+    }
 
     DWORD total = 0;
     QueryNumber(request.get(), WINHTTP_QUERY_CONTENT_LENGTH, total);
