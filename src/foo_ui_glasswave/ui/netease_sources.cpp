@@ -468,9 +468,13 @@ AllFavoritesSource::AllFavoritesSource(std::vector<metadb_handle_ptr> local, std
 // ---- artist page ------------------------------------------------------------------------
 
 NeteaseAlbumGridSource::NeteaseAlbumGridSource(std::wstring hotArtist, std::vector<netease::Album> albums,
-                                               std::wstring emptyText, Open open, bool expandedStyle)
-    : m_artistName(std::move(hotArtist)), m_albums(std::move(albums)), m_emptyText(std::move(emptyText)),
-      m_open(std::move(open)), m_expandedStyle(expandedStyle) {
+                                               std::wstring emptyText, Open open, bool expandedStyle, Menu menu)
+    : m_artistName(std::move(hotArtist)),
+      m_albums(std::move(albums)),
+      m_emptyText(std::move(emptyText)),
+      m_open(std::move(open)),
+      m_menu(std::move(menu)),
+      m_expandedStyle(expandedStyle) {
     m_columns = {{L"Album", 0, true}, {L"Release year", 80, false, true}, {L"Songs", 60, false, true}};
     SetFilter({});
 }
@@ -539,7 +543,20 @@ void NeteaseAlbumGridSource::Activate(size_t row) {
     m_open(false, album.id, album.name);
 }
 
-void NeteaseAlbumGridSource::ContextMenu(HWND, POINT) {}
+void NeteaseAlbumGridSource::ContextMenu(HWND, POINT screen) {
+    if (!m_menu) return;
+    if (m_focus >= m_rows.size()) {
+        m_menu(screen, false, 0, {});
+        return;
+    }
+    const size_t index = m_rows[m_focus];
+    if (!index) {
+        m_menu(screen, true, 0, m_artistName);
+        return;
+    }
+    const auto& album = m_albums[index - 1];
+    m_menu(screen, false, album.id, album.name);
+}
 
 void NeteaseAlbumGridSource::SetFilter(std::wstring_view filterLower) {
     m_filter.assign(filterLower);
@@ -560,8 +577,9 @@ void NeteaseAlbumGridSource::AppendAlbums(std::vector<netease::Album> albums) {
 // ---- followed artists -------------------------------------------------------------------
 
 NeteaseArtistListSource::NeteaseArtistListSource(std::vector<netease::Artist> artists, std::wstring emptyText,
-                                                 Open open)
-    : m_artists(std::move(artists)), m_emptyText(std::move(emptyText)), m_open(std::move(open)) {
+                                                 Open open, Menu menu)
+    : m_artists(std::move(artists)), m_emptyText(std::move(emptyText)), m_open(std::move(open)),
+      m_menu(std::move(menu)) {
     m_columns = {{L"Artist", 0, true}, {L"Albums", 70, false, true}, {L"Songs", 70, false, true}};
     SetFilter({});
 }
@@ -617,7 +635,11 @@ void NeteaseArtistListSource::Activate(size_t row) {
     m_open(artist.id, artist.name);
 }
 
-void NeteaseArtistListSource::ContextMenu(HWND, POINT) {}
+void NeteaseArtistListSource::ContextMenu(HWND, POINT screen) {
+    if (!m_menu || m_focus >= m_rows.size()) return;
+    const auto& artist = m_artists[m_rows[m_focus]];
+    m_menu(screen, artist.id, artist.name);
+}
 
 void NeteaseArtistListSource::SetFilter(std::wstring_view filterLower) {
     m_filter.assign(filterLower);

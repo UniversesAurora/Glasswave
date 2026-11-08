@@ -33,4 +33,12 @@ struct ArtistLink {
 };
 void SetArtistLinkProvider(std::function<std::vector<ArtistLink>(metadb_handle_list_cref)> provider);
 
+// Extra context-menu commands supplied by the main window for the selected items.
+struct ContextAction {
+    std::wstring label;  // empty = separator
+    std::function<void()> run;
+    std::vector<ContextAction> children;  // non-empty: a submenu
+};
+void SetContextActionProvider(std::function<std::vector<ContextAction>(metadb_handle_list_cref)> provider);
+
 }  // namespace glasswave::ui

@@ -73,6 +73,9 @@ public:
     bool SetLike(int64_t id, bool like, abort_callback& abort, std::wstring& error);
     bool AddToPlaylist(int64_t playlistId, const std::vector<int64_t>& ids, abort_callback& abort,
                        std::wstring& error);
+    bool RemoveFromPlaylist(int64_t playlistId, const std::vector<int64_t>& ids, abort_callback& abort,
+                            std::wstring& error);
+    bool SetAlbumCollect(int64_t albumId, bool collect, abort_callback& abort, std::wstring& error);
     bool CreatePlaylist(std::wstring_view name, abort_callback& abort, int64_t& id, std::wstring& error);
 
 private:

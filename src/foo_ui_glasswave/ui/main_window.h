@@ -164,6 +164,10 @@ private:
     void ToggleArtistFollow();
     // Context-menu "Go to artist" destinations for the first item (NetEase or local).
     std::vector<ArtistLink> BuildArtistLinks(metadb_handle_list_cref items);
+    std::vector<ContextAction> BuildContextActions(metadb_handle_list_cref items);
+    void ShowArtistPageMenu(POINT screen, bool hotSongs, int64_t albumId, std::wstring name);
+    void ShowArtistTileMenu(POINT screen, int64_t artistId, std::wstring name);
+    void ShowAlbumGridMenu(POINT screen, int64_t albumId, std::wstring name);
     int ViewStyles() const;  // view options the current source offers
     void OnNavItem(const NavPane::Item& item);
     void AddDroppedFiles(IDataObject* data);

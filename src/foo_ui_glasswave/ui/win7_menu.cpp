@@ -365,6 +365,36 @@ namespace {
 enum : UINT { kPlay = 0x8001, kPlayNext, kAddToQueue, kFavoriteAdd, kFavoriteRemove, kClearQueue, kArtistBase = 0x8100 };
 
 std::function<std::vector<ArtistLink>(metadb_handle_list_cref)> g_artistLinks;
+std::function<std::vector<ContextAction>(metadb_handle_list_cref)> g_contextActions;
+
+std::vector<ContextAction> ContextActionsFor(metadb_handle_list_cref items) {
+    if (!g_contextActions || items.get_count() == 0) return {};
+    return g_contextActions(items);
+}
+
+void AppendContextActions(HMENU menu, const std::vector<ContextAction>& actions, UINT& next,
+                          std::vector<std::function<void()>>& flat) {
+    for (const auto& action : actions) {
+        if (action.label.empty()) {
+            AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+        } else if (!action.children.empty()) {
+            HMENU sub = CreatePopupMenu();
+            AppendContextActions(sub, action.children, next, flat);
+            AppendMenuW(menu, MF_POPUP | MF_STRING, reinterpret_cast<UINT_PTR>(sub), action.label.c_str());
+        } else {
+            const UINT id = next++;
+            flat.push_back(action.run);
+            AppendMenuW(menu, MF_STRING, id, action.label.c_str());
+        }
+    }
+}
+
+bool RunContextAction(UINT cmd, UINT base, UINT next, const std::vector<std::function<void()>>& flat) {
+    if (cmd < base || cmd >= next) return false;
+    const size_t index = cmd - base;
+    if (index < flat.size() && flat[index]) flat[index]();
+    return true;
+}
 
 std::vector<ArtistLink> ArtistLinksFor(metadb_handle_list_cref items) {
     if (!g_artistLinks || items.get_count() == 0) return {};
@@ -418,19 +448,32 @@ void SetArtistLinkProvider(std::function<std::vector<ArtistLink>(metadb_handle_l
     g_artistLinks = std::move(provider);
 }
 
+void SetContextActionProvider(std::function<std::vector<ContextAction>(metadb_handle_list_cref)> provider) {
+    g_contextActions = std::move(provider);
+}
+
 void RunContextMenu(HWND owner, metadb_handle_list_cref items, POINT pt) {
     if (items.get_count() == 0) return;
     auto cm = contextmenu_manager::get();
     cm->init_context(items, contextmenu_manager::flag_show_shortcuts);
     constexpr int kBase = 1;
+    constexpr UINT kActionBase = 0x8200;
     HMENU menu = CreatePopupMenu();
     AppendQueueCommands(menu, items, false);
     const auto artists = ArtistLinksFor(items);
     AppendArtistCommands(menu, artists);
+    const auto actions = ContextActionsFor(items);
+    UINT nextAction = kActionBase;
+    std::vector<std::function<void()>> flat;
+    if (!actions.empty()) {
+        AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+        AppendContextActions(menu, actions, nextAction, flat);
+    }
     cm->win32_build_menu(menu, kBase, 0x7FFF);
     const UINT cmd = TrackWin7Menu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_NONOTIFY, pt.x, pt.y, owner);
     DestroyMenu(menu);
     if (RunArtistCommand(cmd, artists)) return;
+    if (RunContextAction(cmd, kActionBase, nextAction, flat)) return;
     if (RunQueueCommand(cmd, items)) return;
     if (cmd >= kBase) cm->execute_by_id(cmd - kBase);
 }
@@ -444,6 +487,7 @@ void RunPlaylistContextMenu(HWND owner, POINT pt) {
     auto cm = contextmenu_manager::get();
     cm->init_context_playlist(contextmenu_manager::flag_show_shortcuts);
     constexpr int kBase = 1;
+    constexpr UINT kActionBase = 0x8200;
     HMENU menu = CreatePopupMenu();
     if (queue) {
         AppendMenuW(menu, MF_STRING, kClearQueue, TrC(L"Clear Now Playing"));
@@ -452,6 +496,13 @@ void RunPlaylistContextMenu(HWND owner, POINT pt) {
     if (items.get_count()) AppendQueueCommands(menu, items, queue);
     const auto artists = ArtistLinksFor(items);
     AppendArtistCommands(menu, artists);
+    const auto actions = ContextActionsFor(items);
+    UINT nextAction = kActionBase;
+    std::vector<std::function<void()>> flat;
+    if (!actions.empty()) {
+        AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+        AppendContextActions(menu, actions, nextAction, flat);
+    }
     cm->win32_build_menu(menu, kBase, 0x7FFF);
     const UINT cmd = TrackWin7Menu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_NONOTIFY, pt.x, pt.y, owner);
     DestroyMenu(menu);
@@ -463,6 +514,7 @@ void RunPlaylistContextMenu(HWND owner, POINT pt) {
         return;
     }
     if (RunArtistCommand(cmd, artists)) return;
+    if (RunContextAction(cmd, kActionBase, nextAction, flat)) return;
     if (RunQueueCommand(cmd, items)) return;
     if (cmd >= kBase) cm->execute_by_id(cmd - kBase);
 }

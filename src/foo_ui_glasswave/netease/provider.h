@@ -72,6 +72,9 @@ public:
     void Search(std::wstring_view query, SongsCallback done);
     void ToggleLike(int64_t songId, bool like, DoneCallback done = {});
     void SetArtistFollow(int64_t artistId, bool follow, DoneCallback done = {});
+    void AddToPlaylist(int64_t playlistId, std::vector<int64_t> songIds, DoneCallback done = {});
+    void RemoveFromPlaylist(int64_t playlistId, std::vector<int64_t> songIds, DoneCallback done = {});
+    void SetAlbumCollected(int64_t albumId, bool collected, DoneCallback done = {});
 
     void OnLoginCookie(std::wstring cookie, DoneCallback done = {});
     void Logout();

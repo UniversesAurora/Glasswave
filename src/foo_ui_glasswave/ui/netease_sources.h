@@ -121,10 +121,11 @@ class NeteaseAlbumGridSource : public media::ListSource {
 public:
     // hotSongs = true: the Hot songs tile; otherwise the album (id, name).
     using Open = std::function<void(bool hotSongs, int64_t id, std::wstring name)>;
+    using Menu = std::function<void(POINT screen, bool hotSongs, int64_t id, std::wstring name)>;
     // expandedStyle: the collected-albums page offers Expanded tile as an alternative
     // representation (a song list grouped by album, built by the caller).
     NeteaseAlbumGridSource(std::wstring hotArtist, std::vector<netease::Album> albums, std::wstring emptyText,
-                           Open open, bool expandedStyle = false);
+                           Open open, bool expandedStyle = false, Menu menu = {});
 
     const std::vector<media::Column>& Columns() const override { return m_columns; }
     std::wstring ColumnSetKey() const override { return L"netease-artist"; }
@@ -161,6 +162,7 @@ private:
     std::wstring m_filter;
     std::vector<media::Column> m_columns;
     Open m_open;
+    Menu m_menu;
     bool m_expandedStyle = false;
 };
 
@@ -168,7 +170,8 @@ private:
 class NeteaseArtistListSource : public media::ListSource {
 public:
     using Open = std::function<void(int64_t id, std::wstring name)>;
-    NeteaseArtistListSource(std::vector<netease::Artist> artists, std::wstring emptyText, Open open);
+    using Menu = std::function<void(POINT screen, int64_t id, std::wstring name)>;
+    NeteaseArtistListSource(std::vector<netease::Artist> artists, std::wstring emptyText, Open open, Menu menu = {});
 
     const std::vector<media::Column>& Columns() const override { return m_columns; }
     std::wstring ColumnSetKey() const override { return L"netease-artists"; }
@@ -201,6 +204,7 @@ private:
     std::wstring m_filter;
     std::vector<media::Column> m_columns;
     Open m_open;
+    Menu m_menu;
 };
 
 // NetEase playlists as WMP-style tiles or a Details list of name / song count.

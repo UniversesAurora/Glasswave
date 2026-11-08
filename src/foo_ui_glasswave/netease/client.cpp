@@ -825,6 +825,38 @@ bool Client::AddToPlaylist(int64_t playlistId, const std::vector<int64_t>& ids, 
     return true;
 }
 
+bool Client::RemoveFromPlaylist(int64_t playlistId, const std::vector<int64_t>& ids, abort_callback& abort,
+                                std::wstring& error) {
+    json::Object body;
+    int code = 0;
+    if (!Request(L"/playlist/tracks",
+                 {{L"op", L"del"}, {L"pid", std::to_wstring(playlistId)}, {L"tracks", JoinIds(ids)}}, true, abort,
+                 body, code, error))
+        return false;
+    if (code != 200) {
+        error = MessageOf(body, code);
+        return false;
+    }
+    return true;
+}
+
+bool Client::SetAlbumCollect(int64_t albumId, bool collect, abort_callback& abort, std::wstring& error) {
+    json::Object body;
+    int code = 0;
+    if (!Request(L"/album/sub", {{L"id", std::to_wstring(albumId)}, {L"t", collect ? L"1" : L"0"}}, true, abort,
+                 body, code, error))
+        return false;
+    if (code == 301) {
+        error = L"Please sign in to NetEase Cloud Music.";
+        return false;
+    }
+    if (code != 200) {
+        error = MessageOf(body, code);
+        return false;
+    }
+    return true;
+}
+
 bool Client::CreatePlaylist(std::wstring_view name, abort_callback& abort, int64_t& id, std::wstring& error) {
     id = 0;
     json::Object body;

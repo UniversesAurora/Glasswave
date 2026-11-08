@@ -892,6 +892,80 @@ void Provider::SetArtistFollow(int64_t artistId, bool follow, DoneCallback done)
     });
 }
 
+void Provider::AddToPlaylist(int64_t playlistId, std::vector<int64_t> songIds, DoneCallback done) {
+    if (songIds.empty()) {
+        if (done) done(false, L"No songs selected.");
+        return;
+    }
+    std::wstring loginError;
+    if (!RequireLogin(loginError)) {
+        if (done) done(false, loginError);
+        return;
+    }
+    m_tasks.Post([this, playlistId, songIds = std::move(songIds), done = std::move(done)] {
+        if (m_stopping) return;
+        abort_callback_impl abort;
+        std::wstring error;
+        bool ok = false;
+        if (m_service.EnsureStarted(abort, &error)) ok = m_client.AddToPlaylist(playlistId, songIds, abort, error);
+        PostMain([done = std::move(done), ok, error] {
+            if (done) done(ok, ok ? std::wstring() : ErrorOf(error));
+        });
+    });
+}
+
+void Provider::RemoveFromPlaylist(int64_t playlistId, std::vector<int64_t> songIds, DoneCallback done) {
+    if (songIds.empty()) {
+        if (done) done(false, L"No songs selected.");
+        return;
+    }
+    std::wstring loginError;
+    if (!RequireLogin(loginError)) {
+        if (done) done(false, loginError);
+        return;
+    }
+    m_tasks.Post([this, playlistId, songIds = std::move(songIds), done = std::move(done)] {
+        if (m_stopping) return;
+        abort_callback_impl abort;
+        std::wstring error;
+        bool ok = false;
+        if (m_service.EnsureStarted(abort, &error))
+            ok = m_client.RemoveFromPlaylist(playlistId, songIds, abort, error);
+        PostMain([done = std::move(done), ok, error] {
+            if (done) done(ok, ok ? std::wstring() : ErrorOf(error));
+        });
+    });
+}
+
+void Provider::SetAlbumCollected(int64_t albumId, bool collected, DoneCallback done) {
+    std::wstring loginError;
+    if (!RequireLogin(loginError)) {
+        if (done) done(false, loginError);
+        return;
+    }
+    m_tasks.Post([this, albumId, collected, done = std::move(done)] {
+        if (m_stopping) return;
+        abort_callback_impl abort;
+        std::wstring error;
+        bool ok = false;
+        if (m_service.EnsureStarted(abort, &error))
+            ok = m_client.SetAlbumCollect(albumId, collected, abort, error);
+        if (ok) {
+            const auto album = Catalog::Get().FindAlbum(albumId);
+            std::lock_guard lock(m_mutex);
+            auto it = std::find_if(m_collectedAlbums.begin(), m_collectedAlbums.end(),
+                                   [albumId](const Album& a) { return a.id == albumId; });
+            if (!collected && it != m_collectedAlbums.end())
+                m_collectedAlbums.erase(it);
+            else if (collected && it == m_collectedAlbums.end() && album)
+                m_collectedAlbums.push_back(*album);
+        }
+        PostMain([done = std::move(done), ok, error] {
+            if (done) done(ok, ok ? std::wstring() : ErrorOf(error));
+        });
+    });
+}
+
 void Provider::OnLoginCookie(std::wstring cookie, DoneCallback done) {
     const std::wstring normalized = NormalizeCookie(cookie);
     if (!CookieHasMusicU(normalized)) {
