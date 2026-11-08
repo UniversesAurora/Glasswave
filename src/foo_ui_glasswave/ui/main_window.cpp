@@ -3195,36 +3195,33 @@ std::vector<ContextAction> MainWindow::BuildContextActions(metadb_handle_list_cr
                 if (created) {
                     actions.push_back({});
                     actions.push_back({L"Remove from this playlist", [this, playlistId, ids] {
+                                           auto* source = dynamic_cast<ui::NeteaseSongSource*>(m_source.get());
+                                           if (!source) return;
+                                           // Remove the rows at once; the request confirms the edit
+                                           // in the background and a failure reloads the page.
                                            const size_t topRow = m_list->TopRow();
                                            const metadb_handle_ptr anchor =
                                                topRow != SIZE_MAX && m_source ? m_source->Item(topRow) : metadb_handle_ptr{};
+                                           const size_t removed = source->RemoveSongs(ids);
+                                           if (m_playlistDetail && m_playlistDetail->id == playlistId)
+                                               m_playlistDetail->trackCount =
+                                                   std::max(0, m_playlistDetail->trackCount -
+                                                                   static_cast<int>(removed));
+                                           size_t row = anchor.is_valid() ? source->FindRow(anchor) : SIZE_MAX;
+                                           if (row == SIZE_MAX && m_source->Count())
+                                               row = std::min(topRow, m_source->Count() - 1);
+                                           m_list->Refresh();
+                                           if (row != SIZE_MAX) m_list->ScrollToRow(row);
+                                           RepaintDetailHeader();
                                            m_skipStateNavigate = true;
                                            netease::Provider::Get().RemoveFromPlaylist(
                                                playlistId, ids,
-                                               [this, playlistId, ids, anchor, topRow](bool ok, std::wstring) {
-                                                   if (!ok) {
-                                                       m_skipStateNavigate = false;
-                                                       return;
-                                                   }
-                                                   if (m_view.kind != View::Kind::NeteasePlaylist ||
-                                                       m_view.remoteId != std::to_wstring(playlistId))
-                                                       return;
-                                                   auto* source =
-                                                       dynamic_cast<ui::NeteaseSongSource*>(m_source.get());
-                                                   if (!source) return;
-                                                   source->RemoveSongs(ids);
-                                                   if (m_playlistDetail && m_playlistDetail->id == playlistId)
-                                                       m_playlistDetail->trackCount =
-                                                           std::max(0, m_playlistDetail->trackCount -
-                                                                           static_cast<int>(ids.size()));
-                                                   // Keep the same song at the top; only the rows below it
-                                                   // disappear, so the view does not jump to the start.
-                                                   size_t row = anchor.is_valid() ? source->FindRow(anchor) : SIZE_MAX;
-                                                   if (row == SIZE_MAX && m_source->Count())
-                                                       row = std::min(topRow, m_source->Count() - 1);
-                                                   m_list->Refresh();
-                                                   if (row != SIZE_MAX) m_list->ScrollToRow(row);
-                                                   RepaintDetailHeader();
+                                               [this, playlistId](bool ok, std::wstring) {
+                                                   if (ok) return;
+                                                   m_skipStateNavigate = false;
+                                                   if (m_view.kind == View::Kind::NeteasePlaylist &&
+                                                       m_view.remoteId == std::to_wstring(playlistId))
+                                                       Navigate(m_view, false);  // restore the rows
                                                });
                                        }});
                 }

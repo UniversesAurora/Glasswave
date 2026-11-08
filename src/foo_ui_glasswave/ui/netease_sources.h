@@ -70,8 +70,8 @@ public:
     void Append(std::vector<SongTableRow> rows);
 
 protected:
-    // Removes rows (a playlist edit) and rebuilds the visible order.
-    void RemoveRows(const std::function<bool(const SongTableRow&)>& remove);
+    // Removes rows (a playlist edit) and returns how many disappeared.
+    size_t RemoveRows(const std::function<bool(const SongTableRow&)>& remove);
     // Expanded tile always groups an album's songs into one column, in first-appearance order.
     SongTableSource(std::vector<SongTableRow> rows, bool showSource, std::wstring emptyText,
                     std::wstring columnKey);
@@ -106,7 +106,7 @@ class NeteaseSongSource : public SongTableSource {
 public:
     NeteaseSongSource(std::vector<netease::Song> songs, std::wstring emptyText);
     void AppendSongs(const std::vector<netease::Song>& songs);
-    void RemoveSongs(const std::vector<int64_t>& ids);
+    size_t RemoveSongs(const std::vector<int64_t>& ids);
 };
 
 // Favorites from every provider: local Favorites and the NetEase liked list, with a

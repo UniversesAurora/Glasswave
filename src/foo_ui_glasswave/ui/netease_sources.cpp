@@ -303,14 +303,16 @@ void SongTableSource::Append(std::vector<SongTableRow> rows) {
     RebuildVisible();
 }
 
-void SongTableSource::RemoveRows(const std::function<bool(const SongTableRow&)>& remove) {
+size_t SongTableSource::RemoveRows(const std::function<bool(const SongTableRow&)>& remove) {
+    const size_t before = m_all.size();
     const auto end = std::remove_if(m_all.begin(), m_all.end(), remove);
-    if (end == m_all.end()) return;
+    if (end == m_all.end()) return 0;
     m_all.erase(end, m_all.end());
     m_selected.assign(m_all.size(), 0);
     m_focus = SIZE_MAX;
     SortOrder();
     RebuildVisible();
+    return before - m_all.size();
 }
 
 void SongTableSource::RebuildVisible() {
@@ -461,10 +463,10 @@ NeteaseSongSource::NeteaseSongSource(std::vector<netease::Song> songs, std::wstr
 
 void NeteaseSongSource::AppendSongs(const std::vector<netease::Song>& songs) { Append(NeteaseRows(songs)); }
 
-void NeteaseSongSource::RemoveSongs(const std::vector<int64_t>& ids) {
-    if (ids.empty()) return;
+size_t NeteaseSongSource::RemoveSongs(const std::vector<int64_t>& ids) {
+    if (ids.empty()) return 0;
     std::unordered_set<int64_t> removed(ids.begin(), ids.end());
-    RemoveRows([&removed](const SongTableRow& row) {
+    return RemoveRows([&removed](const SongTableRow& row) {
         int64_t id = 0;
         return row.handle.is_valid() && netease::ParseSongPath(row.handle->get_path(), id) &&
                removed.count(id) != 0;
