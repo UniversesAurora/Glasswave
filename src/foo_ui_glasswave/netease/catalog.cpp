@@ -237,6 +237,7 @@ void Catalog::Load() {
         }
         song.coverUrl = Wide(fields[10]);
         song.codec = Wide(fields[11]);
+        if (fields.size() >= 14) song.albumId = _strtoi64(fields[13].c_str(), nullptr, 10);
         loaded.push_back(std::move(song));
     }
     if (loaded.empty()) return;
@@ -277,7 +278,8 @@ void Catalog::Save() const {
             out << song.id << '\t' << song.durationMs << '\t' << song.fee << '\t' << song.bitrate << '\t'
                 << song.sampleRate << '\t' << song.bitsPerSample << '\t' << Clean(song.title) << '\t'
                 << Clean(song.album) << '\t' << Clean(song.albumArtist) << '\t' << Clean(artists) << '\t'
-                << Clean(song.coverUrl) << '\t' << Clean(song.codec) << '\t' << Clean(artistIds) << '\n';
+                << Clean(song.coverUrl) << '\t' << Clean(song.codec) << '\t' << Clean(artistIds) << '\t'
+                << song.albumId << '\n';
         }
     }
     MoveFileExW(tmp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);

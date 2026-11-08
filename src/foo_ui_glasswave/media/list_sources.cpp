@@ -250,8 +250,9 @@ void PlaylistSource::BuildGroups() {
             if (!fix->album.empty()) f[0] = fix->album;
             if (!fix->albumArtist.empty()) f[1] = f[4] = fix->albumArtist;
         }
-        // Same album and album artist as the row above: one more song in that group.
-        const std::wstring key = f[0] + L'\x1f' + f[1];
+        // Same album as the row above: one more song in that group. The album artist is not
+        // part of the key: soundtrack tracks often credit a different artist per track.
+        const std::wstring key = f[0];
         if (!m_groups.empty() && !f[0].empty() && key == last) {
             ++m_groups.back().count;
             continue;

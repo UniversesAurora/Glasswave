@@ -2888,8 +2888,20 @@ void MainWindow::OnAlbumLink(size_t group, size_t line) {
     if (g.art.is_valid() && netease::ParseSongPath(g.art->get_path(), ncmSong)) {
         const auto song = netease::Catalog::Get().FindSong(ncmSong);
         if (!song) return;
+        int64_t albumId = song->albumId;
+        if (line == 0 && !albumId) {
+            // The queue's cached record may predate the album-id column; another track in
+            // the group may already have been refreshed from an album page.
+            for (size_t k = 1; k < g.count && !albumId; ++k) {
+                const auto item = m_source->Item(g.first + k);
+                int64_t other = 0;
+                if (item.is_valid() && netease::ParseSongPath(item->get_path(), other)) {
+                    if (auto record = netease::Catalog::Get().FindSong(other)) albumId = record->albumId;
+                }
+            }
+        }
         if (line == 0) {
-            if (song->albumId) OpenNeteaseAlbum(song->albumId, g.lines[0]);
+            if (albumId) OpenNeteaseAlbum(albumId, g.lines[0]);
         } else if (line == 1) {
             for (const auto& ref : song->artistRefs)
                 if (ref.id) {
