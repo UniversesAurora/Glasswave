@@ -56,7 +56,7 @@
     <Link>
       <SubSystem>Windows</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
-      <AdditionalDependencies>$(SdkRoot)foobar2000\shared\shared-$(Platform).lib;dwmapi.lib;d3d11.lib;dxgi.lib;d2d1.lib;dwrite.lib;dxguid.lib;CoreMessaging.lib;runtimeobject.lib;uxtheme.lib;windowscodecs.lib;imm32.lib;icu.lib;ole32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>$(SdkRoot)foobar2000\shared\shared-$(Platform).lib;dwmapi.lib;d3d11.lib;dxgi.lib;d2d1.lib;dwrite.lib;dxguid.lib;CoreMessaging.lib;runtimeobject.lib;uxtheme.lib;windowscodecs.lib;imm32.lib;icu.lib;ole32.lib;winhttp.lib;bcrypt.lib;crypt32.lib;ws2_32.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)'=='Debug'">
@@ -108,6 +108,13 @@
     <ClCompile Include="media\library_model.cpp" />
     <ClCompile Include="media\list_sources.cpp" />
     <ClCompile Include="media\source_identity.cpp" />
+    <ClCompile Include="netease\config.cpp" />
+    <ClCompile Include="netease\cookie.cpp" />
+    <ClCompile Include="netease\http.cpp" />
+    <ClCompile Include="netease\json.cpp" />
+    <ClCompile Include="netease\log.cpp" />
+    <ClCompile Include="netease\profile.cpp" />
+    <ClCompile Include="netease\task_queue.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="pch.h" />
@@ -140,6 +147,14 @@
     <ClInclude Include="media\list_sources.h" />
     <ClInclude Include="media\source_identity.h" />
     <ClInclude Include="media\cue_encoding.h" />
+    <ClInclude Include="netease\config.h" />
+    <ClInclude Include="netease\cookie.h" />
+    <ClInclude Include="netease\http.h" />
+    <ClInclude Include="netease\json.h" />
+    <ClInclude Include="netease\log.h" />
+    <ClInclude Include="netease\profile.h" />
+    <ClInclude Include="netease\task_queue.h" />
+    <ClInclude Include="netease\types.h" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="$(SdkRoot)pfc\pfc.vcxproj">
