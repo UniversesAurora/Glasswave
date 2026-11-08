@@ -3163,6 +3163,7 @@ void MainWindow::OnDetailBriefBarDown(POINT pt) {
         if (DetailBriefThumb(&top, &height)) {
             const float y = (pt.y - m_layout.detailBriefBar.top) / m_scale;
             const float page = std::max(18.0f, m_detailBriefViewH - 36.0f);
+            m_detailBriefTrackDir = y < top ? 1 : 2;
             ScrollDetailBrief(y < top ? -page : page);
         }
     } else if (part == 4) {
@@ -3194,6 +3195,7 @@ void MainWindow::OnDetailBriefBarMove(POINT pt) {
 void MainWindow::OnDetailBriefBarUp() {
     if (!m_detailBriefPressed) return;
     m_detailBriefPressed = 0;
+    m_detailBriefTrackDir = 0;
     StartScrollAnimation();
 }
 
@@ -3232,12 +3234,14 @@ bool MainWindow::OnDetailBriefRepeat() {
         float top = 0, height = 0;
         if (!DetailBriefThumb(&top, &height)) return false;
         const float y = (m_detailBriefPressPt.y - m_layout.detailBriefBar.top) / m_scale;
-        if (y < top) {
+        if (m_detailBriefTrackDir == 1) {
+            if (y >= top) return false;
             if (m_detailBriefScroll <= 0.0f) return false;
             ScrollDetailBrief(-page);
             return true;
         }
-        if (y >= top + height) {
+        if (m_detailBriefTrackDir == 2) {
+            if (y < top + height) return false;
             if (m_detailBriefScroll >= maxScroll) return false;
             ScrollDetailBrief(page);
             return true;
@@ -5359,6 +5363,7 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
             if (m_capture == Capture::Nav) m_nav->CancelDrag();
             if (m_capture == Capture::DetailScroll) {
                 m_detailBriefPressed = 0;
+                m_detailBriefTrackDir = 0;
                 StartScrollAnimation();
             }
             m_capture = Capture::None;

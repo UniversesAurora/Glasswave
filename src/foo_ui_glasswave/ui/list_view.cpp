@@ -1055,12 +1055,14 @@ bool ListView::OnScrollRepeat() {
         if (!ThumbGeometry(&top, &height)) return false;
         const RECT rr = RowsRect();
         const float y = static_cast<float>(m_scrollPt.y - rr.top);
-        if (y < top) {
+        if (m_scrollTrackDir == 1) {
+            if (y >= top) return false;  // the thumb has reached the pointer
             if (m_top == 0) return false;
             ScrollTo(m_top > page ? m_top - page : 0);
             return true;
         }
-        if (y >= top + height) {
+        if (m_scrollTrackDir == 2) {
+            if (y < top + height) return false;
             if (m_top >= MaxTop()) return false;
             ScrollTo(m_top + page);
             return true;
@@ -1308,10 +1310,13 @@ void ListView::OnLButtonDown(POINT pt, bool ctrl, bool shift) {
         float top = 0, height = 0;
         if (ThumbGeometry(&top, &height)) {
             const size_t page = std::max<size_t>(VisibleLines(), 1) - 1;
-            if (pt.y - RowsRect().top < top)
+            if (pt.y - RowsRect().top < top) {
+                m_scrollTrackDir = 1;
                 ScrollTo(m_top > page ? m_top - page : 0);
-            else
+            } else {
+                m_scrollTrackDir = 2;
                 ScrollTo(m_top + page);
+            }
         }
         m_scrollPressed = 3;
         m_scrollPt = pt;
@@ -1403,6 +1408,7 @@ void ListView::OnLButtonUp(POINT pt) {
     m_drag = Drag::None;
     if (m_scrollPressed) {
         m_scrollPressed = 0;
+        m_scrollTrackDir = 0;
         if (onScrollAnim) onScrollAnim();
     }
     switch (drag) {
@@ -1447,6 +1453,7 @@ void ListView::CancelDrag() {
     if (m_drag != Drag::None) m_drag = Drag::None;
     if (m_scrollPressed || m_scrollHot) {
         m_scrollPressed = 0;
+        m_scrollTrackDir = 0;
         m_scrollHot = 0;
         if (onScrollAnim) onScrollAnim();
     }

@@ -325,6 +325,7 @@ private:
     bool m_detailBriefScrollable = false;
     int m_detailBriefHot = 0;  // 1 up, 2 down, 3 track, 4 thumb
     int m_detailBriefPressed = 0;
+    int m_detailBriefTrackDir = 0;  // track click above (1) or below (2) the thumb
     int m_detailBriefDragOffset = 0;  // px
     POINT m_detailBriefPressPt{};
     std::array<float, 5> m_detailBriefBlend{};  // 0 normal .. 1 hot .. 2 pressed

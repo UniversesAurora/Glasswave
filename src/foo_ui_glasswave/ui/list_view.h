@@ -162,6 +162,7 @@ private:
     size_t m_anchor = SIZE_MAX;
     int m_scrollHot = 0;      // 1 up, 2 down, 3 track, 4 thumb
     int m_scrollPressed = 0;
+    int m_scrollTrackDir = 0;  // track click above (1) or below (2) the thumb
     POINT m_scrollPt{};
     std::array<float, 5> m_scrollBlend{};  // 0 normal .. 1 hot .. 2 pressed
     Drag m_drag = Drag::None;
