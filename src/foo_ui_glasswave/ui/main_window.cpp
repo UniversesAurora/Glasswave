@@ -2127,6 +2127,12 @@ void MainWindow::ShowPlaylistMenu(size_t playlist, POINT screen) {
                                if (p->playlist_get_item_count(playlist))
                                    p->playlist_execute_default_action(playlist, focus == SIZE_MAX ? 0 : focus);
                            }});
+        if (media::IsQueue(playlist))
+            actions.push_back({TrMenu(L"Clear Now Playing"), [playlist] {
+                                   auto p = playlist_manager::get();
+                                   p->playlist_undo_backup(playlist);
+                                   p->playlist_clear(playlist);
+                               }});
         if (media::IsSmart(playlist))
             actions.push_back({L"Edit smart playlist...", [playlist] {
                                    if (auto c = autoplaylist_manager::get()->query_client(playlist); c.is_valid())
@@ -3086,7 +3092,9 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
                 ShowNavCustomizeMenu(screen);
                 return 0;
             }
-            ShowPlaylistMenu(item && item->target == NavPane::Target::Playlist ? item->playlist : SIZE_MAX, screen);
+            const bool playlistMenu = item && (item->target == NavPane::Target::Playlist ||
+                                               item->target == NavPane::Target::Queue);
+            ShowPlaylistMenu(playlistMenu ? item->playlist : SIZE_MAX, screen);
             return 0;
         }
         if (pt.y >= m_layout.client.top) {

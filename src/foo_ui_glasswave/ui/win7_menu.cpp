@@ -362,7 +362,7 @@ UINT TrackWin7Menu(HMENU menu, UINT flags, int x, int y, HWND owner, const std::
 namespace {
 
 // Queue and Favorites commands above foobar2000's own context menu (ids past its range).
-enum : UINT { kPlay = 0x8001, kPlayNext, kAddToQueue, kFavoriteAdd, kFavoriteRemove };
+enum : UINT { kPlay = 0x8001, kPlayNext, kAddToQueue, kFavoriteAdd, kFavoriteRemove, kClearQueue };
 
 void AppendQueueCommands(HMENU menu, metadb_handle_list_cref items, bool inQueue) {
     if (!inQueue) {
@@ -404,16 +404,29 @@ void RunContextMenu(HWND owner, metadb_handle_list_cref items, POINT pt) {
 
 void RunPlaylistContextMenu(HWND owner, POINT pt) {
     auto pm = playlist_manager::get();
+    const t_size playlist = pm->get_active_playlist();
+    const bool queue = media::IsQueue(playlist);
     metadb_handle_list items;
     pm->activeplaylist_get_selected_items(items);
     auto cm = contextmenu_manager::get();
     cm->init_context_playlist(contextmenu_manager::flag_show_shortcuts);
     constexpr int kBase = 1;
     HMENU menu = CreatePopupMenu();
-    if (items.get_count()) AppendQueueCommands(menu, items, media::IsQueue(pm->get_active_playlist()));
+    if (queue) {
+        AppendMenuW(menu, MF_STRING, kClearQueue, TrC(L"Clear Now Playing"));
+        AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+    }
+    if (items.get_count()) AppendQueueCommands(menu, items, queue);
     cm->win32_build_menu(menu, kBase, 0x7FFF);
     const UINT cmd = TrackWin7Menu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_NONOTIFY, pt.x, pt.y, owner);
     DestroyMenu(menu);
+    if (cmd == kClearQueue) {
+        if (queue) {
+            pm->playlist_undo_backup(playlist);
+            pm->playlist_clear(playlist);
+        }
+        return;
+    }
     if (RunQueueCommand(cmd, items)) return;
     if (cmd >= kBase) cm->execute_by_id(cmd - kBase);
 }
