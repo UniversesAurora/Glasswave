@@ -139,6 +139,10 @@ cfg_var_modern::cfg_string cfg_navOrder({0x6a1f3c5e, 0x2b7e, 0x4d90, {0x8c, 0x15
 // Where the Smart playlists section sits among the Local Music categories (0 = first).
 // {6A1F3C64-2B7E-4D90-8C15-3E9A7B2D4F61}
 cfg_var_modern::cfg_int cfg_navSmartAt({0x6a1f3c64, 0x2b7e, 0x4d90, {0x8c, 0x15, 0x3e, 0x9a, 0x7b, 0x2d, 0x4f, 0x61}}, 0);
+// The page and top row shown when the window closed.
+// {6A1F3C65-2B7E-4D90-8C15-3E9A7B2D4F61}
+cfg_var_modern::cfg_string cfg_lastView({0x6a1f3c65, 0x2b7e, 0x4d90, {0x8c, 0x15, 0x3e, 0x9a, 0x7b, 0x2d, 0x4f, 0x61}},
+                                        "");
 
 std::vector<media::GroupKind> LoadNavCategories() {
     std::vector<media::GroupKind> out;
@@ -162,6 +166,24 @@ bool SameCoverUrl(std::wstring_view a, std::wstring_view b) {
         return url.substr(0, query);
     };
     return base(a) == base(b);
+}
+
+std::wstring CleanConfigField(std::wstring text) {
+    for (auto& c : text)
+        if (c == L'\t' || c == L'\r' || c == L'\n') c = L' ';
+    return text;
+}
+
+std::vector<std::wstring> SplitConfigFields(const std::wstring& text) {
+    std::vector<std::wstring> fields;
+    size_t start = 0;
+    while (true) {
+        const size_t tab = text.find(L'\t', start);
+        fields.push_back(text.substr(start, tab == std::wstring::npos ? std::wstring::npos : tab - start));
+        if (tab == std::wstring::npos) break;
+        start = tab + 1;
+    }
+    return fields;
 }
 
 wuc::CompositionNineGridBrush NineGrid(int wPx, int hPx, float scale, float insetPx, bool hollow,
@@ -2088,6 +2110,92 @@ void MainWindow::OnCrumbClick(POINT pt) {
 }
 
 // ---- Navigation --------------------------------------------------------------------------
+
+void MainWindow::SaveLastView() {
+    if (!m_list) return;
+    const size_t top = m_list->TopRow();
+    std::wstring text = L"1";  // version
+    auto add = [&text](const std::wstring& value) {
+        text += L'\t';
+        text += CleanConfigField(value);
+    };
+    add(std::to_wstring(static_cast<int>(m_view.library)));
+    add(std::to_wstring(static_cast<int>(m_view.kind)));
+    add(std::to_wstring(m_view.playlist));
+    add(m_view.name);
+    add(std::to_wstring(static_cast<int>(m_view.group)));
+    add(m_view.key);
+    add(std::to_wstring(static_cast<int>(m_view.neteaseScope)));
+    add(m_view.scopeKnown ? L"1" : L"0");
+    add(m_view.remoteId);
+    add(m_view.parentId);
+    add(m_view.parentName);
+    add(top == SIZE_MAX ? L"-1" : std::to_wstring(top));
+    cfg_lastView.set(pfc::stringcvt::string_utf8_from_wide(text.c_str()).get_ptr());
+}
+
+bool MainWindow::LoadLastView(View& view, size_t& top) {
+    const pfc::string8 stored = cfg_lastView.get();
+    if (stored.is_empty()) return false;
+    const auto fields =
+        SplitConfigFields(pfc::stringcvt::string_wide_from_utf8(stored.get_ptr()).get_ptr());
+    if (fields.size() < 13 || fields[0] != L"1") return false;
+    const int library = _wtoi(fields[1].c_str());
+    const int kind = _wtoi(fields[2].c_str());
+    if (library < static_cast<int>(View::Library::All) || library > static_cast<int>(View::Library::Netease))
+        return false;
+    if (kind < static_cast<int>(View::Kind::Playlist) || kind > static_cast<int>(View::Kind::Search))
+        return false;
+    View v;
+    v.library = static_cast<View::Library>(library);
+    v.kind = static_cast<View::Kind>(kind);
+    if (v.kind == View::Kind::Search) return false;  // no search UI is persisted
+    const int group = _wtoi(fields[5].c_str());
+    if (group < 0 || group >= static_cast<int>(media::kGroupKinds)) return false;
+    v.group = static_cast<media::GroupKind>(group);
+    v.key = fields[6];
+    if (v.kind == View::Kind::Group && v.key.empty()) return false;
+    const int scope = _wtoi(fields[7].c_str());
+    if (scope < static_cast<int>(View::NeteaseScope::Created) ||
+        scope > static_cast<int>(View::NeteaseScope::Recommended))
+        return false;
+    v.neteaseScope = static_cast<View::NeteaseScope>(scope);
+    v.scopeKnown = fields[8] == L"1";
+    v.remoteId = fields[9];
+    v.parentId = fields[10];
+    v.parentName = fields[11];
+    v.name = fields[4];
+    const long long scroll = _wcstoi64(fields[12].c_str(), nullptr, 10);
+    top = scroll < 0 ? SIZE_MAX : static_cast<size_t>(scroll);
+
+    switch (v.kind) {
+    case View::Kind::NeteasePlaylist:
+    case View::Kind::NeteaseAlbum:
+    case View::Kind::NeteaseArtist:
+    case View::Kind::NeteaseArtistSongs:
+        if (v.remoteId.empty()) return false;
+        break;
+    default:
+        break;
+    }
+    if (v.kind == View::Kind::Playlist) {
+        auto pm = playlist_manager::get();
+        t_size p = SIZE_MAX;
+        if (!v.name.empty()) {
+            const auto name = pfc::stringcvt::string_utf8_from_wide(v.name.c_str());
+            p = pm->find_playlist(name.get_ptr());
+        }
+        const auto index = static_cast<t_size>(_wcstoui64(fields[3].c_str(), nullptr, 10));
+        if (p == SIZE_MAX && index < pm->get_playlist_count()) p = index;
+        if (p == SIZE_MAX) return false;
+        v.playlist = p;
+        pfc::string8 name;
+        pm->playlist_get_name(p, name);
+        v.name = Wide(name);
+    }
+    view = std::move(v);
+    return true;
+}
 
 std::wstring MainWindow::ViewKey(const View& view) const {
     std::wstring key = std::to_wstring(static_cast<int>(view.library));
@@ -5573,13 +5681,19 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
         m_dropTarget = MakeFileDropTarget([this](IDataObject* data) { AddDroppedFiles(data); });
         RegisterDragDrop(hwnd, m_dropTarget.get());
 
-        // Start where foobar2000 is: the active playlist, else the music library.
+        // Start on the page that was open when the window closed; otherwise where
+        // foobar2000 is (the active playlist, else the music library).
         View start;
-        const t_size active = playlist_manager::get()->get_active_playlist();
-        if (active != SIZE_MAX) {
-            start.library = View::Library::All;
-            start.kind = View::Kind::Playlist;
-            start.playlist = active;
+        size_t startTop = SIZE_MAX;
+        if (!LoadLastView(start, startTop)) {
+            const t_size active = playlist_manager::get()->get_active_playlist();
+            if (active != SIZE_MAX) {
+                start.library = View::Library::All;
+                start.kind = View::Kind::Playlist;
+                start.playlist = active;
+            }
+        } else if (startTop != SIZE_MAX) {
+            m_scrollPositions[ViewKey(start)] = startTop;
         }
         Navigate(start, true);
 
@@ -6142,6 +6256,7 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
     case WM_DESTROY: {
         WINDOWPLACEMENT wpl{sizeof(wpl)};
         if (GetWindowPlacement(hwnd, &wpl)) cfg_placement.set(wpl);
+        SaveLastView();
         KillTimer(hwnd, kLibraryTimer);
         RevokeDragDrop(hwnd);
         m_dropTarget = nullptr;

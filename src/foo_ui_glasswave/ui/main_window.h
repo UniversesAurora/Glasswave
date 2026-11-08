@@ -131,6 +131,8 @@ private:
     void Navigate(const View& view, bool push);
     std::wstring ViewKey(const View& view) const;
     void ApplyPendingScroll();
+    void SaveLastView();
+    bool LoadLastView(View& view, size_t& top);
     void GoBack();
     void GoForward();
     void ShowOrganizeMenu();
