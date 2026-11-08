@@ -2,6 +2,7 @@
 #include "ui/taskbar.h"
 #include "win7/win7_resources.h"
 #include "gfx/composition_host.h"
+#include "ui/i18n.h"
 
 #include <commctrl.h>
 #include <propsys.h>
@@ -154,7 +155,7 @@ void Taskbar::UpdateButtons() {
         b[i].iId = spec[i].id;
         b[i].iBitmap = spec[i].image;
         b[i].dwFlags = spec[i].enabled ? THBF_ENABLED : THBF_DISABLED;
-        wcsncpy_s(b[i].szTip, spec[i].tip, _TRUNCATE);
+        wcsncpy_s(b[i].szTip, TrC(spec[i].tip), _TRUNCATE);
     }
     m_list->ThumbBarUpdateButtons(m_hwnd, count, b);
 }
@@ -178,7 +179,8 @@ void Taskbar::SetupJumpList() {
         // foobar2000's own command-line switches.
         const std::pair<const wchar_t*, const wchar_t*> items[] = {
             {L"Play / Pause", L"/playpause"}, {L"Next track", L"/next"}, {L"Previous track", L"/prev"}, {L"Stop", L"/stop"}};
-        for (const auto& [title, args] : items) {
+        for (const auto& [english, args] : items) {
+            const wchar_t* title = TrC(english);
             auto link = winrt::create_instance<IShellLinkW>(CLSID_ShellLink);
             link->SetPath(exe);
             link->SetArguments(args);

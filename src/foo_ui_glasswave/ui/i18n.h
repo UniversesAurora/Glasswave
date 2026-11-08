@@ -12,7 +12,7 @@ namespace glasswave::ui {
 enum class Language { Auto, English, Chinese };
 
 Language CurrentLanguageSetting();
-void SetLanguageSetting(Language language);  // takes effect after a restart of the UI
+void SetLanguageSetting(Language language);  // reloads the table; the caller repaints
 bool UsingChinese();
 
 // Translation of `english` (the English text itself when there is none).

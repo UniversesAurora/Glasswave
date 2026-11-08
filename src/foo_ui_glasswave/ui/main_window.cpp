@@ -12,6 +12,7 @@
 #include "ui/shell_glue.h"
 #include "ui/taskbar.h"
 #include "ui/win7_menu.h"
+#include "ui/i18n.h"
 #include "media/favorites.h"
 #include "media/special_playlists.h"
 #include "ui/text.h"
@@ -722,7 +723,7 @@ void MainWindow::UpdateLayout() {
     };
     // Widths follow the text (6 DIP padding each side, 12 more for a drop-down arrow).
     auto fit = [](const wchar_t* text, bool drop) {
-        auto layout = MakeText(text, 12.0f, DWRITE_FONT_WEIGHT_NORMAL, 400, 20);
+        auto layout = MakeText(Tr(text), 12.0f, DWRITE_FONT_WEIGHT_NORMAL, 400, 20);
         DWRITE_TEXT_METRICS tm{};
         layout->GetMetrics(&tm);
         return std::ceil(tm.widthIncludingTrailingWhitespace) + 12 + (drop ? 12.0f : 0.0f);
@@ -1059,7 +1060,7 @@ void MainWindow::RepaintStreamInfo() {
     // Painted at the block's real width (narrow windows shrink it); long names get an ellipsis.
     const int w = std::max<int>(1, m_layout.stream.right - m_layout.stream.left), h = PxI(TransportHeight() - 12);
     if (m_deviceName.empty()) RefreshDeviceName();
-    const std::wstring device = m_deviceName.empty() ? L"Output device" : m_deviceName;
+    const std::wstring device = m_deviceName.empty() ? Tr(L"Output device") : m_deviceName;
     float deviceLeft = 0, deviceTop = 0, deviceRight = 0;
     host.Repaint(m_streamVisual, w, h, m_scale, [&](ID2D1DeviceContext* dc) {
         const float W = w / m_scale, H = h / m_scale;
@@ -1347,7 +1348,7 @@ void MainWindow::BuildCrumbs() {
     for (auto& c : m_crumbs) {
         c.x0 = x;
         if (!c.text.empty()) {
-            auto t = MakeText(c.text, 12.0f, DWRITE_FONT_WEIGHT_NORMAL, 400, 20);
+            auto t = MakeText(Tr(c.text), 12.0f, DWRITE_FONT_WEIGHT_NORMAL, 400, 20);
             DWRITE_TEXT_METRICS tm{};
             t->GetMetrics(&tm);
             x += std::ceil(tm.widthIncludingTrailingWhitespace) + 8;
@@ -1407,7 +1408,7 @@ void MainWindow::PaintBreadcrumb() {
                 }
             }
             if (!c.text.empty()) {
-                auto t = MakeText(c.text, 12.0f, DWRITE_FONT_WEIGHT_NORMAL, c.split - c.x0, H);
+                auto t = MakeText(Tr(c.text), 12.0f, DWRITE_FONT_WEIGHT_NORMAL, c.split - c.x0, H);
                 t->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);  // centered in the bar, like WMP
                 dc->DrawTextLayout({c.x0 + 4, 0}, t.get(), ink.get());
             }
@@ -1727,6 +1728,17 @@ void MainWindow::ShowOrganizeMenu() {
                        m_nav->Rebuild();
                    }},
                   {L"", nullptr},
+                  {L"Language: follow Windows", [this] { ApplyLanguage(Language::Auto); }},
+                  {L"Language: English", [this] { ApplyLanguage(Language::English); }},
+                  {L"Language: Chinese", [this] { ApplyLanguage(Language::Chinese); }},
+                  {L"Export strings for translation...", [this] {
+                       const metadb_handle_list sample = m_source ? m_source->SelectedItems() : metadb_handle_list{};
+                       const std::wstring path = ExportStrings(sample);
+                       const std::wstring note =
+                           L"Saved to " + path + L"\nRun scripts/translate-deepseek.ps1 to translate it.";
+                       popup_message::g_show(pfc::stringcvt::string_utf8_from_wide(note.c_str()), "Glasswave");
+                   }},
+                  {L"", nullptr},
                   {L"Preferences...", [] { standard_commands::run_main(standard_commands::guid_main_preferences); }}});
     SetHoverWidget(nullptr);  // the menu loop swallowed the mouse leave
 }
@@ -1960,6 +1972,16 @@ void MainWindow::OnShuffleTrack() {
         playback_control::get()->set_stop_after_current(true);
         m_shufflePass = 0;
     }
+}
+
+void MainWindow::ApplyLanguage(Language language) {
+    SetLanguageSetting(language);
+    for (auto& w : m_widgets) w->Invalidate();
+    if (m_nav) m_nav->Rebuild();
+    RepaintBreadcrumb();
+    RepaintStreamInfo();
+    if (m_list) m_list->Refresh();
+    UpdateLayout();  // button widths follow the text
 }
 
 void MainWindow::UpdateFavoriteState() {

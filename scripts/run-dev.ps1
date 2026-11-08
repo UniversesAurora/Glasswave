@@ -63,6 +63,14 @@ foreach ($name in $sources.Keys) {
     }
 }
 
+# UI translations (lang/<code>.json, ours to ship) next to the artwork.
+$langSrc = Join-Path $Root 'lang'
+if (Test-Path -LiteralPath $langSrc) {
+    $langDst = Join-Path $art 'lang'
+    New-Item -ItemType Directory -Force -Path $langDst | Out-Null
+    Get-ChildItem -LiteralPath $langSrc -Filter '*.json' | Copy-Item -Destination $langDst -Force
+}
+
 if (-not $NoLaunch) {
     Start-Process -FilePath $Exe -WorkingDirectory $Instance
     Write-Host 'Dev instance started'

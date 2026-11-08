@@ -4,6 +4,7 @@
 #include "ui/text.h"
 #include "win7/win7_resources.h"
 #include "media/favorites.h"
+#include "ui/i18n.h"
 #include "media/special_playlists.h"
 
 namespace glasswave::ui {
@@ -214,7 +215,7 @@ void NavPane::Paint() {
                                                                                         : 0;
             if (!DrawWmpIcon(dc, {x + 16, y + rowH / 2}, it.icon, autoPlaylist, s, special))
                 wp::NavGlyph(dc, {x + 16, y + rowH / 2}, it.icon);
-            auto layout = MakeText(it.text, 12.0f, DWRITE_FONT_WEIGHT_NORMAL, width - x - 34, rowH);
+            auto layout = MakeText(Tr(it.text), 12.0f, DWRITE_FONT_WEIGHT_NORMAL, width - x - 34, rowH);
             dc->DrawTextLayout({x + 26, y}, layout.get(), ink.get());
         }
     });

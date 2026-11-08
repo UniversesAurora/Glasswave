@@ -6,6 +6,7 @@
 #include "win7/win7_resources.h"
 #include "ui/win7_menu.h"
 #include "media/favorites.h"
+#include "ui/i18n.h"
 #include "wmp/wmp_painter.h"
 
 namespace glasswave::ui {
@@ -468,7 +469,7 @@ void ListView::PaintHeader() {
             if (art) cell(x, x + c.w, state);
             else if (state) wp::RowPlate(dc, {x, 1, x + c.w, size.height - 1}, wp::RowState::Hot, true);
             const auto& col = srcCols[c.src];
-            Text(dc, col.title, {x + kCellPad, 0, x + c.w - kCellPad, size.height}, 0x4C607A,
+            Text(dc, Tr(col.title), {x + kCellPad, 0, x + c.w - kCellPad, size.height}, 0x4C607A,
                  col.rightAlign ? DWRITE_TEXT_ALIGNMENT_TRAILING : DWRITE_TEXT_ALIGNMENT_LEADING);
             if (!art) wp::HeaderSeparator(dc, x + c.w, size.height);
             if (c.src == m_source->SortColumn()) {  // sort chevron at the top center, as in Win7
@@ -539,7 +540,7 @@ void ListView::PaintRows() {
         const D2D1_SIZE_F size{w / s, h / s};
         if (!m_source) return;
         if (m_source->Count() == 0) {
-            Text(dc, m_source->EmptyText(), {20, 20, size.width - 20, 60}, kGreyInk, DWRITE_TEXT_ALIGNMENT_CENTER);
+            Text(dc, Tr(m_source->EmptyText()), {20, 20, size.width - 20, 60}, kGreyInk, DWRITE_TEXT_ALIGNMENT_CENTER);
             return;
         }
         // Favorite column shown: which tracks are in the Favorites playlist.
@@ -1205,7 +1206,7 @@ void ListView::ShowHeaderMenu(HWND owner, POINT pt, size_t displayCol) {
     HMENU menu = CreatePopupMenu();
     HMENU choose = CreatePopupMenu();
     if (src != SIZE_MAX && m_source->CanSort(src) && !srcCols[src].title.empty()) {
-        AppendMenuW(menu, MF_STRING, kSort, (L"Sort by \u201C" + srcCols[src].title + L"\u201D").c_str());
+        AppendMenuW(menu, MF_STRING, kSort, (Tr(L"Sort by") + L" \u201C" + Tr(srcCols[src].title) + L"\u201D").c_str());
         AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     }
     for (size_t i = 0; i < srcCols.size(); ++i) {

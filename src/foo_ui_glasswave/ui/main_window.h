@@ -5,6 +5,7 @@
 #include "media/list_sources.h"
 #include "ui/list_view.h"
 #include "ui/main_menu.h"
+#include "ui/i18n.h"
 #include "ui/nav_pane.h"
 #include "ui/search_box.h"
 #include "ui/widget.h"
@@ -137,6 +138,7 @@ private:
     void JumpToPlaying();
     void ShowDeviceMenu();
     void UpdateFavoriteState();  // taskbar Favorite button for the playing song
+    void ApplyLanguage(Language language);
     void SetVolumeFromX(int x);
     void ShowVolumeTip(float thumbX);  // Win7 tooltip bubble with the volume while dragging
     void HideVolumeTip();

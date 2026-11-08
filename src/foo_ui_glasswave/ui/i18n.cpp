@@ -97,7 +97,12 @@ Catalog& Get() {
 }  // namespace
 
 Language CurrentLanguageSetting() { return static_cast<Language>(std::clamp<int>(static_cast<int>(cfg_language.get()), 0, 2)); }
-void SetLanguageSetting(Language language) { cfg_language = static_cast<int>(language); }
+void SetLanguageSetting(Language language) {
+    cfg_language = static_cast<int>(language);
+    auto& c = Get();
+    c.loaded = false;  // reload on next use; keys seen so far stay recorded
+    c.table.clear();
+}
 bool UsingChinese() { return Get().chinese; }
 
 const std::wstring& Tr(const std::wstring& english) {

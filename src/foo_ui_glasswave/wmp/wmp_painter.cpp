@@ -1,6 +1,7 @@
 #include "pch.h"
 #include "wmp/wmp_painter.h"
 #include "ui/text.h"
+#include "ui/i18n.h"
 #include "win7/win7_resources.h"
 
 namespace glasswave::wmp::paint {
@@ -172,7 +173,7 @@ void CommandButton(ID2D1DeviceContext* dc, D2D1_SIZE_F size, Layer layer, std::w
         dc->DrawRoundedRectangle(rr, Solid(dc, Hex(0x8EB0D3)).get(), L);
     }
     const float arrowW = dropDown ? 12.0f : 0.0f;
-    auto layout = ui::MakeText(text, 12.0f, DWRITE_FONT_WEIGHT_NORMAL, size.width - 12 - arrowW, size.height);
+    auto layout = ui::MakeText(ui::Tr(std::wstring(text)), 12.0f, DWRITE_FONT_WEIGHT_NORMAL, size.width - 12 - arrowW, size.height);
     dc->DrawTextLayout({6, 0}, layout.get(), Solid(dc, Hex(0x1E395B)).get());
     if (dropDown) {  // after the text, or centered on the arrow part of a split button
         const float cx = text.empty() ? std::round(size.width / 2) : size.width - 9, cy = size.height / 2 + 0.5f;

@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "ui/win7_menu.h"
+#include "ui/i18n.h"
 #include "gfx/composition_host.h"
 #include "win7/win7_resources.h"
 #include "media/favorites.h"
@@ -115,7 +116,7 @@ void Convert(HMENU menu, MenuState& s) {
         d->separator = (ii.fType & MFT_SEPARATOR) != 0;
         d->radio = (ii.fType & MFT_RADIOCHECK) != 0;
         d->submenu = ii.hSubMenu != nullptr;
-        if (!d->separator) d->text = buf;
+        if (!d->separator) d->text = TrMenu(buf);  // ours and foobar2000's items alike
         MENUITEMINFOW set{sizeof(set)};
         set.fMask = MIIM_FTYPE | MIIM_DATA;
         set.fType = (ii.fType & (MFT_SEPARATOR | MFT_RADIOCHECK | MFT_MENUBARBREAK | MFT_MENUBREAK)) | MFT_OWNERDRAW;
@@ -298,12 +299,12 @@ enum : UINT { kPlay = 0x8001, kPlayNext, kAddToQueue, kFavoriteAdd, kFavoriteRem
 
 void AppendQueueCommands(HMENU menu, metadb_handle_list_cref items, bool inQueue) {
     if (!inQueue) {
-        AppendMenuW(menu, MF_STRING, kPlay, L"Play");
-        AppendMenuW(menu, MF_STRING, kPlayNext, L"Play next");
-        AppendMenuW(menu, MF_STRING, kAddToQueue, L"Add to queue");
+        AppendMenuW(menu, MF_STRING, kPlay, TrC(L"Play"));
+        AppendMenuW(menu, MF_STRING, kPlayNext, TrC(L"Play next"));
+        AppendMenuW(menu, MF_STRING, kAddToQueue, TrC(L"Add to queue"));
     }
     const bool fav = media::AllFavorite(items);
-    AppendMenuW(menu, MF_STRING, fav ? kFavoriteRemove : kFavoriteAdd, fav ? L"Remove from Favorites" : L"Add to Favorites");
+    AppendMenuW(menu, MF_STRING, fav ? kFavoriteRemove : kFavoriteAdd, fav ? TrC(L"Remove from Favorites") : TrC(L"Add to Favorites"));
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
 }
 
