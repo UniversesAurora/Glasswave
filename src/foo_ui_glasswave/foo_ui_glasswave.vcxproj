@@ -94,6 +94,7 @@
     <ClCompile Include="ui\list_view.cpp" />
     <ClCompile Include="ui\nav_pane.cpp" />
     <ClCompile Include="ui\taskbar.cpp" />
+    <ClCompile Include="media\favorites.cpp" />
     <ClCompile Include="ui\win7_menu.cpp" />
     <ClCompile Include="ui\search_box.cpp" />
     <ClCompile Include="ui\shell_glue.cpp" />
@@ -122,6 +123,7 @@
     <ClInclude Include="ui\list_view.h" />
     <ClInclude Include="ui\nav_pane.h" />
     <ClInclude Include="ui\taskbar.h" />
+    <ClInclude Include="media\favorites.h" />
     <ClInclude Include="ui\win7_menu.h" />
     <ClInclude Include="ui\search_box.h" />
     <ClInclude Include="ui\shell_glue.h" />

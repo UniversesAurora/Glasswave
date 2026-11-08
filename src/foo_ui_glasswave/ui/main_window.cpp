@@ -12,6 +12,7 @@
 #include "ui/shell_glue.h"
 #include "ui/taskbar.h"
 #include "ui/win7_menu.h"
+#include "media/favorites.h"
 #include "ui/text.h"
 #include "wmp/wmp_painter.h"
 #include "wmp/wmp_transport.h"
@@ -120,6 +121,71 @@ constexpr int kWmpIcon = 102;
 HICON CreateAppIcon(int sizePx) {
     if (HICON icon = win7::Resources::Get().Icon(win7::Module::Wmploc, kWmpIcon, sizePx)) return icon;
     return ui_control::get()->load_main_icon(sizePx, sizePx);
+}
+
+// WMP's large icon frames carry uneven transparent margins (the 64 px one shows 50x46 px,
+// low and left), so the taskbar drew it small and off-centre. This builds a big icon
+// from the 256 px frame cropped to its visible part, centred and scaled to `sizePx`.
+HICON CreateCenteredAppIcon(int sizePx) {
+    HICON big = win7::Resources::Get().Icon(win7::Module::Wmploc, kWmpIcon, 256);
+    if (!big) return CreateAppIcon(sizePx);
+    auto* wic = gfx::CompositionHost::Get().Wic();
+    com_ptr<IWICBitmap> src;
+    HICON result = nullptr;
+    if (SUCCEEDED(wic->CreateBitmapFromHICON(big, src.put()))) {
+        UINT w = 0, h = 0;
+        src->GetSize(&w, &h);
+        std::vector<BYTE> px(static_cast<size_t>(w) * h * 4);
+        src->CopyPixels(nullptr, w * 4, static_cast<UINT>(px.size()), px.data());
+        UINT l = w, t = h, r = 0, b = 0;
+        for (UINT y = 0; y < h; ++y)
+            for (UINT x = 0; x < w; ++x)
+                if (px[(static_cast<size_t>(y) * w + x) * 4 + 3] > 8) {
+                    l = std::min(l, x), t = std::min(t, y), r = std::max(r, x), b = std::max(b, y);
+                }
+        if (r > l && b > t) {
+            com_ptr<IWICBitmapClipper> clip;
+            com_ptr<IWICBitmapScaler> scaler;
+            const UINT cw = r - l + 1, ch = b - t + 1, side = std::max(cw, ch);
+            const UINT dw = std::max<UINT>(1, sizePx * cw / side), dh = std::max<UINT>(1, sizePx * ch / side);
+            const WICRect rc{static_cast<INT>(l), static_cast<INT>(t), static_cast<INT>(cw), static_cast<INT>(ch)};
+            if (SUCCEEDED(wic->CreateBitmapClipper(clip.put())) && SUCCEEDED(clip->Initialize(src.get(), &rc)) &&
+                SUCCEEDED(wic->CreateBitmapScaler(scaler.put())) &&
+                SUCCEEDED(scaler->Initialize(clip.get(), dw, dh, WICBitmapInterpolationModeHighQualityCubic))) {
+                std::vector<BYTE> scaled(static_cast<size_t>(dw) * dh * 4);
+                scaler->CopyPixels(nullptr, dw * 4, static_cast<UINT>(scaled.size()), scaled.data());
+                // Into a centred square 32-bpp DIB (BGRA, straight alpha as icons expect).
+                BITMAPV5HEADER bh{};
+                bh.bV5Size = sizeof(bh);
+                bh.bV5Width = sizePx;
+                bh.bV5Height = -sizePx;
+                bh.bV5Planes = 1;
+                bh.bV5BitCount = 32;
+                bh.bV5Compression = BI_BITFIELDS;
+                bh.bV5RedMask = 0x00FF0000, bh.bV5GreenMask = 0x0000FF00, bh.bV5BlueMask = 0x000000FF,
+                bh.bV5AlphaMask = 0xFF000000;
+                void* bits = nullptr;
+                HDC screen = GetDC(nullptr);
+                HBITMAP color = CreateDIBSection(screen, reinterpret_cast<BITMAPINFO*>(&bh), DIB_RGB_COLORS, &bits, nullptr, 0);
+                ReleaseDC(nullptr, screen);
+                if (color) {
+                    auto* out = static_cast<BYTE*>(bits);
+                    std::memset(out, 0, static_cast<size_t>(sizePx) * sizePx * 4);
+                    const UINT ox = (sizePx - dw) / 2, oy = (sizePx - dh) / 2;
+                    for (UINT y = 0; y < dh; ++y)
+                        std::memcpy(out + ((static_cast<size_t>(y) + oy) * sizePx + ox) * 4, scaled.data() + static_cast<size_t>(y) * dw * 4,
+                                    static_cast<size_t>(dw) * 4);
+                    HBITMAP mask = CreateBitmap(sizePx, sizePx, 1, 1, nullptr);
+                    ICONINFO ii{TRUE, 0, 0, mask, color};
+                    result = CreateIconIndirect(&ii);
+                    DeleteObject(mask);
+                    DeleteObject(color);
+                }
+            }
+        }
+    }
+    DestroyIcon(big);
+    return result ? result : CreateAppIcon(sizePx);
 }
 
 com_ptr<IWICBitmapSource> LoadAppIcon(int sizePx) {
@@ -881,7 +947,8 @@ void MainWindow::RepaintScaleDependent() {
     // Window icons for the taskbar, Alt+Tab and the system menu, at this monitor's sizes.
     const UINT dpi = static_cast<UINT>(std::lround(m_scale * 96));
     for (auto [which, metric] : {std::pair{ICON_SMALL, SM_CXSMICON}, std::pair{ICON_BIG, SM_CXICON}}) {
-        HICON icon = CreateAppIcon(GetSystemMetricsForDpi(metric, dpi));
+        const int size = GetSystemMetricsForDpi(metric, dpi);
+        HICON icon = which == ICON_BIG ? CreateCenteredAppIcon(size) : CreateAppIcon(size);
         if (HICON old = reinterpret_cast<HICON>(SendMessageW(m_hwnd, WM_SETICON, which, reinterpret_cast<LPARAM>(icon))))
             if (old != icon) DestroyIcon(old);
     }
@@ -1295,10 +1362,18 @@ void MainWindow::PaintBreadcrumb() {
             if ((hot || open) && crumbArt) {
                 const int nameState = open || m_crumbHotPart == 1 ? 3 : 1;
                 const int arrowState = open ? 2 : m_crumbHotPart == 1 ? 1 : 3;
-                if (!c.text.empty())
+                if (!c.text.empty()) {
+                    // MAINBUTTON is the left half of a split button and has no right edge; a
+                    // level without an arrow is closed with the split part's last 3 px.
+                    const float px = 1.0f / m_scale, edge = c.children ? 0 : 3 * px;
                     win7::DrawNineGrid(dc, win7::Module::Wmploc, L"WMP_BREADCRUMB_MAINBUTTON.PNG",
                                        {16.0f * nameState, 0, 16.0f * nameState + 16, 22}, {3, 3, 3, 3},
-                                       {c.x0, top, c.split, bottom});
+                                       {c.x0, top, c.split - edge, bottom});
+                    if (!c.children)
+                        win7::DrawNineGrid(dc, win7::Module::Wmploc, L"WMP_BREADCRUMB_SPLITBUTTON.PNG",
+                                           {10.0f * nameState + 7, 0, 10.0f * nameState + 10, 22}, {0, 3, 0, 3},
+                                           {c.split - edge, top, c.split, bottom});
+                }
                 if (c.children)
                     win7::DrawNineGrid(dc, win7::Module::Wmploc, L"WMP_BREADCRUMB_SPLITBUTTON.PNG",
                                        {10.0f * arrowState, 0, 10.0f * arrowState + 10, 22}, {3, 3, 3, 3},
@@ -1756,6 +1831,7 @@ void MainWindow::OnTrackChanged() {
     if (pc->get_now_playing(playing)) LoadLyrics(playing);
     else m_lyrics.clear();
     RepaintStreamInfo();
+    UpdateFavoriteState();
     RepaintNowPlaying();
     if (auto* w = WidgetById(kSeek)) w->Invalidate();
     if (m_list) m_list->Refresh();
@@ -1859,7 +1935,14 @@ void MainWindow::OnShuffleTrack() {
     }
 }
 
+void MainWindow::UpdateFavoriteState() {
+    metadb_handle_ptr now;
+    const bool fav = playback_control::get()->get_now_playing(now) && media::IsFavorite(now);
+    if (m_taskbar) m_taskbar->SetFavorite(fav);
+}
+
 void MainWindow::OnPlaylistContentChanged(size_t playlist) {
+    if (playlist == media::FavoritesPlaylist(false)) UpdateFavoriteState();
     if (m_view.kind == View::Kind::Playlist && m_view.playlist == playlist && m_source) {
         static_cast<media::PlaylistSource*>(m_source.get())->Rebuild();
         m_list->Refresh();
@@ -2091,6 +2174,11 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
         RepaintScaleDependent();
         m_shadow.Create(hwnd);
         m_taskbar = std::make_unique<Taskbar>(hwnd);
+        m_taskbar->onFavorite = [this] {
+            metadb_handle_ptr now;
+            if (playback_control::get()->get_now_playing(now)) media::ToggleFavorite(now);
+            UpdateFavoriteState();
+        };
         Taskbar::SetupJumpList();
         m_library.Reload();
         m_playCallback = std::make_unique<PlayCallback>(*this);

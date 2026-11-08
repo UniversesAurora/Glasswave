@@ -16,6 +16,9 @@ public:
     // Feed every window message; true when it was a taskbar message we handled.
     bool OnMessage(UINT msg, WPARAM wp, LPARAM lp);
     void SetPlayState(bool playing, bool paused);
+    // Favorite button: a gold star when the playing song is in Favorites, else its outline.
+    void SetFavorite(bool favorite);
+    std::function<void()> onFavorite;
 
     // Jump list tasks. Written only when this process has no explicit AppUserModelID, i.e.
     // the jump list belongs to this foobar2000 installation alone.
@@ -29,7 +32,8 @@ private:
     UINT m_createdMsg = 0;
     winrt::com_ptr<ITaskbarList3> m_list;
     HIMAGELIST m_images = nullptr;
-    bool m_added = false, m_playing = false, m_paused = false;
+    bool m_added = false, m_playing = false, m_paused = false, m_favorite = false;
+    int m_starFull = -1, m_starOutline = -1;  // image list indices
 };
 
 }  // namespace glasswave::ui

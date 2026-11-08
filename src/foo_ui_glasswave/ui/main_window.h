@@ -133,6 +133,7 @@ private:
     void OnNowPlayingClick(int part);
     void JumpToPlaying();
     void ShowDeviceMenu();
+    void UpdateFavoriteState();  // taskbar Favorite button for the playing song
     void SetVolumeFromX(int x);
     void ShowVolumeTip(float thumbX);  // Win7 tooltip bubble with the volume while dragging
     void HideVolumeTip();

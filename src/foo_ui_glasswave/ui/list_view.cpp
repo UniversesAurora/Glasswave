@@ -5,6 +5,7 @@
 #include "ui/text.h"
 #include "win7/win7_resources.h"
 #include "ui/win7_menu.h"
+#include "media/favorites.h"
 #include "wmp/wmp_painter.h"
 
 namespace glasswave::ui {
@@ -47,31 +48,6 @@ CellKind KindOf(const media::Column& c) {
     return CellKind::Text;
 }
 constexpr float kStar = 13;  // STARS.PNG cell width (13x16)
-
-// "Favorites" is an ordinary foobar2000 playlist; the Favorite column adds and removes.
-constexpr const char* kFavorites = "Favorites";
-t_size FavoritesPlaylist(bool create) {
-    auto pm = playlist_manager::get();
-    t_size p = pm->find_playlist(kFavorites);
-    if (p == SIZE_MAX && create) p = pm->create_playlist(kFavorites, SIZE_MAX, SIZE_MAX);
-    return p;
-}
-
-void ToggleFavorite(const metadb_handle_ptr& track) {
-    auto pm = playlist_manager::get();
-    const t_size p = FavoritesPlaylist(true);
-    if (p == SIZE_MAX) return;
-    metadb_handle_list items;
-    pm->playlist_get_all_items(p, items);
-    for (t_size i = 0; i < items.get_count(); ++i)
-        if (items[i] == track) {
-            pm->playlist_remove_items(p, pfc::bit_array_one(i));
-            return;
-        }
-    metadb_handle_list add;
-    add.add_item(track);
-    pm->playlist_add_items(p, add, pfc::bit_array_false());
-}
 
 // Ratings go through foobar2000's own Playback Statistics context command
 // ("Playback Statistics" / "Rating" / "1".."5"), so they land where %rating% reads them.
@@ -572,7 +548,7 @@ void ListView::PaintRows() {
             const auto& srcCols = m_source->Columns();
             bool shown = false;
             for (const Col& c : Columns(0)) shown = shown || KindOf(srcCols[c.src]) == CellKind::Favorite;
-            if (const t_size p = shown ? FavoritesPlaylist(false) : SIZE_MAX; p != SIZE_MAX) {
+            if (const t_size p = shown ? media::FavoritesPlaylist(false) : SIZE_MAX; p != SIZE_MAX) {
                 metadb_handle_list items;
                 playlist_manager::get()->playlist_get_all_items(p, items);
                 for (t_size i = 0; i < items.get_count(); ++i) m_favorites.insert(items[i].get_ptr());
@@ -1086,7 +1062,7 @@ void ListView::OnLButtonDown(POINT pt, bool ctrl, bool shift) {
                 popup_message::g_show("Ratings need foobar2000's Playback Statistics (Library > Playback Statistics).",
                                       "Rating");
         } else if (kind == static_cast<int>(CellKind::Favorite)) {
-            if (const auto item = m_source->Item(hit.row); item.is_valid()) ToggleFavorite(item);
+            if (const auto item = m_source->Item(hit.row); item.is_valid()) media::ToggleFavorite(item);
         }
         MoveFocus(hit.row, ctrl, shift);
         break;
