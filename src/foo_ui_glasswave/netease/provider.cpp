@@ -18,6 +18,18 @@ std::wstring ErrorOf(const std::wstring& error) {
     return error.empty() ? L"The NetEase service did not return a result." : error;
 }
 
+// 私人雷达 (Personal Radar) is one global playlist whose Recommended image differs from
+// the one /user/playlist and /playlist/detail return. Pin the Recommended cover so the
+// navigation and lists do not flip between the two.
+constexpr int64_t kPersonalRadarId = 3136952023;
+
+void PutRecommended(const std::vector<Playlist>& playlists) {
+    for (const auto& playlist : playlists) {
+        Catalog::Get().Put(playlist);
+        if (playlist.id == kPersonalRadarId) Catalog::Get().PreferCover(playlist.id, playlist.coverUrl);
+    }
+}
+
 class NeteaseFavoriteHook : public media::FavoriteHook {
 public:
     explicit NeteaseFavoriteHook(Provider& provider) : m_provider(provider) {}
@@ -396,7 +408,7 @@ void Provider::RefreshAccount(DoneCallback done) {
         std::vector<Playlist> recommended;
         if (m_client.RecommendPlaylists(abort, recommended, listError)) {
             recommendedCount = recommended.size();
-            for (const auto& playlist : recommended) Catalog::Get().Put(playlist);
+            PutRecommended(recommended);
             std::lock_guard lock(m_mutex);
             m_recommendedPlaylists = std::move(recommended);
         }
@@ -522,7 +534,7 @@ void Provider::FetchRecommended(PlaylistsCallback done) {
             });
             return;
         }
-        for (const auto& playlist : playlists) Catalog::Get().Put(playlist);
+        PutRecommended(playlists);
         {
             std::lock_guard lock(m_mutex);
             m_recommendedPlaylists = playlists;
@@ -1335,6 +1347,7 @@ void Provider::OnLoginCookie(std::wstring cookie, DoneCallback done) {
 void Provider::Logout() {
     ClearSessionCookie();
     ClearAccount();
+    Catalog::Get().ClearPreferredCovers();
     {
         std::lock_guard lock(m_mutex);
         m_account = {};

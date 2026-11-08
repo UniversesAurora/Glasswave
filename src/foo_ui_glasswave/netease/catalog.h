@@ -37,6 +37,11 @@ public:
     std::wstring ArtistCover(int64_t artistId) const;
     std::wstring AlbumCover(int64_t albumId) const;
 
+    // Some curated entries carry a different image per endpoint. Pin the cover the user
+    // should always see (the personal radar uses its Recommended image everywhere).
+    void PreferCover(int64_t playlistId, std::wstring coverUrl);
+    void ClearPreferredCovers();
+
     // Main thread: store and feed file_info to metadb in one batch.
     void PutAndHint(const std::vector<Song>& songs);
 
@@ -52,6 +57,7 @@ private:
     mutable std::mutex m_mutex;
     std::unordered_map<int64_t, Song> m_songs;
     std::unordered_map<int64_t, Playlist> m_playlists;
+    std::unordered_map<int64_t, std::wstring> m_preferredCovers;
     std::unordered_map<int64_t, Artist> m_artists;
     std::unordered_map<int64_t, Album> m_albums;
 };

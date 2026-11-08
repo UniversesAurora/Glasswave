@@ -129,8 +129,22 @@ std::wstring Catalog::SongCover(int64_t songId) const {
 }
 
 std::wstring Catalog::PlaylistCover(int64_t playlistId) const {
-    if (const auto playlist = FindPlaylist(playlistId)) return playlist->coverUrl;
+    std::lock_guard lock(m_mutex);
+    if (auto it = m_preferredCovers.find(playlistId); it != m_preferredCovers.end() && !it->second.empty())
+        return it->second;
+    if (auto it = m_playlists.find(playlistId); it != m_playlists.end()) return it->second.coverUrl;
     return {};
+}
+
+void Catalog::PreferCover(int64_t playlistId, std::wstring coverUrl) {
+    if (!playlistId || coverUrl.empty()) return;
+    std::lock_guard lock(m_mutex);
+    m_preferredCovers[playlistId] = std::move(coverUrl);
+}
+
+void Catalog::ClearPreferredCovers() {
+    std::lock_guard lock(m_mutex);
+    m_preferredCovers.clear();
 }
 
 std::wstring Catalog::ArtistCover(int64_t artistId) const {
