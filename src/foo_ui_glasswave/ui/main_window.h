@@ -72,7 +72,10 @@ private:
         media::GroupKind group = media::GroupKind::Artist;
         std::wstring key, name;
         NeteaseScope neteaseScope = NeteaseScope::Created;
-        std::wstring remoteId;     // NetEase playlist id
+        bool scopeKnown = false;   // NeteasePlaylist: its section is known
+        std::wstring remoteId;     // NetEase playlist / artist / album id
+        std::wstring parentId;     // NeteaseAlbum: the artist page it came from
+        std::wstring parentName;
         std::wstring query;        // Search
     };
 
@@ -87,7 +90,20 @@ private:
     std::vector<Crumb> m_crumbs;
     int m_crumbHot = -1, m_crumbHotPart = 0;  // part 0 = name, 1 = arrow
     int m_crumbOpen = -1;                      // crumb whose arrow menu is open
+    // One navigation model for every library: a path of levels, each with its own children
+    // menu. Structural levels always get a menu (the arrow also separates the crumbs).
+    std::vector<Crumb> BuildCrumbPath();
     void BuildCrumbs();
+    void LayoutCrumbs();
+    std::vector<MenuAction> LibraryMenu();
+    std::vector<MenuAction> AllSectionsMenu();
+    std::vector<MenuAction> LocalSectionsMenu();
+    std::vector<MenuAction> NeteaseSectionsMenu();
+    std::vector<MenuAction> PlaylistListMenu(bool smart);
+    std::vector<MenuAction> MusicMenu();
+    std::vector<MenuAction> GroupListMenu(media::GroupKind kind);
+    std::vector<MenuAction> NeteaseScopeMenu(View::NeteaseScope scope);
+    static const wchar_t* ScopeLabel(View::NeteaseScope scope);
     void PaintBreadcrumb();
     bool CrumbAt(POINT pt, int* index, int* part) const;
     void UpdateCrumbHover(POINT pt);
@@ -127,7 +143,7 @@ private:
     void ShowNeteasePlaylists(const View& view, std::vector<netease::Playlist> playlists, std::wstring error);
     void ShowNeteaseArtist(const View& view, netease::Artist artist, std::vector<netease::Album> albums,
                            std::wstring error);
-    void OpenNeteasePlaylist(int64_t id, std::wstring name);
+    void OpenNeteasePlaylist(int64_t id, std::wstring name, View::NeteaseScope scope);
     void OpenNeteaseArtist(int64_t id, std::wstring name);
     void OpenNeteaseAlbum(int64_t id, std::wstring name);
     void OpenNeteaseArtistSongs(int64_t artistId, std::wstring name);

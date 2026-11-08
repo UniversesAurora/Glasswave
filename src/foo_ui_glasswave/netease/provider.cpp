@@ -137,6 +137,17 @@ std::vector<Album> Provider::CollectedAlbums() const {
     return m_collectedAlbums;
 }
 
+Provider::PlaylistScope Provider::FindPlaylistScope(int64_t playlistId) const {
+    std::lock_guard lock(m_mutex);
+    for (const auto& playlist : m_createdPlaylists)
+        if (playlist.id == playlistId) return PlaylistScope::Created;
+    for (const auto& playlist : m_collectedPlaylists)
+        if (playlist.id == playlistId) return PlaylistScope::Collected;
+    for (const auto& playlist : m_recommendedPlaylists)
+        if (playlist.id == playlistId) return PlaylistScope::Recommended;
+    return PlaylistScope::Unknown;
+}
+
 void Provider::SetAccountLocked(const Account& account) {
     m_account = account;
     SetAccount(account.userId, account.nickname);

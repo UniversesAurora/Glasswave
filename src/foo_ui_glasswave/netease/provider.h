@@ -38,6 +38,8 @@ public:
     std::vector<Playlist> RecommendedPlaylists() const;
     std::vector<Artist> FollowedArtists() const;
     std::vector<Album> CollectedAlbums() const;
+    enum class PlaylistScope { Unknown, Created, Collected, Recommended };
+    PlaylistScope FindPlaylistScope(int64_t playlistId) const;
 
     using DoneCallback = std::function<void(bool ok, std::wstring error)>;
     using PlaylistsCallback = std::function<void(std::vector<Playlist> playlists, std::wstring error)>;

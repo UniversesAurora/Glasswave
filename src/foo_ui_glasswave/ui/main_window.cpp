@@ -1390,176 +1390,282 @@ void MainWindow::RepaintBreadcrumb() {
 }
 
 void MainWindow::BuildCrumbs() {
-    auto go = [this](View v) { return [this, v] { Navigate(v, true); }; };
-    // Names are laid out after the crumb list is built; early provider branches must call
-    // this too, or every crumb keeps x0 = split = x1 = 0 and they draw on top of each other.
-    auto layoutCrumbs = [this] {
-        float x = 0;
-        for (auto& c : m_crumbs) {
-            c.x0 = x;
-            if (!c.text.empty()) {
-                auto t = MakeText(Tr(c.text), 12.0f, DWRITE_FONT_WEIGHT_NORMAL, 400, 20);
-                DWRITE_TEXT_METRICS tm{};
-                t->GetMetrics(&tm);
-                x += std::ceil(tm.widthIncludingTrailingWhitespace) + 8;
-            }
-            c.split = x;
-            if (c.children) x += 12;
-            c.x1 = x;
+    m_crumbs = BuildCrumbPath();
+    LayoutCrumbs();
+}
+
+void MainWindow::LayoutCrumbs() {
+    float x = 0;
+    for (auto& c : m_crumbs) {
+        c.x0 = x;
+        if (!c.text.empty()) {
+            auto t = MakeText(Tr(c.text), 12.0f, DWRITE_FONT_WEIGHT_NORMAL, 400, 20);
+            DWRITE_TEXT_METRICS tm{};
+            t->GetMetrics(&tm);
+            x += std::ceil(tm.widthIncludingTrailingWhitespace) + 8;
         }
-        if (m_crumbHot >= static_cast<int>(m_crumbs.size())) m_crumbHot = -1;
-    };
+        c.split = x;
+        if (c.children) x += 12;
+        c.x1 = x;
+    }
+    if (m_crumbHot >= static_cast<int>(m_crumbs.size())) m_crumbHot = -1;
+}
+
+const wchar_t* MainWindow::ScopeLabel(View::NeteaseScope scope) {
+    switch (scope) {
+    case View::NeteaseScope::Collected: return L"Collected playlists";
+    case View::NeteaseScope::Recommended: return L"Recommended";
+    case View::NeteaseScope::Created:
+    default: return L"Created playlists";
+    }
+}
+
+std::vector<MenuAction> MainWindow::LibraryMenu() {
+    auto go = [this](View v) { return [this, v] { Navigate(v, true); }; };
     View all;
+    all.library = View::Library::All;
     all.kind = View::Kind::AllMusic;
-    auto categoryView = [](media::GroupKind k) {
+    View local;
+    local.library = View::Library::Local;
+    local.kind = View::Kind::AllMusic;
+    View netease;
+    netease.library = View::Library::Netease;
+    netease.kind = View::Kind::NeteasePlaylists;
+    netease.neteaseScope = View::NeteaseScope::Created;
+    netease.scopeKnown = true;
+    return {{L"All Music", go(all)}, {L"Local Music", go(local)}, {L"NetEase Cloud Music", go(netease)}};
+}
+
+std::vector<MenuAction> MainWindow::AllSectionsMenu() {
+    auto go = [this](View v) { return [this, v] { Navigate(v, true); }; };
+    View favorites;
+    favorites.library = View::Library::All;
+    favorites.kind = View::Kind::AllFavorites;
+    return {{L"Favorites", go(favorites)}};
+}
+
+std::vector<MenuAction> MainWindow::LocalSectionsMenu() {
+    auto go = [this](View v) { return [this, v] { Navigate(v, true); }; };
+    View playlists;
+    playlists.kind = View::Kind::Playlists;
+    View smart;
+    smart.kind = View::Kind::SmartPlaylists;
+    View music;
+    music.kind = View::Kind::AllMusic;
+    return {{L"Playlists", go(playlists)}, {L"Smart playlists", go(smart)}, {L"Music", go(music)}};
+}
+
+std::vector<MenuAction> MainWindow::NeteaseSectionsMenu() {
+    auto go = [this](View v) { return [this, v] { Navigate(v, true); }; };
+    View liked;
+    liked.library = View::Library::Netease;
+    liked.kind = View::Kind::NeteaseLiked;
+    View created;
+    created.library = View::Library::Netease;
+    created.kind = View::Kind::NeteasePlaylists;
+    created.neteaseScope = View::NeteaseScope::Created;
+    created.scopeKnown = true;
+    View collected = created;
+    collected.neteaseScope = View::NeteaseScope::Collected;
+    View recommended = created;
+    recommended.neteaseScope = View::NeteaseScope::Recommended;
+    return {{L"Favorites", go(liked)},
+            {L"Created playlists", go(created)},
+            {L"Collected playlists", go(collected)},
+            {L"Recommended", go(recommended)}};
+}
+
+std::vector<MenuAction> MainWindow::PlaylistListMenu(bool smart) {
+    auto go = [this](View v) { return [this, v] { Navigate(v, true); }; };
+    std::vector<MenuAction> out;
+    auto pm = playlist_manager::get();
+    auto isSmart = [](t_size p) { return p == media::FavoritesPlaylist(false) || media::IsAutoPlaylist(p); };
+    for (t_size i = 0, n = pm->get_playlist_count(); i < n; ++i) {
+        if (media::IsQueue(i) || isSmart(i) != smart) continue;
+        pfc::string8 name;
+        pm->playlist_get_name(i, name);
+        View v;
+        v.kind = View::Kind::Playlist;
+        v.playlist = i;
+        out.push_back({Wide(name), go(v)});
+    }
+    if (out.empty()) {
+        View page;
+        page.kind = smart ? View::Kind::SmartPlaylists : View::Kind::Playlists;
+        out.push_back({smart ? L"Smart playlists" : L"Playlists", go(page)});
+    }
+    return out;
+}
+
+std::vector<MenuAction> MainWindow::MusicMenu() {
+    auto go = [this](View v) { return [this, v] { Navigate(v, true); }; };
+    View all;
+    all.library = View::Library::Local;
+    all.kind = View::Kind::AllMusic;
+    std::vector<MenuAction> out{{L"All music", go(all)}};
+    for (auto kind : m_nav->Categories()) {
         View v;
         v.kind = View::Kind::Category;
-        v.group = k;
-        return v;
-    };
-    auto isSmartList = [](t_size p) { return p == media::FavoritesPlaylist(false) || media::IsAutoPlaylist(p); };
-    auto playlistsOf = [this, go, isSmartList](bool smart) {
-        std::vector<MenuAction> out;
-        auto pm = playlist_manager::get();
-        for (t_size i = 0, n = pm->get_playlist_count(); i < n; ++i) {
-            if (media::IsQueue(i) || isSmartList(i) != smart) continue;
-            pfc::string8 name;
-            pm->playlist_get_name(i, name);
-            View v;
-            v.kind = View::Kind::Playlist;
-            v.playlist = i;
-            out.push_back({Wide(name), go(v)});
-        }
-        return out;
-    };
-    auto playlists = [playlistsOf] { return playlistsOf(false); };
-    auto smartLists = [playlistsOf] { return playlistsOf(true); };
-    auto groupsOf = [this, go](media::GroupKind kind) {
-        return [this, go, kind] {
-            std::vector<MenuAction> out;
-            for (const auto& g : m_library.Groups(kind)) {
-                if (out.size() >= 300) break;  // a menu, not a list view
-                View v;
-                v.kind = View::Kind::Group;
-                v.group = kind;
-                v.key = g.key;
-                v.name = g.name;
-                out.push_back({g.name.empty() ? L"Unknown" : g.name, go(v)});
-            }
-            return out;
-        };
-    };
-    auto music = [this, go, categoryView, all] {
-        std::vector<MenuAction> out{{L"All music", go(all)}};
-        for (auto kind : m_nav->Categories()) out.push_back({CategoryLabel(kind), go(categoryView(kind))});
-        return out;
-    };
-    View playlistsPage;
-    playlistsPage.kind = View::Kind::Playlists;
-    View smartPage;
-    smartPage.kind = View::Kind::SmartPlaylists;
-    View nowPlaying;
-    nowPlaying.kind = View::Kind::Playlist;
-    nowPlaying.playlist = playlist_manager::get()->get_active_playlist();
-
-    View allLibrary;
-    allLibrary.library = View::Library::All;
-    allLibrary.kind = View::Kind::AllMusic;
-    View localLibrary;
-    localLibrary.library = View::Library::Local;
-    localLibrary.kind = View::Kind::AllMusic;
-    View neteaseHome;
-    neteaseHome.library = View::Library::Netease;
-    neteaseHome.kind = View::Kind::NeteasePlaylists;
-    auto libraries = [go, allLibrary, localLibrary, neteaseHome] {
-        return std::vector<MenuAction>{{L"All Music", go(allLibrary)},
-                                       {L"Local Music", go(localLibrary)},
-                                       {L"NetEase Cloud Music", go(neteaseHome)}};
-    };
-    auto neteaseMenu = [go, neteaseHome] {
-        View created = neteaseHome;
-        created.neteaseScope = View::NeteaseScope::Created;
-        View collected = neteaseHome;
-        collected.neteaseScope = View::NeteaseScope::Collected;
-        View recommended = neteaseHome;
-        recommended.neteaseScope = View::NeteaseScope::Recommended;
-        View liked;
-        liked.library = View::Library::Netease;
-        liked.kind = View::Kind::NeteaseLiked;
-        return std::vector<MenuAction>{{L"Favorites", go(liked)},
-                                       {L"Created playlists", go(created)},
-                                       {L"Collected playlists", go(collected)},
-                                       {L"Recommended", go(recommended)}};
-    };
-
-    if (m_view.library == View::Library::All) {
-        m_crumbs.clear();
-        m_crumbs.push_back({L"", {}, libraries});
-        m_crumbs.push_back({L"All Music", go(allLibrary), {}});
-        if (m_view.kind == View::Kind::AllFavorites) m_crumbs.push_back({L"Favorites", go(m_view), {}});
-        if (m_view.kind == View::Kind::Search) m_crumbs.push_back({L"Search results", go(m_view), {}});
-        layoutCrumbs();
-        return;
+        v.group = kind;
+        out.push_back({CategoryLabel(kind), go(v)});
     }
-    if (m_view.library == View::Library::Netease) {
-        m_crumbs.clear();
-        m_crumbs.push_back({L"", {}, libraries});
-        m_crumbs.push_back({L"NetEase Cloud Music", go(neteaseHome), neteaseMenu});
-        if (m_view.kind == View::Kind::NeteasePlaylists) {
-            const wchar_t* label = m_view.neteaseScope == View::NeteaseScope::Collected ? L"Collected playlists"
-                                   : m_view.neteaseScope == View::NeteaseScope::Recommended ? L"Recommended"
-                                                                                             : L"Created playlists";
-            m_crumbs.push_back({label, go(m_view), neteaseMenu});
-        } else if (m_view.kind == View::Kind::NeteasePlaylist) {
-            m_crumbs.push_back({m_view.name.empty() ? L"Playlist" : m_view.name, go(m_view), {}});
-        } else if (m_view.kind == View::Kind::NeteaseArtist) {
-            m_crumbs.push_back({m_view.name.empty() ? L"Artist" : m_view.name, go(m_view), {}});
-        } else if (m_view.kind == View::Kind::NeteaseAlbum) {
-            m_crumbs.push_back({m_view.name.empty() ? L"Album" : m_view.name, go(m_view), {}});
-        } else if (m_view.kind == View::Kind::NeteaseArtistSongs) {
-            const std::wstring label = Tr(L"Hot songs");
-            m_crumbs.push_back({m_view.name.empty() ? label : m_view.name + L" · " + label, go(m_view), {}});
-        } else if (m_view.kind == View::Kind::NeteaseLiked) {
-            m_crumbs.push_back({L"Favorites", go(m_view), neteaseMenu});
-        } else if (m_view.kind == View::Kind::Search) {
-            m_crumbs.push_back({L"Search results", go(m_view), neteaseMenu});
-        }
-        layoutCrumbs();
-        return;
-    }
+    return out;
+}
 
-    m_crumbs.clear();
-    m_crumbs.push_back({L"", {}, [go, all] { return std::vector<MenuAction>{{L"Library", go(all)}}; }});
-    m_crumbs.push_back({L"Library", go(all), [go, all, playlistsPage, smartPage] {
-                            return std::vector<MenuAction>{{L"Playlists", go(playlistsPage)},
-                                                           {L"Smart playlists", go(smartPage)},
-                                                           {L"Music", go(all)}};
-                        }});
-    if (m_view.kind == View::Kind::Playlist && media::IsQueue(m_view.playlist)) {
-        m_crumbs.push_back({L"Now Playing", go(m_view), {}});  // the queue sits beside Playlists
-    } else if (m_view.kind == View::Kind::Playlists) {
-        m_crumbs.push_back({L"Playlists", go(m_view), playlists});
-    } else if (m_view.kind == View::Kind::SmartPlaylists) {
-        m_crumbs.push_back({L"Smart playlists", go(m_view), smartLists});
-    } else if (m_view.kind == View::Kind::Playlist) {
-        if (isSmartList(m_view.playlist))
-            m_crumbs.push_back({L"Smart playlists", go(smartPage), smartLists});
-        else
-            m_crumbs.push_back({L"Playlists", go(playlistsPage), playlists});
-        m_crumbs.push_back({m_view.name, go(m_view), {}});  // Tr() at layout translates built-in names
-    } else {
-        m_crumbs.push_back({L"Music", go(all), music});
-        const media::GroupKind kind = m_view.group;
-        if (m_view.kind == View::Kind::AllMusic) {
-            m_crumbs.push_back({L"All music", go(all), {}});
+std::vector<MenuAction> MainWindow::GroupListMenu(media::GroupKind kind) {
+    auto go = [this](View v) { return [this, v] { Navigate(v, true); }; };
+    std::vector<MenuAction> out;
+    for (const auto& g : m_library.Groups(kind)) {
+        if (out.size() >= 300) break;  // a menu, not a list view
+        View v;
+        v.kind = View::Kind::Group;
+        v.group = kind;
+        v.key = g.key;
+        v.name = g.name;
+        out.push_back({g.name.empty() ? L"Unknown" : g.name, go(v)});
+    }
+    if (out.empty()) {
+        View page;
+        page.kind = View::Kind::Category;
+        page.group = kind;
+        out.push_back({CategoryLabel(kind), go(page)});
+    }
+    return out;
+}
+
+std::vector<MenuAction> MainWindow::NeteaseScopeMenu(View::NeteaseScope scope) {
+    auto go = [this](View v) { return [this, v] { Navigate(v, true); }; };
+    auto& provider = netease::Provider::Get();
+    std::vector<netease::Playlist> playlists;
+    switch (scope) {
+    case View::NeteaseScope::Collected: playlists = provider.CollectedPlaylists(); break;
+    case View::NeteaseScope::Recommended: playlists = provider.RecommendedPlaylists(); break;
+    case View::NeteaseScope::Created:
+    default: playlists = provider.CreatedPlaylists(); break;
+    }
+    std::vector<MenuAction> out;
+    for (const auto& playlist : playlists) {
+        View v;
+        v.library = View::Library::Netease;
+        v.kind = View::Kind::NeteasePlaylist;
+        v.remoteId = std::to_wstring(playlist.id);
+        v.name = playlist.name;
+        v.neteaseScope = scope;
+        v.scopeKnown = true;
+        out.push_back({playlist.name.empty() ? L"Unnamed playlist" : playlist.name, go(v)});
+    }
+    if (out.empty()) {
+        View page;
+        page.library = View::Library::Netease;
+        page.kind = View::Kind::NeteasePlaylists;
+        page.neteaseScope = scope;
+        page.scopeKnown = true;
+        out.push_back({ScopeLabel(scope), go(page)});
+    }
+    return out;
+}
+
+std::vector<MainWindow::Crumb> MainWindow::BuildCrumbPath() {
+    auto go = [this](View v) { return [this, v] { Navigate(v, true); }; };
+    std::vector<Crumb> path;
+    path.push_back({L"", {}, [this] { return LibraryMenu(); }});
+    switch (m_view.library) {
+    case View::Library::All: {
+        View home;
+        home.library = View::Library::All;
+        home.kind = View::Kind::AllMusic;
+        path.push_back({L"All Music", go(home), [this] { return AllSectionsMenu(); }});
+        if (m_view.kind == View::Kind::AllFavorites) path.push_back({L"Favorites", go(m_view), {}});
+        break;
+    }
+    case View::Library::Local: {
+        View home;
+        home.library = View::Library::Local;
+        home.kind = View::Kind::AllMusic;
+        path.push_back({L"Local Music", go(home), [this] { return LocalSectionsMenu(); }});
+        if (m_view.kind == View::Kind::Playlist && media::IsQueue(m_view.playlist)) {
+            path.push_back({L"Now Playing", go(m_view), {}});
+        } else if (m_view.kind == View::Kind::Playlists) {
+            path.push_back({L"Playlists", go(m_view), [this] { return PlaylistListMenu(false); }});
+        } else if (m_view.kind == View::Kind::SmartPlaylists) {
+            path.push_back({L"Smart playlists", go(m_view), [this] { return PlaylistListMenu(true); }});
+        } else if (m_view.kind == View::Kind::Playlist) {
+            const bool smart = m_view.playlist == media::FavoritesPlaylist(false) || media::IsAutoPlaylist(m_view.playlist);
+            View section;
+            section.kind = smart ? View::Kind::SmartPlaylists : View::Kind::Playlists;
+            path.push_back({smart ? L"Smart playlists" : L"Playlists", go(section),
+                            [this, smart] { return PlaylistListMenu(smart); }});
+            path.push_back({m_view.name, go(m_view), {}});
         } else {
-            m_crumbs.push_back({CategoryLabel(kind), go(categoryView(kind)), groupsOf(kind)});
-            if (m_view.kind == View::Kind::Group) m_crumbs.push_back({m_view.name, go(m_view), {}});
+            View music;
+            music.kind = View::Kind::AllMusic;
+            path.push_back({L"Music", go(music), [this] { return MusicMenu(); }});
+            if (m_view.kind == View::Kind::AllMusic) {
+                path.push_back({L"All music", go(m_view), {}});
+            } else if (m_view.kind == View::Kind::Category) {
+                path.push_back({CategoryLabel(m_view.group), go(m_view),
+                                [this, kind = m_view.group] { return GroupListMenu(kind); }});
+            } else if (m_view.kind == View::Kind::Group) {
+                View category;
+                category.kind = View::Kind::Category;
+                category.group = m_view.group;
+                path.push_back({CategoryLabel(m_view.group), go(category),
+                                [this, kind = m_view.group] { return GroupListMenu(kind); }});
+                path.push_back({m_view.name, go(m_view), {}});
+            }
         }
+        break;
     }
-
-    // Lay out: name with 4 DIP padding, arrow 12 DIP; the root crumb is an arrow only.
-    layoutCrumbs();
+    case View::Library::Netease: {
+        View home;
+        home.library = View::Library::Netease;
+        home.kind = View::Kind::NeteasePlaylists;
+        home.neteaseScope = View::NeteaseScope::Created;
+        home.scopeKnown = true;
+        path.push_back({L"NetEase Cloud Music", go(home), [this] { return NeteaseSectionsMenu(); }});
+        switch (m_view.kind) {
+        case View::Kind::NeteaseLiked:
+            path.push_back({L"Favorites", go(m_view), {}});
+            break;
+        case View::Kind::NeteasePlaylists: {
+            const auto scope = m_view.neteaseScope;
+            path.push_back({ScopeLabel(scope), go(m_view), [this, scope] { return NeteaseScopeMenu(scope); }});
+            break;
+        }
+        case View::Kind::NeteasePlaylist: {
+            if (m_view.scopeKnown) {
+                const auto scope = m_view.neteaseScope;
+                View section;
+                section.library = View::Library::Netease;
+                section.kind = View::Kind::NeteasePlaylists;
+                section.neteaseScope = scope;
+                section.scopeKnown = true;
+                path.push_back({ScopeLabel(scope), go(section), [this, scope] { return NeteaseScopeMenu(scope); }});
+            }
+            path.push_back({m_view.name.empty() ? L"Playlist" : m_view.name, go(m_view), {}});
+            break;
+        }
+        case View::Kind::NeteaseArtist:
+            path.push_back({m_view.name.empty() ? L"Artist" : m_view.name, go(m_view), {}});
+            break;
+        case View::Kind::NeteaseAlbum:
+            path.push_back({m_view.name.empty() ? L"Album" : m_view.name, go(m_view), {}});
+            break;
+        case View::Kind::NeteaseArtistSongs: {
+            const std::wstring label = Tr(L"Hot songs");
+            path.push_back({m_view.name.empty() ? label : m_view.name + L" · " + label, go(m_view), {}});
+            break;
+        }
+        case View::Kind::Search:
+            path.push_back({L"Search results", go(m_view), {}});
+            break;
+        default:
+            break;
+        }
+        break;
+    }
+    }
+    return path;
 }
 
 void MainWindow::PaintBreadcrumb() {
@@ -1723,10 +1829,12 @@ void MainWindow::Navigate(const View& requested, bool push) {
         break;
     }
     case View::Kind::NeteasePlaylists: {
-        auto makeSource = [this](const std::vector<netease::Playlist>& playlists, std::wstring empty) {
+        auto makeSource = [this, scope = view.neteaseScope](const std::vector<netease::Playlist>& playlists,
+                                                             std::wstring empty) {
             return std::make_unique<ui::NeteasePlaylistSource>(
-                playlists, std::move(empty),
-                [this](int64_t id, std::wstring name) { OpenNeteasePlaylist(id, std::move(name)); });
+                playlists, std::move(empty), [this, scope](int64_t id, std::wstring name) {
+                    OpenNeteasePlaylist(id, std::move(name), scope);
+                });
         };
         const View requestedView = view;
         const auto selectTarget = [&view] {
@@ -1861,7 +1969,8 @@ void MainWindow::Navigate(const View& requested, bool push) {
 
     const bool sameView = view.kind == m_view.kind && view.library == m_view.library && view.playlist == m_view.playlist &&
                           view.key == m_view.key && view.group == m_view.group &&
-                          view.neteaseScope == m_view.neteaseScope && view.remoteId == m_view.remoteId &&
+                          view.neteaseScope == m_view.neteaseScope && view.scopeKnown == m_view.scopeKnown &&
+                          view.remoteId == m_view.remoteId && view.parentId == m_view.parentId &&
                           view.query == m_view.query;
     if (push && !sameView) {
         // A new view clears the search, like WMP.
@@ -1942,7 +2051,9 @@ void MainWindow::ShowNeteasePlaylists(const View& view, std::vector<netease::Pla
     }
     auto source = std::make_unique<ui::NeteasePlaylistSource>(
         std::move(playlists), error.empty() ? L"No playlists." : std::move(error),
-        [this](int64_t id, std::wstring name) { OpenNeteasePlaylist(id, std::move(name)); });
+        [this, scope = view.neteaseScope](int64_t id, std::wstring name) {
+            OpenNeteasePlaylist(id, std::move(name), scope);
+        });
     m_source = std::move(source);
     if (auto* style = ViewStyleSetting(view);
         style && m_source->SupportsViewStyle(static_cast<media::ViewStyle>(style->get())))
@@ -1950,12 +2061,14 @@ void MainWindow::ShowNeteasePlaylists(const View& view, std::vector<netease::Pla
     m_list->SetSource(m_source.get(), false);
 }
 
-void MainWindow::OpenNeteasePlaylist(int64_t id, std::wstring name) {
+void MainWindow::OpenNeteasePlaylist(int64_t id, std::wstring name, View::NeteaseScope scope) {
     View view;
     view.library = View::Library::Netease;
     view.kind = View::Kind::NeteasePlaylist;
     view.remoteId = std::to_wstring(id);
     view.name = std::move(name);
+    view.neteaseScope = scope;
+    view.scopeKnown = true;
     Navigate(view, true);
 }
 
@@ -2396,6 +2509,22 @@ void MainWindow::OnNavItem(const NavPane::Item& item) {
         v.kind = View::Kind::NeteasePlaylist;
         v.remoteId = std::to_wstring(item.remoteId);
         v.name = item.text;
+        switch (netease::Provider::Get().FindPlaylistScope(item.remoteId)) {
+        case netease::Provider::PlaylistScope::Created:
+            v.neteaseScope = View::NeteaseScope::Created;
+            v.scopeKnown = true;
+            break;
+        case netease::Provider::PlaylistScope::Collected:
+            v.neteaseScope = View::NeteaseScope::Collected;
+            v.scopeKnown = true;
+            break;
+        case netease::Provider::PlaylistScope::Recommended:
+            v.neteaseScope = View::NeteaseScope::Recommended;
+            v.scopeKnown = true;
+            break;
+        default:
+            break;
+        }
         break;
     case NavPane::Target::NeteaseRecommended:
         v.library = View::Library::Netease;
