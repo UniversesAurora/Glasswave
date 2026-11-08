@@ -230,9 +230,10 @@ Updated: 2026-11-08
     724/725/726. The track, plate and thumb only exist at 96 dpi; they are nine-gridded
     with the theme's fixed margins (and the glyph/gripper use their 120/144 dpi variants)
     so borders stay sharp when the window scale is not 100 %. Optional locally generated
-    2x replacements for the arrow glyphs can be made with scripts/upscale-scrollbar.ps1
-    (waifu2x; never committed); the component loads hd\aero\<id>@2x.png automatically.
-    The middle thumb and track stay the original theme art.
+    2x replacements for the arrow glyphs and/or the thumb gripper can be made with
+    scripts/upscale-scrollbar.ps1 (waifu2x; never committed); the component loads
+    hd\aero\<id>@2x.png automatically. The thumb background, plate and track stay the
+    original theme art.
   - Not implemented yet: NetEase full-catalog search UI and a combined All Music browse
     beyond Favorites.
 

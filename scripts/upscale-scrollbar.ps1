@@ -6,17 +6,22 @@
 
 .DESCRIPTION
     aero.msstyles stores the scrollbar arrow glyphs at 96/120/144 dpi (IMAGE 718/719/720,
-    13/16/20 px per state). This script extracts those three images, unpremultiplies the
-    theme's premultiplied alpha to straight alpha, upscales colour and alpha separately 2x
-    and writes <profile>\glasswave\hd\aero\<id>@2x.png; the component's existing @2x
-    artwork loader uses them for the up/down arrows.
+    13/16/20 px per state) and the thumb gripper at 96/120/144 dpi (IMAGE 724/725/726).
+    This script extracts the selected set, unpremultiplies the theme's premultiplied alpha
+    to straight alpha, upscales colour and alpha separately 2x and writes
+    <profile>\glasswave\hd\aero\<id>@2x.png; the component's existing @2x artwork loader
+    uses them.
 
-    Only the glyphs are upscaled. The arrow-button plate (717), track (728) and thumb (733)
-    have no high-dpi theme images and stay as the theme's nine-grid art; the middle thumb
-    is deliberately left untouched.
+    Only the selected glyphs are upscaled. The arrow-button plate (717), track (728) and
+    thumb background (733) have no high-dpi theme images and stay as the theme's nine-grid
+    art; the middle thumb background is deliberately left untouched.
 
 .PARAMETER ProfileDir
     Portable foobar2000 profile; default the repository dev instance.
+
+.PARAMETER Part
+    Arrows (default): the up/down/left/right arrow glyphs. Gripper: the three horizontal
+    grip lines on the thumb. Both: both sets.
 
 .PARAMETER Waifu2x
     Path to waifu2x-ncnn-vulkan.exe. Default: the newest copy under .local\tools.
@@ -33,6 +38,7 @@
 [CmdletBinding()]
 param(
     [string]$ProfileDir = (Join-Path $PSScriptRoot '..\.local\fb2k-dev\profile'),
+    [ValidateSet('Arrows', 'Gripper', 'Both')][string]$Part = 'Arrows',
     [string]$Waifu2x,
     [ValidateRange(-1, 3)][int]$Noise = -1,
     [ValidateSet('models-cunet', 'models-upconv_7_anime_style_art_rgb', 'models-upconv_7_photo')]
@@ -168,8 +174,12 @@ New-Item -ItemType Directory -Force -Path $inDir, $outDir | Out-Null
 $hdDir = Join-Path $art 'hd\aero'
 New-Item -ItemType Directory -Force -Path $hdDir | Out-Null
 
-# Arrow glyphs at 96/120/144 dpi; the plate/track/thumb stay original.
-$ids = 718, 719, 720
+# Arrow glyphs or the thumb gripper at 96/120/144 dpi; the plate/track/thumb stay original.
+$ids = switch ($Part) {
+    'Gripper' { 724, 725, 726 }
+    'Both' { 718, 719, 720, 724, 725, 726 }
+    default { 718, 719, 720 }
+}
 
 try {
     $sizes = @{}
