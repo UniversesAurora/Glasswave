@@ -1,7 +1,6 @@
 #include "pch.h"
 #include "ui/nav_pane.h"
 #include "gfx/composition_host.h"
-#include "netease/catalog.h"
 #include "ui/art_cache.h"
 #include "ui/text.h"
 #include "win7/win7_resources.h"
@@ -95,7 +94,7 @@ NavPane::NavPane(const winrt::Windows::UI::Composition::ContainerVisual& parent)
 }
 
 NavPane::~NavPane() {
-    ArtCache::Get().Unsubscribe(m_artToken);
+    if (auto* cache = ArtCache::Existing()) cache->Unsubscribe(m_artToken);
     IconCache().clear();  // WIC objects go before COM does
 }
 
@@ -106,21 +105,32 @@ std::wstring NavPane::ItemKey(const Item& item) {
     case Target::Queue: return L"queue";
     case Target::LibraryAll: return L"all";
     case Target::LibraryLocal: return L"local";
-    case Target::LibraryNetease: return L"netease";
+    case Target::LibraryRemote: return std::wstring(item.provider->Key());
     case Target::AllFavorites: return L"favorites";
     case Target::AllRecentPlayed: return L"recent";
     case Target::AllMostPlayed: return L"mostplayed";
     case Target::PlaylistsHeader: return L"playlists";
     case Target::SmartHeader: return L"smart";
-    case Target::NeteaseLiked: return L"liked";
-    case Target::NeteaseArtists: return L"artists";
-    case Target::NeteaseAlbums: return L"albums";
-    case Target::NeteaseCreatedHeader: return L"created";
-    case Target::NeteaseCollectedHeader: return L"collected";
-    case Target::NeteaseRecommended: return L"recommended";
-    case Target::NeteaseLogin: return L"account";
+    case Target::RemoteFavorites: return L"liked";
+    case Target::RemoteArtists: return L"artists";
+    case Target::RemoteAlbums: return L"albums";
+    case Target::RemoteCreatedHeader: return L"created";
+    case Target::RemoteSavedHeader: return L"collected";
+    case Target::RemoteRecommended: return L"recommended";
+    case Target::RemoteAccount: return L"account";
     default: return {};
     }
+}
+
+// Expanded state is remembered per group; a provider's groups are qualified by its key.
+std::wstring NavPane::ExpandKey(const Item& item) {
+    const std::wstring key = ItemKey(item);
+    return item.provider && item.target != Target::LibraryRemote ? std::wstring(item.provider->Key()) + L'/' + key : key;
+}
+
+bool NavPane::IsProviderGroup(const std::wstring& groupKey) const {
+    return std::any_of(m_providers.begin(), m_providers.end(),
+                       [&groupKey](const ProviderSection& s) { return s.provider->Key() == groupKey; });
 }
 
 std::wstring NavPane::GroupKeyOf(size_t index) const {
@@ -255,15 +265,15 @@ void NavPane::Rebuild() {
     auto pm = playlist_manager::get();
     // The play queue on top, like the "Up Next" / "Playing" list of current players.
     m_items.push_back({Target::Queue, media::QueuePlaylist(false), 0, L"Now Playing", wp::NavIcon::NowPlaying, false});
-    // Playlists hold local and NetEase tracks alike, so they belong to All Music; the NetEase
+    // Playlists hold local and provider tracks alike, so they belong to All Music; each provider
     // library shows its own cloud playlists below.
     m_items.push_back({Target::LibraryAll, 0, 0, L"All Music", wp::NavIcon::Library, true});
-    if (m_allExpanded) {
+    if (Expanded(m_items.back())) {
         m_items.push_back({Target::AllFavorites, 0, 1, L"Favorites", wp::NavIcon::Playlist, false});
         m_items.push_back({Target::AllRecentPlayed, 0, 1, L"Recently Played", wp::NavIcon::Playlist, false});
         m_items.push_back({Target::AllMostPlayed, 0, 1, L"Most Played", wp::NavIcon::Playlist, false});
         m_items.push_back({Target::PlaylistsHeader, 0, 1, L"Playlists", wp::NavIcon::Playlist, true});
-        if (m_playlistsExpanded) {
+        if (Expanded(m_items.back())) {
             pfc::string8 name;
             for (t_size i = 0, n = pm->get_playlist_count(); i < n; ++i) {
                 if (media::IsSpecial(i)) continue;  // queue, Favorites and smart lists have their places
@@ -275,13 +285,13 @@ void NavPane::Rebuild() {
     // Local Music: the Smart playlists section and the categories directly, without the old
     // Music level. The section sits at m_smartAt among the categories and can be dragged.
     m_items.push_back({Target::LibraryLocal, 0, 0, L"Local Music", wp::NavIcon::Music, true});
-    if (m_localExpanded) {
+    if (Expanded(m_items.back())) {
         const int count = static_cast<int>(m_categories.size());
         const int at = std::clamp(m_smartAt, 0, count);
         for (int i = 0; i <= count; ++i) {
             if (i == at) {
                 m_items.push_back({Target::SmartHeader, 0, 1, L"Smart playlists", wp::NavIcon::Playlist, true});
-                if (m_smartExpanded) {
+                if (Expanded(m_items.back())) {
                     if (const t_size fav = media::FavoritesPlaylist(false); fav != SIZE_MAX)
                         m_items.push_back({Target::Playlist, fav, 2, L"Favorites", wp::NavIcon::Playlist, false});
                     pfc::string8 smartName;  // every auto playlist, presets and the user's own
@@ -299,50 +309,54 @@ void NavPane::Rebuild() {
             }
         }
     }
-    m_items.push_back({Target::LibraryNetease, 0, 0, L"NetEase Cloud Music", wp::NavIcon::Library, true});
-    if (m_neteaseExpanded) {
-        if (m_neteaseLoggedIn) {
-            m_items.push_back({Target::NeteaseLiked, 0, 1, L"Favorites", wp::NavIcon::Playlist, false});
-            m_items.push_back({Target::NeteaseArtists, 0, 1, L"Artists", wp::NavIcon::Artist, false});
-            m_items.push_back({Target::NeteaseAlbums, 0, 1, L"Albums", wp::NavIcon::Album, false});
-            m_items.push_back(
-                {Target::NeteaseCreatedHeader, 0, 1, L"Created playlists", wp::NavIcon::Playlist, true});
-            if (m_createdExpanded) {
-                for (const auto& playlist : m_createdPlaylists)
-                    m_items.push_back({Target::NeteaseRemotePlaylist, 0, 2,
-                                       playlist.name.empty() ? L"Unnamed playlist" : playlist.name,
-                                       wp::NavIcon::Playlist, false, playlist.id});
-            }
-            m_items.push_back(
-                {Target::NeteaseCollectedHeader, 0, 1, L"Collected playlists", wp::NavIcon::Playlist, true});
-            if (m_collectedExpanded) {
-                for (const auto& playlist : m_collectedPlaylists)
-                    m_items.push_back({Target::NeteaseRemotePlaylist, 0, 2,
-                                       playlist.name.empty() ? L"Unnamed playlist" : playlist.name,
-                                       wp::NavIcon::Playlist, false, playlist.id});
-            }
-            m_items.push_back({Target::NeteaseRecommended, 0, 1, L"Recommended", wp::NavIcon::Playlist, false});
+    for (const auto& section : m_providers) {
+        stream::Provider* provider = section.provider;
+        auto add = [&](Target target, int level, std::wstring text, wp::NavIcon icon, bool expandable,
+                       stream::Id id = {}) {
+            Item item{target, 0, level, std::move(text), icon, expandable, provider, std::move(id)};
+            m_items.push_back(std::move(item));
+            return Expanded(m_items.back());
+        };
+        if (!add(Target::LibraryRemote, 0, provider->Name(), wp::NavIcon::Library, true)) continue;
+        const auto offers = provider->Offers();
+        if (section.signedIn) {
+            if (offers.favorites) add(Target::RemoteFavorites, 1, L"Favorites", wp::NavIcon::Playlist, false);
+            if (offers.followArtists) add(Target::RemoteArtists, 1, L"Artists", wp::NavIcon::Artist, false);
+            if (offers.saveAlbums) add(Target::RemoteAlbums, 1, L"Albums", wp::NavIcon::Album, false);
+            auto playlists = [&](Target header, const wchar_t* label, const std::vector<stream::Playlist>& list) {
+                if (!add(header, 1, label, wp::NavIcon::Playlist, true)) return;
+                for (const auto& playlist : list)
+                    add(Target::RemotePlaylist, 2, playlist.name.empty() ? L"Unnamed playlist" : playlist.name,
+                        wp::NavIcon::Playlist, false, playlist.id);
+            };
+            playlists(Target::RemoteCreatedHeader, L"Created playlists", section.created);
+            if (offers.savePlaylists) playlists(Target::RemoteSavedHeader, L"Collected playlists", section.saved);
+            if (offers.recommended) add(Target::RemoteRecommended, 1, L"Recommended", wp::NavIcon::Playlist, false);
         }
-        const std::wstring account = m_neteaseLoggedIn
-                                         ? (m_neteaseName.empty() ? std::wstring(L"NetEase account") : m_neteaseName)
-                                         : std::wstring(L"Sign in to NetEase Cloud Music...");
-        m_items.push_back({Target::NeteaseLogin, 0, 1, account, wp::NavIcon::Playlist, false});
+        const std::wstring account = !section.signedIn ? L"Sign in to " + provider->Name() + L"..."
+                                     : section.account.empty() ? std::wstring(L"Account")
+                                                               : section.account;
+        add(Target::RemoteAccount, 1, account, wp::NavIcon::Playlist, false);
     }
     ApplyStaticOrder();
     m_hot = SIZE_MAX;
+    m_top = std::min(m_top, m_items.empty() ? size_t{0} : m_items.size() - 1);  // a group may have closed
     Paint();
 }
 
-void NavPane::SetNeteasePlaylists(std::vector<RemotePlaylist> created, std::vector<RemotePlaylist> collected) {
-    m_createdPlaylists = std::move(created);
-    m_collectedPlaylists = std::move(collected);
-    Rebuild();
-}
-
-void NavPane::SetNeteaseState(bool loggedIn, std::wstring name) {
-    if (m_neteaseLoggedIn == loggedIn && m_neteaseName == name) return;
-    m_neteaseLoggedIn = loggedIn;
-    m_neteaseName = std::move(name);
+void NavPane::SetProviders(std::vector<ProviderSection> sections) {
+    // Pages report changes often; rebuild (and repaint the playlist covers) only when the
+    // rows would differ.
+    auto sameRows = [](const std::vector<stream::Playlist>& a, const std::vector<stream::Playlist>& b) {
+        return std::equal(a.begin(), a.end(), b.begin(), b.end(),
+                          [](const stream::Playlist& x, const stream::Playlist& y) { return x.id == y.id && x.name == y.name; });
+    };
+    auto same = [&](const ProviderSection& a, const ProviderSection& b) {
+        return a.provider == b.provider && a.signedIn == b.signedIn && a.account == b.account &&
+               sameRows(a.created, b.created) && sameRows(a.saved, b.saved);
+    };
+    if (std::equal(sections.begin(), sections.end(), m_providers.begin(), m_providers.end(), same)) return;
+    m_providers = std::move(sections);
     Rebuild();
 }
 
@@ -375,9 +389,10 @@ void NavPane::SetFocused(bool focused) {
     Paint();
 }
 
-void NavPane::Select(Target target, size_t playlist, int64_t remoteId) {
+void NavPane::Select(Target target, size_t playlist, const stream::Provider* provider, const stream::Id& remoteId) {
     m_selTarget = target;
     m_selPlaylist = playlist;
+    m_selProvider = provider;
     m_selRemoteId = remoteId;
     Paint();
 }
@@ -400,13 +415,8 @@ const NavPane::Item* NavPane::OnLButtonDown(POINT pt) {
     // Clicking the disclosure triangle toggles; clicking the label also selects.
     const float x = (pt.x - m_bounds.left) / m_scale;
     if (item->expandable && x < 16 + item->level * kIndent) {
-        if (item->target == Target::PlaylistsHeader) m_playlistsExpanded = !m_playlistsExpanded;
-        if (item->target == Target::SmartHeader) m_smartExpanded = !m_smartExpanded;
-        if (item->target == Target::LibraryAll) m_allExpanded = !m_allExpanded;
-        if (item->target == Target::LibraryLocal) m_localExpanded = !m_localExpanded;
-        if (item->target == Target::LibraryNetease) m_neteaseExpanded = !m_neteaseExpanded;
-        if (item->target == Target::NeteaseCreatedHeader) m_createdExpanded = !m_createdExpanded;
-        if (item->target == Target::NeteaseCollectedHeader) m_collectedExpanded = !m_collectedExpanded;
+        const std::wstring key = ExpandKey(*item);
+        if (!m_collapsed.erase(key)) m_collapsed.insert(key);
         Rebuild();
         return nullptr;
     }
@@ -466,13 +476,13 @@ bool NavPane::MovableItem(size_t index) const {
     if (item.level == 0) return !ItemKey(item).empty();
     if (item.level == 1) {
         const std::wstring group = GroupKeyOf(index);
-        return group == L"all" || group == L"local" || group == L"netease";
+        return group == L"all" || group == L"local" || IsProviderGroup(group);
     }
     if (item.level != 2) return false;
     for (size_t i = index; i > 0; --i) {
         if (m_items[i - 1].level >= 2) continue;
         const Target parent = m_items[i - 1].target;
-        return parent == Target::NeteaseCreatedHeader || parent == Target::NeteaseCollectedHeader ||
+        return parent == Target::RemoteCreatedHeader || parent == Target::RemoteSavedHeader ||
                parent == Target::PlaylistsHeader || parent == Target::SmartHeader;
     }
     return false;
@@ -492,12 +502,12 @@ bool NavPane::SameSiblingGroup(size_t a, size_t b) const {
         const size_t pa = parentOf(a);
         const size_t pb = parentOf(b);
         if (pa == SIZE_MAX || pb == SIZE_MAX || pa != pb) return false;
-        // Libraries with several subsections: All Music, Local Music and NetEase.
+        // Libraries with several subsections: All Music, Local Music and each provider.
         const std::wstring group = ItemKey(m_items[pa]);
         if (group == L"local")  // the Smart playlists section interleaves with the categories
             return (first.target == Target::Category || first.target == Target::SmartHeader) &&
                    (second.target == Target::Category || second.target == Target::SmartHeader);
-        return group == L"all" || group == L"netease";
+        return group == L"all" || IsProviderGroup(group);
     }
     if (first.level != 2 || second.level != 2) return false;
     auto parentOf = [this](size_t index) {
@@ -507,11 +517,11 @@ bool NavPane::SameSiblingGroup(size_t a, size_t b) const {
     };
     const size_t pa = parentOf(a);
     const size_t pb = parentOf(b);
-    if (pa == SIZE_MAX || pb == SIZE_MAX || m_items[pa].target != m_items[pb].target) return false;
-    // Groups whose order can be persisted: the two NetEase playlist sections, the regular
+    if (pa == SIZE_MAX || pb == SIZE_MAX || pa != pb) return false;
+    // Groups whose order can be persisted: a provider's two playlist sections, the regular
     // playlists under All Music and the smart playlists under Local Music.
     const Target parent = m_items[pa].target;
-    return parent == Target::NeteaseCreatedHeader || parent == Target::NeteaseCollectedHeader ||
+    return parent == Target::RemoteCreatedHeader || parent == Target::RemoteSavedHeader ||
            parent == Target::PlaylistsHeader || parent == Target::SmartHeader;
 }
 
@@ -605,7 +615,7 @@ void NavPane::Paint() {
             const bool autoPlaylist = it.target == Target::Playlist && media::IsAutoPlaylist(it.playlist);
             // Favorites: star; queue: WMP's playlist icon with the orbit; smart header: auto playlist.
             const int special = (it.target == Target::Playlist && it.text == L"Favorites") ||
-                                        it.target == Target::AllFavorites || it.target == Target::NeteaseLiked
+                                        it.target == Target::AllFavorites || it.target == Target::RemoteFavorites
                                     ? 29526
                                 : it.target == Target::Queue        ? 29513
                                 : it.target == Target::AllRecentPlayed ? 575   // clock with a music note
@@ -614,9 +624,9 @@ void NavPane::Paint() {
                                 : it.target == Target::Category ? CategoryIcon(static_cast<media::GroupKind>(it.playlist))
                                                                 : 0;
             bool drewCover = false;
-            if (it.target == Target::NeteaseRemotePlaylist && it.remoteId) {
-                const auto track = netease::Catalog::Get().PlaylistHandle(it.remoteId);
-                const std::wstring key = L"ncm:playlist:" + std::to_wstring(it.remoteId);
+            if (it.target == Target::RemotePlaylist && !it.remoteId.empty()) {
+                const auto track = it.provider->ArtItem(stream::ArtKind::Playlist, it.remoteId);
+                const std::wstring key = it.provider->ArtKey(stream::ArtKind::Playlist, it.remoteId);
                 winrt::com_ptr<IWICBitmapSource> cover;
                 const int coverPx = static_cast<int>(std::lround(16 * m_scale));
                 if (ArtCache::Get().Find(key, track, coverPx, &cover) == ArtCache::State::Ready && cover) {
@@ -643,7 +653,8 @@ void NavPane::Paint() {
                 it.target == m_selTarget &&
                 (it.target == Target::Playlist || it.target == Target::Category
                      ? it.playlist == m_selPlaylist
-                     : it.target == Target::NeteaseRemotePlaylist ? it.remoteId == m_selRemoteId : true);
+                     : it.target == Target::RemotePlaylist ? it.remoteId == m_selRemoteId : true) &&
+                (!it.provider || it.provider == m_selProvider);
             const bool hot = i == m_hot;
             if (selected || hot)
                 wp::RowPlate(dc, {4, y, width - 6, y + rowH},
@@ -651,14 +662,7 @@ void NavPane::Paint() {
                              m_focused);
             const float x = 8 + it.level * kIndent;
             if (it.expandable) {
-                const bool expanded = it.target == Target::PlaylistsHeader ? m_playlistsExpanded
-                                      : it.target == Target::SmartHeader   ? m_smartExpanded
-                                      : it.target == Target::LibraryAll    ? m_allExpanded
-                                      : it.target == Target::LibraryLocal  ? m_localExpanded
-                                      : it.target == Target::LibraryNetease ? m_neteaseExpanded
-                                      : it.target == Target::NeteaseCreatedHeader ? m_createdExpanded
-                                      : it.target == Target::NeteaseCollectedHeader ? m_collectedExpanded
-                                                                           : false;
+                const bool expanded = Expanded(it);
                 // Win7 tree expander as vectors (the 16 px theme glyph went soft at 200 %).
                 wp::Disclosure(dc, {x + 2, y + rowH / 2}, expanded, i == m_hotExpander);
             }

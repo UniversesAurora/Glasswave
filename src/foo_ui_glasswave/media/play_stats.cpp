@@ -1,7 +1,7 @@
 #include "pch.h"
 #include "media/play_stats.h"
-#include "netease/catalog.h"
-#include "netease/handle.h"
+#include "stream/provider.h"
+#include "app/settings.h"
 
 #include <cstdlib>
 #include <ctime>
@@ -12,7 +12,9 @@ namespace glasswave::media {
 
 namespace {
 
-constexpr size_t kMaxRecords = 2000;
+constexpr const char* kHeader = "# glasswave play stats 2";
+
+size_t MaxRecords() { return static_cast<size_t>(settings::PlayHistoryLimit()); }
 
 std::filesystem::path StatsFile() {
     pfc::string8 native;
@@ -85,20 +87,23 @@ std::string LocalField(const metadb_handle_ptr& track, const char* script) {
 
 int64_t ToInt(std::string_view text) { return std::strtoll(std::string(text).c_str(), nullptr, 10); }
 
+std::wstring Wide(std::string_view text) {
+    return pfc::stringcvt::string_wide_from_utf8(text.data(), text.size()).get_ptr();
+}
+
 // The stable identity of a track, shared by Record and CountFor. Returns false for
 // tracks that should not be tracked (empty paths, internet streams).
-bool RecordKey(const metadb_handle_ptr& track, std::string& key, std::string& path, bool& remote, int64_t& songId) {
+bool RecordKey(const metadb_handle_ptr& track, std::string& key, stream::Provider** provider = nullptr) {
     const char* rawPath = track->get_path();
     if (!rawPath || !*rawPath) return false;
-    path = rawPath;
-    songId = 0;
-    remote = netease::ParseSongPath(rawPath, songId);
-    if (remote) {
-        key = "ncm:" + std::to_string(songId);
+    if (auto* owner = stream::ProviderOf(track)) {
+        key = Utf8(std::wstring(owner->Key()) + L':' + owner->TrackId(track));
+        if (provider) *provider = owner;
         return true;
     }
+    const std::string_view path(rawPath);
     if (path.starts_with("http://") || path.starts_with("https://")) return false;
-    key = path + '\x1f' + std::to_string(track->get_subsong_index());
+    key = std::string(path) + '\x1f' + std::to_string(track->get_subsong_index());
     return true;
 }
 
@@ -119,25 +124,25 @@ void PlayStats::Load() {
     std::ifstream in(StatsFile(), std::ios::binary);
     if (!in) return;
     std::string line;
+    if (!std::getline(in, line) || line != kHeader) return;  // another format: start over
     while (std::getline(in, line)) {
-        if (line.empty() || line[0] == '#') continue;
         std::vector<std::string_view> fields;
         size_t start = 0;
         while (true) {
             const size_t tab = line.find('\t', start);
-            fields.emplace_back(line.data() + start,
-                                (tab == std::string::npos ? line.size() : tab) - start);
+            fields.emplace_back(line.data() + start, (tab == std::string::npos ? line.size() : tab) - start);
             if (tab == std::string::npos) break;
             start = tab + 1;
         }
         if (fields.size() < 13) continue;
+        auto text = [](std::string_view field) { return Wide(Unescape(field)); };
         PlayRecord record;
         record.count = static_cast<uint32_t>(ToInt(fields[0]));
         record.lastPlayed = ToInt(fields[1]);
-        record.remote = ToInt(fields[2]) != 0;
-        record.songId = ToInt(fields[3]);
-        record.albumId = ToInt(fields[4]);
-        record.artistId = ToInt(fields[5]);
+        record.provider = text(fields[2]);
+        record.trackId = text(fields[3]);
+        record.albumId = text(fields[4]);
+        record.artistId = text(fields[5]);
         record.subsong = static_cast<uint32_t>(ToInt(fields[6]));
         record.durationMs = static_cast<int>(ToInt(fields[7]));
         record.key = Unescape(fields[8]);
@@ -162,23 +167,29 @@ void PlayStats::Save() const {
     temp += L".tmp";
     std::ofstream out(temp, std::ios::binary | std::ios::trunc);
     if (!out) return;
-    out << "# glasswave play stats 1\n";
+    auto text = [](const std::wstring& value) { return Escape(Utf8(value)); };
+    out << kHeader << '\n';
     for (const auto& record : m_records) {
-        out << record.count << '\t' << record.lastPlayed << '\t' << (record.remote ? 1 : 0) << '\t'
-            << record.songId << '\t' << record.albumId << '\t' << record.artistId << '\t' << record.subsong
-            << '\t' << record.durationMs << '\t' << Escape(record.key) << '\t' << Escape(record.path) << '\t'
-            << Escape(record.title) << '\t' << Escape(record.artist) << '\t' << Escape(record.album) << '\n';
+        out << record.count << '\t' << record.lastPlayed << '\t' << text(record.provider) << '\t'
+            << text(record.trackId) << '\t' << text(record.albumId) << '\t' << text(record.artistId) << '\t'
+            << record.subsong << '\t' << record.durationMs << '\t' << Escape(record.key) << '\t'
+            << Escape(record.path) << '\t' << Escape(record.title) << '\t' << Escape(record.artist) << '\t'
+            << Escape(record.album) << '\n';
     }
     out.close();
+    if (!out) {  // disk full or similar: keep the previous file
+        DeleteFileW(temp.c_str());
+        return;
+    }
     MoveFileExW(temp.c_str(), file.c_str(), MOVEFILE_REPLACE_EXISTING);
 }
 
 void PlayStats::Prune() {
-    if (m_records.size() <= kMaxRecords) return;
+    const size_t limit = MaxRecords();
+    if (m_records.size() <= limit) return;
     std::stable_sort(m_records.begin(), m_records.end(),
                      [](const PlayRecord& a, const PlayRecord& b) { return a.lastPlayed < b.lastPlayed; });
-    m_records.erase(m_records.begin(),
-                    m_records.begin() + static_cast<std::ptrdiff_t>(m_records.size() - kMaxRecords));
+    m_records.erase(m_records.begin(), m_records.begin() + static_cast<std::ptrdiff_t>(m_records.size() - limit));
 }
 
 void PlayStats::RebuildIndex() {
@@ -189,10 +200,9 @@ void PlayStats::RebuildIndex() {
 void PlayStats::Record(const metadb_handle_ptr& track) {
     if (!track.is_valid()) return;
     if (!m_loaded) Load();
-    std::string key, path;
-    bool remote = false;
-    int64_t songId = 0;
-    if (!RecordKey(track, key, path, remote, songId)) return;
+    std::string key;
+    stream::Provider* provider = nullptr;
+    if (!RecordKey(track, key, &provider)) return;
     PlayRecord* record = nullptr;
     if (auto it = m_index.find(key); it != m_index.end()) record = &m_records[it->second];
     if (!record) {
@@ -201,22 +211,22 @@ void PlayStats::Record(const metadb_handle_ptr& track) {
         record = &m_records.back();
         record->key = key;
     }
-    record->path = path;
+    record->path = track->get_path();
     record->subsong = track->get_subsong_index();
-    record->remote = remote;
-    record->songId = remote ? songId : 0;
-    record->albumId = 0;
-    record->artistId = 0;
-    if (remote) {
-        if (const auto song = netease::Catalog::Get().FindSong(songId)) {
+    record->provider = provider ? std::wstring(provider->Key()) : std::wstring();
+    record->trackId = provider ? provider->TrackId(track) : std::wstring();
+    record->albumId.clear();
+    record->artistId.clear();
+    if (provider) {
+        if (const auto song = provider->FindTrack(record->trackId)) {
             record->title = Utf8(song->title);
-            record->artist = Utf8(netease::JoinArtists(song->artists));
+            record->artist = Utf8(stream::JoinArtists(song->artists));
             record->album = Utf8(song->album);
             record->durationMs = song->durationMs;
             record->albumId = song->albumId;
-            for (const auto& ref : song->artistRefs)
-                if (ref.id) {
-                    record->artistId = ref.id;
+            for (const auto& artist : song->artists)
+                if (!artist.id.empty()) {
+                    record->artistId = artist.id;
                     break;
                 }
         }
@@ -237,10 +247,8 @@ void PlayStats::Record(const metadb_handle_ptr& track) {
 
 uint32_t PlayStats::CountFor(const metadb_handle_ptr& track) const {
     if (!track.is_valid()) return 0;
-    std::string key, path;
-    bool remote = false;
-    int64_t songId = 0;
-    if (!RecordKey(track, key, path, remote, songId)) return 0;
+    std::string key;
+    if (!RecordKey(track, key)) return 0;
     auto it = m_index.find(key);
     return it != m_index.end() ? m_records[it->second].count : 0;
 }
@@ -251,10 +259,8 @@ void PlayStats::ForgetRecent(metadb_handle_list_cref items) {
     for (size_t i = 0; i < items.get_count(); ++i) {
         const metadb_handle_ptr& track = items[i];
         if (!track.is_valid()) continue;
-        std::string key, path;
-        bool remote = false;
-        int64_t songId = 0;
-        if (!RecordKey(track, key, path, remote, songId)) continue;
+        std::string key;
+        if (!RecordKey(track, key)) continue;
         auto it = m_index.find(key);
         if (it == m_index.end()) continue;
         PlayRecord& record = m_records[it->second];
@@ -272,10 +278,8 @@ void PlayStats::ClearCounts(metadb_handle_list_cref items) {
     for (size_t i = 0; i < items.get_count(); ++i) {
         const metadb_handle_ptr& track = items[i];
         if (!track.is_valid()) continue;
-        std::string key, path;
-        bool remote = false;
-        int64_t songId = 0;
-        if (!RecordKey(track, key, path, remote, songId)) continue;
+        std::string key;
+        if (!RecordKey(track, key)) continue;
         auto it = m_index.find(key);
         if (it == m_index.end()) continue;
         PlayRecord& record = m_records[it->second];

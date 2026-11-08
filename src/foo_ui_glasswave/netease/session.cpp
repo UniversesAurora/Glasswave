@@ -1,10 +1,9 @@
 #include "pch.h"
-#include "media/favorites.h"
 #include "netease/config.h"
 #include "netease/cookie.h"
 #include "netease/handle.h"
 #include "netease/log.h"
-#include "netease/provider.h"
+#include "netease/session.h"
 
 #include <atomic>
 #include <chrono>
@@ -32,47 +31,19 @@ void PutRecommended(const std::vector<Playlist>& playlists) {
     }
 }
 
-class NeteaseFavoriteHook : public media::FavoriteHook {
-public:
-    explicit NeteaseFavoriteHook(Provider& provider) : m_provider(provider) {}
-
-    bool Handles(const metadb_handle_ptr& track) const override {
-        int64_t id = 0;
-        return track.is_valid() && ParseSongPath(track->get_path(), id);
-    }
-    bool IsFavorite(const metadb_handle_ptr& track) const override {
-        int64_t id = 0;
-        return ParseSongPath(track->get_path(), id) && m_provider.IsLiked(id);
-    }
-    void Toggle(const metadb_handle_ptr& track) override {
-        int64_t id = 0;
-        if (!ParseSongPath(track->get_path(), id)) return;
-        m_provider.ToggleLike(id, !m_provider.IsLiked(id));
-    }
-    void Set(const metadb_handle_ptr& track, bool favorite) override {
-        int64_t id = 0;
-        if (!ParseSongPath(track->get_path(), id)) return;
-        if (m_provider.IsLiked(id) != favorite) m_provider.ToggleLike(id, favorite);
-    }
-
-private:
-    Provider& m_provider;
-};
-
-std::unique_ptr<NeteaseFavoriteHook> g_favoriteHook;
 
 }  // namespace
 
-Provider& Provider::Get() {
-    static Provider provider;
+Session& Session::Get() {
+    static Session provider;
     return provider;
 }
 
-Provider::Provider() : m_service(ServiceManager::Get()), m_client(m_service), m_tasks(2) {}
+Session::Session() : m_service(ServiceManager::Get()), m_client(m_service), m_tasks(2) {}
 
-Provider::~Provider() { Shutdown(); }
+Session::~Session() { Shutdown(); }
 
-void Provider::Initialize() {
+void Session::Initialize() {
     if (m_initialized.exchange(true)) return;
     m_stopping = false;
     LoadSessionCookie();
@@ -81,8 +52,6 @@ void Provider::Initialize() {
     Catalog::Get().Load();
     Log(L"art: extractor supports ncm://song/ = " +
         std::wstring(album_art_extractor::g_is_supported_path("ncm://song/1") ? L"yes" : L"no"));
-    if (!g_favoriteHook) g_favoriteHook = std::make_unique<NeteaseFavoriteHook>(*this);
-    media::SetFavoriteHook(g_favoriteHook.get());
     std::lock_guard lock(m_mutex);
     m_account = {};
     m_account.nickname = GetAccountName();
@@ -94,10 +63,8 @@ void Provider::Initialize() {
     }
 }
 
-void Provider::Shutdown() {
+void Session::Shutdown() {
     if (!m_initialized.exchange(false)) return;
-    media::SetFavoriteHook(nullptr);
-    g_favoriteHook.reset();
     m_stopping = true;
     m_tasks.Stop();
     m_service.Stop();
@@ -113,66 +80,66 @@ void Provider::Shutdown() {
     m_liked.clear();
 }
 
-bool Provider::LoggedIn() const { return CookieHasMusicU(SessionCookie()); }
+bool Session::LoggedIn() const { return CookieHasMusicU(SessionCookie()); }
 
-Account Provider::CurrentAccount() const {
+Account Session::CurrentAccount() const {
     std::lock_guard lock(m_mutex);
     return m_account;
 }
 
-int64_t Provider::LikedPlaylistId() const {
+int64_t Session::LikedPlaylistId() const {
     std::lock_guard lock(m_mutex);
     return m_likedPlaylist;
 }
 
-bool Provider::IsLiked(int64_t songId) const {
+bool Session::IsLiked(int64_t songId) const {
     std::lock_guard lock(m_likedMutex);
     return m_liked.count(songId) != 0;
 }
 
-std::vector<Playlist> Provider::CreatedPlaylists() const {
+std::vector<Playlist> Session::CreatedPlaylists() const {
     std::lock_guard lock(m_mutex);
     return m_createdPlaylists;
 }
 
-std::vector<Playlist> Provider::CollectedPlaylists() const {
+std::vector<Playlist> Session::CollectedPlaylists() const {
     std::lock_guard lock(m_mutex);
     return m_collectedPlaylists;
 }
 
-std::vector<Playlist> Provider::RecommendedPlaylists() const {
+std::vector<Playlist> Session::RecommendedPlaylists() const {
     std::lock_guard lock(m_mutex);
     return m_recommendedPlaylists;
 }
 
-std::vector<Artist> Provider::FollowedArtists() const {
+std::vector<Artist> Session::FollowedArtists() const {
     std::lock_guard lock(m_mutex);
     return m_followedArtists;
 }
 
-std::vector<Album> Provider::CollectedAlbums() const {
+std::vector<Album> Session::CollectedAlbums() const {
     std::lock_guard lock(m_mutex);
     return m_collectedAlbums;
 }
 
-std::optional<std::vector<Song>> Provider::CachedLikedSongs() const {
+std::optional<std::vector<Song>> Session::CachedLikedSongs() const {
     std::lock_guard lock(m_mutex);
     return m_likedSongs;
 }
 
-std::optional<std::vector<Song>> Provider::CachedPlaylistSongs(int64_t playlistId) const {
+std::optional<std::vector<Song>> Session::CachedPlaylistSongs(int64_t playlistId) const {
     std::lock_guard lock(m_mutex);
     auto it = m_playlistSongs.find(playlistId);
     return it == m_playlistSongs.end() ? std::nullopt : std::optional<std::vector<Song>>(it->second);
 }
 
-std::optional<std::vector<Song>> Provider::CachedAlbumSongs(int64_t albumId) const {
+std::optional<std::vector<Song>> Session::CachedAlbumSongs(int64_t albumId) const {
     std::lock_guard lock(m_mutex);
     auto it = m_albumSongs.find(albumId);
     return it == m_albumSongs.end() ? std::nullopt : std::optional<std::vector<Song>>(it->second);
 }
 
-Provider::PlaylistScope Provider::FindPlaylistScope(int64_t playlistId) const {
+Session::PlaylistScope Session::FindPlaylistScope(int64_t playlistId) const {
     std::lock_guard lock(m_mutex);
     for (const auto& playlist : m_createdPlaylists)
         if (playlist.id == playlistId) return PlaylistScope::Created;
@@ -183,34 +150,34 @@ Provider::PlaylistScope Provider::FindPlaylistScope(int64_t playlistId) const {
     return PlaylistScope::Unknown;
 }
 
-void Provider::SetAccountLocked(const Account& account) {
+void Session::SetAccountLocked(const Account& account) {
     m_account = account;
     SetAccount(account.userId, account.nickname);
 }
 
-void Provider::PostMain(std::function<void()> fn) {
+void Session::PostMain(std::function<void()> fn) {
     if (m_stopping || !fn) return;
     fb2k::inMainThread([this, fn = std::move(fn)] {
         if (!m_stopping) fn();
     });
 }
 
-void Provider::SetStateCallback(std::function<void()> callback) {
+void Session::SetStateCallback(std::function<void()> callback) {
     std::lock_guard lock(m_mutex);
     m_stateCallback = std::move(callback);
 }
 
-void Provider::SetLibraryCallback(std::function<void()> callback) {
+void Session::SetLibraryCallback(std::function<void()> callback) {
     std::lock_guard lock(m_mutex);
     m_libraryCallback = std::move(callback);
 }
 
-void Provider::SetLikesCallback(std::function<void()> callback) {
+void Session::SetLikesCallback(std::function<void()> callback) {
     std::lock_guard lock(m_mutex);
     m_likesCallback = std::move(callback);
 }
 
-void Provider::NotifyChanged() {
+void Session::NotifyChanged() {
     std::function<void()> callback;
     {
         std::lock_guard lock(m_mutex);
@@ -219,7 +186,7 @@ void Provider::NotifyChanged() {
     if (callback) PostMain([callback = std::move(callback)] { callback(); });
 }
 
-void Provider::NotifyLibraryChanged() {
+void Session::NotifyLibraryChanged() {
     std::function<void()> callback;
     {
         std::lock_guard lock(m_mutex);
@@ -228,7 +195,7 @@ void Provider::NotifyLibraryChanged() {
     if (callback) PostMain([callback = std::move(callback)] { callback(); });
 }
 
-void Provider::NotifyLikesChanged() {
+void Session::NotifyLikesChanged() {
     std::function<void()> callback;
     {
         std::lock_guard lock(m_mutex);
@@ -237,13 +204,13 @@ void Provider::NotifyLikesChanged() {
     if (callback) PostMain([callback = std::move(callback)] { callback(); });
 }
 
-bool Provider::RequireLogin(std::wstring& error) const {
+bool Session::RequireLogin(std::wstring& error) const {
     if (LoggedIn()) return true;
     error = L"Please sign in to NetEase Cloud Music.";
     return false;
 }
 
-bool Provider::EnsureAccount(abort_callback& abort, int64_t& userId, std::wstring& error) {
+bool Session::EnsureAccount(abort_callback& abort, int64_t& userId, std::wstring& error) {
     {
         std::lock_guard lock(m_mutex);
         if (m_account.loggedIn && m_account.userId) {
@@ -273,7 +240,7 @@ bool Provider::EnsureAccount(abort_callback& abort, int64_t& userId, std::wstrin
     return true;
 }
 
-void Provider::StartService(DoneCallback done) {
+void Session::StartService(DoneCallback done) {
     m_tasks.Post([this, done = std::move(done)] {
         if (m_stopping) return;
         abort_callback_impl abort;
@@ -285,7 +252,7 @@ void Provider::StartService(DoneCallback done) {
     });
 }
 
-bool Provider::ReloadUserPlaylists(abort_callback& abort, int64_t userId, std::wstring& error) {
+bool Session::ReloadUserPlaylists(abort_callback& abort, int64_t userId, std::wstring& error) {
     std::vector<Playlist> playlists;
     int64_t likedPlaylist = 0;
     if (!m_client.UserPlaylists(userId, abort, playlists, likedPlaylist, error)) return false;
@@ -300,7 +267,7 @@ bool Provider::ReloadUserPlaylists(abort_callback& abort, int64_t userId, std::w
     return true;
 }
 
-void Provider::ApplyPlaylistInfo(const Playlist& info) {
+void Session::ApplyPlaylistInfo(const Playlist& info) {
     if (!info.id) return;
     Catalog::Get().Put(info);
     std::lock_guard lock(m_mutex);
@@ -322,7 +289,7 @@ void Provider::ApplyPlaylistInfo(const Playlist& info) {
     update(m_recommendedPlaylists);
 }
 
-void Provider::ApplyPlaylistOrder(const std::vector<int64_t>& ids) {
+void Session::ApplyPlaylistOrder(const std::vector<int64_t>& ids) {
     std::lock_guard lock(m_mutex);
     auto apply = [&ids](std::vector<Playlist>& list) {
         std::map<int64_t, Playlist> byId;
@@ -342,7 +309,7 @@ void Provider::ApplyPlaylistOrder(const std::vector<int64_t>& ids) {
     apply(m_collectedPlaylists);
 }
 
-void Provider::SchedulePlaylistSummaryRefresh(int64_t playlistId) {
+void Session::SchedulePlaylistSummaryRefresh(int64_t playlistId) {
     m_tasks.Post([this, playlistId] {
         if (m_stopping) return;
         std::this_thread::sleep_for(std::chrono::milliseconds(700));
@@ -356,7 +323,7 @@ void Provider::SchedulePlaylistSummaryRefresh(int64_t playlistId) {
     });
 }
 
-void Provider::RefreshAccount(DoneCallback done) {
+void Session::RefreshAccount(DoneCallback done) {
     m_tasks.Post([this, done = std::move(done)] {
         if (m_stopping) return;
         abort_callback_impl abort;
@@ -454,7 +421,7 @@ void Provider::RefreshAccount(DoneCallback done) {
     });
 }
 
-void Provider::RefreshLikes(DoneCallback done) {
+void Session::RefreshLikes(DoneCallback done) {
     m_tasks.Post([this, done = std::move(done)] {
         if (m_stopping) return;
         abort_callback_impl abort;
@@ -496,7 +463,7 @@ void Provider::RefreshLikes(DoneCallback done) {
     });
 }
 
-void Provider::FetchMyPlaylists(PlaylistsCallback done) {
+void Session::FetchMyPlaylists(PlaylistsCallback done) {
     m_tasks.Post([this, done = std::move(done)] {
         if (m_stopping) return;
         abort_callback_impl abort;
@@ -543,7 +510,7 @@ void Provider::FetchMyPlaylists(PlaylistsCallback done) {
     });
 }
 
-void Provider::FetchRecommended(PlaylistsCallback done) {
+void Session::FetchRecommended(PlaylistsCallback done) {
     m_tasks.Post([this, done = std::move(done)] {
         if (m_stopping) return;
         abort_callback_impl abort;
@@ -578,7 +545,7 @@ void Provider::FetchRecommended(PlaylistsCallback done) {
     });
 }
 
-void Provider::FetchFollowedArtists(ArtistsCallback done) {
+void Session::FetchFollowedArtists(ArtistsCallback done) {
     m_tasks.Post([this, done = std::move(done)] {
         if (m_stopping) return;
         abort_callback_impl abort;
@@ -613,7 +580,7 @@ void Provider::FetchFollowedArtists(ArtistsCallback done) {
     });
 }
 
-void Provider::FetchCollectedAlbums(AlbumsCallback done) {
+void Session::FetchCollectedAlbums(AlbumsCallback done) {
     m_tasks.Post([this, done = std::move(done)] {
         if (m_stopping) return;
         abort_callback_impl abort;
@@ -648,7 +615,7 @@ void Provider::FetchCollectedAlbums(AlbumsCallback done) {
     });
 }
 
-void Provider::FetchCollectedAlbumsPage(int offset, int limit, AlbumsPageCallback done) {
+void Session::FetchCollectedAlbumsPage(int offset, int limit, AlbumsPageCallback done) {
     m_tasks.Post([this, offset, limit, done = std::move(done)] {
         if (m_stopping) return;
         abort_callback_impl abort;
@@ -691,7 +658,7 @@ void Provider::FetchCollectedAlbumsPage(int offset, int limit, AlbumsPageCallbac
     });
 }
 
-void Provider::FetchAlbumTracks(std::vector<Album> albums, SongsCallback done) {
+void Session::FetchAlbumTracks(std::vector<Album> albums, SongsCallback done) {
     m_tasks.Post([this, albums = std::move(albums), done = std::move(done)]() mutable {
         if (m_stopping) return;
         abort_callback_impl abort;
@@ -736,7 +703,7 @@ void Provider::FetchAlbumTracks(std::vector<Album> albums, SongsCallback done) {
     });
 }
 
-void Provider::FetchLiked(SongsCallback done) {
+void Session::FetchLiked(SongsCallback done) {
     m_tasks.Post([this, done = std::move(done)] {
         if (m_stopping) return;
         abort_callback_impl abort;
@@ -834,7 +801,7 @@ void Provider::FetchLiked(SongsCallback done) {
     });
 }
 
-void Provider::FetchPlaylist(int64_t playlistId, DetailCallback done) {
+void Session::FetchPlaylist(int64_t playlistId, DetailCallback done) {
     m_tasks.Post([this, playlistId, done = std::move(done)] {
         if (m_stopping) return;
         abort_callback_impl abort;
@@ -870,7 +837,7 @@ void Provider::FetchPlaylist(int64_t playlistId, DetailCallback done) {
     });
 }
 
-void Provider::FetchArtistDetail(int64_t artistId, ArtistDetailCallback done) {
+void Session::FetchArtistDetail(int64_t artistId, ArtistDetailCallback done) {
     m_tasks.Post([this, artistId, done = std::move(done)] {
         if (m_stopping) return;
         abort_callback_impl abort;
@@ -896,7 +863,7 @@ void Provider::FetchArtistDetail(int64_t artistId, ArtistDetailCallback done) {
     });
 }
 
-void Provider::FetchArtistDescription(int64_t artistId, ArtistDescriptionCallback done) {
+void Session::FetchArtistDescription(int64_t artistId, ArtistDescriptionCallback done) {
     m_tasks.Post([this, artistId, done = std::move(done)] {
         if (m_stopping) return;
         abort_callback_impl abort;
@@ -920,7 +887,7 @@ void Provider::FetchArtistDescription(int64_t artistId, ArtistDescriptionCallbac
     });
 }
 
-void Provider::FetchArtistAlbumsPage(int64_t artistId, int offset, int limit, ArtistAlbumsCallback done) {
+void Session::FetchArtistAlbumsPage(int64_t artistId, int offset, int limit, ArtistAlbumsCallback done) {
     m_tasks.Post([this, artistId, offset, limit, done = std::move(done)] {
         if (m_stopping) return;
         abort_callback_impl abort;
@@ -946,7 +913,7 @@ void Provider::FetchArtistAlbumsPage(int64_t artistId, int offset, int limit, Ar
     });
 }
 
-void Provider::FetchArtistSongsPage(int64_t artistId, int offset, int limit, SongsPageCallback done) {
+void Session::FetchArtistSongsPage(int64_t artistId, int offset, int limit, SongsPageCallback done) {
     m_tasks.Post([this, artistId, offset, limit, done = std::move(done)] {
         if (m_stopping) return;
         abort_callback_impl abort;
@@ -972,7 +939,7 @@ void Provider::FetchArtistSongsPage(int64_t artistId, int offset, int limit, Son
     });
 }
 
-void Provider::FetchAlbumDetail(int64_t albumId, AlbumDetailCallback done) {
+void Session::FetchAlbumDetail(int64_t albumId, AlbumDetailCallback done) {
     m_tasks.Post([this, albumId, done = std::move(done)] {
         if (m_stopping) return;
         abort_callback_impl abort;
@@ -1003,7 +970,7 @@ void Provider::FetchAlbumDetail(int64_t albumId, AlbumDetailCallback done) {
     });
 }
 
-void Provider::Search(std::wstring_view query, SongsCallback done) {
+void Session::Search(std::wstring_view query, SongsCallback done) {
     m_tasks.Post([this, query = std::wstring(query), done = std::move(done)] {
         if (m_stopping) return;
         abort_callback_impl abort;
@@ -1028,7 +995,7 @@ void Provider::Search(std::wstring_view query, SongsCallback done) {
     });
 }
 
-void Provider::ToggleLike(int64_t songId, bool like, DoneCallback done) {
+void Session::ToggleLike(int64_t songId, bool like, DoneCallback done) {
     std::wstring loginError;
     if (!RequireLogin(loginError)) {
         if (done) done(false, loginError);
@@ -1061,7 +1028,7 @@ void Provider::ToggleLike(int64_t songId, bool like, DoneCallback done) {
     });
 }
 
-void Provider::SetArtistFollow(int64_t artistId, bool follow, DoneCallback done) {
+void Session::SetArtistFollow(int64_t artistId, bool follow, DoneCallback done) {
     std::wstring loginError;
     if (!RequireLogin(loginError)) {
         if (done) done(false, loginError);
@@ -1093,7 +1060,7 @@ void Provider::SetArtistFollow(int64_t artistId, bool follow, DoneCallback done)
     });
 }
 
-void Provider::AddToPlaylist(int64_t playlistId, std::vector<int64_t> songIds, DoneCallback done) {
+void Session::AddToPlaylist(int64_t playlistId, std::vector<int64_t> songIds, DoneCallback done) {
     if (songIds.empty()) {
         if (done) done(false, L"No songs selected.");
         return;
@@ -1121,11 +1088,11 @@ void Provider::AddToPlaylist(int64_t playlistId, std::vector<int64_t> songIds, D
         PostMain([done = std::move(done), ok, error] {
             if (done) done(ok, ok ? std::wstring() : ErrorOf(error));
         });
-        if (ok) NotifyChanged();
+        if (ok) NotifyLibraryChanged();
     });
 }
 
-void Provider::RemoveFromPlaylist(int64_t playlistId, std::vector<int64_t> songIds, DoneCallback done) {
+void Session::RemoveFromPlaylist(int64_t playlistId, std::vector<int64_t> songIds, DoneCallback done) {
     if (songIds.empty()) {
         if (done) done(false, L"No songs selected.");
         return;
@@ -1152,11 +1119,11 @@ void Provider::RemoveFromPlaylist(int64_t playlistId, std::vector<int64_t> songI
         PostMain([done = std::move(done), ok, error] {
             if (done) done(ok, ok ? std::wstring() : ErrorOf(error));
         });
-        if (ok) NotifyChanged();
+        if (ok) NotifyLibraryChanged();
     });
 }
 
-void Provider::SetAlbumCollected(int64_t albumId, bool collected, DoneCallback done) {
+void Session::SetAlbumCollected(int64_t albumId, bool collected, DoneCallback done) {
     std::wstring loginError;
     if (!RequireLogin(loginError)) {
         if (done) done(false, loginError);
@@ -1182,11 +1149,11 @@ void Provider::SetAlbumCollected(int64_t albumId, bool collected, DoneCallback d
         PostMain([done = std::move(done), ok, error] {
             if (done) done(ok, ok ? std::wstring() : ErrorOf(error));
         });
-        if (ok) NotifyChanged();
+        if (ok) NotifyLibraryChanged();
     });
 }
 
-void Provider::SetPlaylistSubscribed(int64_t playlistId, bool subscribed, DoneCallback done) {
+void Session::SetPlaylistSubscribed(int64_t playlistId, bool subscribed, DoneCallback done) {
     std::wstring loginError;
     if (!RequireLogin(loginError)) {
         if (done) done(false, loginError);
@@ -1236,11 +1203,11 @@ void Provider::SetPlaylistSubscribed(int64_t playlistId, bool subscribed, DoneCa
         PostMain([done = std::move(done), ok, error] {
             if (done) done(ok, ok ? std::wstring() : ErrorOf(error));
         });
-        if (ok) NotifyChanged();
+        if (ok) NotifyLibraryChanged();
     });
 }
 
-void Provider::CreatePlaylist(std::wstring name, CreatePlaylistCallback done) {
+void Session::CreatePlaylist(std::wstring name, CreatePlaylistCallback done) {
     if (name.empty()) {
         if (done) done(false, 0, L"The playlist name is empty.");
         return;
@@ -1279,11 +1246,11 @@ void Provider::CreatePlaylist(std::wstring name, CreatePlaylistCallback done) {
         PostMain([done = std::move(done), id] {
             if (done) done(true, id, {});
         });
-        NotifyChanged();
+        NotifyLibraryChanged();
     });
 }
 
-void Provider::RenamePlaylist(int64_t playlistId, std::wstring name, DoneCallback done) {
+void Session::RenamePlaylist(int64_t playlistId, std::wstring name, DoneCallback done) {
     if (name.empty()) {
         if (done) done(false, L"The playlist name is empty.");
         return;
@@ -1330,7 +1297,7 @@ void Provider::RenamePlaylist(int64_t playlistId, std::wstring name, DoneCallbac
     });
 }
 
-void Provider::DeletePlaylist(int64_t playlistId, DoneCallback done) {
+void Session::DeletePlaylist(int64_t playlistId, DoneCallback done) {
     std::wstring loginError;
     if (!RequireLogin(loginError)) {
         if (done) done(false, loginError);
@@ -1362,7 +1329,7 @@ void Provider::DeletePlaylist(int64_t playlistId, DoneCallback done) {
     });
 }
 
-void Provider::ReorderPlaylists(std::vector<int64_t> ids, DoneCallback done) {
+void Session::ReorderPlaylists(std::vector<int64_t> ids, DoneCallback done) {
     if (ids.empty()) {
         if (done) done(true, {});
         return;
@@ -1394,7 +1361,7 @@ void Provider::ReorderPlaylists(std::vector<int64_t> ids, DoneCallback done) {
     });
 }
 
-void Provider::OnLoginCookie(std::wstring cookie, DoneCallback done) {
+void Session::OnLoginCookie(std::wstring cookie, DoneCallback done) {
     const std::wstring normalized = NormalizeCookie(cookie);
     if (!CookieHasMusicU(normalized)) {
         if (done) done(false, L"The login response did not contain a MUSIC_U session.");
@@ -1404,7 +1371,7 @@ void Provider::OnLoginCookie(std::wstring cookie, DoneCallback done) {
     RefreshAccount(std::move(done));
 }
 
-void Provider::Logout() {
+void Session::Logout() {
     ClearSessionCookie();
     ClearAccount();
     Catalog::Get().ClearPreferredCovers();

@@ -1,13 +1,12 @@
 #include "pch.h"
 #include "ui/art_cache.h"
 #include "ui/shell_glue.h"
+#include "app/settings.h"
 
 namespace glasswave::ui {
 
 namespace {
 std::unique_ptr<ArtCache> g_cache;
-constexpr size_t kMaxEntries = 600;  // thumbnails kept (about 90 KB each at 150 px)
-constexpr int kWorkers = 3;          // covers of the visible albums load in parallel
 
 std::wstring CacheKeyFor(const std::wstring& key, const metadb_handle_ptr& track, int sizePx) {
     std::wstring cacheKey = key;
@@ -30,7 +29,7 @@ ArtCache* ArtCache::Existing() { return g_cache.get(); }
 void ArtCache::Shutdown() { g_cache.reset(); }
 
 ArtCache::ArtCache() {
-    for (int i = 0; i < kWorkers; ++i) m_threads.emplace_back([this] { Worker(); });
+    for (int i = 0, n = settings::CoverThreads(); i < n; ++i) m_threads.emplace_back([this] { Worker(); });
 }
 
 ArtCache::~ArtCache() {
@@ -111,12 +110,12 @@ ArtCache::State ArtCache::Find(const std::wstring& key, const metadb_handle_ptr&
         }
         m_wake.notify_one();
         // Keep memory bounded: drop the least recently used finished thumbnails.
-        if (m_entries.size() > kMaxEntries) {
+        if (const size_t limit = static_cast<size_t>(settings::ThumbnailCacheEntries()); m_entries.size() > limit) {
             std::vector<std::pair<uint64_t, std::wstring>> old;
             for (auto& [k, e] : m_entries)
                 if (e.state != State::Pending) old.emplace_back(e.used, k);
             std::sort(old.begin(), old.end());
-            for (size_t i = 0; i < old.size() && m_entries.size() > kMaxEntries * 3 / 4; ++i)
+            for (size_t i = 0; i < old.size() && m_entries.size() > limit * 3 / 4; ++i)
                 m_entries.erase(old[i].second);
         }
         return State::Pending;

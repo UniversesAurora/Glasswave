@@ -5,7 +5,7 @@
 #include "netease/http.h"
 #include "netease/log.h"
 #include "netease/profile.h"
-#include "netease/provider.h"
+#include "netease/session.h"
 
 #include <SDK/album_art_helpers.h>
 
@@ -59,7 +59,7 @@ public:
         case CoverKind::Song:
             url = Catalog::Get().SongCover(id);
             if (url.empty()) {
-                auto& provider = Provider::Get();
+                auto& provider = Session::Get();
                 std::wstring error;
                 if (provider.Service().EnsureStarted(abort, &error)) {
                     std::vector<Song> songs;

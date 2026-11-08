@@ -17,9 +17,9 @@ namespace glasswave::netease {
 
 // Account, session and asynchronous access to the NetEase service. All callbacks run on
 // foobar2000's main thread; API work runs on `Tasks()`.
-class Provider {
+class Session {
 public:
-    static Provider& Get();
+    static Session& Get();
 
     void Initialize();
     void Shutdown();
@@ -105,10 +105,10 @@ public:
     void Logout();
 
 private:
-    Provider();
-    ~Provider();
-    Provider(const Provider&) = delete;
-    Provider& operator=(const Provider&) = delete;
+    Session();
+    ~Session();
+    Session(const Session&) = delete;
+    Session& operator=(const Session&) = delete;
 
     void PostMain(std::function<void()> fn);
     void NotifyChanged();

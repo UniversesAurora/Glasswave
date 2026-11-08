@@ -1,6 +1,6 @@
 #include "pch.h"
 #include "ui/netease_login.h"
-#include "netease/provider.h"
+#include "netease/session.h"
 #include "ui/i18n.h"
 
 #include <gdiplus.h>
@@ -189,12 +189,12 @@ void SetQrImage(const std::shared_ptr<LoginState>& state, const std::wstring& da
 
 void RequestQr(const std::shared_ptr<LoginState>& state) {
     SetMode(state, LoginState::Mode::Starting, L"Preparing the QR code...");
-    netease::Provider::Get().Tasks().Post([state] {
+    netease::Session::Get().Tasks().Post([state] {
         abort_callback_impl abort;
         std::wstring error;
         netease::QrLogin key;
         netease::QrLogin qr;
-        auto& provider = netease::Provider::Get();
+        auto& provider = netease::Session::Get();
         if (!provider.Service().EnsureStarted(abort, &error) || !provider.Api().QrKey(abort, key, error) ||
             !provider.Api().QrCreate(key.key, abort, qr, error)) {
             fb2k::inMainThread([state, error] {
@@ -214,9 +214,9 @@ void PollQr(const std::shared_ptr<LoginState>& state) {
     if (!state || state->closed || state->polling || state->key.empty()) return;
     state->polling = true;
     const std::wstring key = state->key;
-    netease::Provider::Get().Tasks().Post([state, key] {
+    netease::Session::Get().Tasks().Post([state, key] {
         abort_callback_impl abort;
-        const netease::QrStatus status = netease::Provider::Get().Api().QrCheck(key, abort);
+        const netease::QrStatus status = netease::Session::Get().Api().QrCheck(key, abort);
         fb2k::inMainThread([state, status] {
             if (state->closed) return;
             state->polling = false;
@@ -240,7 +240,7 @@ void PollQr(const std::shared_ptr<LoginState>& state) {
                 KillTimer(state->hwnd, kPollTimer);
                 state->status = L"Signing in...";
                 InvalidateRect(state->hwnd, nullptr, TRUE);
-                netease::Provider::Get().OnLoginCookie(status.cookie, [state](bool ok, std::wstring error) {
+                netease::Session::Get().OnLoginCookie(status.cookie, [state](bool ok, std::wstring error) {
                     if (state->closed) return;
                     if (!ok) {
                         SetMode(state, LoginState::Mode::Error, error.empty() ? L"Sign-in failed." : error);
@@ -273,7 +273,7 @@ void SubmitCookie(const std::shared_ptr<LoginState>& state) {
     cookie.resize(static_cast<size_t>(got));
     state->status = L"Signing in...";
     InvalidateRect(state->hwnd, nullptr, TRUE);
-    netease::Provider::Get().OnLoginCookie(cookie, [state](bool ok, std::wstring error) {
+    netease::Session::Get().OnLoginCookie(cookie, [state](bool ok, std::wstring error) {
         if (state->closed) return;
         if (!ok) {
             SetMode(state, LoginState::Mode::Error, error.empty() ? L"Sign-in failed." : error);
@@ -286,10 +286,10 @@ void SubmitCookie(const std::shared_ptr<LoginState>& state) {
 
 void DownloadService(const std::shared_ptr<LoginState>& state) {
     SetMode(state, LoginState::Mode::Downloading, L"Downloading the NetEase service (about 65 MB)...");
-    netease::Provider::Get().Tasks().Post([state] {
+    netease::Session::Get().Tasks().Post([state] {
         abort_callback_impl abort;
         std::wstring error;
-        const bool ok = netease::Provider::Get().Service().Install(
+        const bool ok = netease::Session::Get().Service().Install(
             abort,
             [state](long long received, long long total) {
                 if (!state || state->closed || !total) return;
@@ -314,7 +314,7 @@ void DownloadService(const std::shared_ptr<LoginState>& state) {
 
 void StartServiceOrInstall(const std::shared_ptr<LoginState>& state) {
     if (!state || state->closed) return;
-    auto& provider = netease::Provider::Get();
+    auto& provider = netease::Session::Get();
     if (!provider.Service().Available()) {
         SetMode(state, LoginState::Mode::Install,
                 L"The NetEase service is not installed. Download it from the NeteaseCloudMusicApi Enhanced "

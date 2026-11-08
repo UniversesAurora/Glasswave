@@ -4,7 +4,7 @@
 #include "netease/handle.h"
 #include "netease/log.h"
 #include "netease/profile.h"
-#include "netease/provider.h"
+#include "netease/session.h"
 
 #include <SDK/input_impl.h>
 
@@ -112,8 +112,7 @@ public:
     void decode_initialize(unsigned p_flags, abort_callback& p_abort) {
         if (m_decoder.is_valid()) return;
         Log(L"input: decoding song " + std::to_wstring(m_id));
-        auto& provider = Provider::Get();
-        provider.Initialize();
+        auto& provider = Session::Get();  // started by the component's initquit, on the main thread
         if (!provider.LoggedIn())
             throw exception_io_data("Please sign in to NetEase Cloud Music before playing this track.");
         std::wstring error;

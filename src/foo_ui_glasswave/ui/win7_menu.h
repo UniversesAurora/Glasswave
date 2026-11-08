@@ -1,4 +1,5 @@
 #pragma once
+#include "ui/main_menu.h"
 
 #include <functional>
 #include <string>
@@ -25,19 +26,8 @@ void RunContextMenu(HWND owner, metadb_handle_list_cref items, POINT pt);
 // foobar2000's context menu for the active playlist's selection (playlist commands included).
 void RunPlaylistContextMenu(HWND owner, POINT pt);
 
-// A destination for the context menus' "Go to artist" command. The main window builds
-// them (local artist groups, NetEase artist ids); several entries become a submenu.
-struct ArtistLink {
-    std::wstring name;
-    std::function<void()> open;
-};
-
 // Extra context-menu commands supplied by the main window for the selected items.
-struct ContextAction {
-    std::wstring label;  // empty = separator
-    std::function<void()> run;
-    std::vector<ContextAction> children;  // non-empty: a submenu
-};
+using ContextAction = MenuAction;
 void SetContextActionProvider(std::function<std::vector<ContextAction>(metadb_handle_list_cref)> provider);
 
 }  // namespace glasswave::ui

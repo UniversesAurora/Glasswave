@@ -3,11 +3,12 @@
 #include "aero/shadow_frame.h"
 #include "media/library_model.h"
 #include "media/list_sources.h"
-#include "netease/types.h"
+#include "stream/provider.h"
 #include "ui/list_view.h"
 #include "ui/main_menu.h"
 #include "ui/i18n.h"
 #include "ui/nav_pane.h"
+#include "ui/page.h"
 #include "ui/search_box.h"
 #include "ui/widget.h"
 #include "ui/win7_menu.h"
@@ -19,7 +20,7 @@ namespace glasswave::ui {
 // The Glasswave main window, laid out like WMP 12 library mode: Aero glass caption and
 // frame, a light client area (navigation bar, command bar, navigation pane + list,
 // transport band), all presented through a Windows.UI.Composition visual tree.
-class MainWindow {
+class MainWindow : public PageHost {
 public:
     MainWindow();
     ~MainWindow();
@@ -41,8 +42,21 @@ public:
     void OnPlaylistsChanged();
     void OnPlaylistLockChanged();  // auto playlists attach as locks, also after start-up
     void ScheduleLibraryReload();
-    void OnNeteaseLoginChanged();
-    void OnNeteaseLikesChanged();
+
+    // PageHost: what the page on screen may do with the window.
+    const View& CurrentView() const override { return m_view; }
+    void Open(const View& view) override { Navigate(view, true); }
+    void Replace(const View& view) override { Navigate(view, false); }
+    void Reload() override { Navigate(m_view, false); }
+    void Refresh() override { RefreshCurrentPage(); }
+    void SetPageName(const std::wstring& name) override;
+    void ShowSource(std::unique_ptr<media::ListSource> source) override;
+    media::ListSource* Source() const override { return m_source.get(); }
+    void ListChanged() override;
+    void ChromeChanged() override;
+    media::ViewStyle SavedStyle(media::ViewStyle fallback) const override;
+    HWND Owner() const override { return m_hwnd; }
+    std::weak_ptr<int> Lifetime() const override { return m_alive; }
 
 private:
     struct Layout {
@@ -61,34 +75,13 @@ private:
         POINT cluster{};  // origin of the WMP 12 transport cluster bitmap
     };
 
-    struct View {
-        // Category: every group of `group` (Artist, Album, ...); Group: the songs of one of them.
-        enum class Library { All, Local, Netease };
-        enum class NeteaseScope { Created, Collected, Recommended };
-        enum class Kind {
-            Playlist, AllMusic, Category, Group, Playlists, SmartPlaylists,
-            AllFavorites, AllRecentPlayed, AllMostPlayed, NeteasePlaylists, NeteasePlaylist, NeteaseLiked,
-            NeteaseArtists, NeteaseAlbums, NeteaseArtist, NeteaseAlbum, NeteaseArtistSongs, Search
-        };
-        Library library = Library::Local;
-        Kind kind = Kind::AllMusic;
-        size_t playlist = 0;
-        media::GroupKind group = media::GroupKind::Artist;
-        std::wstring key, name;
-        NeteaseScope neteaseScope = NeteaseScope::Created;
-        bool scopeKnown = false;   // NeteasePlaylist: its section is known
-        std::wstring remoteId;     // NetEase playlist / artist / album id
-        std::wstring parentId;     // NeteaseAlbum: the artist page it came from
-        std::wstring parentName;
-        std::wstring query;        // Search
-    };
-
     // Breadcrumb (WMP 12 address bar): each level is a name that navigates there and, if
     // the level has children, an arrow after it that lists them.
     struct Crumb {
         std::wstring text;                                 // empty: the leading root arrow
         std::function<void()> open;                        // click on the name
         std::function<std::vector<MenuAction>()> children; // arrow menu; empty = no arrow
+        bool literal = false;                              // a user's name: shown untranslated
         float x0 = 0, split = 0, x1 = 0;                   // DIP: name [x0, split), arrow [split, x1)
     };
     std::vector<Crumb> m_crumbs;
@@ -102,13 +95,13 @@ private:
     std::vector<MenuAction> LibraryMenu();
     std::vector<MenuAction> AllSectionsMenu();
     std::vector<MenuAction> LocalSectionsMenu();
-    std::vector<MenuAction> NeteaseSectionsMenu();
+    std::vector<MenuAction> ProviderSectionsMenu(stream::Provider& provider);
     std::vector<MenuAction> PlaylistListMenu(bool smart);
     std::vector<MenuAction> GroupListMenu(media::GroupKind kind);
-    std::vector<MenuAction> NeteaseScopeMenu(View::NeteaseScope scope);
-    std::vector<MenuAction> FollowedArtistsMenu();
-    std::vector<MenuAction> CollectedAlbumsMenu();
-    static const wchar_t* ScopeLabel(View::NeteaseScope scope);
+    std::vector<MenuAction> ShelfMenu(stream::Provider& provider, stream::Shelf shelf);
+    std::vector<MenuAction> FollowedArtistsMenu(stream::Provider& provider);
+    std::vector<MenuAction> SavedAlbumsMenu(stream::Provider& provider);
+    void AddRemoteCrumbs(std::vector<Crumb>& path, stream::Provider& provider);
     void PaintBreadcrumb();
     bool CrumbAt(POINT pt, int* index, int* part) const;
     void UpdateCrumbHover(POINT pt);
@@ -129,7 +122,6 @@ private:
 
     // Navigation
     void Navigate(const View& view, bool push);
-    std::wstring ViewKey(const View& view) const;
     void ApplyPendingScroll();
     void SaveLastView();
     bool LoadLastView(View& view, size_t& top);
@@ -147,47 +139,13 @@ private:
     void ShowNavCustomizeMenu(POINT screen);
     void SetNavCategories(std::vector<media::GroupKind> kinds);
     void SetNavSmartPosition(int position);
-    void ShowNeteaseLogin();
-    void CreateNeteasePlaylist();
-    void ShowNeteaseNavMenu(NavPane::Target target, POINT screen);
-    std::vector<metadb_handle_ptr> LocalFavoriteHandles() const;
-    void ShowNeteaseSongs(const View& view, std::vector<netease::Song> songs, std::wstring error);
-    void ShowNeteasePlaylists(const View& view, std::vector<netease::Playlist> playlists, std::wstring error);
-    void RefreshNeteaseNavPlaylists();
-    void ShowNeteaseArtistDetail(const View& view, netease::Artist artist, std::wstring error);
-    void ContinueArtistLoad();
-    void LoadArtistAlbumPage();
-    void LoadArtistTrackPage();
-    void LoadHotSongsPage();
-    void LoadCollectedMetaPage();
-    void LoadCollectedTrackPage();
-    void ContinueCollectedLoad();
-    void OnListNearEnd();
-    void ShowNeteaseArtists(const View& view, std::vector<netease::Artist> artists, std::wstring error);
-    void OpenNeteasePlaylist(int64_t id, std::wstring name, View::NeteaseScope scope);
-    void OpenNeteaseArtist(int64_t id, std::wstring name);
-    void OpenNeteaseAlbum(int64_t id, std::wstring name, std::wstring parentId = {}, std::wstring parentName = {});
-    void OpenNeteaseArtistSongs(int64_t artistId, std::wstring name);
-    struct DetailHeader {
-        enum class Action { None, Follow, Collect };
-        bool visible = false;
-        std::wstring title, subtitle, brief;
-        std::wstring artKey;
-        metadb_handle_ptr artTrack;
-        bool artIsArtist = false;
-        Action action = Action::None;
-        bool actionKnown = false;
-        bool actionOn = false;
-        std::wstring actionLabel;
-    };
-    DetailHeader BuildDetailHeader() const;
+    stream::Provider* ViewProvider() const;  // the provider of the current Remote view
+    void RefreshProviderSections();          // the navigation pane's provider sections
+    void ShowRemoteNavMenu(const NavPane::Item& item, POINT screen);
     void PaintDetailHeader();
     void RepaintDetailHeader();
     float DetailHeaderTextWidth() const;  // DIP available for the name, stats and description
     void OnDetailAction();
-    void ToggleArtistFollow();
-    void ToggleAlbumCollected();
-    void TogglePlaylistSubscribed();
     // The description's own scroll area (long artist/album/playlist introductions).
     bool DetailBriefThumb(float* top, float* height) const;  // DIP within the bar
     int DetailBriefPartAt(POINT pt) const;  // 0 none, 1 up, 2 down, 3 track, 4 thumb
@@ -201,27 +159,14 @@ private:
     void StartScrollAnimation();
     void StartScrollRepeat();
     void ShowPageContextMenu(POINT screen);  // actions for the page itself (no selected item)
-    // Context-menu "Go to artist" destinations for the first item (NetEase or local).
-    std::vector<ArtistLink> BuildArtistLinks(metadb_handle_list_cref items);
+    // Context-menu "Go to artist" destinations for the first item (provider or local).
+    std::vector<MenuAction> BuildArtistLinks(metadb_handle_list_cref items);
     std::vector<ContextAction> BuildContextActions(metadb_handle_list_cref items);
     void RemoveFromNowPlaying(metadb_handle_list_cref items);
     void ClearNowPlaying();
     void ForgetPlayStats(metadb_handle_list_cref items, bool recent);
     void ClearPlayStats(bool recent);
     void RefreshPlayCounts();  // after a track starts, updates the visible count column
-    // Whole playlist/album contents: play, play next, enqueue, copy to a local playlist or
-    // add to a NetEase playlist.
-    enum class BulkAction { Play, PlayNext, Enqueue, LocalPlaylist, NeteasePlaylist };
-    void AddBulkMenuItems(std::vector<MenuAction>& actions, bool netease,
-                          std::function<void(BulkAction, int64_t)> run, int64_t excludeNetease = 0);
-    std::vector<std::pair<int64_t, std::wstring>> LocalPlaylistTargets(size_t exclude = SIZE_MAX);
-    void ApplyBulkSongs(const std::vector<netease::Song>& songs, BulkAction action, int64_t target);
-    void RunNeteasePlaylistBulk(int64_t id, BulkAction action, int64_t target);
-    void RunNeteaseAlbumBulk(int64_t id, BulkAction action, int64_t target);
-    void ShowArtistPageMenu(POINT screen, bool hotSongs, int64_t albumId, std::wstring name);
-    void ShowArtistTileMenu(POINT screen, int64_t artistId, std::wstring name);
-    void ShowPlaylistTileMenu(POINT screen, int64_t playlistId, std::wstring name, View::NeteaseScope scope);
-    void ShowAlbumGridMenu(POINT screen, int64_t albumId, std::wstring name);
     int ViewStyles() const;  // view options the current source offers
     void OnNavItem(const NavPane::Item& item);
     void OnNavMove(const NavPane::Item& dragged, const NavPane::Item& target, bool after);
@@ -266,10 +211,11 @@ private:
     void UpdateFavoriteState();  // taskbar Favorite button for the playing song
     void ApplyLanguage(Language language);
     void RefreshCurrentPage();  // art + account lists + the current page re-read from the service
-    bool CanRefreshPage() const;  // pages whose data can be re-read meaningfully
-    void OnNeteaseLibraryChanged();  // covers/names changed; no page reload
-    void RenameNeteasePlaylist(int64_t id, std::wstring name);
-    void DeleteNeteasePlaylist(int64_t id, std::wstring name, View::NeteaseScope scope);
+    bool CanRefreshPage() const { return m_page && m_page->CanRefresh(); }
+    // A provider reported a change (the page on screen is never re-read for it).
+    void OnProviderAccount(stream::Provider& provider);
+    void OnProviderLibrary(stream::Provider& provider);
+    void OnProviderFavorites(stream::Provider& provider);
     void SetVolumeFromX(int x);
     float VolumeThumbX() const;  // centre of the volume thumb in client pixels
     void ShowVolumeTip(float thumbX);  // Win7 tooltip bubble with the volume while dragging
@@ -328,13 +274,7 @@ private:
     winrt::Windows::UI::Composition::SpriteVisual m_breadcrumb{nullptr};
     winrt::Windows::UI::Composition::SpriteVisual m_detailHeader{nullptr};
     SIZE m_detailHeaderSize{};
-    DetailHeader m_detail;                       // rebuilt by UpdateLayout for the current page
-    std::optional<netease::Artist> m_artist;     // the NetEase artist page on screen
-    std::optional<netease::Album> m_albumDetail; // the NetEase album page on screen
-    std::optional<netease::Playlist> m_playlistDetail;  // the NetEase playlist page on screen
-    std::vector<netease::Album> m_artistAlbums;  // its albums, kept for the view-style switch
-    std::vector<netease::Song> m_artistSongs;    // expanded-tile contents, cached per artist
-    std::wstring m_artistSongsId;
+    DetailInfo m_detail;  // rebuilt by UpdateLayout for the current page
     bool m_detailBriefExpanded = false;
     bool m_detailBriefOverflow = false;
     float m_detailBriefScroll = 0;  // DIP into the description
@@ -351,26 +291,7 @@ private:
     bool m_scrollAnimActive = false;
     bool m_scrollRepeatActive = false;
     ULONGLONG m_scrollRepeatSince = 0;
-    size_t m_artistAlbumOffset = 0;     // API offset for the next album metadata page
-    size_t m_artistTracksLoaded = 0;    // albums whose tracks are in m_artistSongs
-    bool m_artistAlbumsMore = true;
-    bool m_artistAlbumsLoading = false;
-    bool m_artistTracksLoading = false;
-    size_t m_hotSongsOffset = 0;  // hot songs loaded so far
-    bool m_hotSongsMore = true;
-    bool m_hotSongsLoading = false;
-    bool m_startHotSongs = false;
-    std::vector<netease::Album> m_collectedAlbums;  // metadata pages loaded for the collected-albums page
-    std::vector<netease::Song> m_collectedSongs;
-    size_t m_collectedMetaOffset = 0;
-    bool m_collectedMetaMore = true;
-    bool m_collectedMetaLoading = false;
-    size_t m_collectedTracksLoaded = 0;
-    bool m_collectedTracksLoading = false;
-    bool m_startAlbumPage = false;  // start the first page once Navigate has set the view
-    bool m_forcePageRefresh = false;  // the next Navigate re-reads the current page from the service
-    bool m_skipStateNavigate = false;  // a write updates the page in place: no reload on its state callback
-    bool m_detailActionPending = false;
+    bool m_forcePageRefresh = false;  // the next Navigate re-reads the page from its service
     int m_detailArtToken = 0;
     winrt::com_ptr<IWICBitmapSource> m_icon, m_art;
 
@@ -383,6 +304,7 @@ private:
     // Library and content
     media::LibraryModel m_library;
     std::unique_ptr<media::ListSource> m_source;
+    std::unique_ptr<Page> m_page;  // the asynchronous page on screen, if any; owns its loading state
     std::unique_ptr<ListView> m_list;
     std::unique_ptr<NavPane> m_nav;
     std::unique_ptr<SearchBox> m_search;
@@ -416,6 +338,9 @@ private:
     std::unique_ptr<PlayCallback> m_playCallback;
     std::unique_ptr<PlaylistCallback> m_playlistCallback;
     std::unique_ptr<LibraryCallback> m_libraryCallback;
+    struct ProviderListener;
+    std::unique_ptr<ProviderListener> m_providerListener;
+    std::shared_ptr<int> m_alive = std::make_shared<int>(0);
     now_playing_album_art_notify* m_artNotify = nullptr;
     winrt::com_ptr<IDropTarget> m_dropTarget;
 };

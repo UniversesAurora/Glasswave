@@ -95,7 +95,14 @@
     <ClCompile Include="ui\nav_pane.cpp" />
     <ClCompile Include="ui\netease_login.cpp" />
     <ClCompile Include="ui\text_prompt.cpp" />
-    <ClCompile Include="ui\netease_sources.cpp" />
+    <ClCompile Include="ui\song_table.cpp" />
+    <ClCompile Include="ui\remote_grids.cpp" />
+    <ClCompile Include="ui\remote_pages.cpp" />
+    <ClCompile Include="ui\song_actions.cpp" />
+    <ClCompile Include="ui\view.cpp" />
+    <ClCompile Include="app\settings.cpp" />
+    <ClCompile Include="stream\provider.cpp" />
+    <ClCompile Include="netease\stream_provider.cpp" />
     <ClCompile Include="ui\taskbar.cpp" />
     <ClCompile Include="ui\i18n.cpp" />
     <ClCompile Include="media\favorites.cpp" />
@@ -124,7 +131,7 @@
     <ClCompile Include="netease\json.cpp" />
     <ClCompile Include="netease\log.cpp" />
     <ClCompile Include="netease\profile.cpp" />
-    <ClCompile Include="netease\provider.cpp" />
+    <ClCompile Include="netease\session.cpp" />
     <ClCompile Include="netease\service.cpp" />
     <ClCompile Include="netease\task_queue.cpp" />
   </ItemGroup>
@@ -145,7 +152,16 @@
     <ClInclude Include="ui\nav_pane.h" />
     <ClInclude Include="ui\netease_login.h" />
     <ClInclude Include="ui\text_prompt.h" />
-    <ClInclude Include="ui\netease_sources.h" />
+    <ClInclude Include="ui\song_table.h" />
+    <ClInclude Include="ui\remote_grids.h" />
+    <ClInclude Include="ui\remote_pages.h" />
+    <ClInclude Include="ui\song_actions.h" />
+    <ClInclude Include="ui\page.h" />
+    <ClInclude Include="ui\view.h" />
+    <ClInclude Include="app\settings.h" />
+    <ClInclude Include="stream\model.h" />
+    <ClInclude Include="stream\provider.h" />
+    <ClInclude Include="netease\stream_provider.h" />
     <ClInclude Include="ui\taskbar.h" />
     <ClInclude Include="ui\i18n.h" />
     <ClInclude Include="media\favorites.h" />
@@ -173,7 +189,7 @@
     <ClInclude Include="netease\json.h" />
     <ClInclude Include="netease\log.h" />
     <ClInclude Include="netease\profile.h" />
-    <ClInclude Include="netease\provider.h" />
+    <ClInclude Include="netease\session.h" />
     <ClInclude Include="netease\service.h" />
     <ClInclude Include="netease\task_queue.h" />
     <ClInclude Include="netease\types.h" />

@@ -6,7 +6,8 @@
 #include "win7/win7_resources.h"
 #include "ui/win7_menu.h"
 #include "media/favorites.h"
-#include "netease/handle.h"
+#include "app/settings.h"
+#include "stream/provider.h"
 #include "ui/i18n.h"
 #include "wmp/wmp_painter.h"
 
@@ -35,7 +36,6 @@ constexpr D2D1_SIZE_F kAlbumTile{132, 160};
 constexpr float kAlbumTileArt = 100;
 constexpr D2D1_SIZE_F kArtistTile{240, 108};
 constexpr float kArtistTileArt = 88;
-constexpr size_t kMaxArtBitmaps = 128;  // decoded covers kept for scrolling and view switches
 
 constexpr uint32_t kInk = 0x1E1E1E, kSecondaryInk = 0x4A4A4A, kGreyInk = 0x7A7A7A, kPlayingInk = 0x1E5BA8;
 constexpr uint32_t kGroupInk = 0x2E64B4, kGroupRule = 0xC9D7E8, kLinkInk = 0x0066CC;
@@ -773,11 +773,9 @@ void ListView::PaintCells(ID2D1DeviceContext* dc, size_t row, float y, float row
             // No heart in WMP's art: a gold star (5530) when the song is in Favorites, its
             // outline (5531) on the hovered row, else the empty one (5533).
             const metadb_handle_ptr item = m_source->Item(row);
-            const bool fav = item.is_valid() && [&] {
-                int64_t remoteId = 0;
-                if (netease::ParseSongPath(item->get_path(), remoteId)) return media::IsFavorite(item);
-                return m_favorites.count(item.get_ptr()) != 0;
-            }();
+            // Provider tracks ask their provider; local ones the Favorites set cached per paint.
+            const bool fav = item.is_valid() && (stream::ProviderOf(item) ? media::IsFavorite(item)
+                                                                        : m_favorites.count(item.get_ptr()) != 0);
             const int id = fav ? 5530 : row == m_hot ? 5531 : 5533;
             const float fx = std::round((c.x + (c.w - 14) / 2) * m_scale) / m_scale;
             const float fy = std::round((y + (rowH - 14) / 2) * m_scale) / m_scale;
@@ -968,7 +966,7 @@ void ListView::DrawArt(ID2D1DeviceContext* dc, const std::wstring& key, const me
             src->GetSize(&sw, &sh);
             if (SUCCEEDED(dc->CreateBitmapFromWicBitmap(src.get(), nullptr, bmp.put()))) {
                 m_artBitmaps[cacheKey] = {bmp, ++m_artClock, version};
-                if (m_artBitmaps.size() > kMaxArtBitmaps) {
+                if (m_artBitmaps.size() > static_cast<size_t>(settings::ListBitmapCache())) {
                     auto oldest = m_artBitmaps.begin();
                     for (auto it = m_artBitmaps.begin(); it != m_artBitmaps.end(); ++it)
                         if (it->second.used < oldest->second.used) oldest = it;
@@ -1160,7 +1158,7 @@ ListView::Hit ListView::HitAt(POINT pt) const {
                 const auto& g = (*m_source->Groups())[l.group];
                 const size_t k = l.sub;
                 const float tx = AlbumTextLeft(albumL);
-                if (k < g.lines.size() && !g.linkKeys[k].empty() && !g.lines[k].empty() && x >= tx &&
+                if (k < g.lines.size() && g.links[k] && !g.lines[k].empty() && x >= tx &&
                     x <= tx + TextWidth(g.lines[k], albumR - 4 - tx)) {
                     hit.part = Part::Link;
                     hit.line = k;

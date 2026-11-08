@@ -1,6 +1,9 @@
 #pragma once
 #include "wmp/wmp_painter.h"
 #include "media/library_model.h"
+#include "stream/provider.h"
+
+#include <set>
 
 namespace glasswave::ui {
 
@@ -10,19 +13,23 @@ int CategoryIcon(media::GroupKind kind);
 
 // Navigation pane: the play queue (Now Playing), All Music (Favorites, the cross-source
 // Recently Played / Most Played lists and the user's playlists), Local Music (the Smart
-// playlists section and its categories) and the NetEase Cloud Music library.
+// playlists section and its categories) and one section per streaming provider.
 class NavPane {
 public:
     // Category: a way to browse Local Music; playlist holds its media::GroupKind.
     enum class Target {
         None, Queue, PlaylistsHeader, Playlist, SmartHeader, Category,
-        LibraryAll, AllFavorites, AllRecentPlayed, AllMostPlayed, LibraryLocal, LibraryNetease,
-        NeteaseCreatedHeader, NeteaseCollectedHeader, NeteaseRemotePlaylist,
-        NeteaseRecommended, NeteaseLiked, NeteaseArtists, NeteaseAlbums, NeteaseLogin
+        LibraryAll, AllFavorites, AllRecentPlayed, AllMostPlayed, LibraryLocal,
+        // a provider's section (Item::provider): its root, pages, playlists and account row
+        LibraryRemote, RemoteFavorites, RemoteArtists, RemoteAlbums, RemoteCreatedHeader, RemoteSavedHeader,
+        RemotePlaylist, RemoteRecommended, RemoteAccount
     };
-    struct RemotePlaylist {
-        int64_t id = 0;
-        std::wstring name;
+    // What the pane shows for a provider.
+    struct ProviderSection {
+        stream::Provider* provider = nullptr;
+        bool signedIn = false;
+        std::wstring account;
+        std::vector<stream::Playlist> created, saved;
     };
     struct Item {
         Target target = Target::None;
@@ -31,16 +38,16 @@ public:
         std::wstring text;
         wmp::paint::NavIcon icon = wmp::paint::NavIcon::None;
         bool expandable = false;
-        int64_t remoteId = 0;
+        stream::Provider* provider = nullptr;
+        stream::Id remoteId;  // RemotePlaylist
     };
 
     explicit NavPane(const winrt::Windows::UI::Composition::ContainerVisual& parent);
     ~NavPane();
 
     void Rebuild();  // playlists changed
-    // The NetEase account shown under its library node (logged out: a sign-in entry).
-    void SetNeteaseState(bool loggedIn, std::wstring name);
-    void SetNeteasePlaylists(std::vector<RemotePlaylist> created, std::vector<RemotePlaylist> collected);
+    // The streaming providers' sections, in registration order.
+    void SetProviders(std::vector<ProviderSection> sections);
     // The Music categories shown (WMP's "Customize navigation pane"), in order.
     void SetCategories(std::vector<media::GroupKind> kinds);
     const std::vector<media::GroupKind>& Categories() const { return m_categories; }
@@ -49,7 +56,8 @@ public:
     void SetSmartPosition(int position);
     int SmartPosition() const { return m_smartAt; }
     void SetBounds(const RECT& px, float scale);
-    void Select(Target target, size_t playlist, int64_t remoteId = 0);
+    void Select(Target target, size_t playlist, const stream::Provider* provider = nullptr,
+                const stream::Id& remoteId = {});
     // Selection is blue while the pane has the focus, grey otherwise (Win7 tree view).
     void SetFocused(bool focused);
     const RECT& Bounds() const { return m_bounds; }
@@ -80,15 +88,12 @@ private:
 
     winrt::Windows::UI::Composition::SpriteVisual m_visual{nullptr};
     std::vector<Item> m_items;
-    bool m_allExpanded = true, m_localExpanded = true, m_neteaseExpanded = true;
-    bool m_playlistsExpanded = true, m_smartExpanded = true;
-    bool m_neteaseLoggedIn = false;
-    std::wstring m_neteaseName;
-    std::vector<RemotePlaylist> m_createdPlaylists, m_collectedPlaylists;
-    bool m_createdExpanded = true, m_collectedExpanded = true;
+    std::set<std::wstring> m_collapsed;  // ExpandKey of the groups the user closed
+    std::vector<ProviderSection> m_providers;
     Target m_selTarget = Target::LibraryLocal;
     size_t m_selPlaylist = 0;
-    int64_t m_selRemoteId = 0;
+    const stream::Provider* m_selProvider = nullptr;
+    stream::Id m_selRemoteId;
     size_t m_hot = SIZE_MAX;
     size_t m_hotExpander = SIZE_MAX;  // item whose expander is under the mouse
     bool m_focused = false;
@@ -109,6 +114,9 @@ private:
     bool SameSiblingGroup(size_t a, size_t b) const;
     bool MovableItem(size_t index) const;
     static std::wstring ItemKey(const Item& item);
+    static std::wstring ExpandKey(const Item& item);
+    bool Expanded(const Item& item) const { return !m_collapsed.count(ExpandKey(item)); }
+    bool IsProviderGroup(const std::wstring& groupKey) const;
     bool IsStaticItem(size_t index) const;
     std::wstring GroupKeyOf(size_t index) const;
     bool ApplyStaticMove(const Item& dragged, const Item& target, bool after, const std::wstring& group);

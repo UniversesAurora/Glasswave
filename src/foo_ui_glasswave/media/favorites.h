@@ -6,17 +6,8 @@ namespace glasswave::media {
 
 inline constexpr const char* kFavoritesName = "Favorites";
 
-// Optional provider dispatcher for tracks that are not local files (NetEase ncm://
-// handles). The hook runs on the main thread.
-class FavoriteHook {
-public:
-    virtual ~FavoriteHook() = default;
-    virtual bool Handles(const metadb_handle_ptr& track) const = 0;
-    virtual bool IsFavorite(const metadb_handle_ptr& track) const = 0;
-    virtual void Toggle(const metadb_handle_ptr& track) = 0;
-    virtual void Set(const metadb_handle_ptr& track, bool favorite) = 0;
-};
-void SetFavoriteHook(FavoriteHook* hook);
+// Tracks of a streaming provider (stream::ProviderOf) are routed to that provider's own
+// favorites instead.
 
 t_size FavoritesPlaylist(bool create);  // SIZE_MAX when missing and !create
 bool IsFavorite(const metadb_handle_ptr& track);

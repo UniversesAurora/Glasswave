@@ -5,8 +5,7 @@
 #include "media/favorites.h"
 #include "ui/win7_menu.h"
 #include "media/source_identity.h"
-#include "netease/catalog.h"
-#include "netease/handle.h"
+#include "stream/provider.h"
 #include "ui/text.h"
 #include "ui/i18n.h"
 #include <cwctype>
@@ -171,9 +170,8 @@ enum PlaylistField {
 
 // The library a track comes from, for lists that mix providers (the queue and playlists).
 std::wstring SourceLabel(const metadb_handle_ptr& track) {
-    int64_t id = 0;
-    return track.is_valid() && netease::ParseSongPath(track->get_path(), id) ? ui::Tr(L"NetEase Cloud Music")
-                                                                            : ui::Tr(L"Local Music");
+    const auto* provider = stream::ProviderOf(track);
+    return ui::Tr(provider ? provider->Name() : std::wstring(L"Local Music"));
 }
 }  // namespace
 
@@ -323,10 +321,32 @@ void PlaylistSource::BuildGroups() {
         const std::wstring album = info.album.empty() ? ui::Tr(L"Unknown Album") : info.album;
         g.header = album;
         g.lines = {album, info.albumArtist, info.genre, info.year};
-        // Album, album artist and genre open their views. The main window turns these into
-        // NetEase pages when the group's track is an ncm:// handle.
-        g.linkKeys = {info.album, info.albumArtistLink, info.genre, std::wstring()};
+        // Album, album artist and genre open their library views; a streaming provider's
+        // tracks open that provider's album and artist pages instead.
+        g.links = {Link{Link::Kind::LocalAlbum, GroupKind::Album, info.album, {}},
+                   Link::ToGroup(GroupKind::Artist, info.albumArtistLink), Link::ToGroup(GroupKind::Genre, info.genre),
+                   Link{}};
+        if (info.album.empty()) g.links[0] = {};
         m_groups.push_back(std::move(g));
+    }
+    for (auto& g : m_groups) {
+        auto* provider = stream::ProviderOf(g.art);
+        if (!provider) continue;
+        g.links = {};
+        // Old cached records may lack the album id; another song of the group may have it.
+        std::optional<stream::Track> track;
+        for (size_t k = 0; k < g.count && !(track && !track->albumId.empty()); ++k) {
+            const auto item = pm->playlist_get_item_handle(m_playlist, m_rows[g.first + k]);
+            if (auto found = provider->FindTrack(provider->TrackId(item)); found && (!track || !found->albumId.empty()))
+                track = std::move(found);
+        }
+        if (!track) continue;
+        g.links[0] = Link::Remote(Link::Kind::RemoteAlbum, provider->Key(), track->albumId);
+        for (const auto& artist : track->artists)
+            if (!artist.id.empty()) {
+                g.links[1] = Link::Remote(Link::Kind::RemoteArtist, provider->Key(), artist.id);
+                break;
+            }
     }
 }
 
@@ -395,10 +415,9 @@ void PlaylistSource::Sort(size_t column, bool descending) {
                                      : m_fields[column] == kPlAlbumColumn ? Compile("[%album%]")
                                                                           : m_scripts[column];
     for (t_size i = 0; i < n; ++i) {
-        if (bySource) {  // local first, then NetEase
-            int64_t id = 0;
-            const auto track = pm->playlist_get_item_handle(m_playlist, i);
-            keys[i] = track.is_valid() && netease::ParseSongPath(track->get_path(), id) ? L"1" : L"0";
+        if (bySource) {  // local first, then each provider
+            const auto* provider = stream::ProviderOf(pm->playlist_get_item_handle(m_playlist, i));
+            keys[i] = provider ? L"1" + std::wstring(provider->Key()) : L"0";
             continue;
         }
         if (byPlayCount) {  // zero-pad so the text compare orders numbers
@@ -496,12 +515,12 @@ std::wstring PlaylistSource::ArtKey(size_t row) const {
     auto pm = playlist_manager::get();
     const metadb_handle_ptr item = pm->playlist_get_item_handle(m_playlist, m_rows[row]);
     std::wstring key;
-    int64_t songId = 0;
-    if (item.is_valid() && netease::ParseSongPath(item->get_path(), songId)) {
-        // Share the NetEase album covers with the album pages and grids.
-        int64_t albumId = 0;
-        if (auto song = netease::Catalog::Get().FindSong(songId)) albumId = song->albumId;
-        key = albumId ? L"ncm:album:" + std::to_wstring(albumId) : L"ncm:song:" + std::to_wstring(songId);
+    if (auto* provider = stream::ProviderOf(item)) {
+        // Share the provider's album covers with its album pages and grids.
+        const stream::Id id = provider->TrackId(item);
+        const auto track = provider->FindTrack(id);
+        key = track && !track->albumId.empty() ? provider->ArtKey(stream::ArtKind::Album, track->albumId)
+                                               : provider->ArtKey(stream::ArtKind::Track, id);
     } else {
         // Album + folder, not album artist: one album often lists different contributing
         // artists per track, but they all share the same cover.
@@ -920,8 +939,10 @@ void TrackSource::SetFilter(std::wstring_view filterLower) {
             const std::wstring artist = album ? album->secondary : t.albumArtist;
             const std::wstring year = album ? album->year : t.year;
             g.lines = {t.album, artist, t.genre, year};
-            g.linkKeys = {album ? album->key : std::wstring(),
-                          m_model.FindGroup(GroupKind::Artist, artist) ? artist : std::wstring(), t.genre, year};
+            g.links = {Link::ToGroup(GroupKind::Album, album ? album->key : std::wstring()),
+                       Link::ToGroup(GroupKind::Artist,
+                                     m_model.FindGroup(GroupKind::Artist, artist) ? artist : std::wstring()),
+                       Link::ToGroup(GroupKind::Genre, t.genre), Link::ToGroup(GroupKind::Year, year)};
         }
         m_groups.push_back(std::move(g));
     }

@@ -18,6 +18,30 @@ struct Column {
 inline constexpr const char* kArtFormat = "<art>";
 Column ArtColumn(bool hidden);
 
+// Where a line of the album column leads, like WMP's hyperlinks.
+struct Link {
+    enum class Kind {
+        None,
+        Group,        // a LibraryModel group: `group` + its `key`
+        LocalAlbum,   // a local album found by name (`key`), preferring the group's artist line
+        LocalArtist,  // a local artist found by name (`key`)
+        RemoteAlbum,  // a streaming provider's album: `provider` + id in `key`
+        RemoteArtist  // a streaming provider's artist page
+    };
+    Kind kind = Kind::None;
+    GroupKind group = GroupKind::Artist;
+    std::wstring key;
+    std::wstring provider;
+
+    static Link ToGroup(GroupKind kind, std::wstring key) {
+        return key.empty() ? Link{} : Link{Kind::Group, kind, std::move(key), {}};
+    }
+    static Link Remote(Kind kind, std::wstring_view provider, std::wstring id) {
+        return id.empty() ? Link{} : Link{kind, GroupKind::Artist, std::move(id), std::wstring(provider)};
+    }
+    explicit operator bool() const { return kind != Kind::None; }
+};
+
 // WMP 12 details view grouped by album: a header line, then the tracks next to an
 // album column showing the cover and up to four lines of album information.
 struct RowGroup {
@@ -26,9 +50,8 @@ struct RowGroup {
     metadb_handle_ptr art;        // track whose front cover represents the group
     std::wstring header;
     std::array<std::wstring, 4> lines;
-    // Album column lines that open a view, like WMP's hyperlinks: keys of the album (0),
-    // album artist (1) and genre (2) groups in LibraryModel; empty = plain text.
-    std::array<std::wstring, 4> linkKeys;
+    // What each album column line opens (album, artist, genre, year); none = plain text.
+    std::array<Link, 4> links;
 };
 
 // WMP 12 view options: Icon, Expanded tile, Details.
