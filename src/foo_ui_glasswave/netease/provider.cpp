@@ -1214,6 +1214,11 @@ void Provider::RenamePlaylist(int64_t playlistId, std::wstring name, DoneCallbac
                     info.name = name;
                     ApplyPlaylistInfo(info);
                 } else {
+                    if (auto existing = Catalog::Get().FindPlaylist(playlistId)) {
+                        Playlist updated = *existing;
+                        updated.name = name;
+                        Catalog::Get().Put(updated);
+                    }
                     std::lock_guard lock(m_mutex);
                     auto rename = [&](std::vector<Playlist>& list) {
                         for (auto& playlist : list)
