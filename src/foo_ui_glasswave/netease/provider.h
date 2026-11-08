@@ -33,7 +33,8 @@ public:
     Account CurrentAccount() const;
     int64_t LikedPlaylistId() const;
     bool IsLiked(int64_t songId) const;
-    std::vector<Playlist> MyPlaylists() const;
+    std::vector<Playlist> CreatedPlaylists() const;
+    std::vector<Playlist> CollectedPlaylists() const;
 
     using DoneCallback = std::function<void(bool ok, std::wstring error)>;
     using PlaylistsCallback = std::function<void(std::vector<Playlist> playlists, std::wstring error)>;
@@ -74,7 +75,8 @@ private:
     mutable std::mutex m_mutex;
     std::function<void()> m_stateCallback;
     Account m_account;
-    std::vector<Playlist> m_myPlaylists;
+    std::vector<Playlist> m_createdPlaylists;
+    std::vector<Playlist> m_collectedPlaylists;
     int64_t m_likedPlaylist = 0;
     mutable std::mutex m_likedMutex;
     std::unordered_set<int64_t> m_liked;

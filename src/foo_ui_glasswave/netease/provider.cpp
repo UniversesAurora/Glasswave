@@ -85,7 +85,8 @@ void Provider::Shutdown() {
     m_service.Stop();
     std::lock_guard lock(m_mutex);
     m_account = {};
-    m_myPlaylists.clear();
+    m_createdPlaylists.clear();
+    m_collectedPlaylists.clear();
     m_likedPlaylist = 0;
     std::lock_guard liked(m_likedMutex);
     m_liked.clear();
@@ -108,9 +109,14 @@ bool Provider::IsLiked(int64_t songId) const {
     return m_liked.count(songId) != 0;
 }
 
-std::vector<Playlist> Provider::MyPlaylists() const {
+std::vector<Playlist> Provider::CreatedPlaylists() const {
     std::lock_guard lock(m_mutex);
-    return m_myPlaylists;
+    return m_createdPlaylists;
+}
+
+std::vector<Playlist> Provider::CollectedPlaylists() const {
+    std::lock_guard lock(m_mutex);
+    return m_collectedPlaylists;
 }
 
 void Provider::SetAccountLocked(const Account& account) {
@@ -238,6 +244,18 @@ void Provider::RefreshAccount(DoneCallback done) {
             m_liked.clear();
             for (int64_t id : ids) m_liked.insert(id);
         }
+        std::vector<Playlist> playlists;
+        int64_t likedPlaylist = 0;
+        std::wstring playlistError;
+        if (m_client.UserPlaylists(account.userId, abort, playlists, likedPlaylist, playlistError)) {
+            std::vector<Playlist> created, collected;
+            for (auto& playlist : playlists)
+                (playlist.creatorId == account.userId ? created : collected).push_back(std::move(playlist));
+            std::lock_guard lock(m_mutex);
+            m_createdPlaylists = std::move(created);
+            m_collectedPlaylists = std::move(collected);
+            m_likedPlaylist = likedPlaylist;
+        }
         PostMain([done = std::move(done)] {
             if (done) done(true, {});
         });
@@ -321,7 +339,10 @@ void Provider::FetchMyPlaylists(PlaylistsCallback done) {
         }
         {
             std::lock_guard lock(m_mutex);
-            m_myPlaylists = playlists;
+            m_createdPlaylists.clear();
+            m_collectedPlaylists.clear();
+            for (auto& playlist : playlists)
+                (playlist.creatorId == userId ? m_createdPlaylists : m_collectedPlaylists).push_back(playlist);
             m_likedPlaylist = liked;
         }
         for (const auto& playlist : playlists) Catalog::Get().Put(playlist);
@@ -396,7 +417,10 @@ void Provider::FetchLiked(SongsCallback done) {
             std::vector<Playlist> playlists;
             if (m_client.UserPlaylists(userId, abort, playlists, likedPlaylist, error)) {
                 std::lock_guard lock(m_mutex);
-                m_myPlaylists = playlists;
+                m_createdPlaylists.clear();
+                m_collectedPlaylists.clear();
+                for (auto& playlist : playlists)
+                    (playlist.creatorId == userId ? m_createdPlaylists : m_collectedPlaylists).push_back(playlist);
                 m_likedPlaylist = likedPlaylist;
             }
         }
@@ -544,7 +568,8 @@ void Provider::Logout() {
     {
         std::lock_guard lock(m_mutex);
         m_account = {};
-        m_myPlaylists.clear();
+        m_createdPlaylists.clear();
+        m_collectedPlaylists.clear();
         m_likedPlaylist = 0;
         std::lock_guard liked(m_likedMutex);
         m_liked.clear();

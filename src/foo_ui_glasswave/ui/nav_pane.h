@@ -16,7 +16,12 @@ public:
     enum class Target {
         None, Queue, PlaylistsHeader, Playlist, SmartHeader, Music, Category,
         LibraryAll, AllFavorites, LibraryLocal, LibraryNetease,
-        NeteaseMyPlaylists, NeteaseRecommended, NeteaseLiked, NeteaseLogin
+        NeteaseCreatedHeader, NeteaseCollectedHeader, NeteaseRemotePlaylist,
+        NeteaseRecommended, NeteaseLiked, NeteaseLogin
+    };
+    struct RemotePlaylist {
+        int64_t id = 0;
+        std::wstring name;
     };
     struct Item {
         Target target = Target::None;
@@ -25,6 +30,7 @@ public:
         std::wstring text;
         wmp::paint::NavIcon icon = wmp::paint::NavIcon::None;
         bool expandable = false;
+        int64_t remoteId = 0;
     };
 
     explicit NavPane(const winrt::Windows::UI::Composition::ContainerVisual& parent);
@@ -33,11 +39,12 @@ public:
     void Rebuild();  // playlists changed
     // The NetEase account shown under its library node (logged out: a sign-in entry).
     void SetNeteaseState(bool loggedIn, std::wstring name);
+    void SetNeteasePlaylists(std::vector<RemotePlaylist> created, std::vector<RemotePlaylist> collected);
     // The Music categories shown (WMP's "Customize navigation pane"), in order.
     void SetCategories(std::vector<media::GroupKind> kinds);
     const std::vector<media::GroupKind>& Categories() const { return m_categories; }
     void SetBounds(const RECT& px, float scale);
-    void Select(Target target, size_t playlist);
+    void Select(Target target, size_t playlist, int64_t remoteId = 0);
     // Selection is blue while the pane has the focus, grey otherwise (Win7 tree view).
     void SetFocused(bool focused);
     const RECT& Bounds() const { return m_bounds; }
@@ -60,8 +67,11 @@ private:
     bool m_playlistsExpanded = true, m_smartExpanded = true, m_musicExpanded = true;
     bool m_neteaseLoggedIn = false;
     std::wstring m_neteaseName;
+    std::vector<RemotePlaylist> m_createdPlaylists, m_collectedPlaylists;
+    bool m_createdExpanded = true, m_collectedExpanded = true;
     Target m_selTarget = Target::Music;
     size_t m_selPlaylist = 0;
+    int64_t m_selRemoteId = 0;
     size_t m_hot = SIZE_MAX;
     size_t m_hotExpander = SIZE_MAX;  // item whose expander is under the mouse
     bool m_focused = false;

@@ -133,9 +133,26 @@ void NavPane::Rebuild() {
     }
     m_items.push_back({Target::LibraryNetease, 0, 0, L"NetEase Cloud Music", wp::NavIcon::Library, true});
     if (m_neteaseExpanded) {
-        m_items.push_back({Target::NeteaseMyPlaylists, 0, 1, L"My playlists", wp::NavIcon::Playlist, false});
-        m_items.push_back({Target::NeteaseRecommended, 0, 1, L"Recommended", wp::NavIcon::Playlist, false});
-        m_items.push_back({Target::NeteaseLiked, 0, 1, L"Favorites", wp::NavIcon::Playlist, false});
+        if (m_neteaseLoggedIn) {
+            m_items.push_back({Target::NeteaseLiked, 0, 1, L"Favorites", wp::NavIcon::Playlist, false});
+            m_items.push_back(
+                {Target::NeteaseCreatedHeader, 0, 1, L"Created playlists", wp::NavIcon::Playlist, true});
+            if (m_createdExpanded) {
+                for (const auto& playlist : m_createdPlaylists)
+                    m_items.push_back({Target::NeteaseRemotePlaylist, 0, 2,
+                                       playlist.name.empty() ? L"Unnamed playlist" : playlist.name,
+                                       wp::NavIcon::Playlist, false, playlist.id});
+            }
+            m_items.push_back(
+                {Target::NeteaseCollectedHeader, 0, 1, L"Collected playlists", wp::NavIcon::Playlist, true});
+            if (m_collectedExpanded) {
+                for (const auto& playlist : m_collectedPlaylists)
+                    m_items.push_back({Target::NeteaseRemotePlaylist, 0, 2,
+                                       playlist.name.empty() ? L"Unnamed playlist" : playlist.name,
+                                       wp::NavIcon::Playlist, false, playlist.id});
+            }
+            m_items.push_back({Target::NeteaseRecommended, 0, 1, L"Recommended", wp::NavIcon::Playlist, false});
+        }
         const std::wstring account = m_neteaseLoggedIn
                                          ? (m_neteaseName.empty() ? std::wstring(L"NetEase account") : m_neteaseName)
                                          : std::wstring(L"Sign in to NetEase Cloud Music...");
@@ -143,6 +160,12 @@ void NavPane::Rebuild() {
     }
     m_hot = SIZE_MAX;
     Paint();
+}
+
+void NavPane::SetNeteasePlaylists(std::vector<RemotePlaylist> created, std::vector<RemotePlaylist> collected) {
+    m_createdPlaylists = std::move(created);
+    m_collectedPlaylists = std::move(collected);
+    Rebuild();
 }
 
 void NavPane::SetNeteaseState(bool loggedIn, std::wstring name) {
@@ -172,9 +195,10 @@ void NavPane::SetFocused(bool focused) {
     Paint();
 }
 
-void NavPane::Select(Target target, size_t playlist) {
+void NavPane::Select(Target target, size_t playlist, int64_t remoteId) {
     m_selTarget = target;
     m_selPlaylist = playlist;
+    m_selRemoteId = remoteId;
     Paint();
 }
 
@@ -197,6 +221,8 @@ const NavPane::Item* NavPane::OnLButtonDown(POINT pt) {
         if (item->target == Target::LibraryAll) m_allExpanded = !m_allExpanded;
         if (item->target == Target::LibraryLocal) m_localExpanded = !m_localExpanded;
         if (item->target == Target::LibraryNetease) m_neteaseExpanded = !m_neteaseExpanded;
+        if (item->target == Target::NeteaseCreatedHeader) m_createdExpanded = !m_createdExpanded;
+        if (item->target == Target::NeteaseCollectedHeader) m_collectedExpanded = !m_collectedExpanded;
         Rebuild();
         return nullptr;
     }
@@ -248,8 +274,11 @@ void NavPane::Paint() {
         float y = 6;
         for (size_t i = m_top; i < m_items.size(); ++i, y += rowH) {
             const Item& it = m_items[i];
-            const bool selected = it.target == m_selTarget &&
-                                  ((it.target != Target::Playlist && it.target != Target::Category) || it.playlist == m_selPlaylist);
+            const bool selected =
+                it.target == m_selTarget &&
+                (it.target == Target::Playlist || it.target == Target::Category
+                     ? it.playlist == m_selPlaylist
+                     : it.target == Target::NeteaseRemotePlaylist ? it.remoteId == m_selRemoteId : true);
             const bool hot = i == m_hot;
             if (selected || hot)
                 wp::RowPlate(dc, {4, y, width - 6, y + rowH},
@@ -263,6 +292,8 @@ void NavPane::Paint() {
                                       : it.target == Target::LibraryAll    ? m_allExpanded
                                       : it.target == Target::LibraryLocal  ? m_localExpanded
                                       : it.target == Target::LibraryNetease ? m_neteaseExpanded
+                                      : it.target == Target::NeteaseCreatedHeader ? m_createdExpanded
+                                      : it.target == Target::NeteaseCollectedHeader ? m_collectedExpanded
                                                                            : false;
                 // Win7 tree expander as vectors (the 16 px theme glyph went soft at 200 %).
                 wp::Disclosure(dc, {x + 2, y + rowH / 2}, expanded, i == m_hotExpander);

@@ -56,6 +56,7 @@ private:
     struct View {
         // Category: every group of `group` (Artist, Album, ...); Group: the songs of one of them.
         enum class Library { All, Local, Netease };
+        enum class NeteaseScope { Created, Collected, Recommended };
         enum class Kind {
             Playlist, AllMusic, Category, Group, Playlists, SmartPlaylists,
             AllFavorites, NeteasePlaylists, NeteasePlaylist, NeteaseLiked, Search
@@ -65,7 +66,7 @@ private:
         size_t playlist = 0;
         media::GroupKind group = media::GroupKind::Artist;
         std::wstring key, name;
-        bool recommended = false;  // NeteasePlaylists: My playlists / Recommended
+        NeteaseScope neteaseScope = NeteaseScope::Created;
         std::wstring remoteId;     // NetEase playlist id
         std::wstring query;        // Search
     };
