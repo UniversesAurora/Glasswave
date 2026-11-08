@@ -40,6 +40,8 @@ public:
     void OnPlaylistContentChanged(size_t playlist);
     void OnPlaylistSelectionChanged(size_t playlist);
     void OnPlaylistsChanged();
+    // The set of playlists changed: remap(old index) is the new index, SIZE_MAX if deleted.
+    void OnPlaylistsMoved(const std::function<size_t(size_t)>& remap);
     void OnPlaylistLockChanged();  // auto playlists attach as locks, also after start-up
     void ScheduleLibraryReload();
 
@@ -162,7 +164,7 @@ private:
     // Context-menu "Go to artist" destinations for the first item (provider or local).
     std::vector<MenuAction> BuildArtistLinks(metadb_handle_list_cref items);
     std::vector<ContextAction> BuildContextActions(metadb_handle_list_cref items);
-    void RemoveFromNowPlaying(metadb_handle_list_cref items);
+    void RemoveFromNowPlaying();  // the selected rows of the queue
     void ClearNowPlaying();
     void ForgetPlayStats(metadb_handle_list_cref items, bool recent);
     void ClearPlayStats(bool recent);

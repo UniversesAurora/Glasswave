@@ -374,10 +374,22 @@ struct MainWindow::PlaylistCallback : playlist_callback_impl_base {
         window.OnPlaylistSelectionChanged(p);
     }
     void on_item_focus_change(t_size p, t_size, t_size) override { window.OnPlaylistSelectionChanged(p); }
-    void on_playlist_created(t_size, const char*, t_size) override { window.OnPlaylistsChanged(); }
+    // Views hold playlist indices; every change of the set moves them along.
+    void on_playlist_created(t_size p, const char*, t_size) override {
+        window.OnPlaylistsMoved([p](size_t i) { return i >= p ? i + 1 : i; });
+    }
     void on_playlist_locked(t_size, bool) override { window.OnPlaylistLockChanged(); }
-    void on_playlists_reorder(const t_size*, t_size) override { window.OnPlaylistsChanged(); }
-    void on_playlists_removed(const pfc::bit_array&, t_size, t_size) override { window.OnPlaylistsChanged(); }
+    void on_playlists_reorder(const t_size* order, t_size count) override {
+        std::vector<size_t> moved(count);
+        for (t_size to = 0; to < count; ++to) moved[order[to]] = to;  // order[new] = old
+        window.OnPlaylistsMoved([&moved](size_t i) { return i < moved.size() ? moved[i] : i; });
+    }
+    void on_playlists_removed(const pfc::bit_array& mask, t_size oldCount, t_size) override {
+        std::vector<size_t> moved(oldCount, SIZE_MAX);
+        for (t_size i = 0, next = 0; i < oldCount; ++i)
+            if (!mask[i]) moved[i] = next++;
+        window.OnPlaylistsMoved([&moved](size_t i) { return i < moved.size() ? moved[i] : SIZE_MAX; });
+    }
     void on_playlist_renamed(t_size, const char*, t_size) override { window.OnPlaylistsChanged(); }
     void on_playback_order_changed(t_size) override { window.OnPlaybackOrderChanged(); }
 
@@ -2624,7 +2636,7 @@ std::vector<ContextAction> MainWindow::BuildContextActions(metadb_handle_list_cr
     std::vector<MenuAction> page;
     if (m_page) m_page->AddSongActions(page, selected);
     if (m_view.kind == View::Kind::Playlist && media::IsQueue(m_view.playlist))
-        page.push_back({L"Remove from Now Playing", [this, selected] { RemoveFromNowPlaying(selected); }});
+        page.push_back({L"Remove from Now Playing", [this] { RemoveFromNowPlaying(); }});
     else if (m_view.kind == View::Kind::AllRecentPlayed)
         page.push_back({L"Remove from Recently Played", [this, selected] { ForgetPlayStats(selected, true); }});
     else if (m_view.kind == View::Kind::AllMostPlayed)
@@ -2634,29 +2646,26 @@ std::vector<ContextAction> MainWindow::BuildContextActions(metadb_handle_list_cr
     return actions;
 }
 
-void MainWindow::RemoveFromNowPlaying(metadb_handle_list_cref items) {
+void MainWindow::RemoveFromNowPlaying() {
+    // The selected rows, not every row with the same song: the queue can hold a song twice.
     const t_size queue = media::QueuePlaylist(false);
-    if (queue == SIZE_MAX || items.get_count() == 0) return;
+    if (queue == SIZE_MAX) return;
     auto pm = playlist_manager::get();
     const t_size count = pm->playlist_get_item_count(queue);
     if (!count) return;
-    metadb_handle_list all;
-    pm->playlist_get_all_items(queue, all);
-    auto same = [](const metadb_handle_ptr& a, const metadb_handle_ptr& b) {
-        return a.is_valid() && b.is_valid() && std::strcmp(a->get_path(), b->get_path()) == 0 &&
-               a->get_subsong_index() == b->get_subsong_index();
-    };
+    pfc::bit_array_bittable mask(count);
+    pm->playlist_get_selection_mask(queue, mask);
+    bool any = false;
+    for (t_size i = 0; i < count && !any; ++i) any = mask[i];
+    if (!any) {  // a right-click on an unselected row acts on that row
+        const t_size focus = pm->playlist_get_focus_item(queue);
+        if (focus >= count) return;
+        mask.set(focus, true);
+    }
     t_size playingPlaylist = SIZE_MAX, playingIndex = SIZE_MAX;
     const bool playing = pm->get_playing_item_location(&playingPlaylist, &playingIndex);
-    bool removesPlaying = false;
-    pfc::bit_array_bittable mask(count);
-    for (t_size i = 0; i < count; ++i)
-        for (t_size j = 0; j < items.get_count(); ++j) {
-            if (!same(all[i], items[j])) continue;
-            mask.set(i, true);
-            if (playing && playingPlaylist == queue && playingIndex == i) removesPlaying = true;
-            break;
-        }
+    const bool removesPlaying = playing && playingPlaylist == queue && playingIndex < count && mask[playingIndex];
+    const bool paused = playback_control::get()->is_paused();
     pm->playlist_undo_backup(queue);
     pm->playlist_remove_items(queue, mask);
     if (!removesPlaying) return;
@@ -2681,6 +2690,7 @@ void MainWindow::RemoveFromNowPlaying(metadb_handle_list_cref items) {
     if (next == SIZE_MAX) next = remaining - 1;
     pm->playlist_set_focus_item(queue, next);
     pm->playlist_execute_default_action(queue, next);
+    if (paused) playback_control::get()->pause(true);  // the next song waits like the removed one did
 }
 
 void MainWindow::ClearNowPlaying() {
@@ -2810,7 +2820,6 @@ void MainWindow::RefreshProviderSections() {
         NavPane::ProviderSection section;
         section.provider = provider;
         section.signedIn = provider->SignedIn();
-        section.account = provider->AccountName();
         if (section.signedIn) {
             section.created = provider->Playlists(stream::Shelf::Created);
             section.saved = provider->Playlists(stream::Shelf::Saved);
@@ -2824,10 +2833,6 @@ void MainWindow::ShowRemoteNavMenu(const NavPane::Item& item, POINT screen) {
     stream::Provider& provider = *item.provider;
     std::vector<MenuAction> actions;
     switch (item.target) {
-    case NavPane::Target::RemoteAccount:
-        if (provider.SignedIn()) actions.push_back({L"Sign out", [&provider] { provider.SignOut(); }});
-        else actions.push_back({L"Sign in...", [this, &provider] { provider.SignIn(m_hwnd); }});
-        break;
     case NavPane::Target::RemotePlaylist:
         ShowRemotePlaylistMenu(*this, provider, item.remoteId, item.text, provider.ShelfOf(item.remoteId), screen);
         return;
@@ -2836,6 +2841,8 @@ void MainWindow::ShowRemoteNavMenu(const NavPane::Item& item, POINT screen) {
         if ((item.target == NavPane::Target::RemoteCreatedHeader || item.target == NavPane::Target::LibraryRemote) &&
             provider.Offers().editPlaylists && provider.SignedIn())
             actions.push_back({L"New " + provider.Name() + L" playlist", [this, &provider] { CreateRemotePlaylist(*this, provider); }});
+        if (item.target == NavPane::Target::LibraryRemote && !provider.SignedIn())
+            actions.push_back({L"Sign in...", [this, &provider] { provider.SignIn(m_hwnd); }});
         if (provider.SignedIn())  // re-read the right-clicked section, not just the page on screen
             actions.push_back({L"Refresh", [this, item] {
                                    ArtCache::Get().Invalidate(L"");
@@ -3105,9 +3112,6 @@ void MainWindow::OnNavItem(const NavPane::Item& item) {
     case NavPane::Target::RemotePlaylist:
         v = PlaylistView(*item.provider, item.remoteId, item.text, item.provider->ShelfOf(item.remoteId));
         break;
-    case NavPane::Target::RemoteAccount:
-        item.provider->SignIn(m_hwnd);
-        return;
     default: return;
     }
     Navigate(v, true);
@@ -3182,16 +3186,7 @@ void MainWindow::OnNavMove(const NavPane::Item& dragged, const NavPane::Item& ta
                 value = group[next++];
             }
         if (next != group.size()) return;
-        std::vector<size_t> oldToNew(count);
-        for (size_t pos = 0; pos < count; ++pos) oldToNew[full[pos]] = pos;
-        if (!pm->reorder(full.data(), count)) return;
-        if (m_view.kind == View::Kind::Playlist && m_view.playlist < count)
-            m_view.playlist = oldToNew[m_view.playlist];
-        for (auto& view : m_history)
-            if (view.kind == View::Kind::Playlist && view.playlist < count)
-                view.playlist = oldToNew[view.playlist];
-        m_nav->Rebuild();
-        if (m_view.kind == View::Kind::Playlist) Navigate(m_view, false);
+        pm->reorder(full.data(), count);  // on_playlists_reorder moves the views along
         return;
     }
     // A provider's playlists: within the own or the saved ones, synced to the service.
@@ -3620,6 +3615,24 @@ void MainWindow::OnPlaylistContentChanged(size_t playlist) {
 
 void MainWindow::OnPlaylistSelectionChanged(size_t playlist) {
     if (m_view.kind == View::Kind::Playlist && m_view.playlist == playlist && m_list) m_list->Refresh();
+}
+
+void MainWindow::OnPlaylistsMoved(const std::function<size_t(size_t)>& remap) {
+    // A page whose playlist was deleted becomes that section's Playlists page.
+    auto fix = [&remap](View& view) {
+        if (view.kind != View::Kind::Playlist) return;
+        if (const size_t moved = remap(view.playlist); moved != SIZE_MAX) {
+            view.playlist = moved;
+            return;
+        }
+        const bool smart = view.library == View::Library::Local;
+        view = {};
+        view.library = smart ? View::Library::Local : View::Library::All;
+        view.kind = smart ? View::Kind::SmartPlaylists : View::Kind::Playlists;
+    };
+    fix(m_view);
+    for (auto& view : m_history) fix(view);
+    OnPlaylistsChanged();
 }
 
 void MainWindow::OnPlaylistsChanged() {
@@ -4371,7 +4384,6 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
                 case NavPane::Target::RemoteSavedHeader:
                 case NavPane::Target::RemoteRecommended:
                 case NavPane::Target::RemotePlaylist:
-                case NavPane::Target::RemoteAccount:
                     ShowRemoteNavMenu(*item, screen);
                     return 0;
                 case NavPane::Target::LibraryAll:

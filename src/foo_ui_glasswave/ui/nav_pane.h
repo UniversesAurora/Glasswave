@@ -22,13 +22,12 @@ public:
         LibraryAll, AllFavorites, AllRecentPlayed, AllMostPlayed, LibraryLocal,
         // a provider's section (Item::provider): its root, pages, playlists and account row
         LibraryRemote, RemoteFavorites, RemoteArtists, RemoteAlbums, RemoteCreatedHeader, RemoteSavedHeader,
-        RemotePlaylist, RemoteRecommended, RemoteAccount
+        RemotePlaylist, RemoteRecommended
     };
     // What the pane shows for a provider.
     struct ProviderSection {
         stream::Provider* provider = nullptr;
         bool signedIn = false;
-        std::wstring account;
         std::vector<stream::Playlist> created, saved;
     };
     struct Item {

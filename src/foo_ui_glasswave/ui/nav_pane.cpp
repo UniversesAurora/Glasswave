@@ -117,7 +117,6 @@ std::wstring NavPane::ItemKey(const Item& item) {
     case Target::RemoteCreatedHeader: return L"created";
     case Target::RemoteSavedHeader: return L"collected";
     case Target::RemoteRecommended: return L"recommended";
-    case Target::RemoteAccount: return L"account";
     default: return {};
     }
 }
@@ -333,10 +332,7 @@ void NavPane::Rebuild() {
             if (offers.savePlaylists) playlists(Target::RemoteSavedHeader, L"Collected playlists", section.saved);
             if (offers.recommended) add(Target::RemoteRecommended, 1, L"Recommended", wp::NavIcon::Playlist, false);
         }
-        const std::wstring account = !section.signedIn ? L"Sign in to " + provider->Name() + L"..."
-                                     : section.account.empty() ? std::wstring(L"Account")
-                                                               : section.account;
-        add(Target::RemoteAccount, 1, account, wp::NavIcon::Playlist, false);
+        // Signing in and out is on the preferences page (and the root's context menu).
     }
     ApplyStaticOrder();
     m_hot = SIZE_MAX;
@@ -352,7 +348,7 @@ void NavPane::SetProviders(std::vector<ProviderSection> sections) {
                           [](const stream::Playlist& x, const stream::Playlist& y) { return x.id == y.id && x.name == y.name; });
     };
     auto same = [&](const ProviderSection& a, const ProviderSection& b) {
-        return a.provider == b.provider && a.signedIn == b.signedIn && a.account == b.account &&
+        return a.provider == b.provider && a.signedIn == b.signedIn &&
                sameRows(a.created, b.created) && sameRows(a.saved, b.saved);
     };
     if (std::equal(sections.begin(), sections.end(), m_providers.begin(), m_providers.end(), same)) return;
