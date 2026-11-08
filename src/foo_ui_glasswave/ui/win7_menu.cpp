@@ -3,7 +3,6 @@
 #include "ui/i18n.h"
 #include "gfx/composition_host.h"
 #include "win7/win7_resources.h"
-#include "media/favorites.h"
 #include "media/special_playlists.h"
 
 #include <commctrl.h>
@@ -387,9 +386,8 @@ UINT TrackWin7Menu(HMENU menu, UINT flags, int x, int y, HWND owner, const std::
 namespace {
 
 // Queue and Favorites commands above foobar2000's own context menu (ids past its range).
-enum : UINT { kPlay = 0x8001, kPlayNext, kAddToQueue, kFavoriteAdd, kFavoriteRemove, kClearQueue, kArtistBase = 0x8100 };
+enum : UINT { kPlay = 0x8001, kPlayNext, kAddToQueue, kClearQueue };
 
-std::function<std::vector<ArtistLink>(metadb_handle_list_cref)> g_artistLinks;
 std::function<std::vector<ContextAction>(metadb_handle_list_cref)> g_contextActions;
 
 std::vector<ContextAction> ContextActionsFor(metadb_handle_list_cref items) {
@@ -421,37 +419,11 @@ bool RunContextAction(UINT cmd, UINT base, UINT next, const std::vector<std::fun
     return true;
 }
 
-std::vector<ArtistLink> ArtistLinksFor(metadb_handle_list_cref items) {
-    if (!g_artistLinks || items.get_count() == 0) return {};
-    return g_artistLinks(items);
-}
-
-void AppendArtistCommands(HMENU menu, const std::vector<ArtistLink>& links) {
-    if (links.empty()) return;
-    if (links.size() == 1) {
-        AppendMenuW(menu, MF_STRING, kArtistBase, TrC(L"Go to artist"));
-    } else {
-        HMENU sub = CreatePopupMenu();
-        for (size_t i = 0; i < links.size(); ++i)
-            AppendMenuW(sub, MF_STRING, kArtistBase + static_cast<UINT>(i), links[i].name.c_str());
-        AppendMenuW(menu, MF_POPUP | MF_STRING, reinterpret_cast<UINT_PTR>(sub), TrC(L"Go to artist"));
-    }
-}
-
-bool RunArtistCommand(UINT cmd, const std::vector<ArtistLink>& links) {
-    if (cmd < kArtistBase || cmd >= kArtistBase + links.size()) return false;
-    if (links[cmd - kArtistBase].open) links[cmd - kArtistBase].open();
-    return true;
-}
-
-void AppendQueueCommands(HMENU menu, metadb_handle_list_cref items, bool inQueue) {
-    if (!inQueue) {
-        AppendMenuW(menu, MF_STRING, kPlay, TrC(L"Play"));
-        AppendMenuW(menu, MF_STRING, kPlayNext, TrC(L"Play next"));
-        AppendMenuW(menu, MF_STRING, kAddToQueue, TrC(L"Add to queue"));
-    }
-    const bool fav = media::AllFavorite(items);
-    AppendMenuW(menu, MF_STRING, fav ? kFavoriteRemove : kFavoriteAdd, fav ? TrC(L"Remove from Favorites") : TrC(L"Add to Favorites"));
+void AppendQueueCommands(HMENU menu, bool inQueue) {
+    if (inQueue) return;  // the queue page acts on the playing list itself
+    AppendMenuW(menu, MF_STRING, kPlay, TrC(L"Play"));
+    AppendMenuW(menu, MF_STRING, kPlayNext, TrC(L"Play next"));
+    AppendMenuW(menu, MF_STRING, kAddToQueue, TrC(L"Add to queue"));
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
 }
 
@@ -460,17 +432,11 @@ bool RunQueueCommand(UINT cmd, metadb_handle_list_cref items) {
     case kPlay: media::PlayQueue(items, 0); return true;
     case kPlayNext: media::PlayNext(items); return true;
     case kAddToQueue: media::AddToQueue(items); return true;
-    case kFavoriteAdd: media::SetFavorite(items, true); return true;
-    case kFavoriteRemove: media::SetFavorite(items, false); return true;
     default: return false;
     }
 }
 
 }  // namespace
-
-void SetArtistLinkProvider(std::function<std::vector<ArtistLink>(metadb_handle_list_cref)> provider) {
-    g_artistLinks = std::move(provider);
-}
 
 void SetContextActionProvider(std::function<std::vector<ContextAction>(metadb_handle_list_cref)> provider) {
     g_contextActions = std::move(provider);
@@ -483,17 +449,17 @@ void RunContextMenu(HWND owner, metadb_handle_list_cref items, POINT pt) {
     constexpr int kBase = 1;
     constexpr UINT kActionBase = 0x8200;
     HMENU menu = CreatePopupMenu();
-    AppendQueueCommands(menu, items, false);
-    const auto artists = ArtistLinksFor(items);
-    AppendArtistCommands(menu, artists);
+    AppendQueueCommands(menu, false);
     const auto actions = ContextActionsFor(items);
     UINT nextAction = kActionBase;
     std::vector<std::function<void()>> flat;
-    if (!actions.empty()) AppendContextActions(menu, actions, nextAction, flat);
+    if (!actions.empty()) {
+        AppendContextActions(menu, actions, nextAction, flat);
+        AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+    }
     cm->win32_build_menu(menu, kBase, 0x7FFF);
     const UINT cmd = TrackWin7Menu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_NONOTIFY, pt.x, pt.y, owner);
     DestroyMenu(menu);
-    if (RunArtistCommand(cmd, artists)) return;
     if (RunContextAction(cmd, kActionBase, nextAction, flat)) return;
     if (RunQueueCommand(cmd, items)) return;
     if (cmd >= kBase) cm->execute_by_id(cmd - kBase);
@@ -514,13 +480,14 @@ void RunPlaylistContextMenu(HWND owner, POINT pt) {
         AppendMenuW(menu, MF_STRING, kClearQueue, TrC(L"Clear Now Playing"));
         AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     }
-    if (items.get_count()) AppendQueueCommands(menu, items, queue);
-    const auto artists = ArtistLinksFor(items);
-    AppendArtistCommands(menu, artists);
+    if (items.get_count()) AppendQueueCommands(menu, queue);
     const auto actions = ContextActionsFor(items);
     UINT nextAction = kActionBase;
     std::vector<std::function<void()>> flat;
-    if (!actions.empty()) AppendContextActions(menu, actions, nextAction, flat);
+    if (!actions.empty()) {
+        AppendContextActions(menu, actions, nextAction, flat);
+        AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+    }
     cm->win32_build_menu(menu, kBase, 0x7FFF);
     const UINT cmd = TrackWin7Menu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_NONOTIFY, pt.x, pt.y, owner);
     DestroyMenu(menu);
@@ -535,7 +502,6 @@ void RunPlaylistContextMenu(HWND owner, POINT pt) {
         }
         return;
     }
-    if (RunArtistCommand(cmd, artists)) return;
     if (RunContextAction(cmd, kActionBase, nextAction, flat)) return;
     if (RunQueueCommand(cmd, items)) return;
     if (cmd >= kBase) cm->execute_by_id(cmd - kBase);

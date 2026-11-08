@@ -211,7 +211,7 @@ private:
     // add to a NetEase playlist.
     enum class BulkAction { Play, PlayNext, Enqueue, LocalPlaylist, NeteasePlaylist };
     void AddBulkMenuItems(std::vector<MenuAction>& actions, bool netease,
-                          std::function<void(BulkAction, int64_t)> run);
+                          std::function<void(BulkAction, int64_t)> run, int64_t excludeNetease = 0);
     std::vector<std::pair<int64_t, std::wstring>> LocalPlaylistTargets(size_t exclude = SIZE_MAX);
     void ApplyBulkSongs(const std::vector<netease::Song>& songs, BulkAction action, int64_t target);
     void RunNeteasePlaylistBulk(int64_t id, BulkAction action, int64_t target);

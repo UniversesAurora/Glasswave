@@ -571,7 +571,6 @@ void MainWindow::InitComposition() {
     netease::Provider::Get().SetStateCallback([this] { OnNeteaseLoginChanged(); });
     netease::Provider::Get().SetLibraryCallback([this] { OnNeteaseLibraryChanged(); });
     netease::Provider::Get().SetLikesCallback([this] { OnNeteaseLikesChanged(); });
-    SetArtistLinkProvider([this](metadb_handle_list_cref items) { return BuildArtistLinks(items); });
     SetContextActionProvider([this](metadb_handle_list_cref items) { return BuildContextActions(items); });
     m_list = std::make_unique<ListView>(m_contentLayer);
     m_list->onLink = [this](size_t group, size_t line) { OnAlbumLink(group, line); };
@@ -3526,6 +3525,15 @@ std::vector<ContextAction> MainWindow::BuildContextActions(metadb_handle_list_cr
     if (items.get_count() == 0) return actions;
     metadb_handle_list selected;
     selected.add_items(items);
+    // View group: the artist(s) and the album stay adjacent at the top of the menu.
+    const auto artistLinks = BuildArtistLinks(items);
+    if (artistLinks.size() == 1) {
+        actions.push_back({L"Go to artist", artistLinks.front().open});
+    } else if (!artistLinks.empty()) {
+        std::vector<ContextAction> links;
+        for (const auto& link : artistLinks) links.push_back({link.name, link.open});
+        actions.push_back({L"Go to artist", nullptr, std::move(links)});
+    }
     // Page-specific removals go after the song actions, so View artist/View album stay
     // together at the top of the menu.
     std::vector<ContextAction> pageActions;
@@ -3567,15 +3575,24 @@ std::vector<ContextAction> MainWindow::BuildContextActions(metadb_handle_list_cr
                 }
             }
         }
-        if (albumId)
+        const bool sameAlbum =
+            albumId && m_view.kind == View::Kind::NeteaseAlbum && m_view.remoteId == std::to_wstring(albumId);
+        if (albumId && !sameAlbum)
             actions.push_back({L"View album", [this, albumId, albumName] {
                                    OpenNeteaseAlbum(albumId, albumName);
                                }});
-        if (albumId) actions.push_back({});
+        if (!actions.empty()) actions.push_back({});
+        const bool favorite = media::AllFavorite(selected);
+        actions.push_back({favorite ? L"Remove from Favorites" : L"Add to Favorites",
+                           [selected, favorite] { media::SetFavorite(selected, !favorite); }});
         actions.push_back(std::move(addToPlaylist));
         if (!ids.empty()) {
             std::vector<ContextAction> playlists;
+            const int64_t currentId = m_view.kind == View::Kind::NeteasePlaylist
+                                          ? static_cast<int64_t>(_wcstoi64(m_view.remoteId.c_str(), nullptr, 10))
+                                          : 0;
             for (const auto& playlist : netease::Provider::Get().CreatedPlaylists()) {
+                if (playlist.id == currentId) continue;  // the songs are already in this playlist
                 playlists.push_back({playlist.name.empty() ? L"Unnamed playlist" : playlist.name,
                                      [this, playlistId = playlist.id, ids] {
                                          const bool current =
@@ -3666,16 +3683,22 @@ std::vector<ContextAction> MainWindow::BuildContextActions(metadb_handle_list_cr
     const media::Track* track = first.is_valid() ? m_library.FindTrack(first) : nullptr;
     if (track && track->albumIndex < m_library.Groups(media::GroupKind::Album).size()) {
         const auto& album = m_library.Groups(media::GroupKind::Album)[track->albumIndex];
-        actions.push_back({L"View album", [this, key = album.key, name = album.name] {
-                               View v;
-                               v.kind = View::Kind::Group;
-                               v.group = media::GroupKind::Album;
-                               v.key = key;
-                               v.name = name;
-                               Navigate(v, true);
-                           }});
-        actions.push_back({});
+        const bool sameAlbum = m_view.kind == View::Kind::Group && m_view.group == media::GroupKind::Album &&
+                               m_view.key == album.key;
+        if (!sameAlbum)
+            actions.push_back({L"View album", [this, key = album.key, name = album.name] {
+                                   View v;
+                                   v.kind = View::Kind::Group;
+                                   v.group = media::GroupKind::Album;
+                                   v.key = key;
+                                   v.name = name;
+                                   Navigate(v, true);
+                               }});
     }
+    if (!actions.empty()) actions.push_back({});
+    const bool favorite = media::AllFavorite(selected);
+    actions.push_back({favorite ? L"Remove from Favorites" : L"Add to Favorites",
+                       [selected, favorite] { media::SetFavorite(selected, !favorite); }});
     actions.push_back(std::move(addToPlaylist));
     if (!pageActions.empty()) {
         actions.push_back({});
@@ -3783,7 +3806,7 @@ std::vector<std::pair<int64_t, std::wstring>> MainWindow::LocalPlaylistTargets(s
 }
 
 void MainWindow::AddBulkMenuItems(std::vector<MenuAction>& actions, bool netease,
-                                  std::function<void(BulkAction, int64_t)> run) {
+                                  std::function<void(BulkAction, int64_t)> run, int64_t excludeNetease) {
     actions.push_back({L"Play", [run] { run(BulkAction::Play, 0); }});
     actions.push_back({L"Play next", [run] { run(BulkAction::PlayNext, 0); }});
     actions.push_back({L"Add to queue", [run] { run(BulkAction::Enqueue, 0); }});
@@ -3798,6 +3821,7 @@ void MainWindow::AddBulkMenuItems(std::vector<MenuAction>& actions, bool netease
     if (netease) {
         std::vector<MenuAction> ncm;
         for (const auto& playlist : netease::Provider::Get().CreatedPlaylists()) {
+            if (playlist.id == excludeNetease) continue;  // the songs are already there
             ncm.push_back({playlist.name.empty() ? L"Unnamed playlist" : playlist.name,
                            [run, id = playlist.id] { run(BulkAction::NeteasePlaylist, id); }});
         }
@@ -3857,6 +3881,40 @@ void MainWindow::RunNeteaseAlbumBulk(int64_t id, BulkAction action, int64_t targ
 
 void MainWindow::ShowPageContextMenu(POINT screen) {
     std::vector<MenuAction> actions;
+    // A song list page can act on its whole (filtered) contents. NetEase playlist and album
+    // pages already carry the same actions from their own bulk menu.
+    const bool localPlaylist = m_view.kind == View::Kind::Playlist && !media::IsQueue(m_view.playlist);
+    const bool songPage = localPlaylist || m_view.kind == View::Kind::AllRecentPlayed ||
+                          m_view.kind == View::Kind::AllMostPlayed ||
+                          m_view.kind == View::Kind::AllFavorites || m_view.kind == View::Kind::AllMusic ||
+                          m_view.kind == View::Kind::Category || m_view.kind == View::Kind::Group ||
+                          m_view.kind == View::Kind::NeteaseLiked ||
+                          m_view.kind == View::Kind::NeteaseArtistSongs;
+    if (songPage && m_source && m_source->Count()) {
+        metadb_handle_list items;
+        for (size_t row = 0; row < m_source->Count(); ++row) {
+            const auto track = m_source->Item(row);
+            if (track.is_valid()) items.add_item(track);
+        }
+        if (items.get_count()) {
+            actions.push_back({L"Play", [items] { media::PlayQueue(items, 0); }});
+            actions.push_back({L"Play next", [items] { media::PlayNext(items); }});
+            actions.push_back({L"Add to queue", [items] { media::AddToQueue(items); }});
+            std::vector<MenuAction> targets;
+            const size_t exclude = localPlaylist ? m_view.playlist : SIZE_MAX;
+            for (const auto& [id, name] : LocalPlaylistTargets(exclude)) {
+                targets.push_back({name.empty() ? L"Unnamed playlist" : name, [items, id] {
+                                       auto pm = playlist_manager::get();
+                                       if (id >= 0 && static_cast<t_size>(id) < pm->get_playlist_count())
+                                           pm->playlist_add_items(static_cast<t_size>(id), items,
+                                                                  pfc::bit_array_false());
+                                   }});
+            }
+            if (targets.empty()) targets.push_back({L"No playlists", nullptr});
+            actions.push_back({L"Add to playlist", nullptr, std::move(targets)});
+            actions.push_back({L"", nullptr});
+        }
+    }
     if (m_source && m_source->Count()) {  // every list page can take the whole selection
         actions.push_back({L"Select all", [this] {
                                m_source->SelectAll();
@@ -3907,7 +3965,7 @@ void MainWindow::ShowPageContextMenu(POINT screen) {
                          (m_playlistDetail && account.userId && m_playlistDetail->creatorId == account.userId);
         AddBulkMenuItems(actions, true, [this, id](BulkAction action, int64_t target) {
             RunNeteasePlaylistBulk(id, action, target);
-        });
+        }, id);
         if (netease::Provider::Get().LoggedIn()) {
             actions.push_back({L"", nullptr});
             if (own) {
@@ -3996,6 +4054,28 @@ void MainWindow::ShowArtistPageMenu(POINT screen, bool hotSongs, int64_t albumId
             AddBulkMenuItems(actions, true, [this, albumId](BulkAction action, int64_t target) {
                 RunNeteaseAlbumBulk(albumId, action, target);
             });
+            if (netease::Provider::Get().LoggedIn()) {
+                actions.push_back({L"", nullptr});
+                bool collected = false;
+                for (const auto& album : netease::Provider::Get().CollectedAlbums())
+                    if (album.id == albumId) {
+                        collected = true;
+                        break;
+                    }
+                const bool next = !collected;
+                actions.push_back({collected ? L"Uncollect album" : L"Collect album",
+                                   [this, albumId, next] {
+                                       m_skipStateNavigate = true;
+                                       netease::Provider::Get().SetAlbumCollected(
+                                           albumId, next, [this](bool ok, std::wstring) {
+                                               if (!ok) {
+                                                   m_skipStateNavigate = false;
+                                                   return;
+                                               }
+                                               RepaintDetailHeader();
+                                           });
+                                   }});
+            }
             actions.push_back({L"", nullptr});
         }
     }
@@ -4026,7 +4106,7 @@ void MainWindow::ShowPlaylistTileMenu(POINT screen, int64_t playlistId, std::wst
     actions.push_back({L"", nullptr});
     AddBulkMenuItems(actions, true, [this, playlistId](BulkAction action, int64_t target) {
         RunNeteasePlaylistBulk(playlistId, action, target);
-    });
+    }, playlistId);
     if (netease::Provider::Get().LoggedIn() && scope == View::NeteaseScope::Created) {
         actions.push_back({L"", nullptr});
         actions.push_back({L"Rename...", [this, playlistId, name] {
@@ -4078,6 +4158,20 @@ void MainWindow::ShowAlbumGridMenu(POINT screen, int64_t albumId, std::wstring n
     std::vector<MenuAction> actions;
     if (albumId) actions.push_back({L"View", [this, albumId, name] { OpenNeteaseAlbum(albumId, name); }});
     if (albumId) {
+        if (auto album = netease::Catalog::Get().FindAlbum(albumId)) {
+            std::vector<MenuAction> artists;
+            for (const auto& ref : album->artistRefs)
+                if (ref.id)
+                    artists.push_back({ref.name.empty() ? L"Artist" : ref.name,
+                                       [this, id = ref.id, artistName = ref.name] {
+                                           OpenNeteaseArtist(id, artistName);
+                                       }});
+            if (artists.size() == 1) {
+                actions.push_back({L"Go to artist", artists.front().run});
+            } else if (!artists.empty()) {
+                actions.push_back({L"Go to artist", nullptr, std::move(artists)});
+            }
+        }
         actions.push_back({L"", nullptr});
         AddBulkMenuItems(actions, true, [this, albumId](BulkAction action, int64_t target) {
             RunNeteaseAlbumBulk(albumId, action, target);
@@ -4089,17 +4183,18 @@ void MainWindow::ShowAlbumGridMenu(POINT screen, int64_t albumId, std::wstring n
             collected = true;
             break;
         }
-    if (collected) {
+    if (albumId && netease::Provider::Get().LoggedIn()) {
         if (!actions.empty()) actions.push_back({L"", nullptr});
-        actions.push_back({L"Uncollect album", [this, albumId] {
+        const bool next = !collected;
+        actions.push_back({collected ? L"Uncollect album" : L"Collect album", [this, albumId, next] {
                                m_skipStateNavigate = true;
                                netease::Provider::Get().SetAlbumCollected(
-                                   albumId, false, [this, albumId](bool ok, std::wstring) {
+                                   albumId, next, [this, albumId, next](bool ok, std::wstring) {
                                        if (!ok) {
                                            m_skipStateNavigate = false;
                                            return;
                                        }
-                                       if (m_view.kind == View::Kind::NeteaseAlbums) {
+                                       if (!next && m_view.kind == View::Kind::NeteaseAlbums) {
                                            if (auto* grid =
                                                    dynamic_cast<ui::NeteaseAlbumGridSource*>(m_source.get())) {
                                                grid->RemoveAlbum(albumId);
@@ -4143,7 +4238,7 @@ void MainWindow::CreateNeteasePlaylist() {
 void MainWindow::ShowNeteaseNavMenu(NavPane::Target target, POINT screen) {
     if (target == NavPane::Target::NeteaseRecommended) return;  // a daily set: no useful refresh
     std::vector<MenuAction> actions;
-    if (target == NavPane::Target::NeteaseCreatedHeader)
+    if (target == NavPane::Target::NeteaseCreatedHeader || target == NavPane::Target::LibraryNetease)
         actions.push_back({L"New NetEase playlist", [this] { CreateNeteasePlaylist(); }});
     if (CanRefreshPage()) actions.push_back({L"Refresh", [this] { RefreshCurrentPage(); }});
     if (!actions.empty()) ShowActionMenu(m_hwnd, screen, actions);
@@ -5929,6 +6024,13 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
                     ShowPlaylistTileMenu(screen, item->remoteId, item->text, scope);
                     return 0;
                 }
+                case NavPane::Target::LibraryAll:
+                case NavPane::Target::AllFavorites:
+                case NavPane::Target::AllRecentPlayed:
+                case NavPane::Target::AllMostPlayed:
+                case NavPane::Target::NeteaseLogin:
+                    // Page actions live on the list's own empty area; nothing applies to the row.
+                    return 0;
                 default:
                     break;
                 }
@@ -6038,7 +6140,6 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
         m_playCallback.reset();
         if (auto* cache = ArtCache::Existing()) cache->Unsubscribe(m_detailArtToken);
         m_detailArtToken = 0;
-        SetArtistLinkProvider({});
         SetContextActionProvider({});
         netease::Provider::Get().SetStateCallback({});
         netease::Provider::Get().SetLibraryCallback({});
