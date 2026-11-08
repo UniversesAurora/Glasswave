@@ -283,6 +283,7 @@ bool ServiceManager::EnsureStarted(abort_callback& abort, std::wstring* error) {
 }
 
 bool ServiceManager::StartLocked(abort_callback& abort, std::wstring* error) {
+    (void)abort;  // one shared start must not be cancelled by a single playback abort
     StopLocked();
     m_state = ServiceState::Starting;
     m_lastError.clear();
@@ -361,7 +362,8 @@ bool ServiceManager::StartLocked(abort_callback& abort, std::wstring* error) {
     Log(L"service: started on port " + std::to_wstring(port));
 
     for (int attempt = 0; attempt < 120; ++attempt) {
-        abort.check();
+        abort_callback_impl startAbort;
+        startAbort.check();
         if (WaitForSingleObject(process.hProcess, 0) == WAIT_OBJECT_0) {
             DWORD code = 0;
             GetExitCodeProcess(process.hProcess, &code);
@@ -375,7 +377,7 @@ bool ServiceManager::StartLocked(abort_callback& abort, std::wstring* error) {
         probe.noProxy = true;
         probe.timeoutMs = 1000;
         probe.maxBodyBytes = 64u * 1024u;
-        const HttpResponse response = SendHttp(Wide(m_baseUrl) + L"/", probe, abort);
+        const HttpResponse response = SendHttp(Wide(m_baseUrl) + L"/", probe, startAbort);
         if (response.status != 0) {
             m_state = ServiceState::Ready;
             m_lastError.clear();
