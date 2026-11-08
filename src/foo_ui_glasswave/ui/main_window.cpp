@@ -17,6 +17,7 @@
 #include "media/favorites.h"
 #include "media/special_playlists.h"
 #include "netease/provider.h"
+#include "netease/handle.h"
 #include "ui/netease_login.h"
 #include "ui/netease_sources.h"
 #include "ui/text.h"
@@ -1638,8 +1639,7 @@ void MainWindow::Navigate(const View& requested, bool push) {
         break;
     }
     case View::Kind::AllFavorites: {
-        source = std::make_unique<ui::NeteaseSongSource>(std::vector<netease::Song>{},
-                                                         L"Loading your NetEase favorites...");
+        source = std::make_unique<ui::AllFavoritesSource>(LocalFavoriteHandles(), std::vector<netease::Song>{});
         m_nav->Select(NavPane::Target::AllFavorites, 0);
         const View requestedView = view;
         netease::Provider::Get().FetchLiked(
@@ -1787,8 +1787,31 @@ void MainWindow::Navigate(const View& requested, bool push) {
     RepaintBreadcrumb();  // also re-applies the layout (view options button)
 }
 
+std::vector<metadb_handle_ptr> MainWindow::LocalFavoriteHandles() const {
+    std::vector<metadb_handle_ptr> handles;
+    const t_size playlist = media::FavoritesPlaylist(false);
+    if (playlist == SIZE_MAX) return handles;
+    metadb_handle_list items;
+    playlist_manager::get()->playlist_get_all_items(playlist, items);
+    for (t_size i = 0; i < items.get_count(); ++i) {
+        int64_t remoteId = 0;
+        if (netease::ParseSongPath(items[i]->get_path(), remoteId)) continue;  // remote handled by provider
+        handles.push_back(items[i]);
+    }
+    return handles;
+}
+
 void MainWindow::ShowNeteaseSongs(const View& view, std::vector<netease::Song> songs, std::wstring error) {
     if (m_view.kind != view.kind || m_view.library != view.library || m_view.remoteId != view.remoteId) return;
+    if (view.kind == View::Kind::AllFavorites) {
+        auto source = std::make_unique<ui::AllFavoritesSource>(LocalFavoriteHandles(), std::move(songs));
+        m_source = std::move(source);
+        if (auto* style = ViewStyleSetting(view);
+            style && m_source->SupportsViewStyle(static_cast<media::ViewStyle>(style->get())))
+            m_source->SetViewStyle(static_cast<media::ViewStyle>(style->get()));
+        m_list->SetSource(m_source.get(), false);
+        return;
+    }
     auto source = std::make_unique<ui::NeteaseSongSource>(
         std::move(songs), error.empty() ? L"No songs." : std::move(error));
     m_source = std::move(source);
@@ -1799,8 +1822,7 @@ void MainWindow::ShowNeteaseSongs(const View& view, std::vector<netease::Song> s
 }
 
 void MainWindow::ShowNeteasePlaylists(const View& view, std::vector<netease::Playlist> playlists,
-                                      std::wstring error) {
-    if (m_view.kind != view.kind || m_view.library != view.library || m_view.neteaseScope != view.neteaseScope)
+                                      std::wstring error) {    if (m_view.kind != view.kind || m_view.library != view.library || m_view.neteaseScope != view.neteaseScope)
         return;
     if (view.neteaseScope != View::NeteaseScope::Recommended) {
         const int64_t userId = netease::Provider::Get().CurrentAccount().userId;

@@ -117,6 +117,7 @@ private:
     void ShowNavCustomizeMenu(POINT screen);
     void SetNavCategories(std::vector<media::GroupKind> kinds);
     void ShowNeteaseLogin();
+    std::vector<metadb_handle_ptr> LocalFavoriteHandles() const;
     void ShowNeteaseSongs(const View& view, std::vector<netease::Song> songs, std::wstring error);
     void ShowNeteasePlaylists(const View& view, std::vector<netease::Playlist> playlists, std::wstring error);
     void OpenNeteasePlaylist(int64_t id, std::wstring name);
