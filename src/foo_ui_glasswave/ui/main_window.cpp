@@ -52,7 +52,7 @@ constexpr UINT_PTR kVolumeTipTimer = 2;
 constexpr UINT_PTR kScrollAnimTimer = 3;
 constexpr UINT_PTR kScrollRepeatTimer = 4;
 constexpr UINT kFrameMessage = WM_APP + 0x32;                  // FrameClock: the lyrics pane draws a frame
-constexpr float kLyricsPaneWidth = 440.0f, kLyricsGap = 8.0f;  // DIP (new UI, no Win7 measurement)
+constexpr float kLyricsPaneWidth = 440.0f;  // DIP (new UI, no Win7 measurement)
 constexpr float kNavPaneWidth = 190.0f;
 constexpr size_t kMenuItemLimit = 300;  // breadcrumb menus list at most this many items
 
@@ -929,12 +929,12 @@ void MainWindow::UpdateLayout() {
     const int capH = PxI(max ? m::kCaptionHeightMax : m::kCaptionHeight);
     L.caption = {0, 0, W, capH};
     L.client = {L.border, capH, W - L.border, H - L.border};
-    // The lyrics pane takes the right of the window, on the glass beside the client area.
+    // The lyrics pane takes the right of the window: glass joined to the client area.
     L.lyricsPane = {};
     if (m_lyricsOpen) {
         const int paneW = std::min(PxI(kLyricsPaneWidth), std::max(0, (W - 2 * L.border) / 2));
         L.lyricsPane = {W - L.border - paneW, capH, W - L.border, H - L.border};
-        L.client.right = L.lyricsPane.left - PxI(kLyricsGap);
+        L.client.right = L.lyricsPane.left;
     }
     // Light + dark client edge lines, one device pixel each (DWM frame bitmap, 1:1).
     L.clientEdge = {L.client.left - 2, L.client.top - 2, L.client.right + 2, L.client.bottom + 2};
@@ -944,6 +944,7 @@ void MainWindow::UpdateLayout() {
     L.content = {L.client.left, L.cmdBar.bottom, L.client.right, L.transport.top};
 
     // Caption buttons hang from the top edge (flush when maximized).
+    if (m_lyricsOpen) L.clientEdge.right = L.lyricsPane.right + 2;  // one edge around client and pane
     // With the DWM artwork: Win7 sizes measured at 150 % (43 / 41 / 73 x 29 px), hanging one
     // device pixel below the frame's outer line.
     const bool dwm = m_aeroArt;
@@ -1519,7 +1520,7 @@ void MainWindow::ToggleLyrics() {
     if (!IsWindowMaximized() && !IsIconic(m_hwnd)) {
         RECT wr{};
         GetWindowRect(m_hwnd, &wr);
-        const int extra = PxI(kLyricsPaneWidth + kLyricsGap) * (m_lyricsOpen ? 1 : -1);
+        const int extra = PxI(kLyricsPaneWidth) * (m_lyricsOpen ? 1 : -1);
         MONITORINFO mi{sizeof(mi)};
         GetMonitorInfoW(MonitorFromWindow(m_hwnd, MONITOR_DEFAULTTONEAREST), &mi);
         const RECT& work = mi.rcWork;
@@ -4190,7 +4191,7 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
 
     case WM_GETMINMAXINFO: {
         auto* mmi = reinterpret_cast<MINMAXINFO*>(lp);
-        mmi->ptMinTrackSize = {PxI(640 + (m_lyricsOpen ? kLyricsPaneWidth + kLyricsGap : 0.0f)), PxI(420)};
+        mmi->ptMinTrackSize = {PxI(640 + (m_lyricsOpen ? kLyricsPaneWidth : 0.0f)), PxI(420)};
         return 0;
     }
 

@@ -23,7 +23,7 @@ constexpr float kTextInset = 0.45f;      // em: text inset inside the hover plat
 constexpr float kLinePadding = 0.4f;     // em: above and below each line block
 constexpr float kSubGap = 0.3f;          // em: main line to translation
 constexpr float kSubSize = 0.55f;        // em: translation size
-constexpr float kAlign = 0.35f;          // focused line's top, fraction of the lyrics area
+constexpr float kLinesAbove = 1.5f;      // lines left visible above the focused one
 constexpr float kFadeWidth = 0.5f;       // em: soft edge of the word fill
 constexpr float kFloat = 0.05f;          // em: how far a sung word rises
 constexpr float kPlateRadius = 0.35f;    // em
@@ -31,7 +31,8 @@ constexpr float kHoverAlpha = 0.09f, kPressAlpha = 0.05f;
 constexpr float kInactiveScale = 97;     // percent, lines other than the active one while playing
 constexpr float kPressScale = 95;        // percent, a pressed line
 constexpr float kMaxBlur = 5;            // DIP
-constexpr float kBlurFactor = 0.8f;      // AMLL's narrow-viewport factor (our pane is always narrow)
+constexpr float kBlurAbove = 0.8f;       // DIP per line above the focus (sung lines), from 1.6
+constexpr float kBlurBelow0 = 0.3f, kBlurBelow = 0.5f;  // upcoming lines stay readable longer
 constexpr int kInterludeGapMs = 7000;    // gaps at least this long show the breathing dots
 constexpr float kTopFade = 36, kBottomFade = 72;  // DIP
 constexpr float kPaneTint = 0.30f;       // black over the glass so white text reads
@@ -389,8 +390,11 @@ float LyricsView::FontSize() const {
 float LyricsView::ContentTop() const { return kHeaderHeight; }
 
 float LyricsView::AnchorY() const {
+    // High in the pane, like Apple Music: one and a half lines of what was sung stay visible,
+    // the rest of the pane shows what comes next.
     const float H = (m_bounds.bottom - m_bounds.top) / m_scale;
-    return ContentTop() + (H - ContentTop()) * kAlign;
+    const float typical = m_typicalLine > 0 ? m_typicalLine : 2.1f * FontSize();
+    return std::min(ContentTop() + kLinesAbove * typical, ContentTop() + (H - ContentTop()) * 0.4f);
 }
 
 // ---- Layout -----------------------------------------------------------------------------
@@ -402,14 +406,21 @@ void LyricsView::Relayout() {
     if (W <= 0 || !m_lyrics) return;
     const float F = FontSize();
     m_layoutWidth = std::max(40.0f, W - 2 * kSideMargin - 2 * kTextInset * F);
+    std::vector<float> heights;
     for (const auto& line : m_lyrics->lines) {
         auto view = std::make_unique<LineView>();
         view->line = &line;
         BuildLine(*view, m_layoutWidth);
+        heights.push_back(view->height);
         view->y.SetParams(kPosSlow);
         view->scale.SetParams(kScaleSpring);
         view->press.SetParams(kPressSpring);
         m_lines.push_back(std::move(view));
+    }
+    m_typicalLine = 0;
+    if (!heights.empty()) {
+        std::nth_element(heights.begin(), heights.begin() + heights.size() / 2, heights.end());
+        m_typicalLine = heights[heights.size() / 2];
     }
 }
 
@@ -535,13 +546,14 @@ void LyricsView::UpdateTargets(bool stagger, bool snap, bool slow) {
         else l.y.SetTarget(target, delay);
         const bool scaleDown = synced && m_playing && !m_paused && !l.active;
         l.scale.SetTarget(scaleDown ? kInactiveScale : 100, delay);
-        // Blur grows with the distance from the focus (lines above count one more).
+        // Blur grows with the distance from the focus: quickly for sung lines above, slowly
+        // for the upcoming ones below so the next few stay readable.
         float level = 0;
         if (synced && !l.active && !m_browsing) {
             const int fi = std::max(m_focus, 0);
             const int idx = static_cast<int>(i);
-            const int distance = idx < fi ? fi - idx + 1 : idx - fi;
-            level = std::min(kMaxBlur, (1.0f + distance) * kBlurFactor);
+            level = idx < fi ? (fi - idx + 1) * kBlurAbove : kBlurBelow0 + (idx - fi - 1) * kBlurBelow;
+            level = std::min(kMaxBlur, std::max(0.0f, level));
         }
         l.blurTarget = level;
         if (target + l.height >= ContentTop()) {
