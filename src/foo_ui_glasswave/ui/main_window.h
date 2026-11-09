@@ -144,6 +144,8 @@ private:
     void ApplyViewStyle(media::ViewStyle style);
     void CycleViewStyle();
     void CreatePlaylist(bool autoPlaylist);
+    void KeepQueueActive();    // files opened from outside go to Now Playing
+    void ActivateAddTarget();  // Add files / folder: the regular playlist on screen, else the queue
     std::vector<MenuAction> AddPlaylistActions();  // Add > new / smart / preset playlists
     void OnAlbumLink(size_t group, size_t line);
     static cfg_var_modern::cfg_int* ViewStyleSetting(const View& view);

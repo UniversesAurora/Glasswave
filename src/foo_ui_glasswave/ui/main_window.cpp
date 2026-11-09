@@ -763,9 +763,15 @@ void MainWindow::CreateWidgets() {
               if (w) w->SetPressed(false);
           };
     add(kAddFiles, [](auto* dc, D2D1_SIZE_F s, Layer l) { wp::CommandButton(dc, s, l, L"Add files", false); }, {})
-        ->onClick = [] { standard_commands::main_add_files(); };
+        ->onClick = [this] {
+              ActivateAddTarget();
+              standard_commands::main_add_files();
+          };
     add(kAddFolder, [](auto* dc, D2D1_SIZE_F s, Layer l) { wp::CommandButton(dc, s, l, L"Add folder", false); }, {})
-        ->onClick = [] { standard_commands::main_add_directory(); };
+        ->onClick = [this] {
+              ActivateAddTarget();
+              standard_commands::main_add_directory();
+          };
     add(kRefresh, [](auto* dc, D2D1_SIZE_F s, Layer l) {
         wp::CommandButton(dc, s, l, L"", false);  // plate only
         const std::wstring label = Tr(L"Refresh");
@@ -2368,7 +2374,7 @@ void MainWindow::Navigate(const View& requested, bool push) {
         pfc::string8 name;
         pm->playlist_get_name(view.playlist, name);
         view.name = m_view.name = Wide(name);
-        if (pm->get_active_playlist() != view.playlist) pm->set_active_playlist(view.playlist);
+        KeepQueueActive();
         source = std::make_unique<media::PlaylistSource>(view.playlist);
         target = media::IsQueue(view.playlist) ? NavPane::Target::Queue : NavPane::Target::Playlist;
         navIndex = view.playlist;
@@ -3151,6 +3157,24 @@ void MainWindow::CycleViewStyle() {
     }
 }
 
+// foobar2000 puts files opened from outside (Explorer, the command line) into the active
+// playlist, and into a new "New Playlist" when that one is locked (a smart playlist). They
+// belong in Now Playing, so the queue stays active; only an explicit Add files / folder /
+// location while a regular playlist is shown targets that playlist.
+void MainWindow::KeepQueueActive() {
+    auto pm = playlist_manager::get();
+    const t_size queue = media::QueuePlaylist(true);
+    if (queue != SIZE_MAX && pm->get_active_playlist() != queue) pm->set_active_playlist(queue);
+}
+
+void MainWindow::ActivateAddTarget() {
+    if (m_view.kind == View::Kind::Playlist && m_view.playlist < playlist_manager::get()->get_playlist_count() &&
+        !media::IsAutoPlaylist(m_view.playlist))
+        playlist_manager::get()->set_active_playlist(m_view.playlist);
+    else
+        KeepQueueActive();
+}
+
 void MainWindow::CreatePlaylist(bool autoPlaylist) {
     auto pm = playlist_manager::get();
     const t_size p = pm->create_playlist(autoPlaylist ? "New Auto Playlist" : "New Playlist", SIZE_MAX, SIZE_MAX);
@@ -3407,9 +3431,12 @@ void MainWindow::ShowOrganizeMenu() {
                  {{L"Manage music library...", [] { library_manager::get()->show_preferences(); }},
                   {L"Rescan library", [] { library_manager::get()->rescan(); }},
                   {L"", nullptr},
-                  {L"Add files...", [] { standard_commands::main_add_files(); }},
-                  {L"Add folder...", [] { standard_commands::main_add_directory(); }},
-                  {L"Add location...", [] { standard_commands::run_main(standard_commands::guid_main_add_location); }},
+                  {L"Add files...", [this] { ActivateAddTarget(); standard_commands::main_add_files(); }},
+                  {L"Add folder...", [this] { ActivateAddTarget(); standard_commands::main_add_directory(); }},
+                  {L"Add location...", [this] {
+                       ActivateAddTarget();
+                       standard_commands::run_main(standard_commands::guid_main_add_location);
+                   }},
                   {L"", nullptr},
                   {L"Language", nullptr,
                    {{L"Follow Windows", [this] { ApplyLanguage(Language::Auto); }, {},
@@ -3476,12 +3503,13 @@ void MainWindow::ShowPlaylistMenu(size_t playlist, POINT screen) {
     auto pm = playlist_manager::get();
     std::vector<MenuAction> actions;
     if (playlist != SIZE_MAX && playlist < pm->get_playlist_count()) {
-        actions.push_back({L"Play", [playlist] {
+        actions.push_back({L"Play", [this, playlist] {
                                auto p = playlist_manager::get();
                                p->set_active_playlist(playlist);
                                const t_size focus = p->playlist_get_focus_item(playlist);
                                if (p->playlist_get_item_count(playlist))
                                    p->playlist_execute_default_action(playlist, focus == SIZE_MAX ? 0 : focus);
+                               KeepQueueActive();
                            }});
         if (media::IsQueue(playlist))
             actions.push_back({TrMenu(L"Clear Now Playing"), [this] { ClearNowPlaying(); }});
@@ -3512,9 +3540,10 @@ void MainWindow::ShowPlaylistMenu(size_t playlist, POINT screen) {
                                }});
         // The queue and Favorites are built in: no renaming or removing.
         if (!media::IsQueue(playlist) && playlist != media::FavoritesPlaylist(false)) {
-            actions.push_back({L"Rename...", [playlist] {
+            actions.push_back({L"Rename...", [this, playlist] {
                                    playlist_manager::get()->set_active_playlist(playlist);
                                    standard_commands::run_main(standard_commands::guid_main_rename_playlist);
+                                   KeepQueueActive();
                                }});
             actions.push_back({L"Remove", [playlist] { playlist_manager::get()->remove_playlist(playlist); }});
         }

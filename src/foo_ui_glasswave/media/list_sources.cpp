@@ -591,8 +591,13 @@ void PlaylistSource::Activate(size_t row) {
 }
 
 void PlaylistSource::ContextMenu(HWND owner, POINT screen) {
-    playlist_manager::get()->set_active_playlist(m_playlist);
+    // Playlist context commands act on the active playlist; afterwards the queue (normally
+    // active, see MainWindow::KeepQueueActive) is active again.
+    auto pm = playlist_manager::get();
+    const t_size previous = pm->get_active_playlist();
+    pm->set_active_playlist(m_playlist);
     ui::RunPlaylistContextMenu(owner, screen);
+    if (previous != m_playlist && previous < pm->get_playlist_count()) pm->set_active_playlist(previous);
 }
 
 bool PlaylistSource::DeleteSelected() {
