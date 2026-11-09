@@ -53,6 +53,10 @@ constexpr UINT_PTR kScrollAnimTimer = 3;
 constexpr UINT_PTR kScrollRepeatTimer = 4;
 constexpr UINT kFrameMessage = WM_APP + 0x32;                  // FrameClock: the lyrics pane draws a frame
 constexpr float kLyricsPaneWidth = 440.0f;  // DIP (new UI, no Win7 measurement)
+// Text rows of the transport band (title + artist and the lyric line on the left, stream
+// format and output device on the right): 12 DIP Segoe UI on 16 DIP rows, both pairs
+// centred on the band like the time between them.
+constexpr float kInfoRow = 16.0f;
 constexpr float kNavPaneWidth = 190.0f;
 constexpr size_t kMenuItemLimit = 300;  // breadcrumb menus list at most this many items
 
@@ -642,6 +646,8 @@ void MainWindow::InitComposition() {
     for (const auto& v : {m_capsule, m_cluster, m_divider, m_clientGlow, m_title, m_nowPlaying, m_breadcrumb, m_time,
                           m_streamVisual})
         children.InsertAtTop(v);
+    m_npLyric = comp.CreateSpriteVisual();
+    children.InsertAtTop(m_npLyric);
     m_win7Art = wt::Available();
     m_aeroArt = aero::atlas::Available();
     m_divider.IsVisible(!m_win7Art);  // part of the original capsule bitmap
@@ -938,13 +944,13 @@ void MainWindow::UpdateLayout() {
     }
     // Light + dark client edge lines, one device pixel each (DWM frame bitmap, 1:1).
     L.clientEdge = {L.client.left - 2, L.client.top - 2, L.client.right + 2, L.client.bottom + 2};
+    if (m_lyricsOpen) L.clientEdge.right = L.lyricsPane.right + 2;  // one edge around client and pane
     L.navBar = {L.client.left, L.client.top, L.client.right, L.client.top + PxI(NavBarHeight())};
     L.cmdBar = {L.client.left, L.navBar.bottom, L.client.right, L.navBar.bottom + PxI(m::kCommandBarHeight)};
     L.transport = {L.client.left, L.client.bottom - PxI(TransportHeight()), L.client.right, L.client.bottom};
     L.content = {L.client.left, L.cmdBar.bottom, L.client.right, L.transport.top};
 
     // Caption buttons hang from the top edge (flush when maximized).
-    if (m_lyricsOpen) L.clientEdge.right = L.lyricsPane.right + 2;  // one edge around client and pane
     // With the DWM artwork: Win7 sizes measured at 150 % (43 / 41 / 73 x 29 px), hanging one
     // device pixel below the frame's outer line.
     const bool dwm = m_aeroArt;
@@ -1224,6 +1230,7 @@ void MainWindow::UpdateLayout() {
         RECT t = L.nowPlaying;
         t.right = std::min<LONG>(t.right, t.left + PxI(360));
         Place(m_nowPlaying, t);
+        Place(m_npLyric, t);
     }
     Place(m_time, L.time);
     Place(m_streamVisual, L.stream);
@@ -1397,51 +1404,58 @@ void MainWindow::RepaintNowPlaying() {
                 x = dst.right + 8;
             }
         }
-        com_ptr<ID2D1SolidColorBrush> dark, grey, link, lyricInk;
+        com_ptr<ID2D1SolidColorBrush> dark, grey, link;
         dc->CreateSolidColorBrush(Hex(0x1E1E1E), dark.put());
         dc->CreateSolidColorBrush(Hex(0x5B5B5B), grey.put());
         dc->CreateSolidColorBrush(Hex(0x0066CC), link.put());
-        dc->CreateSolidColorBrush(Hex(0x2E64B4), lyricInk.put());
-        // Title and artist are links (to the song in the list, to the artist); the synced
-        // lyric line, if any, goes under the artist.
-        std::wstring lyric;
-        for (const auto& [at, text] : m_lyrics) {
-            if (at > m_position + 0.05) break;
-            lyric = text;
-        }
-        const bool showLyric = !m_lyrics.empty() && !m_lyricsOpen;  // the pane shows them instead
-        const float lh = 15, top = std::round((H - (showLyric ? 3 : 2) * lh) / 2);
-        auto line = [&](const std::wstring& text, float y, ID2D1SolidColorBrush* ink, bool hot) {
-            auto layout = MakeText(text, 12.0f, DWRITE_FONT_WEIGHT_NORMAL, 350 - x, lh + 2);
-            if (hot) layout->SetUnderline(TRUE, {0, static_cast<UINT32>(text.size())});
-            dc->DrawTextLayout({x, y - 1}, layout.get(), hot ? link.get() : ink);
-            DWRITE_TEXT_METRICS tm{};
-            layout->GetMetrics(&tm);
-            return D2D1_RECT_F{x, y, x + std::min(tm.widthIncludingTrailingWhitespace, 350 - x), y + lh};
-        };
+        // Row 1: title and artist (links: the song in the list, the artist), then the Favorite
+        // star. Row 2: the current lyric line (PaintNowPlayingLyric). Without synced lyrics the
+        // single row is centred.
+        const bool lyricRow = m_npLyrics && m_npLyrics->synced;
+        const float top = std::round(H / 2 - (lyricRow ? kInfoRow : kInfoRow / 2));
+        m_npTextX = x;
+        m_npLyricTop = top + kInfoRow;
         const auto toClient = [&](D2D1_RECT_F r) {
             return RECT{m_layout.nowPlaying.left + PxI(r.left), m_layout.nowPlaying.top + PxI(r.top),
                         m_layout.nowPlaying.left + PxI(r.right), m_layout.nowPlaying.top + PxI(r.bottom)};
         };
-        // The title leaves room for the Favorite star right after it (as in current players).
-        const D2D1_RECT_F title = [&] {
-            auto layout = MakeText(m_trackTitle, 12.0f, DWRITE_FONT_WEIGHT_NORMAL, 350 - x - 22, lh + 2);
-            if (m_npHot == 1) layout->SetUnderline(TRUE, {0, static_cast<UINT32>(m_trackTitle.size())});
-            dc->DrawTextLayout({x, top - 1}, layout.get(), m_npHot == 1 ? link.get() : dark.get());
+        const auto natural = [](const std::wstring& text) {
+            if (text.empty()) return 0.0f;
             DWRITE_TEXT_METRICS tm{};
-            layout->GetMetrics(&tm);
-            return D2D1_RECT_F{x, top, x + std::min(tm.widthIncludingTrailingWhitespace, 350 - x - 22), top + lh};
-        }();
-        m_npTitleRect = toClient(title);
+            MakeText(text, 12.0f, DWRITE_FONT_WEIGHT_NORMAL, 2000, kInfoRow + 2)->GetMetrics(&tm);
+            return std::ceil(tm.widthIncludingTrailingWhitespace);
+        };
+        // Share the row: the title first, the artist keeps at least 40 % when both are long.
+        constexpr float kStar = 22, kGap = 10;
+        float titleW = natural(m_trackTitle), artistW = natural(m_trackArtist);
+        const float room = std::max(0.0f, 350 - x - kStar - (artistW > 0 ? kGap : 0));
+        if (titleW + artistW > room) {
+            artistW = std::min(artistW, std::max(std::min(artistW, 60.0f), room * 0.4f));
+            titleW = std::min(titleW, room - artistW);
+            artistW = std::min(artistW, room - titleW);
+        }
+        const auto text = [&](const std::wstring& t, float at, float width, ID2D1SolidColorBrush* ink, bool hot) {
+            auto layout = MakeText(t, 12.0f, DWRITE_FONT_WEIGHT_NORMAL, std::max(width, 1.0f), kInfoRow + 2);
+            if (hot) layout->SetUnderline(TRUE, {0, static_cast<UINT32>(t.size())});
+            dc->DrawTextLayout({at, top - 1}, layout.get(), hot ? link.get() : ink);
+            return D2D1_RECT_F{at, top, at + width, top + kInfoRow};
+        };
+        m_npTitleRect = toClient(text(m_trackTitle, x, titleW, dark.get(), m_npHot == 1));
+        float end = x + titleW;
+        m_npArtistRect = {};
+        if (artistW > 0) {
+            m_npArtistRect = toClient(text(m_trackArtist, end + kGap, artistW, grey.get(), m_npHot == 2));
+            end += kGap + artistW;
+        }
         // WMP's stars: gold (5530) in Favorites, gold outline (5531) on hover, empty (5533).
-        const float sx = std::round((title.right + 6) * m_scale) / m_scale, sy = std::round((top + (lh - 14) / 2) * m_scale) / m_scale;
+        const float sx = std::round((end + 6) * m_scale) / m_scale;
+        const float sy = std::round((top + (kInfoRow - 14) / 2) * m_scale) / m_scale;
         win7::Draw(dc, win7::Module::Wmploc, m_npFavorite ? 5530 : m_npHot == 4 ? 5531 : 5533, {sx, sy});
         m_npStarRect = toClient({sx - 3, sy - 3, sx + 17, sy + 17});
-        m_npArtistRect = m_trackArtist.empty() ? RECT{}
-                                               : toClient(line(m_trackArtist, top + lh, grey.get(), m_npHot == 2));
-        if (showLyric) line(lyric, top + 2 * lh, lyricInk.get(), false);
     });
     if (m_trackTitle.empty()) m_npTitleRect = m_npArtistRect = m_npStarRect = {};
+    m_npLyricLine = -2;
+    PaintNowPlayingLyric();
     // Time right of the controls.
     host.Repaint(m_time, PxI(110), PxI(20), m_scale, [&](ID2D1DeviceContext* dc) {
         if (m_length <= 0 && m_trackTitle.empty()) return;
@@ -1453,6 +1467,83 @@ void MainWindow::RepaintNowPlaying() {
         dc->DrawTextLayout({0, 0}, layout.get(), grey.get());
     });
     UpdateLayout();
+}
+
+// The lyric line under the title. Word-timed lines turn blue word by word as they are sung;
+// line-timed ones are blue as a whole.
+void MainWindow::PaintNowPlayingLyric() {
+    auto& host = gfx::CompositionHost::Get();
+    const int w = PxI(360), h = PxI(TransportHeight() - 10);
+    if (!m_npLyricSurface || m_npLyricSize.cx != w || m_npLyricSize.cy != h) {
+        m_npLyricSurface = host.CreateSurface(w, h);
+        m_npLyricSize = {w, h};
+        auto brush = host.Compositor().CreateSurfaceBrush(m_npLyricSurface);
+        brush.Stretch(wuc::CompositionStretch::None);
+        brush.HorizontalAlignmentRatio(0);
+        brush.VerticalAlignmentRatio(0);
+        m_npLyric.Brush(brush);
+    }
+    double now = m_position;
+    try {
+        if (auto pc = playback_control::get(); pc->is_playing()) now = pc->playback_get_position();
+    } catch (...) {
+    }
+    const int ms = static_cast<int>(now * 1000);
+    int index = -1;
+    if (m_npLyrics && m_npLyrics->synced && !m_trackTitle.empty())
+        for (size_t i = 0; i < m_npLyrics->lines.size() && m_npLyrics->lines[i].start <= ms; ++i)
+            index = static_cast<int>(i);
+    m_npLyricLine = index;
+    host.Draw(m_npLyricSurface, m_scale, [&](ID2D1DeviceContext* dc) {
+        if (index < 0) return;
+        const lyrics::Line& line = m_npLyrics->lines[static_cast<size_t>(index)];
+        const float width = std::max(1.0f, 350 - m_npTextX);
+        auto layout = MakeText(line.text, 12.0f, DWRITE_FONT_WEIGHT_NORMAL, width, kInfoRow + 2);
+        com_ptr<ID2D1SolidColorBrush> grey, blue;
+        dc->CreateSolidColorBrush(Hex(0x6E6E6E), grey.put());
+        dc->CreateSolidColorBrush(Hex(0x1F5FB8), blue.put());
+        const D2D1_POINT_2F at{m_npTextX, m_npLyricTop - 1};
+        if (line.words.empty()) {
+            dc->DrawTextLayout(at, layout.get(), blue.get());
+            return;
+        }
+        // Sung part: words before the current one whole, the current one by its progress.
+        float fill = 0;
+        UINT32 pos = 0;
+        for (const auto& word : line.words) {
+            const UINT32 len = static_cast<UINT32>(word.text.size());
+            if (word.start > ms || pos >= line.text.size()) break;
+            DWRITE_HIT_TEST_METRICS hit{};
+            UINT32 count = 0;
+            layout->HitTestTextRange(pos, std::min<UINT32>(len, static_cast<UINT32>(line.text.size()) - pos), 0, 0,
+                                     &hit, 1, &count);
+            const float p = word.end > word.start
+                                ? std::clamp(static_cast<float>(ms - word.start) / (word.end - word.start), 0.0f, 1.0f)
+                                : 1.0f;
+            if (count > 0) fill = hit.left + hit.width * p;
+            pos += len;
+        }
+        dc->DrawTextLayout(at, layout.get(), grey.get());
+        if (fill > 0) {
+            dc->PushAxisAlignedClip({at.x, 0, at.x + fill, h / m_scale}, D2D1_ANTIALIAS_MODE_ALIASED);
+            dc->DrawTextLayout(at, layout.get(), blue.get());
+            dc->PopAxisAlignedClip();
+        }
+    });
+}
+
+bool MainWindow::TickNowPlayingLyric() {
+    if (!m_npLyrics || !m_npLyrics->synced || !m_playing) return false;
+    const double now = playback_control::get()->playback_get_position();
+    const int ms = static_cast<int>(now * 1000);
+    int index = -1;
+    for (size_t i = 0; i < m_npLyrics->lines.size() && m_npLyrics->lines[i].start <= ms; ++i)
+        index = static_cast<int>(i);
+    // Repaint when the line changes, and every frame while a word-timed line fills.
+    const bool filling = index >= 0 && !m_npLyrics->lines[static_cast<size_t>(index)].words.empty() &&
+                         ms <= m_npLyrics->lines[static_cast<size_t>(index)].end + 50;
+    if (index != m_npLyricLine || filling) PaintNowPlayingLyric();
+    return !m_paused;
 }
 
 void MainWindow::RepaintStreamInfo() {
@@ -1468,7 +1559,7 @@ void MainWindow::RepaintStreamInfo() {
         com_ptr<ID2D1SolidColorBrush> grey, link;
         dc->CreateSolidColorBrush(Hex(0x5B5B5B), grey.put());
         dc->CreateSolidColorBrush(Hex(m_npHot == 3 ? 0x0066CC : 0x2E4E7A), link.put());
-        const float lh = 15, top = std::round((H - 2 * lh) / 2);
+        const float lh = kInfoRow, top = std::round(H / 2 - lh);
         if (!m_streamInfo.empty()) {
             auto info = MakeText(m_streamInfo, 11.5f, DWRITE_FONT_WEIGHT_NORMAL, W, lh + 2);
             info->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_TRAILING);
@@ -1491,7 +1582,7 @@ void MainWindow::RepaintStreamInfo() {
         deviceRight = tm.left + tm.width;
         deviceTop = top + lh;
     });
-    m_deviceText = {deviceLeft, deviceTop, deviceRight, deviceTop + 15};
+    m_deviceText = {deviceLeft, deviceTop, deviceRight, deviceTop + kInfoRow};
 }
 
 void MainWindow::RefreshDeviceName() {
@@ -1544,11 +1635,10 @@ void MainWindow::RequestLyrics(const metadb_handle_ptr& track, bool again) {
 }
 
 void MainWindow::OnLyrics(const lyrics::Result& result) {
-    m_lyrics.clear();
-    if (result.lyrics && result.lyrics->synced)
-        for (const auto& l : result.lyrics->lines) m_lyrics.emplace_back(l.start / 1000.0, l.text);
+    m_npLyrics = result.status == lyrics::Status::Found ? result.lyrics : nullptr;
     if (m_lyricsView) m_lyricsView->SetResult(result);
     RepaintNowPlaying();
+    if (m_npLyrics && m_npLyrics->synced && m_playing && !m_paused) StartLyricsFrames();
 }
 
 void MainWindow::StartLyricsFrames() {
@@ -3508,6 +3598,7 @@ void MainWindow::OnPlaybackStateChanged() {
     if (m_taskbar) m_taskbar->SetPlayState(playing, paused);
     if (m_list) m_list->Refresh();  // playing marker
     if (m_lyricsView) m_lyricsView->SetPlaying(playing, paused);
+    if (playing && !paused && m_npLyrics && m_npLyrics->synced) StartLyricsFrames();
     OnTrackChanged();  // paused resume still has codec/bitrate information
 }
 
@@ -4065,7 +4156,9 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
     case kFrameMessage:
         if (m_frameClock) {
             m_frameClock->Ack();
-            if (!m_lyricsView || !m_lyricsView->Tick()) m_frameClock->Stop();
+            bool more = m_lyricsView && m_lyricsView->Tick();
+            more |= TickNowPlayingLyric();
+            if (!more) m_frameClock->Stop();
         }
         return 0;
 

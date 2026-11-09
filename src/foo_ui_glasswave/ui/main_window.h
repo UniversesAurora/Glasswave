@@ -201,7 +201,16 @@ private:
     // lyric line under them; the time right of the controls; stream format and the
     // output device (a menu) right-aligned.
     std::wstring m_streamInfo;
-    std::vector<std::pair<double, std::wstring>> m_lyrics;  // synced lines (seconds, text) for the transport band
+    // The current lyric line under the title in the transport band (its own visual: word-timed
+    // lines repaint every frame while they fill).
+    std::shared_ptr<const lyrics::Lyrics> m_npLyrics;
+    winrt::Windows::UI::Composition::SpriteVisual m_npLyric{nullptr};
+    winrt::Windows::UI::Composition::CompositionDrawingSurface m_npLyricSurface{nullptr};
+    SIZE m_npLyricSize{};
+    float m_npTextX = 0, m_npLyricTop = 0;  // DIP inside the now-playing block
+    int m_npLyricLine = -2;                 // line painted last (-1 none yet)
+    void PaintNowPlayingLyric();
+    bool TickNowPlayingLyric();  // per frame; returns whether frames are still needed
     // Lyrics pane (right of the client area, on the glass).
     std::unique_ptr<LyricsView> m_lyricsView;
     std::unique_ptr<gfx::FrameClock> m_frameClock;

@@ -11,14 +11,14 @@ glass. Code: `ui/lyrics_view.{h,cpp}` (rendering, motion, input), `ui/spring.h`,
 | What | Value | Source |
 | --- | --- | --- |
 | Pane width | 440, at most half the window | new UI |
-| Gap to the client edge | 8 (glass) | new UI |
+| Join to the client area | none: one client edge runs around both | owner, 2026-11-09 |
 | Pane tint over the glass | black 30 % | new UI, legibility of white text |
 | Header | 84 high: cover 52 (radius 6), title 16 semibold 95 %, artist 14 regular 60 % | AM iOS header |
 | F | round(pane width x 0.075), 20..42 (33 at 440) | AM iOS: 30 pt on a 390 pt screen |
 | Font | Segoe UI Variable Display (else Segoe UI), bold; translation semibold 0.55 F | AM: SF Pro bold |
 | Hover plate | from 12 to width - 12, radius 0.35 F; text inset 0.45 F | AM iOS capture |
 | Line block | padding 0.4 F above and below; translation 0.3 F below the line | AMLL |
-| Focused line | its top at 35 % of the lyrics area | AMLL `alignPosition` |
+| Focused line | 1.5 median line blocks below the header (at most 40 % of the lyrics area): one and a half sung lines stay visible | owner, 2026-11-09 (AMLL uses 35 %) |
 | Edge fades | lyrics fade out over 36 below the header and 72 at the bottom | AM |
 
 ## Colour (white with alpha)
@@ -43,8 +43,10 @@ glass. Code: `ui/lyrics_view.{h,cpp}` (rendering, motion, input), `ui/spring.h`,
 - **New lyrics** fly in from 60 % of the pane's height below, staggered.
 - **Scale**: lines other than the active one shrink to 97 % while playing (left-centre pivot),
   spring mass 2, stiffness 100, damping 25 (AMLL).
-- **Blur**: 0 for the active line; others (1 + distance) x 0.8 DIP, at most 5; lines above
-  the focus count one line further (AMLL). Eased over 0.4 s. A hovered line is sharp.
+- **Blur**: 0 for the active line. Sung lines above: (distance + 1) x 0.8 DIP (AMLL).
+  Upcoming lines below grow slower so the next few stay readable: 0.3 + 0.5 x (distance - 1)
+  DIP (owner, 2026-11-09; AMLL: (1 + distance) x 0.8). At most 5. Eased over 0.4 s. A hovered
+  line is sharp.
 - **Word fill** (word-timed lines): a soft edge 0.5 F wide sweeps across each word over its
   duration, bright to the left, dim to the right; a wrapped word fills across its runs (AMLL
   `wordFadeWidth`).
@@ -76,3 +78,11 @@ glass. Code: `ui/lyrics_view.{h,cpp}` (rendering, motion, input), `ui/spring.h`,
 `gfx::FrameClock` waits on the compositor clock (`DCompositionWaitForCompositorClock`) and
 posts one frame message at a time, so animation runs at the display's refresh rate. It runs
 while lyrics play or anything moves and stops otherwise.
+
+## Transport band
+
+Two 12 DIP rows of 16 DIP centred on the band on both sides: title and artist (then the
+Favorite star) over the current lyric line on the left, stream format over the output device
+on the right. A word-timed line turns blue (#1F5FB8) from grey (#6E6E6E) as it is sung; a
+line-timed one is blue. Without synced lyrics the single left row is centred.
+
