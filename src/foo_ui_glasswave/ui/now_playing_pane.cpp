@@ -32,10 +32,12 @@ wuc::ContainerVisual MakeRoot(const wuc::ContainerVisual& parent) {
     return root;
 }
 
+// Apple Music's lyrics glyph: a speech bubble with a quotation mark. Sized like the list
+// glyph beside it (17 DIP Fluent icon), bubble and tail together centred on `c`.
 void DrawLyricsIcon(ID2D1DeviceContext* dc, D2D1_POINT_2F c, ID2D1Brush* ink) {
     com_ptr<ID2D1Factory> f;
     dc->GetFactory(f.put());
-    const float l = c.x - 10, t = c.y - 8.5f, r = c.x + 10, b = c.y + 5.5f, rad = 4;
+    const float l = c.x - 8, t = c.y - 7, r = c.x + 8, b = c.y + 4, rad = 3;
     com_ptr<ID2D1PathGeometry> path;
     if (FAILED(f->CreatePathGeometry(path.put()))) return;
     com_ptr<ID2D1GeometrySink> sink;
@@ -48,19 +50,20 @@ void DrawLyricsIcon(ID2D1DeviceContext* dc, D2D1_POINT_2F c, ID2D1Brush* ink) {
     arc(r, t + rad);
     sink->AddLine({r, b - rad});
     arc(r - rad, b);
-    sink->AddLine({l + 9, b});
-    sink->AddLine({l + 3.5f, b + 5});
-    sink->AddLine({l + 4, b});
+    sink->AddLine({l + 7, b});
+    sink->AddLine({l + 3, b + 3});  // tail
+    sink->AddLine({l + 3.2f, b});
     sink->AddLine({l + rad, b});
     arc(l, b - rad);
     sink->AddLine({l, t + rad});
     arc(l + rad, t);
     sink->EndFigure(D2D1_FIGURE_END_CLOSED);
     sink->Close();
-    dc->DrawGeometry(path.get(), ink, 1.8f);
-    for (const float x : {c.x - 3.0f, c.x + 3.2f}) {
-        dc->FillEllipse(D2D1::Ellipse({x, c.y - 2.4f}, 1.8f, 1.8f), ink);
-        dc->DrawLine({x + 1.5f, c.y - 2.0f}, {x - 0.8f, c.y + 1.6f}, ink, 1.4f);
+    dc->DrawGeometry(path.get(), ink, 1.4f);
+    const float qy = (t + b) / 2 - 0.8f;
+    for (const float x : {c.x - 2.4f, c.x + 2.6f}) {
+        dc->FillEllipse(D2D1::Ellipse({x, qy}, 1.4f, 1.4f), ink);
+        dc->DrawLine({x + 1.2f, qy + 0.3f}, {x - 0.6f, qy + 3.0f}, ink, 1.1f);
     }
 }
 
