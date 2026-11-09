@@ -97,10 +97,13 @@ line-timed one is blue. Without synced lyrics the single left row is centred.
 
 ## Pane and queue (`ui/now_playing_pane`, `ui/queue_view`)
 
-The pane holds the header, the lyrics or the queue, and a 64 DIP bottom bar with two 40 DIP
-buttons at 23 % and 77 % of the width (Apple Music's lyrics and queue positions); the active
-one sits on a white 22 % circle, the other's glyph is at 60 %. View > Lyrics opens the pane,
-View > Up Next its queue side.
+The pane holds the header, the lyrics or the queue, and a 64 DIP bottom bar with a segmented
+control (owner, 2026-11-09: an iOS tab switch instead of Apple Music's round buttons): a
+track as wide and tall as the queue's capsules (20 DIP margins, 34 high, white 14 %) holds
+"Lyrics" and "Up Next" (icon and 14 DIP semibold label); a white 78 % thumb inset 3 DIP sits
+under the selected half, whose icon and label turn dark. The thumb slides on the switching
+spring, and can be dragged: the content follows it and settles on the nearer side. View >
+Lyrics opens the pane, View > Up Next its queue side.
 
 Switching (spring k 260, c 30): the lyrics fade out over the first two thirds and rise
 24 DIP; the queue fades in from 15 % on and rises 48 DIP into place; the header stays and,

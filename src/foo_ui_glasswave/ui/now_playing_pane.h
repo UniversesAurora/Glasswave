@@ -6,9 +6,10 @@
 #include "ui/spring.h"
 
 // The pane on the glass right of the client area, after Apple Music's now-playing sheet:
-// the current song's header, then either the lyrics or the queue, switched by two buttons at
-// the bottom (lyrics left, queue right, as on iOS). Switching cross-fades the two with a
-// short slide; the header stays and, in the queue, scrolls along as the queue's song card.
+// the current song's header, then either the lyrics or the queue, switched by a segmented
+// control at the bottom (an iOS tab switch: a light thumb slides between Lyrics and Up Next;
+// it can be dragged, and the content follows it). Switching cross-fades the two with a short
+// rise; the header stays and, in the queue, scrolls along as the queue's song card.
 
 namespace glasswave::ui {
 
@@ -60,13 +61,16 @@ private:
     RECT LyricsRect() const;
     RECT QueueRect() const;
     RECT BarRect() const;
-    int ButtonAt(POINT pt) const;  // 0 lyrics, 1 queue, -1 none
+    int ButtonAt(POINT pt) const;  // segment under the point: 0 lyrics, 1 queue, -1 none
+    RECT TrackRect() const;        // the segmented control, client px
 
     winrt::Windows::UI::Composition::ContainerVisual m_root{nullptr};
     winrt::Windows::UI::Composition::SpriteVisual m_tint{nullptr}, m_header{nullptr};
     winrt::Windows::UI::Composition::ContainerVisual m_bar{nullptr};
-    std::array<winrt::Windows::UI::Composition::ShapeVisual, 2> m_buttonPlate{nullptr, nullptr};
-    std::array<winrt::Windows::UI::Composition::SpriteVisual, 2> m_buttonIcon{nullptr, nullptr};
+    winrt::Windows::UI::Composition::ShapeVisual m_track{nullptr}, m_thumb{nullptr};
+    winrt::Windows::UI::Composition::CompositionRoundedRectangleGeometry m_trackShape{nullptr}, m_thumbShape{nullptr};
+    // Each segment's icon and label twice: white on the track, dark on the thumb.
+    std::array<winrt::Windows::UI::Composition::SpriteVisual, 2> m_segLight{nullptr, nullptr}, m_segDark{nullptr, nullptr};
     winrt::com_ptr<ID2D1DeviceContext> m_dc;
     LyricsView m_lyrics;
     QueueView m_queue;
@@ -83,6 +87,9 @@ private:
     Target m_capture = Target::None;  // where the button went down
     Target m_hoverTarget = Target::None;
     int m_buttonDown = -1;
+    bool m_barDragging = false;  // the thumb is being dragged
+    LONG m_barDownX = 0;
+    float m_barDownT = 0;
 };
 
 }  // namespace glasswave::ui

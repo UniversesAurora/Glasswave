@@ -3,6 +3,7 @@
 #include "ui/now_playing_pane.h"
 
 #include "gfx/composition_host.h"
+#include "ui/i18n.h"
 #include "ui/pane_common.h"
 
 #include <winrt/Windows.Foundation.Collections.h>
@@ -17,9 +18,10 @@ using Clock = std::chrono::steady_clock;
 
 namespace {
 
-constexpr float kButton = 40;          // DIP: bottom bar button (highlight circle)
-constexpr float kButtonX[2] = {0.23f, 0.77f};  // fractions of the pane width (Apple Music's left / right)
-constexpr float kButtonPlate = 0.22f;  // white alpha of the active button's circle
+// Segmented control: as wide and tall as the queue's capsules, a light thumb inside the track.
+constexpr float kTrackX = 20, kTrackH = 34;  // DIP
+constexpr float kThumbInset = 3;             // DIP
+constexpr float kTrackAlpha = 0.14f, kThumbAlpha = 0.78f;
 constexpr SpringParams kSwitchSpring{1, 260, 30};
 constexpr float kLyricsRise = 24, kQueueRise = 48;  // DIP the two sides move while switching
 
@@ -77,16 +79,23 @@ NowPlayingPane::NowPlayingPane(const wuc::ContainerVisual& parent)
     m_root.Children().InsertAtTop(m_header);
     m_bar = comp.CreateContainerVisual();
     m_root.Children().InsertAtTop(m_bar);
+    auto pill = [&](wuc::CompositionRoundedRectangleGeometry& shape, float alpha) {
+        auto visual = comp.CreateShapeVisual();
+        shape = comp.CreateRoundedRectangleGeometry();
+        auto sprite = comp.CreateSpriteShape(shape);
+        sprite.FillBrush(comp.CreateColorBrush(
+            winrt::Windows::UI::ColorHelper::FromArgb(static_cast<uint8_t>(std::lround(alpha * 255)), 255, 255, 255)));
+        visual.Shapes().Append(sprite);
+        m_bar.Children().InsertAtTop(visual);
+        return visual;
+    };
+    m_track = pill(m_trackShape, kTrackAlpha);
+    m_thumb = pill(m_thumbShape, kThumbAlpha);
     for (size_t i = 0; i < 2; ++i) {
-        m_buttonPlate[i] = comp.CreateShapeVisual();
-        auto circle = comp.CreateEllipseGeometry();
-        auto shape = comp.CreateSpriteShape(circle);
-        shape.FillBrush(comp.CreateColorBrush(winrt::Windows::UI::ColorHelper::FromArgb(
-            static_cast<uint8_t>(std::lround(kButtonPlate * 255)), 255, 255, 255)));
-        m_buttonPlate[i].Shapes().Append(shape);
-        m_bar.Children().InsertAtTop(m_buttonPlate[i]);
-        m_buttonIcon[i] = comp.CreateSpriteVisual();
-        m_bar.Children().InsertAtTop(m_buttonIcon[i]);
+        m_segLight[i] = comp.CreateSpriteVisual();
+        m_segDark[i] = comp.CreateSpriteVisual();
+        m_bar.Children().InsertAtTop(m_segLight[i]);
+        m_bar.Children().InsertAtTop(m_segDark[i]);
     }
     m_t.SetParams(kSwitchSpring);
     m_lyrics.onSeek = [this](double s) {
@@ -138,16 +147,19 @@ void NowPlayingPane::LayoutParts() {
     const RECT bar = BarRect();
     m_bar.Offset(float3{static_cast<float>(bar.left), static_cast<float>(bar.top), 0});
     m_bar.Size(float2{w, static_cast<float>(bar.bottom - bar.top)});
-    const float d = kButton * m_scale, cy = (bar.bottom - bar.top) / 2.0f;
-    for (size_t i = 0; i < 2; ++i) {
-        const float cx = std::round(w * kButtonX[i]);
-        m_buttonPlate[i].Offset(float3{cx - d / 2, std::round(cy - d / 2), 0});
-        m_buttonPlate[i].Size(float2{d, d});
-        auto circle = m_buttonPlate[i].Shapes().GetAt(0).as<wuc::CompositionSpriteShape>().Geometry().as<wuc::CompositionEllipseGeometry>();
-        circle.Center(float2{d / 2, d / 2});
-        circle.Radius(float2{d / 2, d / 2});
-        m_buttonIcon[i].Offset(float3{cx - d / 2, std::round(cy - d / 2), 0});
-    }
+    const RECT track = TrackRect();
+    const float tw = static_cast<float>(track.right - track.left), th = static_cast<float>(track.bottom - track.top);
+    m_track.Offset(float3{static_cast<float>(track.left - bar.left), static_cast<float>(track.top - bar.top), 0});
+    m_track.Size(float2{tw, th});
+    m_trackShape.Size(float2{tw, th});
+    m_trackShape.CornerRadius(float2{th / 2, th / 2});
+    const float inset = kThumbInset * m_scale, segW = tw / 2;
+    m_thumb.Size(float2{segW - 2 * inset, th - 2 * inset});
+    m_thumbShape.Size(float2{segW - 2 * inset, th - 2 * inset});
+    m_thumbShape.CornerRadius(float2{th / 2 - inset, th / 2 - inset});
+    for (size_t i = 0; i < 2; ++i)
+        for (auto& v : {m_segLight[i], m_segDark[i]})
+            v.Offset(float3{std::round(track.left - bar.left + i * segW), static_cast<float>(track.top - bar.top), 0});
     PaintHeader();
     PaintBar();
 }
@@ -173,15 +185,36 @@ void NowPlayingPane::PaintHeader() {
 
 void NowPlayingPane::PaintBar() {
     auto& host = gfx::CompositionHost::Get();
-    const int d = static_cast<int>(std::ceil(kButton * m_scale));
+    const RECT track = TrackRect();
+    const int w = std::max<int>(1, (track.right - track.left) / 2), h = std::max<int>(1, track.bottom - track.top);
+    const float W = w / m_scale, H = h / m_scale;
     for (size_t i = 0; i < 2; ++i) {
-        host.Repaint(m_buttonIcon[i], d, d, m_scale, [&](ID2D1DeviceContext* dc) {
-            auto ink = pane::White(dc, 0.95f);
-            const D2D1_POINT_2F c{kButton / 2, kButton / 2};
-            if (i == 0) DrawLyricsIcon(dc, c, ink.get());
-            else pane::DrawIcon(dc, pane::icon::kList, 20, c, ink.get());
-        });
-        m_buttonIcon[i].Size(float2{static_cast<float>(d), static_cast<float>(d)});
+        const std::wstring label = Tr(i == 0 ? L"Lyrics" : L"Up Next");
+        for (const bool dark : {false, true}) {
+            auto& visual = dark ? m_segDark[i] : m_segLight[i];
+            host.Repaint(visual, w, h, m_scale, [&](ID2D1DeviceContext* dc) {
+                com_ptr<ID2D1SolidColorBrush> ink;
+                dc->CreateSolidColorBrush(dark ? D2D1::ColorF(0.18f, 0.16f, 0.18f, 0.9f) : D2D1::ColorF(1, 1, 1, 0.9f),
+                                          ink.put());
+                // Icon and label centred together.
+                auto* f = host.DWrite();
+                auto format = pane::Format(14, DWRITE_FONT_WEIGHT_SEMI_BOLD);
+                format->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+                com_ptr<IDWriteTextLayout> layout;
+                if (FAILED(f->CreateTextLayout(label.c_str(), static_cast<UINT32>(label.size()), format.get(), W, H,
+                                               layout.put())))
+                    return;
+                DWRITE_TEXT_METRICS tm{};
+                layout->GetMetrics(&tm);
+                const float iconW = 22, gap = 6;
+                const float x0 = std::round((W - iconW - gap - tm.width) / 2);
+                const D2D1_POINT_2F c{x0 + iconW / 2, H / 2};
+                if (i == 0) DrawLyricsIcon(dc, c, ink.get());
+                else pane::DrawIcon(dc, pane::icon::kList, 17, c, ink.get());
+                dc->DrawTextLayout({x0 + iconW + gap, std::round((H - tm.height) / 2)}, layout.get(), ink.get());
+            });
+            visual.Size(float2{static_cast<float>(w), static_cast<float>(h)});
+        }
     }
 }
 
@@ -201,12 +234,11 @@ void NowPlayingPane::SetVisible(bool visible) {
 }
 
 void NowPlayingPane::SetMode(Mode mode) {
-    if (mode == m_mode) return;
-    m_mode = mode;
-    if (mode == Mode::Queue) {
+    if (mode == Mode::Queue && m_mode != Mode::Queue && !m_barDragging) {
         if (onQueueShown) onQueueShown();
         m_queue.ScrollToCard();
     }
+    m_mode = mode;
     m_t.SetTarget(mode == Mode::Queue ? 1.0f : 0.0f);
     m_lastFrame = Clock::now();
     ApplyTransition();
@@ -237,10 +269,14 @@ void NowPlayingPane::ApplyTransition() {
     const float cardY = qr.top + m_queue.CardTop() * s + (1 - t) * kQueueRise * s;
     const float headerY = static_cast<float>(m_bounds.top) * (1 - t) + cardY * t;
     m_header.Offset(float3{static_cast<float>(m_bounds.left), std::round(headerY), 0});
-    m_buttonPlate[0].Opacity(1 - t);
-    m_buttonPlate[1].Opacity(t);
-    m_buttonIcon[0].Opacity(0.6f + 0.4f * (1 - t));
-    m_buttonIcon[1].Opacity(0.6f + 0.4f * t);
+    // The thumb slides with the switch; each segment's dark glyph shows where the thumb is.
+    const RECT track = TrackRect(), bar = BarRect();
+    const float segW = (track.right - track.left) / 2.0f, inset = kThumbInset * s;
+    m_thumb.Offset(float3{std::round(track.left - bar.left + inset + t * segW), std::round(track.top - bar.top + inset), 0});
+    m_segDark[0].Opacity(1 - t);
+    m_segLight[0].Opacity(t);
+    m_segDark[1].Opacity(t);
+    m_segLight[1].Opacity(1 - t);
 }
 
 bool NowPlayingPane::Tick() {
@@ -261,16 +297,17 @@ bool NowPlayingPane::Tick() {
 
 bool NowPlayingPane::HitTest(POINT pt) const { return m_visible && PtInRect(&m_bounds, pt) != FALSE; }
 
-int NowPlayingPane::ButtonAt(POINT pt) const {
+RECT NowPlayingPane::TrackRect() const {
     const RECT bar = BarRect();
-    if (!PtInRect(&bar, pt)) return -1;
-    const float w = static_cast<float>(m_bounds.right - m_bounds.left);
-    const float cy = (bar.top + bar.bottom) / 2.0f, r = kButton * m_scale / 2 + 6 * m_scale;
-    for (int i = 0; i < 2; ++i) {
-        const float cx = m_bounds.left + w * kButtonX[i];
-        if (std::abs(pt.x - cx) <= r && std::abs(pt.y - cy) <= r) return i;
-    }
-    return -1;
+    const LONG x = static_cast<LONG>(std::lround(kTrackX * m_scale)), h = static_cast<LONG>(std::lround(kTrackH * m_scale));
+    const LONG top = (bar.top + bar.bottom - h) / 2;
+    return {bar.left + x, top, std::max(bar.left + x, bar.right - x), top + h};
+}
+
+int NowPlayingPane::ButtonAt(POINT pt) const {
+    const RECT track = TrackRect();
+    if (!PtInRect(&track, pt)) return -1;
+    return pt.x < (track.left + track.right) / 2 ? 0 : 1;
 }
 
 NowPlayingPane::Target NowPlayingPane::TargetAt(POINT pt) const {
@@ -282,6 +319,24 @@ NowPlayingPane::Target NowPlayingPane::TargetAt(POINT pt) const {
 }
 
 void NowPlayingPane::OnMouseMove(POINT pt) {
+    if (m_capture == Target::Bar && m_buttonDown >= 0) {
+        // Dragging the thumb: the switch (and the content with it) follows the pointer.
+        const RECT track = TrackRect();
+        const float segW = std::max(1.0f, (track.right - track.left) / 2.0f);
+        if (!m_barDragging && std::abs(pt.x - m_barDownX) > 4 * m_scale) {
+            m_barDragging = true;
+            if (m_mode != Mode::Queue) {
+                if (onQueueShown) onQueueShown();
+                m_queue.ScrollToCard();
+            }
+        }
+        if (m_barDragging) {
+            m_t.Snap(std::clamp(m_barDownT + (pt.x - m_barDownX) / segW, 0.0f, 1.0f));
+            ApplyTransition();
+            StartFrames();
+        }
+        return;
+    }
     if (m_capture == Target::Lyrics) return m_lyrics.OnMouseMove(pt);
     if (m_capture == Target::Queue) return m_queue.OnMouseMove(pt);
     const Target target = TargetAt(pt);
@@ -303,7 +358,12 @@ void NowPlayingPane::OnMouseLeave() {
 void NowPlayingPane::OnLButtonDown(POINT pt) {
     m_capture = TargetAt(pt);
     switch (m_capture) {
-    case Target::Bar: m_buttonDown = ButtonAt(pt); break;
+    case Target::Bar:
+        m_buttonDown = ButtonAt(pt);
+        m_barDownX = pt.x;
+        m_barDownT = std::clamp(m_t.Position(), 0.0f, 1.0f);
+        m_barDragging = false;
+        break;
     case Target::Lyrics: m_lyrics.OnLButtonDown(pt); break;
     case Target::Queue: m_queue.OnLButtonDown(pt); break;
     case Target::None: break;
@@ -315,7 +375,13 @@ void NowPlayingPane::OnLButtonUp(POINT pt) {
     m_capture = Target::None;
     switch (target) {
     case Target::Bar:
-        if (const int b = ButtonAt(pt); b >= 0 && b == m_buttonDown) SetMode(b == 0 ? Mode::Lyrics : Mode::Queue);
+        if (m_barDragging) {
+            const bool queue = m_t.Position() > 0.5f;
+            m_barDragging = false;
+            SetMode(queue ? Mode::Queue : Mode::Lyrics);  // settles on the nearer side
+        } else if (const int b = ButtonAt(pt); b >= 0 && b == m_buttonDown) {
+            SetMode(b == 0 ? Mode::Lyrics : Mode::Queue);
+        }
         m_buttonDown = -1;
         break;
     case Target::Lyrics: m_lyrics.OnLButtonUp(pt); break;
@@ -329,6 +395,10 @@ void NowPlayingPane::OnCaptureLost() {
     if (m_capture == Target::Queue) m_queue.OnCaptureLost();
     m_capture = Target::None;
     m_buttonDown = -1;
+    if (m_barDragging) {
+        m_barDragging = false;
+        SetMode(m_mode);  // back to where it was
+    }
 }
 
 void NowPlayingPane::OnWheel(int delta) {
