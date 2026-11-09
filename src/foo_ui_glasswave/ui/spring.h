@@ -25,6 +25,12 @@ public:
         m_vel = 0;
         m_hasPending = false;
     }
+    // Translates the spring without changing its velocity or remaining motion.
+    void Shift(float delta) {
+        m_pos += delta;
+        m_target += delta;
+        m_pending += delta;
+    }
     // Moves towards `target`, starting after `delay` seconds.
     void SetTarget(float target, float delay = 0) {
         if (delay > 0) {

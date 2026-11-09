@@ -29,10 +29,10 @@ public:
     void SetVisible(bool visible);
     const winrt::Windows::UI::Composition::ContainerVisual& Root() const { return m_root; }
 
-    void SetUpNext(std::vector<Row> rows);
+    void SetUpNext(std::vector<Row> rows, bool playbackChanged = false);
     void SetHistory(std::vector<Row> rows);
     void SetShuffleRepeat(bool shuffle, int repeat);  // repeat: 0 off, 1 all, 2 one
-    void ScrollToCard();                              // the current song's card at the top
+    void ScrollToCard(bool animate = false);          // the current song's card at the top
     float CardTop() const;                            // DIP from the view's top, as shown now
 
     bool Tick(float dt);  // springs, inertia; returns whether frames are still needed
@@ -50,7 +50,9 @@ public:
     std::function<void(size_t playlistIndex)> onPlay;            // an up-next row
     std::function<void(const metadb_handle_ptr&)> onPlayHistory;  // a history row
     std::function<void()> onClearHistory, onShuffle, onRepeat, onFrames;
-    std::function<void(size_t from, size_t to)> onMove;          // queue playlist indexes
+    // The displayed slots can wrap around the end of the playlist. Items maps each slot
+    // to the old playlist index of the song that should occupy it.
+    std::function<void(const std::vector<size_t>& slots, const std::vector<size_t>& items)> onReorder;
     std::function<void(size_t playlistIndex, POINT screen)> onRowMenu;
 
 private:
@@ -68,7 +70,7 @@ private:
     void DrawCover(RowView& row);
     void DrawChrome();  // section titles and capsules
     void ReleaseRow(RowView& row);
-    void SetRows(std::vector<Row> rows, bool history);
+    void SetRows(std::vector<Row> rows, bool history, bool playbackChanged = false);
     Hit HitAt(POINT pt) const;
     float MaxScroll() const;
     float ShownScroll() const;  // with the rubber band applied
@@ -85,6 +87,7 @@ private:
     bool m_visible = false;
 
     std::vector<std::unique_ptr<RowView>> m_rows;  // history rows first, then up next
+    std::vector<std::unique_ptr<RowView>> m_retiringRows;  // slide and fade before releasing
     size_t m_historyCount = 0;
     bool m_shuffleOn = false;
     int m_repeatMode = 0;
@@ -96,6 +99,7 @@ private:
 
     // Scrolling: the content offset (DIP); beyond the ends it is shown rubber-banded.
     Spring m_scroll{0};
+    bool m_followingPlayback = false;  // return to the card without rubber-banding a shrinking list
     bool m_dragging = false, m_pending = false;
     POINT m_downPt{};
     float m_downScroll = 0;

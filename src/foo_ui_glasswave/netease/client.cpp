@@ -663,29 +663,34 @@ bool Client::GetLyrics(int64_t id, abort_callback& abort, std::wstring& lrc, std
     return true;
 }
 
-bool Client::GetSongUrl(int64_t id, std::wstring_view level, abort_callback& abort, SongUrl& out,
-                        std::wstring& error) {
+stream::SourceStatus Client::GetSongUrl(int64_t id, std::wstring_view level, abort_callback& abort, SongUrl& out,
+                                       std::wstring& error) {
     out = {};
+    error.clear();
     json::Object body;
     int code = 0;
     if (!Request(L"/song/url/v1", {{L"id", std::to_wstring(id)}, {L"level", std::wstring(level)}}, false, abort,
                  body, code, error))
-        return false;
+        return stream::SourceStatus::Failed;
     if (code != 200) {
         error = MessageOf(body, code);
-        return false;
+        return stream::SourceStatus::Failed;
     }
     auto data = json::GetArray(body, L"data");
     if (!data || data->Size() == 0) {
-        error = L"The service returned no playable URL.";
-        return false;
+        error = L"The service returned an invalid song URL response.";
+        return stream::SourceStatus::Failed;
     }
     const IJsonValue first = data->GetAt(0);
     if (!first || first.ValueType() != JsonValueType::Object) {
-        error = L"The service returned no playable URL.";
-        return false;
+        error = L"The service returned an invalid song URL response.";
+        return stream::SourceStatus::Failed;
     }
     const auto item = first.GetObject();
+    if (json::GetInt64(item, L"id") != id || !item.HasKey(L"url")) {
+        error = L"The service returned an invalid song URL response.";
+        return stream::SourceStatus::Failed;
+    }
     out.url = json::GetString(item, L"url");
     out.type = json::GetString(item, L"type");
     out.level = json::GetString(item, L"level");
@@ -694,11 +699,18 @@ bool Client::GetSongUrl(int64_t id, std::wstring_view level, abort_callback& abo
     out.expireSeconds = json::GetInt(item, L"expi", 1200);
     out.trial = static_cast<bool>(json::GetObject(item, L"freeTrialInfo"));
     out.message = json::GetString(item, L"message");
-    if (out.url.empty()) {
-        error = out.message.empty() ? L"No playable source for this song." : out.message;
-        return false;
+    if (out.code >= 500 || out.code == 301 || out.code == 401) {
+        error = out.message.empty() ? L"NetEase stream request failed (" + std::to_wstring(out.code) + L")."
+                                    : out.message;
+        return stream::SourceStatus::Failed;
     }
-    return true;
+    const auto status = stream::CheckSourceUrl(out.url);
+    if (status == stream::SourceStatus::Unavailable) {
+        error = out.message.empty() ? L"No playable source for this song." : out.message;
+    } else if (status == stream::SourceStatus::Failed) {
+        error = L"The service returned an invalid stream URL.";
+    }
+    return status;
 }
 
 bool Client::GetArtistDetail(int64_t artistId, abort_callback& abort, Artist& out, std::wstring& error) {

@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "netease/config.h"
+#include "stream/playback_source.h"
 
 namespace glasswave::netease {
 
@@ -34,7 +35,10 @@ Quality GetQuality() {
     return static_cast<Quality>(v);
 }
 
-void SetQuality(Quality quality) { cfg_quality.set(static_cast<int64_t>(quality)); }
+void SetQuality(Quality quality) {
+    cfg_quality.set(static_cast<int64_t>(quality));
+    stream::ResetSourceAvailability();
+}
 
 int CoverCacheLimitMb() {
     return static_cast<int>(std::clamp<int64_t>(cfg_coverCacheMb.get(), kCoverCacheMinMb, kCoverCacheMaxMb));

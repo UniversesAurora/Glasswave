@@ -153,6 +153,7 @@ public:
         int64_t id = 0;
         if (!ParseSongPath(p_path, id)) throw exception_io_data("Invalid NetEase track");
         m_id = id;
+        m_path = p_path;
     }
 
     void get_info(file_info& p_info, abort_callback& p_abort) {
@@ -180,6 +181,7 @@ public:
 
     void decode_initialize(unsigned p_flags, abort_callback& p_abort) {
         if (m_decoder.is_valid()) return;
+        const auto epoch = stream::SourcePlaybackEpoch();
         Log(L"input: decoding song " + std::to_wstring(m_id));
         auto& provider = Session::Get();  // started by the component's initquit, on the main thread
         if (!provider.LoggedIn())
@@ -189,15 +191,25 @@ public:
             throw exception_io_data(Utf8(error.empty() ? L"NetEase service is unavailable." : error).c_str());
 
         SongUrl resolved;
-        bool ok = false;
+        auto status = stream::SourceStatus::Unavailable;
+        std::wstring requestError;
         for (const auto& level : LevelsFor(GetQuality())) {
-            if (provider.Api().GetSongUrl(m_id, level, p_abort, resolved, error)) {
-                ok = true;
-                break;
-            }
+            const auto result = provider.Api().GetSongUrl(m_id, level, p_abort, resolved, error);
+            status = stream::CombineSourceStatus(status, result);
+            if (result == stream::SourceStatus::Playable) break;
+            if (result == stream::SourceStatus::Failed && requestError.empty()) requestError = error;
         }
-        if (!ok)
+        if (status != stream::SourceStatus::Playable) {
+            if (status == stream::SourceStatus::Unavailable &&
+                stream::SkipUnavailableSource(epoch, m_path, error, p_flags, p_abort)) {
+                // No CDN request or audio decoder is created for an unavailable source.
+                // EOF lets the core choose the next item in its native playback order.
+                Log(L"input: skipped unavailable song " + std::to_wstring(m_id));
+                return;
+            }
+            if (!requestError.empty()) error = requestError;
             throw exception_io_data(Utf8(error.empty() ? L"No playable source for this song." : error).c_str());
+        }
         if (resolved.trial)
             Log(L"input: playing a free trial for song " + std::to_wstring(m_id));
         const std::string extension = ExtensionFor(resolved);
@@ -210,7 +222,8 @@ public:
         auto resolve = [id = m_id, level = resolved.level](abort_callback& abort) {
             SongUrl fresh;
             std::wstring urlError;
-            if (!Session::Get().Api().GetSongUrl(id, level, abort, fresh, urlError) || fresh.url.empty())
+            if (Session::Get().Api().GetSongUrl(id, level, abort, fresh, urlError) !=
+                stream::SourceStatus::Playable)
                 throw exception_io_data(Utf8(urlError.empty() ? L"Cannot renew the stream URL." : urlError).c_str());
             return OpenStream(fresh.url, abort);
         };
@@ -267,6 +280,7 @@ public:
 
 private:
     int64_t m_id = 0;
+    std::string m_path;
     service_ptr_t<input_decoder> m_decoder;
 };
 

@@ -470,8 +470,6 @@ void ClientEdge(ID2D1DeviceContext* dc, D2D1_SIZE_F size) {
     dc->DrawRectangle(Inset(rc, g.L / 2), light.get(), g.L);
     auto dark = Solid(dc, Rgba(27, 30, 33, 0.66f));
     dc->DrawRectangle(Inset(rc, g.L * 1.5f), dark.get(), g.L);
-    auto base = Solid(dc, Hex(0xF1F7FD));  // WMP 12 content background (#e9f2f8 .. #f2f8ff)
-    dc->FillRectangle(Inset(rc, g.L * 2), base.get());
 }
 
 void ClientGlow(ID2D1DeviceContext* dc, D2D1_SIZE_F size) {

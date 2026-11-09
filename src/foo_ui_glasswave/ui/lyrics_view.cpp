@@ -407,11 +407,9 @@ float LyricsView::FontSize() const {
 float LyricsView::ContentTop() const { return 0; }
 
 float LyricsView::AnchorY() const {
-    // High in the pane, like Apple Music: one and a half lines of what was sung stay visible,
-    // the rest of the pane shows what comes next.
-    const float H = (m_bounds.bottom - m_bounds.top) / m_scale;
-    const float typical = m_typicalLine > 0 ? m_typicalLine : 2.1f * FontSize();
-    return std::min(ContentTop() + kLinesAbove * typical, ContentTop() + (H - ContentTop()) * 0.4f);
+    // A fixed reference block keeps the focus at the same height across songs, regardless
+    // of wrapping or whether their lines have translations.
+    return ContentTop() + kLinesAbove * m_referenceLineHeight;
 }
 
 // ---- Layout -----------------------------------------------------------------------------
@@ -424,21 +422,20 @@ void LyricsView::Relayout() {
     if (W <= 0 || !m_lyrics) return;
     const float F = FontSize();
     m_layoutWidth = std::max(40.0f, W - 2 * kSideMargin - 2 * kTextInset * F);
-    std::vector<float> heights;
+    lyrics::Line reference;
+    reference.text = reference.translation = L"Ag";
+    LineView referenceView;
+    referenceView.line = &reference;
+    BuildLine(referenceView, m_layoutWidth);
+    m_referenceLineHeight = referenceView.height;
     for (const auto& line : m_lyrics->lines) {
         auto view = std::make_unique<LineView>();
         view->line = &line;
         BuildLine(*view, m_layoutWidth);
-        heights.push_back(view->height);
         view->y.SetParams(kPosSlow);
         view->scale.SetParams(kScaleSpring);
         view->press.SetParams(kPressSpring);
         m_lines.push_back(std::move(view));
-    }
-    m_typicalLine = 0;
-    if (!heights.empty()) {
-        std::nth_element(heights.begin(), heights.begin() + heights.size() / 2, heights.end());
-        m_typicalLine = heights[heights.size() / 2];
     }
 }
 

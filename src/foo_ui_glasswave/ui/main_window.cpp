@@ -19,6 +19,8 @@
 #include "media/favorites.h"
 #include "media/play_stats.h"
 #include "media/special_playlists.h"
+#include "media/queue_order.h"
+#include "stream/playback_source.h"
 #include "ui/art_cache.h"
 #include "ui/text_prompt.h"
 #include "app/settings.h"
@@ -378,10 +380,11 @@ struct MainWindow::PlayCallback : play_callback_impl_base {
         window.OnPlaybackStateChanged();
     }
     void on_playback_new_track(metadb_handle_ptr track) override {
+        if (track.is_valid() && !stream::CanPlaySource(track->get_path())) return;
         media::PlayStats::Get().Record(track);
         window.RefreshPlayCounts();
         window.OnShuffleTrack();
-        window.OnTrackChanged();
+        window.OnTrackChanged(true);
         window.OnPlaybackStateChanged();
     }
     void on_playback_stop(play_control::t_stop_reason reason) override {
@@ -614,6 +617,11 @@ void MainWindow::InitComposition() {
     m_glass = std::make_unique<aero::GlassMaterial>(aero::kWin7Sky, aero::atlas::Available());
     auto children = m_root.Children();
     children.InsertAtTop(m_glass->Root());
+    // The content base stops at the library boundary. The shared edge also surrounds
+    // the now-playing pane, whose glass must remain visible through its dark tint.
+    m_clientBackground = comp.CreateSpriteVisual();
+    m_clientBackground.Brush(comp.CreateColorBrush(winrt::Windows::UI::ColorHelper::FromArgb(255, 0xF1, 0xF7, 0xFD)));
+    children.InsertAtTop(m_clientBackground);
 
     m_frameOutline = comp.CreateSpriteVisual();
     m_frameOutline.RelativeSizeAdjustment(float2{1, 1});
@@ -1215,6 +1223,7 @@ void MainWindow::UpdateLayout() {
         });
     }
     Place(m_clientEdge, L.clientEdge);
+    Place(m_clientBackground, L.client);
     Place(m_clientGlow, L.client);
     Place(m_navBar, L.navBar);
     Place(m_cmdBar, L.cmdBar);
@@ -1310,7 +1319,7 @@ void MainWindow::RepaintScaleDependent() {
         paint::FrameOutline(dc, D2D1::SizeF(frameSrc / s, frameSrc / s), m::kCornerRadius);
     }));
     const int edgeSrc = PxI(16);
-    m_clientEdge.Brush(NineGrid(edgeSrc, edgeSrc, s, 3.0f, false, [&](ID2D1DeviceContext* dc) {
+    m_clientEdge.Brush(NineGrid(edgeSrc, edgeSrc, s, 3.0f, true, [&](ID2D1DeviceContext* dc) {
         paint::ClientEdge(dc, D2D1::SizeF(edgeSrc / s, edgeSrc / s));
     }));
     m_clientGlow.Brush(NineGrid(edgeSrc, edgeSrc, s, 4.0f, true, [&](ID2D1DeviceContext* dc) {
@@ -1672,9 +1681,23 @@ void MainWindow::StartLyricsFrames() {
     m_frameClock->Start();
 }
 
-// The pane's queue: Up Next is the rest of Now Playing after the playing song (all of it when
-// the song plays from elsewhere), History the cross-source play history, oldest first.
-void MainWindow::RefreshPaneQueue() {
+// Up Next follows Now Playing after its current song, wrapping once when repeat-all is on.
+// History uses the cross-source play history, oldest first.
+void MainWindow::SchedulePaneQueueRefresh(bool playbackChanged) {
+    m_queueFollowPending |= playbackChanged;
+    if (m_queueRefreshPending) return;
+    m_queueRefreshPending = true;
+    // Playlist batches and playback callbacks can run before the core commits the new
+    // playing location. Read one complete snapshot after those callbacks have returned.
+    fb2k::inMainThread([this, alive = std::weak_ptr<int>(m_alive)] {
+        if (alive.expired()) return;
+        m_queueRefreshPending = false;
+        const bool follow = std::exchange(m_queueFollowPending, false);
+        RefreshPaneQueue(follow);
+    });
+}
+
+void MainWindow::RefreshPaneQueue(bool playbackChanged) {
     if (!m_pane || !m_lyricsOpen) return;
     static titleformat_object::ptr s_title, s_artist;
     if (!s_title) {
@@ -1688,7 +1711,19 @@ void MainWindow::RefreshPaneQueue() {
         t_size playing = SIZE_MAX, index = SIZE_MAX;
         const bool fromQueue = pm->get_playing_item_location(&playing, &index) && playing == queue;
         const t_size count = pm->playlist_get_item_count(queue);
-        for (t_size i = fromQueue ? index + 1 : 0; i < count; ++i) {
+        if (!fromQueue) index = playback_control::get()->is_playing() ? SIZE_MAX : m_panePlayingIndex;
+        if (index >= count) index = SIZE_MAX;
+        metadb_handle_ptr cursor;
+        if (index != SIZE_MAX) cursor = pm->playlist_get_item_handle(queue, index);
+        if (!fromQueue && cursor != m_panePlayingTrack) {
+            // A stopped cursor must not survive replacing or removing its old item.
+            index = SIZE_MAX;
+            cursor.release();
+        }
+        playbackChanged |= index != m_panePlayingIndex;
+        m_panePlayingIndex = index;
+        m_panePlayingTrack = cursor;
+        for (size_t i : media::FollowingQueueIndices(count, index, m_repeat == Repeat::All)) {
             QueueView::Row row;
             row.handle = pm->playlist_get_item_handle(queue, i);
             pfc::string8 text;
@@ -1719,7 +1754,7 @@ void MainWindow::RefreshPaneQueue() {
     // The newest record is the song playing now: it is the card, not history.
     if (loaded && !history.empty() && history.back().handle == now) history.pop_back();
     m_pane->Queue().SetHistory(std::move(history));
-    m_pane->Queue().SetUpNext(std::move(upNext));
+    m_pane->Queue().SetUpNext(std::move(upNext), playbackChanged);
     m_pane->Queue().SetShuffleRepeat(m_shuffle, static_cast<int>(m_repeat));
 }
 
@@ -1752,18 +1787,14 @@ void MainWindow::ConnectPaneQueue() {
     queue.onRepeat = [this] {
         SetShuffleRepeat(m_shuffle, m_repeat == Repeat::Off ? Repeat::All : m_repeat == Repeat::All ? Repeat::One : Repeat::Off);
     };
-    queue.onMove = [](size_t from, size_t to) {
+    queue.onReorder = [](const std::vector<size_t>& slots, const std::vector<size_t>& items) {
         auto pm = playlist_manager::get();
         const t_size p = media::QueuePlaylist(false);
         const t_size count = p == SIZE_MAX ? 0 : pm->playlist_get_item_count(p);
-        if (from >= count || to >= count || from == to) return;
-        std::vector<t_size> order(count);
-        for (t_size i = 0; i < count; ++i) order[i] = i;
-        const t_size moved = order[from];
-        order.erase(order.begin() + static_cast<std::ptrdiff_t>(from));
-        order.insert(order.begin() + static_cast<std::ptrdiff_t>(to), moved);
+        const auto order = media::ReorderQueueSlots(count, slots, items);
+        if (!order) return;
         pm->playlist_undo_backup(p);
-        pm->playlist_reorder_items(p, order.data(), count);
+        pm->playlist_reorder_items(p, order->data(), count);
     };
     queue.onRowMenu = [this](size_t index, POINT screen) {
         std::vector<MenuAction> actions;
@@ -3756,7 +3787,7 @@ void MainWindow::OnPlaybackStateChanged() {
     OnTrackChanged();  // paused resume still has codec/bitrate information
 }
 
-void MainWindow::OnTrackChanged() {
+void MainWindow::OnTrackChanged(bool playbackChanged) {
     static titleformat_object::ptr s_title, s_artist;
     if (!s_title) {
         titleformat_compiler::get()->compile_safe(s_title, "$if2(%title%,%filename%)");
@@ -3818,6 +3849,7 @@ void MainWindow::OnTrackChanged() {
             add(ch);
         }
     }
+    const bool trackChanged = loaded && (playbackChanged || m_lyricsTrack != now);
     if (!loaded) {
         if (m_lyricsTrack.is_valid()) {
             m_lyricsTrack.release();
@@ -3826,8 +3858,8 @@ void MainWindow::OnTrackChanged() {
         }
     } else if (m_lyricsTrack != now) {
         RequestLyrics(now, false);
-        RefreshPaneQueue();  // the song that started left Up Next and joined History
     }
+    SchedulePaneQueueRefresh(trackChanged);
     if (m_pane) m_pane->SetTrack(m_trackTitle, m_trackArtist, m_lyricsArt);
     RepaintStreamInfo();
     UpdateFavoriteState();
@@ -3897,7 +3929,7 @@ void MainWindow::UpdateShuffleRepeat(bool shuffle, Repeat repeat) {
         if (auto* w = WidgetById(id)) w->Invalidate();
     cfg_shuffle = shuffle ? 1 : 0;
     cfg_repeat = static_cast<int>(repeat);
-    if (m_pane) m_pane->Queue().SetShuffleRepeat(shuffle, static_cast<int>(repeat));
+    SchedulePaneQueueRefresh();
 }
 
 void MainWindow::SetShuffleRepeat(bool shuffle, Repeat repeat) {
@@ -3956,7 +3988,7 @@ void MainWindow::UpdateFavoriteState() {
 
 void MainWindow::OnPlaylistContentChanged(size_t playlist) {
     if (playlist == media::FavoritesPlaylist(false)) UpdateFavoriteState();
-    if (media::IsQueue(playlist)) RefreshPaneQueue();
+    if (media::IsQueue(playlist)) SchedulePaneQueueRefresh();
     if (m_view.kind == View::Kind::Playlist && m_view.playlist == playlist && m_source) {
         static_cast<media::PlaylistSource*>(m_source.get())->Rebuild();
         m_list->Refresh();
@@ -3988,6 +4020,7 @@ void MainWindow::OnPlaylistsMoved(const std::function<size_t(size_t)>& remap) {
 }
 
 void MainWindow::OnPlaylistsChanged() {
+    SchedulePaneQueueRefresh();
     if (!m_nav) return;
     m_nav->Rebuild();
     if (m_view.kind == View::Kind::Playlist || m_view.kind == View::Kind::Playlists ||

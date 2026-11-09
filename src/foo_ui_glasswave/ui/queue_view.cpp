@@ -4,6 +4,7 @@
 
 #include "gfx/composition_host.h"
 #include "gfx/effects.h"
+#include "media/queue_order.h"
 #include "ui/art_cache.h"
 #include "ui/i18n.h"
 #include "ui/pane_common.h"
@@ -36,6 +37,9 @@ constexpr float kTopFade = 16, kBottomFade = 40;  // DIP
 constexpr float kRubber = 0.55f;     // iOS rubber band constant
 constexpr SpringParams kRowSpring{1, 300, 30};
 constexpr SpringParams kScrollSpring{1, 220, 30};
+// AMLL Cover's swap spring and MusicInfo's outgoing opacity duration.
+constexpr SpringParams kAdvanceSpring{0.9f, 220, 26};
+constexpr float kExitSeconds = 0.22f;
 
 float Clamp01(float v) { return std::clamp(v, 0.0f, 1.0f); }
 
@@ -53,6 +57,8 @@ struct QueueView::RowView {
     Spring y{0};
     bool placed = false;  // the spring has a position
     float hover = 0;
+    float opacity = 1;
+    float enterOffset = 0;
     wuc::ContainerVisual root{nullptr};
     wuc::ShapeVisual plate{nullptr};
     wuc::CompositionRoundedRectangleGeometry plateShape{nullptr};
@@ -99,6 +105,7 @@ QueueView::QueueView(const wuc::ContainerVisual& parent) {
 QueueView::~QueueView() {
     if (auto* cache = ArtCache::Existing()) cache->Unsubscribe(m_artToken);
     for (auto& r : m_rows) ReleaseRow(*r);
+    for (auto& r : m_retiringRows) ReleaseRow(*r);
     if (m_root) {
         if (auto parent = m_root.Parent()) parent.Children().Remove(m_root);
     }
@@ -134,6 +141,8 @@ void QueueView::SetBounds(const RECT& px, float scale) {
         });
     }
     for (auto& r : m_rows) ReleaseRow(*r);  // widths changed: redraw
+    for (auto& r : m_retiringRows) ReleaseRow(*r);
+    m_retiringRows.clear();
     Layout();
     DrawChrome();
     if (m_visible) Render();
@@ -149,36 +158,73 @@ void QueueView::SetVisible(bool visible) {
         Render();
     } else {
         for (auto& r : m_rows) ReleaseRow(*r);
+        for (auto& r : m_retiringRows) ReleaseRow(*r);
+        m_retiringRows.clear();
     }
 }
 
 // ---- Data ------------------------------------------------------------------------------
 
-void QueueView::SetRows(std::vector<Row> rows, bool history) {
+void QueueView::SetRows(std::vector<Row> rows, bool history, bool playbackChanged) {
     // Rows keep their visuals and spring position when the same song is still listed, so a
     // song that starts slides out and the others move up instead of the list jumping.
     std::vector<std::unique_ptr<RowView>> old;
     std::vector<std::unique_ptr<RowView>> keep;
     for (auto& r : m_rows) (r->history == history ? old : keep).push_back(std::move(r));
+    // Reuse rows along one continuous movement. Wrapped rows leave and re-enter at the
+    // opposite end, while native shuffle can move the whole list up or down.
+    std::ptrdiff_t shift = 0;
+    if (playbackChanged && !history) {
+        std::vector<size_t> before, after;
+        std::map<size_t, metadb_handle_ptr> incoming;
+        for (const auto& r : rows) {
+            after.push_back(r.playlistIndex);
+            incoming.emplace(r.playlistIndex, r.handle);
+        }
+        for (const auto& r : old) {
+            const auto found = incoming.find(r->data.playlistIndex);
+            const bool same = found != incoming.end() && found->second == r->data.handle;
+            before.push_back(same ? r->data.playlistIndex : SIZE_MAX);
+        }
+        shift = media::QueueRowShift(before, after);
+    }
+    // A long jump cross-fades over one row. Traversing every skipped row would leave a
+    // large empty area before the new first song reaches the section heading.
+    const float movement = std::clamp(static_cast<float>(shift), -1.0f, 1.0f) * kRowH;
+    const bool replace = playbackChanged && (shift < -1 || shift > 1);
     std::vector<std::unique_ptr<RowView>> fresh;
     for (auto& data : rows) {
         std::unique_ptr<RowView> view;
-        for (auto& o : old)
-            if (o && o->data.handle == data.handle) {
-                view = std::move(o);
+        for (size_t i = 0; i < old.size(); ++i)
+            if (!replace && old[i] && old[i]->data.handle == data.handle &&
+                (history || old[i]->data.playlistIndex == data.playlistIndex) &&
+                (!playbackChanged || static_cast<std::ptrdiff_t>(fresh.size()) ==
+                                         static_cast<std::ptrdiff_t>(i) + shift)) {
+                view = std::move(old[i]);
                 break;
             }
         if (!view) {
             view = std::make_unique<RowView>();
             view->history = history;
-            view->y.SetParams(kRowSpring);
+            view->opacity = m_visible ? 0.0f : 1.0f;
+            view->enterOffset = playbackChanged && m_visible ? m_scroll.Position() - m_cardTop - movement : 0;
         }
+        view->y.SetParams(playbackChanged ? kAdvanceSpring : kRowSpring);
         if (view->data.title != data.title || view->data.artist != data.artist) view->drawn = false;
         view->data = std::move(data);
         fresh.push_back(std::move(view));
     }
-    for (auto& o : old)
-        if (o) ReleaseRow(*o);
+    for (auto& o : old) {
+        if (!o) continue;
+        if (m_visible && !history && o->root && o->root.IsVisible()) {
+            o->y.SetParams(kAdvanceSpring);
+            const float offset = shift == 0 ? -kRowH : movement;
+            o->y.SetTarget(o->y.Position() + offset);
+            m_retiringRows.push_back(std::move(o));
+        } else {
+            ReleaseRow(*o);
+        }
+    }
     m_rows.clear();
     if (history) {
         m_historyCount = fresh.size();
@@ -192,24 +238,17 @@ void QueueView::SetRows(std::vector<Row> rows, bool history) {
     m_hover = m_press = {};
 }
 
-void QueueView::SetUpNext(std::vector<Row> rows) {
-    SetRows(std::move(rows), false);
+void QueueView::SetUpNext(std::vector<Row> rows, bool playbackChanged) {
+    SetRows(std::move(rows), false, playbackChanged);
     Layout();
+    if (playbackChanged) ScrollToCard(true);
     DrawChrome();
     if (m_visible) StartFrames();
 }
 
 void QueueView::SetHistory(std::vector<Row> rows) {
-    // The card stays where it is when history grows above it.
-    const float before = m_cardTop;
     SetRows(std::move(rows), true);
     Layout();
-    const float delta = m_cardTop - before;
-    if (delta != 0) {
-        const float target = m_scroll.Target() + delta;
-        m_scroll.Snap(m_scroll.Position() + delta);
-        m_scroll.SetTarget(target);
-    }
     DrawChrome();
     if (m_visible) StartFrames();
 }
@@ -221,10 +260,18 @@ void QueueView::SetShuffleRepeat(bool shuffle, int repeat) {
     DrawChrome();
 }
 
-void QueueView::ScrollToCard() {
+void QueueView::ScrollToCard(bool animate) {
     Layout();
-    m_scroll.Snap(std::min(m_cardTop, MaxScroll()));
+    const float target = std::min(m_cardTop, MaxScroll());
+    m_followingPlayback = animate && m_visible;
+    if (m_followingPlayback) {
+        m_scroll.SetParams(kAdvanceSpring);
+        m_scroll.SetTarget(target);
+    }
+    else m_scroll.Snap(target);
     m_velocity = 0;
+    m_dragging = m_pending = false;
+    if (m_visible) StartFrames();
 }
 
 float QueueView::MaxScroll() const {
@@ -234,6 +281,7 @@ float QueueView::MaxScroll() const {
 
 float QueueView::ShownScroll() const {
     const float s = m_scroll.Position(), max = MaxScroll();
+    if (m_followingPlayback) return s;
     const float viewH = (m_bounds.bottom - m_bounds.top) / m_scale;
     if (s < 0) return -Rubber(-s, viewH);
     if (s > max) return max + Rubber(s - max, viewH);
@@ -245,6 +293,7 @@ float QueueView::CardTop() const { return m_cardTop - ShownScroll(); }
 // ---- Layout and rendering --------------------------------------------------------------
 
 void QueueView::Layout() {
+    const float oldCardTop = m_cardTop;
     float y = 8;
     m_historyTop = y;
     size_t i = 0;
@@ -263,6 +312,16 @@ void QueueView::Layout() {
         y += 12;
     }
     m_cardTop = y;
+    // History grows above the card. Translate the content coordinates together so the
+    // card and the upcoming rows keep their screen positions and spring velocities.
+    const float delta = m_cardTop - oldCardTop;
+    if (delta != 0) {
+        m_scroll.Shift(delta);
+        m_downScroll += delta;
+        for (auto& r : m_rows)
+            if (!r->history && r->placed) r->y.Shift(delta);
+        for (auto& r : m_retiringRows) r->y.Shift(delta);
+    }
     y += pane::kHeaderHeight;
     m_capsulesTop = y + 4;
     y = m_capsulesTop + kCapsuleH + 20;
@@ -286,7 +345,9 @@ void QueueView::Layout() {
         }
         const float target = first + slot * kRowH;
         if (!r.placed) {
-            r.y.Snap(target);
+            r.y.Snap(target + r.enterOffset);
+            r.y.SetTarget(target);
+            r.enterOffset = 0;
             r.placed = true;
         } else {
             r.y.SetTarget(target);
@@ -380,19 +441,18 @@ void QueueView::DrawChrome() {
     const float capW = (W - 2 * kContentX - kCapsuleGap) / 2;
     auto capsule = [&](const wuc::SpriteVisual& visual, bool on, const std::function<void(ID2D1DeviceContext*, ID2D1Brush*)>& glyph) {
         paint(visual, capW, kCapsuleH, [&](ID2D1DeviceContext* dc) {
-            const D2D1_ROUNDED_RECT rr = D2D1::RoundedRect({0, 0, capW, kCapsuleH}, kCapsuleH / 2, kCapsuleH / 2);
-            dc->FillRoundedRectangle(rr, pane::White(dc, on ? 0.78f : 0.14f).get());
+            pane::DrawCapsule(dc, {0, 0, capW, kCapsuleH}, pane::White(dc, on ? 0.78f : 0.14f).get());
             com_ptr<ID2D1SolidColorBrush> ink;
             dc->CreateSolidColorBrush(on ? D2D1::ColorF(0.18f, 0.16f, 0.18f, 0.9f) : D2D1::ColorF(1, 1, 1, 0.9f), ink.put());
             glyph(dc, ink.get());
         });
     };
     capsule(m_shuffle, m_shuffleOn, [&](ID2D1DeviceContext* dc, ID2D1Brush* ink) {
-        pane::DrawIcon(dc, pane::icon::kShuffle, 16, {capW / 2, kCapsuleH / 2}, ink);
+        pane::DrawIcon(dc, pane::icon::kShuffle, 16, {capW / 2, kCapsuleH / 2}, ink, DWRITE_FONT_WEIGHT_BOLD);
     });
     capsule(m_repeat, m_repeatMode != 0, [&](ID2D1DeviceContext* dc, ID2D1Brush* ink) {
         pane::DrawIcon(dc, m_repeatMode == 2 ? pane::icon::kRepeatOne : pane::icon::kRepeatAll, 16,
-                       {capW / 2, kCapsuleH / 2}, ink);
+                       {capW / 2, kCapsuleH / 2}, ink, DWRITE_FONT_WEIGHT_BOLD);
     });
 }
 
@@ -429,6 +489,7 @@ void QueueView::RenderRow(RowView& r) {
     const bool visible = shown + kRowH >= 0 && shown <= viewH;
     r.root.IsVisible(visible);
     r.root.Offset(float3{0, std::round(shown * s), 0});
+    r.root.Opacity(r.opacity);
     const bool lifted = m_reorder >= 0 && m_rows[static_cast<size_t>(m_reorder)].get() == &r;
     const float k = lifted ? 1.03f : 1.0f;  // a dragged row lifts a little
     r.root.Scale(float3{k, k, 1});
@@ -452,6 +513,7 @@ void QueueView::Render() {
     place(m_repeat, kContentX + capW + kCapsuleGap, m_capsulesTop, true);
     place(m_upNextTitle, 0, m_upNextTop, true);
     place(m_empty, 0, m_upNextTop + kUpNextH, m_rows.size() == m_historyCount);
+    for (auto& r : m_retiringRows) RenderRow(*r);
     for (auto& r : m_rows) RenderRow(*r);
     // A dragged row draws above the others.
     if (m_reorder >= 0) {
@@ -468,11 +530,12 @@ void QueueView::Render() {
 
 bool QueueView::NeedsFrames() const {
     if (!m_visible) return false;
-    if (m_dragging || m_reorder >= 0 || m_velocity != 0 || m_scroll.Moving() || m_coversDirty) return true;
+    if (m_dragging || m_reorder >= 0 || m_velocity != 0 || m_scroll.Moving() || m_coversDirty ||
+        !m_retiringRows.empty()) return true;
     for (size_t i = 0; i < m_rows.size(); ++i) {
         const auto& r = *m_rows[i];
         const bool hovered = m_hover.row == static_cast<int>(i) && m_reorder < 0;
-        if (r.y.Moving() || r.hover != (hovered ? 1.0f : 0.0f)) return true;
+        if (r.y.Moving() || r.hover != (hovered ? 1.0f : 0.0f) || r.opacity != 1.0f) return true;
     }
     return false;
 }
@@ -494,12 +557,23 @@ bool QueueView::Tick(float dt) {
         }
     }
     m_scroll.Step(dt);
+    if (!m_scroll.Moving()) m_followingPlayback = false;
     for (size_t i = 0; i < m_rows.size(); ++i) {
         auto& r = *m_rows[i];
         r.y.Step(dt);
+        r.opacity = Approach(r.opacity, 1.0f, dt, kExitSeconds);
         const bool hovered = m_hover.row == static_cast<int>(i) && m_reorder < 0 && !m_dragging;
         r.hover = Approach(r.hover, hovered ? 1.0f : 0.0f, dt, 0.25f);
     }
+    for (auto& r : m_retiringRows) {
+        r->y.Step(dt);
+        r->opacity = Approach(r->opacity, 0.0f, dt, kExitSeconds);
+    }
+    std::erase_if(m_retiringRows, [this](auto& r) {
+        if (r->opacity > 0) return false;
+        ReleaseRow(*r);
+        return true;
+    });
     Render();
     return NeedsFrames();
 }
@@ -578,6 +652,7 @@ void QueueView::OnLButtonDown(POINT pt) {
     m_pending = true;
     m_velocity = 0;
     m_scroll.Snap(m_scroll.Position());
+    m_followingPlayback = false;
     if (m_press.part == Part::Handle) {
         m_reorder = m_press.row;
         const float y = (pt.y - m_bounds.top) / m_scale + ShownScroll();
@@ -595,17 +670,22 @@ void QueueView::OnLButtonUp(POINT pt) {
     m_pending = false;
     if (m_reorder >= 0) {
         const int from = m_reorder - static_cast<int>(m_historyCount), to = m_reorderTo;
-        const size_t fromIndex = m_rows[static_cast<size_t>(m_reorder)]->data.playlistIndex;
         m_reorder = -1;
         if (to != from && to >= 0) {
+            std::vector<size_t> slots;
+            for (size_t u = m_historyCount; u < m_rows.size(); ++u)
+                slots.push_back(m_rows[u]->data.playlistIndex);
             // Reorder locally (the playlist change arrives later and finds the same rows).
             auto moved = std::move(m_rows[m_historyCount + static_cast<size_t>(from)]);
             m_rows.erase(m_rows.begin() + static_cast<std::ptrdiff_t>(m_historyCount + from));
             m_rows.insert(m_rows.begin() + static_cast<std::ptrdiff_t>(m_historyCount + to), std::move(moved));
-            const size_t base = fromIndex - static_cast<size_t>(from);
-            for (size_t u = 0; u < m_rows.size() - m_historyCount; ++u)
-                m_rows[m_historyCount + u]->data.playlistIndex = base + u;
-            if (onMove) onMove(fromIndex, base + static_cast<size_t>(to));
+            std::vector<size_t> items;
+            for (size_t u = 0; u < slots.size(); ++u) {
+                auto& row = m_rows[m_historyCount + u]->data;
+                items.push_back(row.playlistIndex);
+                row.playlistIndex = slots[u];
+            }
+            if (onReorder) onReorder(slots, items);
         }
         Layout();
         StartFrames();
@@ -657,6 +737,7 @@ void QueueView::OnLButtonUp(POINT pt) {
 void QueueView::OnCaptureLost() {
     m_pending = m_dragging = false;
     m_reorder = -1;
+    m_followingPlayback = false;
     m_press = {};
     m_scroll.SetTarget(std::clamp(m_scroll.Position(), 0.0f, MaxScroll()));
     Layout();
@@ -665,6 +746,8 @@ void QueueView::OnCaptureLost() {
 
 void QueueView::OnWheel(int delta) {
     m_velocity = 0;
+    m_followingPlayback = false;
+    m_scroll.SetParams(kScrollSpring);
     m_scroll.SetTarget(std::clamp(m_scroll.Target() - delta / 120.0f * 80.0f, 0.0f, MaxScroll()));
     m_hover = {};
     StartFrames();

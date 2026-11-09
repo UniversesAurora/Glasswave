@@ -93,6 +93,39 @@ never clipped.
   upper `#e5f2f9` -> `#d4e3f5`, lower `#b1c2d3` -> `#d2e2ef`, outline `#a3afbb` -> `#6f7d8b`.
 - Glyphs blue when enabled (`#3c88da` -> `#154ea2`, R5), grey when disabled (`#aab4bf`).
 
+## Now-playing queue icons (owner, 2026-11-09)
+
+- Shuffle, repeat-all and repeat-one in the sidebar capsules use 16 DIP Segoe Fluent Icons
+  (Segoe MDL2 Assets fallback), requested at bold weight 700 for heavier strokes.
+
+## Now-playing capsules and glass (owner photos, 2026-11-09)
+
+- Shape references are the owner's `Photo 1` segmented control (1280 x 307 JPEG) and
+  `Photo 2` Apple Music capsule (393 x 313 JPEG). The bright capsule in Photo 2 spans
+  approximately x 55..300 and y 96..210. Its shallow transition into the flat edge is
+  reconstructed as a continuous-curvature profile, shared by the queue buttons, tab
+  track and selected thumb.
+- For height H, the circular side radius is R = H / 2 and the horizontal transition
+  extends 1.30 R. In top-left coordinates normalized to R, the cubic runs from
+  (1.30, 0) through (0.94974747, 0), (0.58578644, 0) to (0.29289322, 0.29289322),
+  then follows the circle to (0, 1). The cubic has zero curvature at the flat edge and
+  matches the circle's tangent and curvature at 45 degrees. The other quarters mirror
+  this profile. Narrow bounds reduce R to fit. These values are fitted to the JPEG
+  contours, with the tangent and curvature constraints enforced analytically.
+- The shared client edge is a hollow two-device-pixel frame. The opaque WMP content
+  base `#F1F7FD` fills only the library client rectangle. The lyrics/queue pane exposes
+  the window's Aero material and screen-anchored reflection streaks through its existing
+  30% black tint, as specified in ADR 0010.
+
+## Lyrics search window (new UI, 2026-11-09)
+
+The lyric search uses native Win32 controls, as the existing text prompt and preferences
+do. Its initial outer size is 640 x 540 DIP, minimum 520 x 400, with 16 DIP margins,
+8 DIP gaps and 24 DIP fields / buttons. Text uses Segoe UI 9 pt. The result list and
+read-only preview share the remaining height equally. Columns are source 130, title 180,
+artist 130 and timing 130 DIP, with native horizontal scrolling when needed. These are
+new application layout values, not measurements of an Apple or Win7 window.
+
 ## Reflection (R6)
 
 Soft white bands leaning like "/", anchored to the monitor, intensity 50.

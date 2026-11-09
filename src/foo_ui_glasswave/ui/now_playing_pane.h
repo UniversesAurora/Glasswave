@@ -67,8 +67,7 @@ private:
     winrt::Windows::UI::Composition::ContainerVisual m_root{nullptr};
     winrt::Windows::UI::Composition::SpriteVisual m_tint{nullptr}, m_header{nullptr};
     winrt::Windows::UI::Composition::ContainerVisual m_bar{nullptr};
-    winrt::Windows::UI::Composition::ShapeVisual m_track{nullptr}, m_thumb{nullptr};
-    winrt::Windows::UI::Composition::CompositionRoundedRectangleGeometry m_trackShape{nullptr}, m_thumbShape{nullptr};
+    winrt::Windows::UI::Composition::SpriteVisual m_track{nullptr}, m_thumb{nullptr};
     // Each segment's icon and label twice: white on the track, dark on the thumb.
     std::array<winrt::Windows::UI::Composition::SpriteVisual, 2> m_segLight{nullptr, nullptr}, m_segDark{nullptr, nullptr};
     winrt::com_ptr<ID2D1DeviceContext> m_dc;

@@ -399,21 +399,117 @@ Updated: 2026-11-09
   scrolling) and View > Up Next. Checked in the dev instance by capture; interaction not yet
   tested by the owner.
 
+## Development handover (2026-11-09)
+
+- Reviewed the requirements, architecture, ADRs 0001-0010, visual specifications, plans,
+  recent commits and the main rendering, library, provider, lyrics and queue code paths.
+- The README's M0 status and several roadmap checkboxes lag the implementation. Album
+  grouping, cover grids, column editing and a preferences page already exist. The planned
+  colourization controls on that page are still separate work. The pane's queue and history
+  also exist and need interaction testing. The ESLyric-compatible script host remains
+  unimplemented, with its extension point in `lyrics::Searcher` and its work order in
+  `docs/plan/lyrics-script-host.md`.
+- Removed duplicate source and header entries from `foo_ui_glasswave.vcxproj`. The repeated
+  source entries produced four MSB8027 warnings and concurrent writes to `frame_clock.obj`
+  that failed a full rebuild. All 63 component source files remain included exactly once.
+- Verified a full Release x64 rebuild through `scripts/build.ps1 -Rebuild` with 0 errors.
+  Two C4702 warnings remain in the fetched foobar2000 SDK's `input_impl.h` (lines 249 and
+  418) during link-time code generation. MSBuild/PDB communication failed in restricted
+  execution on this host; the completed rebuild ran in the normal host environment.
+- Dev-instance interaction and visual comparisons were not repeated in this handover.
+  Existing owner-test items below still apply.
+
+## Lyrics anchor and queue follow-up (2026-11-09)
+
+- The lyric anchor now uses a fixed one-line original plus one-line translation reference
+  block. Wrapping and missing translations no longer change the focused line's height.
+- The sidebar still reads Now Playing. It excludes the song card's current item, follows
+  its current position and wraps the tail to the beginning only for repeat-all. Stopping
+  leaves the last cursor in the open window. Queue items remain in the underlying playlist.
+- After owner clarification, the implementation keeps foobar2000's native shuffle and
+  the stored Now Playing order. No additional shuffle state is persisted.
+- Rows move up or down after native shuffle jumps, and skipped rows keep their visuals
+  until their exit fade finishes. Clicking a song springs back to the card without a
+  rubber-band discontinuity when the list shrinks. Growing history translates existing
+  springs together, and dragging across the wrapped section maps the actual playlist slots.
+  Motion tuning follows the supplied AMLL cover and song-information transitions. Long
+  jumps cross-fade within one row of travel, avoiding a large blank gap between lists.
+- Queue notifications are coalesced onto the next main-thread dispatch. This reads the
+  completed core transaction after replacement/add/remove/reorder and the settled playing
+  index after a track callback. A first sidebar click now follows the new song immediately.
+  A stopped cursor is reused only while its original item remains in that slot.
+- `scripts/test-queue.ps1` passes 144927 assertions covering empty and singleton queues,
+  changed queue sizes, exhausted tails, repeat wrapping, invalid reorder input, wrapped
+  drag permutations, forward/backward jumps and spring translation/settling. The test uses
+  MSVC with /W4 /WX. Source checks also cover empty/malformed/valid URLs, quality fallback
+  precedence, provider identities, explicit retry and stale worker results. The Release
+  x64 build passes with 0 warnings and 0 errors.
+- Dev-instance screenshots and interaction checks confirmed the fixed lyric anchor,
+  whole-list replacement, addition/removal, first-click follow, repeat wrapping and native
+  shuffle motion.
+
+## Streaming source availability (2026-11-09)
+
+- Restored the dev instance's global playback error popups after an incorrect attempt to
+  hide the missing-source error through Preferences. No core error setting is changed by
+  the component.
+- `stream/playback_source` supplies provider-neutral URL checks, availability results and
+  a per-playback unavailable-source set. Empty addresses never reach HTTP or an audio
+  decoder. An unavailable input ends without audio, and the core chooses its next track.
+  The core's 2.26 `skipTrack` predicate excludes confirmed unavailable items on later
+  selections, including native shuffle and repeat. Queue items are retained.
+- NetEase distinguishes a completed empty-URL response from transport, authentication,
+  malformed-response and server failures. Quality fallbacks can recover to a playable
+  source, while a failed request retains normal error reporting. Conversion and integrity
+  testing also keep their error reporting. Skipped inputs do not count as played songs.
+- Availability is temporary. Playback commands, stop, account/session changes and quality
+  changes clear it. An epoch prevents an old worker from poisoning a newer attempt.
+  Another provider can use the same checks and skip handling from its input adapter.
+- The reported item was Jolin Tsai's "不一样又怎样" (`ncm://song/29732695`). The current
+  session returned item code 404 and an empty URL. The owner can play it elsewhere and
+  requested treating this special source state as unplayable, without diagnosing rights.
+- With global error popups enabled, dev-instance validation skipped this item to a local
+  track without a popup. A list containing only this item stopped normally with shuffle
+  and repeat-all enabled, without repeatedly requesting the missing source.
+
+## Queue capsule icon weight (2026-11-09)
+
+- Queue capsule shuffle, repeat-all and repeat-one icons now request bold weight 700
+  at 16 DIP, following the owner's request for heavier strokes (2026-11-09).
+- Release x64 builds with 0 warnings and 0 errors. Dev-instance screenshots verified
+  the heavier glyphs in enabled, disabled and repeat-one states.
+
+## Continuous capsules and restored pane glass (2026-11-09)
+
+- Rebuilt queue capsules and both parts of the bottom segmented control from the owner's
+  iOS photo contours. A shared path eases from a straight edge with zero curvature into
+  a circular side with matching tangent and curvature. All corners are mirrored. The
+  thumb remains a compositor visual, repainted only on layout changes.
+- Traced the missing glass to commit `326ee57`: joining the client edge around library
+  and pane also stretched the edge painter's opaque content fill across the pane.
+  Separated the library base from the hollow edge. Lyrics and queue now reveal the
+  existing Aero material and screen-anchored reflection streaks through their dark tint.
+- Release x64 builds with 0 warnings and 0 errors. Existing playback checks pass 144927
+  assertions. The curve's diagonal join was checked analytically at curvature 1/R.
+- Dev-instance screenshots confirmed the restored glass and streaks on both pane modes,
+  the capsule/track/thumb contours, thumb dragging and maximized/restored layouts.
+- Capsule geometry is a fit to the owner's photographs. Apple's exact construction and
+  pixel-for-pixel equivalence have not been established.
+
 ## Next
 
-1. Owner tests the lyrics pane (session reply has the steps); the script host
-   (docs/plan/lyrics-script-host.md) goes to the next implementer; then the pane's queue and
-   history lists.
+1. Owner tests lyric source priorities and manual search. Complete the remaining endpoint
+   and account acceptance in docs/plan/lyrics-script-host.md.
 2. Owner tests the restructured NetEase pages and the preferences page (list in the session
    reply); fix what they report.
-2. Open review items the owner chose to leave: the helper's loopback binding is not verified
+3. Open review items the owner chose to leave: the helper's loopback binding is not verified
    after start (ADR 0008 says it is); an external service address over plain http sends
    the session cookie in clear text.
-3. Glass blur stays the host backdrop + color matrix (legacy accent tried, no gain).
-4. Remaining tuning from the Win7 captures.
-5. Stacked covers for artists.
-6. Playlist editing: drag to reorder, drag from library to playlists, rename inline.
-7. Split main_window.cpp further (detail band, breadcrumb, menus) and list_view.cpp
+4. Glass blur stays the host backdrop + color matrix (legacy accent tried, no gain).
+5. Remaining tuning from the Win7 captures.
+6. Stacked covers for artists.
+7. Playlist editing: drag to reorder, drag from library to playlists, rename inline.
+8. Split main_window.cpp further (detail band, breadcrumb, menus) and list_view.cpp
    (1700 lines) by responsibility.
 
 ## Known issues

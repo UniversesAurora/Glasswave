@@ -111,6 +111,7 @@
     <ClCompile Include="app\settings.cpp" />
     <ClCompile Include="ui\settings_page.cpp" />
     <ClCompile Include="stream\provider.cpp" />
+    <ClCompile Include="stream\playback_source.cpp" />
     <ClCompile Include="netease\stream_provider.cpp" />
     <ClCompile Include="ui\taskbar.cpp" />
     <ClCompile Include="ui\i18n.cpp" />
@@ -180,12 +181,14 @@
     <ClInclude Include="app\setting_fields.h" />
     <ClInclude Include="stream\model.h" />
     <ClInclude Include="stream\provider.h" />
+    <ClInclude Include="stream\playback_source.h" />
     <ClInclude Include="netease\stream_provider.h" />
     <ClInclude Include="ui\taskbar.h" />
     <ClInclude Include="ui\i18n.h" />
     <ClInclude Include="media\favorites.h" />
     <ClInclude Include="media\play_stats.h" />
     <ClInclude Include="media\special_playlists.h" />
+    <ClInclude Include="media\queue_order.h" />
     <ClInclude Include="ui\win7_menu.h" />
     <ClInclude Include="ui\search_box.h" />
     <ClInclude Include="ui\shell_glue.h" />

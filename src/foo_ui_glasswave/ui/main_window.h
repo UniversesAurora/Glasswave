@@ -46,7 +46,7 @@ public:
 
     // Forwarded from the core callbacks.
     void OnPlaybackStateChanged();
-    void OnTrackChanged();
+    void OnTrackChanged(bool playbackChanged = false);
     void OnPlaybackTime();
     void OnVolumeChanged();
     void OnPlaybackOrderChanged();
@@ -230,8 +230,12 @@ private:
     void OnLyrics(const lyrics::Result& result);
     void StartLyricsFrames();
     void ShowLyricsMenu(POINT screen);
-    void RefreshPaneQueue();  // up next, history and shuffle / repeat for the pane's queue
+    void RefreshPaneQueue(bool playbackChanged = false);
+    void SchedulePaneQueueRefresh(bool playbackChanged = false);
     void ConnectPaneQueue();
+    size_t m_panePlayingIndex = SIZE_MAX;  // retain the queue cursor when playback stops
+    metadb_handle_ptr m_panePlayingTrack;
+    bool m_queueRefreshPending = false, m_queueFollowPending = false;
     RECT m_npTitleRect{}, m_npArtistRect{}, m_npStarRect{};  // client px, for clicks
     bool m_npFavorite = false;                                // the playing song is in Favorites
     D2D1_RECT_F m_deviceText{};             // DIP inside m_layout.stream
@@ -295,7 +299,7 @@ private:
     winrt::Windows::UI::Composition::SpriteVisual m_frameOutline{nullptr};
     std::array<winrt::Windows::UI::Composition::SpriteVisual, 2> m_sideHighlight{nullptr, nullptr};  // left, right
     SIZE m_sideHighlightSize{};
-    winrt::Windows::UI::Composition::SpriteVisual m_clientEdge{nullptr};
+    winrt::Windows::UI::Composition::SpriteVisual m_clientEdge{nullptr}, m_clientBackground{nullptr};
     winrt::Windows::UI::Composition::SpriteVisual m_navBar{nullptr};
     winrt::Windows::UI::Composition::SpriteVisual m_navGroove{nullptr};  // recess behind back / forward
     winrt::Windows::UI::Composition::SpriteVisual m_libraryBg{nullptr};  // WMP library background image

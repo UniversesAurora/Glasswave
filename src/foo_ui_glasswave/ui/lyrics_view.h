@@ -99,7 +99,7 @@ private:
     std::shared_ptr<const lyrics::Lyrics> m_lyrics;
     std::vector<std::unique_ptr<LineView>> m_lines;
     float m_layoutWidth = 0;
-    float m_typicalLine = 0;  // DIP, median line block height (alignment)
+    float m_referenceLineHeight = 0;  // DIP, one original line plus one translation line
     bool m_playing = false, m_paused = false;
 
     // Timeline

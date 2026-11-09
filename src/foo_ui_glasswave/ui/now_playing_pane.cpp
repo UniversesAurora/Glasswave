@@ -82,18 +82,10 @@ NowPlayingPane::NowPlayingPane(const wuc::ContainerVisual& parent)
     m_root.Children().InsertAtTop(m_header);
     m_bar = comp.CreateContainerVisual();
     m_root.Children().InsertAtTop(m_bar);
-    auto pill = [&](wuc::CompositionRoundedRectangleGeometry& shape, float alpha) {
-        auto visual = comp.CreateShapeVisual();
-        shape = comp.CreateRoundedRectangleGeometry();
-        auto sprite = comp.CreateSpriteShape(shape);
-        sprite.FillBrush(comp.CreateColorBrush(
-            winrt::Windows::UI::ColorHelper::FromArgb(static_cast<uint8_t>(std::lround(alpha * 255)), 255, 255, 255)));
-        visual.Shapes().Append(sprite);
-        m_bar.Children().InsertAtTop(visual);
-        return visual;
-    };
-    m_track = pill(m_trackShape, kTrackAlpha);
-    m_thumb = pill(m_thumbShape, kThumbAlpha);
+    for (auto* visual : {&m_track, &m_thumb}) {
+        *visual = comp.CreateSpriteVisual();
+        m_bar.Children().InsertAtTop(*visual);
+    }
     for (size_t i = 0; i < 2; ++i) {
         m_segLight[i] = comp.CreateSpriteVisual();
         m_segDark[i] = comp.CreateSpriteVisual();
@@ -154,12 +146,8 @@ void NowPlayingPane::LayoutParts() {
     const float tw = static_cast<float>(track.right - track.left), th = static_cast<float>(track.bottom - track.top);
     m_track.Offset(float3{static_cast<float>(track.left - bar.left), static_cast<float>(track.top - bar.top), 0});
     m_track.Size(float2{tw, th});
-    m_trackShape.Size(float2{tw, th});
-    m_trackShape.CornerRadius(float2{th / 2, th / 2});
     const float inset = kThumbInset * m_scale, segW = tw / 2;
     m_thumb.Size(float2{segW - 2 * inset, th - 2 * inset});
-    m_thumbShape.Size(float2{segW - 2 * inset, th - 2 * inset});
-    m_thumbShape.CornerRadius(float2{th / 2 - inset, th / 2 - inset});
     for (size_t i = 0; i < 2; ++i)
         for (auto& v : {m_segLight[i], m_segDark[i]})
             v.Offset(float3{std::round(track.left - bar.left + i * segW), static_cast<float>(track.top - bar.top), 0});
@@ -191,6 +179,15 @@ void NowPlayingPane::PaintBar() {
     const RECT track = TrackRect();
     const int w = std::max<int>(1, (track.right - track.left) / 2), h = std::max<int>(1, track.bottom - track.top);
     const float W = w / m_scale, H = h / m_scale;
+    const int trackW = std::max<int>(1, track.right - track.left);
+    host.Repaint(m_track, trackW, h, m_scale, [&](ID2D1DeviceContext* dc) {
+        pane::DrawCapsule(dc, {0, 0, trackW / m_scale, H}, pane::White(dc, kTrackAlpha).get());
+    });
+    const int thumbW = std::max(1, static_cast<int>(std::lround(trackW / 2.0f - 2 * kThumbInset * m_scale)));
+    const int thumbH = std::max(1, static_cast<int>(std::lround(h - 2 * kThumbInset * m_scale)));
+    host.Repaint(m_thumb, thumbW, thumbH, m_scale, [&](ID2D1DeviceContext* dc) {
+        pane::DrawCapsule(dc, {0, 0, thumbW / m_scale, thumbH / m_scale}, pane::White(dc, kThumbAlpha).get());
+    });
     for (size_t i = 0; i < 2; ++i) {
         const std::wstring label = Tr(i == 0 ? L"Lyrics" : L"Up Next");
         for (const bool dark : {false, true}) {

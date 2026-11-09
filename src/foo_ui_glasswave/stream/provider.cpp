@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "stream/provider.h"
+#include "stream/playback_source.h"
 
 namespace glasswave::stream {
 
@@ -49,6 +50,7 @@ void Provider::RemoveListener(Listener* listener) {
 
 // Listeners may remove themselves while being notified, so iterate over a copy.
 void Provider::NotifyAccountChanged() {
+    ResetSourceAvailability();
     for (Listener* listener : std::vector<Listener*>(m_listeners)) listener->OnAccountChanged(*this);
 }
 

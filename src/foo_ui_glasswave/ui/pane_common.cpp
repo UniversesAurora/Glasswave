@@ -65,7 +65,8 @@ void DrawTextLine(ID2D1DeviceContext* dc, const std::wstring& text, float size, 
     dc->DrawTextLayout(at, layout.get(), brush);
 }
 
-void DrawIcon(ID2D1DeviceContext* dc, wchar_t glyph, float size, D2D1_POINT_2F c, ID2D1Brush* brush) {
+void DrawIcon(ID2D1DeviceContext* dc, wchar_t glyph, float size, D2D1_POINT_2F c, ID2D1Brush* brush,
+              DWRITE_FONT_WEIGHT weight) {
     auto* f = gfx::CompositionHost::Get().DWrite();
     static const std::wstring family = [f] {
         com_ptr<IDWriteFontCollection> fonts;
@@ -78,13 +79,52 @@ void DrawIcon(ID2D1DeviceContext* dc, wchar_t glyph, float size, D2D1_POINT_2F c
         return std::wstring(L"Segoe MDL2 Assets");
     }();
     com_ptr<IDWriteTextFormat> format;
-    if (FAILED(f->CreateTextFormat(family.c_str(), nullptr, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL,
+    if (FAILED(f->CreateTextFormat(family.c_str(), nullptr, weight, DWRITE_FONT_STYLE_NORMAL,
                                    DWRITE_FONT_STRETCH_NORMAL, size, L"", format.put())))
         return;
     format->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
     format->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
     const wchar_t text[1] = {glyph};
     dc->DrawText(text, 1, format.get(), D2D1::RectF(c.x - size, c.y - size, c.x + size, c.y + size), brush);
+}
+
+void DrawCapsule(ID2D1DeviceContext* dc, D2D1_RECT_F bounds, ID2D1Brush* brush) {
+    const float width = bounds.right - bounds.left, height = bounds.bottom - bounds.top;
+    if (width <= 0 || height <= 0) return;
+    // The iOS endcap eases out of the straight edge before meeting the circular side.
+    // Its cubic has zero curvature at the straight edge and matches the circle's
+    // tangent and curvature at 45 degrees. See docs/design/visual-spec.md.
+    constexpr float extent = 1.3f;
+    constexpr float first = 0.94974747f, second = 0.58578644f, diagonal = 0.29289322f;
+    const float radius = std::min(height / 2, width / (2 * extent));
+    const float reach = extent * radius;
+    const float a = first * radius, b = second * radius, d = diagonal * radius;
+    const float l = bounds.left, t = bounds.top, r = bounds.right, bottom = bounds.bottom;
+    com_ptr<ID2D1Factory> factory;
+    dc->GetFactory(factory.put());
+    com_ptr<ID2D1PathGeometry> path;
+    if (FAILED(factory->CreatePathGeometry(path.put()))) return;
+    com_ptr<ID2D1GeometrySink> sink;
+    if (FAILED(path->Open(sink.put()))) return;
+    const auto arc = [&](float x, float y) {
+        sink->AddArc({{x, y}, {radius, radius}, 0, D2D1_SWEEP_DIRECTION_CLOCKWISE, D2D1_ARC_SIZE_SMALL});
+    };
+    sink->BeginFigure({l + reach, t}, D2D1_FIGURE_BEGIN_FILLED);
+    sink->AddLine({r - reach, t});
+    sink->AddBezier({{r - a, t}, {r - b, t}, {r - d, t + d}});
+    arc(r, t + radius);
+    sink->AddLine({r, bottom - radius});
+    arc(r - d, bottom - d);
+    sink->AddBezier({{r - b, bottom}, {r - a, bottom}, {r - reach, bottom}});
+    sink->AddLine({l + reach, bottom});
+    sink->AddBezier({{l + a, bottom}, {l + b, bottom}, {l + d, bottom - d}});
+    arc(l, bottom - radius);
+    sink->AddLine({l, t + radius});
+    arc(l + d, t + d);
+    sink->AddBezier({{l + b, t}, {l + a, t}, {l + reach, t}});
+    sink->EndFigure(D2D1_FIGURE_END_CLOSED);
+    if (FAILED(sink->Close())) return;
+    dc->FillGeometry(path.get(), brush);
 }
 
 void DrawCover(ID2D1DeviceContext* dc, ID2D1Bitmap* bitmap, D2D1_RECT_F box, float radius) {

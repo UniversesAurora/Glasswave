@@ -22,7 +22,10 @@ void DrawTextLine(ID2D1DeviceContext* dc, const std::wstring& text, float size, 
 namespace icon {
 inline constexpr wchar_t kShuffle = 0xE8B1, kRepeatAll = 0xE8EE, kRepeatOne = 0xE8ED, kList = 0xE8FD;
 }
-void DrawIcon(ID2D1DeviceContext* dc, wchar_t glyph, float size, D2D1_POINT_2F c, ID2D1Brush* brush);
+void DrawIcon(ID2D1DeviceContext* dc, wchar_t glyph, float size, D2D1_POINT_2F c, ID2D1Brush* brush,
+              DWRITE_FONT_WEIGHT weight = DWRITE_FONT_WEIGHT_NORMAL);
+// Continuous-curvature capsule measured from the owner's iOS references.
+void DrawCapsule(ID2D1DeviceContext* dc, D2D1_RECT_F bounds, ID2D1Brush* brush);
 // A cover cropped to fill `box` with rounded corners and a soft shadow below.
 void DrawCover(ID2D1DeviceContext* dc, ID2D1Bitmap* bitmap, D2D1_RECT_F box, float radius);
 // The current song's header: cover, title, artist (lyrics and queue share it).

@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "netease/stream_provider.h"
+#include "stream/playback_source.h"
 #include "netease/catalog.h"
 #include "netease/config.h"
 #include "netease/cover_cache.h"
@@ -280,6 +281,7 @@ void StreamProvider::SignIn(HWND owner) {
 }
 
 void StreamProvider::OnSessionChanged() {
+    stream::ResetSourceAvailability();
     const bool signedIn = Ncm().LoggedIn();
     if (signedIn == m_signedIn) return NotifyLibraryChanged();
     m_signedIn = signedIn;
