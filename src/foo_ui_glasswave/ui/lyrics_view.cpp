@@ -7,6 +7,7 @@
 
 #include <winrt/Windows.Foundation.Collections.h>
 #include "ui/i18n.h"
+#include "ui/pane_common.h"
 
 namespace glasswave::ui {
 
@@ -19,9 +20,7 @@ using Clock = std::chrono::steady_clock;
 namespace {
 
 // ---- Tuning (docs/design/lyrics-view.md) -----------------------------------------------
-constexpr float kHeaderHeight = 84;      // DIP: cover, title and artist above the lyrics
-constexpr float kCover = 52;             // DIP
-constexpr float kSideMargin = 12;        // DIP: hover plate inset from the pane edge
+constexpr float kSideMargin = pane::kSideMargin;
 constexpr float kTextInset = 0.45f;      // em: text inset inside the hover plate
 constexpr float kLinePadding = 0.4f;     // em: above and below each line block
 constexpr float kSubGap = 0.3f;          // em: main line to translation
@@ -38,7 +37,6 @@ constexpr float kBlurAbove = 0.8f;       // DIP per line above the focus (sung l
 constexpr float kBlurBelow0 = 0.3f, kBlurBelow = 0.5f;  // upcoming lines stay readable longer
 constexpr int kInterludeGapMs = 7000;    // gaps at least this long show the breathing dots
 constexpr float kTopFade = 36, kBottomFade = 72;  // DIP
-constexpr float kPaneTint = 0.30f;       // black over the glass so white text reads
 
 // Text alphas (white).
 constexpr float kDim = 0.24f;            // a line that is not active
@@ -127,40 +125,8 @@ private:
     LONG m_ref = 1;
 };
 
-std::wstring DefaultLocale() {
-    wchar_t name[LOCALE_NAME_MAX_LENGTH]{};
-    if (GetUserDefaultLocaleName(name, LOCALE_NAME_MAX_LENGTH) > 0) return name;
-    return L"en-us";
-}
-
-std::wstring PickFamily(IDWriteFactory* f) {
-    com_ptr<IDWriteFontCollection> fonts;
-    if (SUCCEEDED(f->GetSystemFontCollection(fonts.put()))) {
-        for (const wchar_t* family : {L"Segoe UI Variable Display", L"Segoe UI"}) {
-            UINT32 index = 0;
-            BOOL exists = FALSE;
-            if (SUCCEEDED(fonts->FindFamilyName(family, &index, &exists)) && exists) return family;
-        }
-    }
-    return L"Segoe UI";
-}
-
-com_ptr<IDWriteTextFormat> MakeFormat(float size, DWRITE_FONT_WEIGHT weight) {
-    auto* f = gfx::CompositionHost::Get().DWrite();
-    static const std::wstring family = PickFamily(f);
-    static const std::wstring locale = DefaultLocale();
-    com_ptr<IDWriteTextFormat> format;
-    winrt::check_hresult(f->CreateTextFormat(family.c_str(), nullptr, weight, DWRITE_FONT_STYLE_NORMAL,
-                                             DWRITE_FONT_STRETCH_NORMAL, size, locale.c_str(), format.put()));
-    format->SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP);
-    return format;
-}
-
-com_ptr<ID2D1SolidColorBrush> White(ID2D1DeviceContext* dc, float alpha) {
-    com_ptr<ID2D1SolidColorBrush> b;
-    dc->CreateSolidColorBrush(D2D1::ColorF(1, 1, 1, alpha), b.put());
-    return b;
-}
+com_ptr<IDWriteTextFormat> MakeFormat(float size, DWRITE_FONT_WEIGHT weight) { return pane::Format(size, weight); }
+using pane::White;
 
 }  // namespace
 
@@ -302,13 +268,7 @@ LyricsView::LyricsView(const wuc::ContainerVisual& parent) {
     m_root = comp.CreateContainerVisual();
     m_root.IsVisible(false);
     parent.Children().InsertAtTop(m_root);
-    m_tint = comp.CreateSpriteVisual();
-    m_tint.Brush(comp.CreateColorBrush(winrt::Windows::UI::ColorHelper::FromArgb(
-        static_cast<uint8_t>(std::lround(kPaneTint * 255)), 0, 0, 0)));
-    m_root.Children().InsertAtTop(m_tint);
-    m_header = comp.CreateSpriteVisual();
     m_message = comp.CreateSpriteVisual();
-    m_root.Children().InsertAtTop(m_header);
     m_root.Children().InsertAtTop(m_message);
 
     // The lines live in a layer whose alpha is multiplied by a vertical gradient: they fade
@@ -387,15 +347,10 @@ void LyricsView::SetVisible(bool visible) {
     }
 }
 
-void LyricsView::SetTrack(const std::wstring& title, const std::wstring& artist, const com_ptr<IWICBitmapSource>& art) {
-    m_title = title;
-    m_artist = artist;
-    if (art.get() != m_art.get()) m_artBitmap = nullptr;
-    m_art = art;
-    if (m_visible) {
-        PaintHeader();
-        PaintMessage();
-    }
+void LyricsView::SetHasTrack(bool hasTrack) {
+    if (hasTrack == m_hasTrack) return;
+    m_hasTrack = hasTrack;
+    if (m_visible) PaintMessage();
 }
 
 void LyricsView::SetResult(const lyrics::Result& result) {
@@ -449,7 +404,7 @@ float LyricsView::FontSize() const {
     return std::clamp(std::round(w * 0.075f), 20.0f, 42.0f);
 }
 
-float LyricsView::ContentTop() const { return kHeaderHeight; }
+float LyricsView::ContentTop() const { return 0; }
 
 float LyricsView::AnchorY() const {
     // High in the pane, like Apple Music: one and a half lines of what was sung stay visible,
@@ -742,7 +697,6 @@ void LyricsView::LayoutChrome() {
     auto& host = gfx::CompositionHost::Get();
     const float w = static_cast<float>(std::max<LONG>(0, m_bounds.right - m_bounds.left));
     const float h = static_cast<float>(std::max<LONG>(0, m_bounds.bottom - m_bounds.top));
-    m_tint.Size(float2{w, h});
     const float top = std::round(ContentTop() * m_scale);
     m_layer.Offset(float3{0, top, 0});
     m_layer.Size(float2{w, std::max(0.0f, h - top)});
@@ -762,72 +716,13 @@ void LyricsView::LayoutChrome() {
             dc->FillRectangle({0, 0, 4 / m_scale, H}, b.get());
         });
     }
-    PaintHeader();
     PaintMessage();
-}
-
-void LyricsView::PaintHeader() {
-    auto& host = gfx::CompositionHost::Get();
-    const int w = std::max<int>(1, m_bounds.right - m_bounds.left), h = static_cast<int>(std::round(kHeaderHeight * m_scale));
-    m_header.Size(float2{static_cast<float>(w), static_cast<float>(h)});
-    auto surface = host.CreateSurface(w, h);
-    m_dc->SetDpi(96.0f * m_scale, 96.0f * m_scale);
-    host.Draw(surface, m_scale, m_dc.get(), [&](ID2D1DeviceContext* dc) {
-        if (m_title.empty()) return;
-        const float W = w / m_scale;
-        const float x0 = kSideMargin + 8, y0 = (kHeaderHeight - kCover) / 2;
-        float textX = x0;
-        if (m_art && !m_artBitmap) dc->CreateBitmapFromWicBitmap(m_art.get(), nullptr, m_artBitmap.put());
-        if (m_artBitmap) {
-            const D2D1_RECT_F box{x0, y0, x0 + kCover, y0 + kCover};
-            com_ptr<ID2D1Factory> factory;
-            dc->GetFactory(factory.put());
-            com_ptr<ID2D1RoundedRectangleGeometry> clip;
-            factory->CreateRoundedRectangleGeometry(D2D1::RoundedRect(box, 6, 6), clip.put());
-            com_ptr<ID2D1SolidColorBrush> shade;
-            dc->CreateSolidColorBrush(D2D1::ColorF(0, 0, 0, 0.18f), shade.put());
-            dc->FillRoundedRectangle(D2D1::RoundedRect({box.left, box.top + 2, box.right, box.bottom + 2}, 7, 7), shade.get());
-            dc->PushLayer(D2D1::LayerParameters1(D2D1::InfiniteRect(), clip.get()), nullptr);
-            const D2D1_SIZE_F s = m_artBitmap->GetSize();
-            const float k = std::max(kCover / std::max(1.0f, s.width), kCover / std::max(1.0f, s.height));
-            const float dw = s.width * k, dh = s.height * k;
-            const D2D1_RECT_F dst{box.left + (kCover - dw) / 2, box.top + (kCover - dh) / 2, box.left + (kCover + dw) / 2,
-                                  box.top + (kCover + dh) / 2};
-            dc->DrawBitmap(m_artBitmap.get(), &dst, 1.0f, D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC, nullptr, nullptr);
-            dc->PopLayer();
-            textX = box.right + 14;
-        }
-        auto* f = gfx::CompositionHost::Get().DWrite();
-        const float textW = std::max(10.0f, W - textX - kSideMargin - 8);
-        auto line = [&](const std::wstring& text, float size, DWRITE_FONT_WEIGHT weight, float y, float alpha) {
-            if (text.empty()) return;
-            auto format = MakeFormat(size, weight);
-            format->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
-            com_ptr<IDWriteTextLayout> layout;
-            if (FAILED(f->CreateTextLayout(text.c_str(), static_cast<UINT32>(text.size()), format.get(), textW,
-                                           size * 1.5f, layout.put())))
-                return;
-            com_ptr<IDWriteInlineObject> ellipsis;
-            f->CreateEllipsisTrimmingSign(layout.get(), ellipsis.put());
-            const DWRITE_TRIMMING trim{DWRITE_TRIMMING_GRANULARITY_CHARACTER, 0, 0};
-            layout->SetTrimming(&trim, ellipsis.get());
-            dc->DrawTextLayout({textX, y}, layout.get(), White(dc, alpha).get());
-        };
-        const float mid = kHeaderHeight / 2;
-        line(m_title, 16, DWRITE_FONT_WEIGHT_SEMI_BOLD, mid - 22, 0.95f);
-        line(m_artist, 14, DWRITE_FONT_WEIGHT_NORMAL, mid + 1, 0.6f);
-    });
-    auto brush = host.Compositor().CreateSurfaceBrush(surface);
-    brush.Stretch(wuc::CompositionStretch::None);
-    brush.HorizontalAlignmentRatio(0);
-    brush.VerticalAlignmentRatio(0);
-    m_header.Brush(brush);
 }
 
 void LyricsView::PaintMessage() {
     std::wstring text;
     switch (m_status) {
-    case lyrics::Status::None: text = m_title.empty() ? Tr(L"Nothing playing") : L""; break;
+    case lyrics::Status::None: text = !m_hasTrack ? Tr(L"Nothing playing") : L""; break;
     case lyrics::Status::Searching: text = Tr(L"Searching for lyrics…"); break;
     case lyrics::Status::NotFound: text = Tr(L"No lyrics found"); break;
     case lyrics::Status::Found: break;

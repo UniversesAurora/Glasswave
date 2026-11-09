@@ -95,3 +95,30 @@ Favorite star) over the current lyric line on the left, stream format over the o
 on the right. A word-timed line turns blue (#1F5FB8) from grey (#6E6E6E) as it is sung; a
 line-timed one is blue. Without synced lyrics the single left row is centred.
 
+## Pane and queue (`ui/now_playing_pane`, `ui/queue_view`)
+
+The pane holds the header, the lyrics or the queue, and a 64 DIP bottom bar with two 40 DIP
+buttons at 23 % and 77 % of the width (Apple Music's lyrics and queue positions); the active
+one sits on a white 22 % circle, the other's glyph is at 60 %. View > Lyrics opens the pane,
+View > Up Next its queue side.
+
+Switching (spring k 260, c 30): the lyrics fade out over the first two thirds and rise
+24 DIP; the queue fades in from 15 % on and rises 48 DIP into place; the header stays and,
+in the queue, follows the song card.
+
+Queue, from Apple Music's "Playing Next" on a 390 pt screen scaled to the pane:
+
+| What | Value |
+| --- | --- |
+| Order | History (oldest first, Clear on the right), the song card (the header), shuffle / repeat capsules, Continue Playing with the song count, the rest of Now Playing |
+| Opening position | the card at the top; scrolling up reveals the history |
+| Row | 56 high, cover 46 (radius 5), title 16 at 95 %, artist 14 at 60 %, reorder handle (3 lines, 18 wide, 40 %) |
+| Section titles | 20 bold; subtitle 14 at 55 % |
+| Capsules | 34 high, two halves; off: white 14 % with a white glyph, on: white 78 % with a dark glyph |
+| Hover / pressed plate | white 8 % / 4 %, radius 10 |
+| Rows | springs (k 300, c 30): a song that starts slides out and the rest move up; history keeps the card in place when it grows |
+| Reorder | drag by the handle: the row lifts (103 %, plate 14 %), the others make room, the queue playlist is reordered on release |
+| Scroll | wheel 80 DIP per notch on a spring; drag 1:1 with inertia (0.95 per 60 Hz frame); past the ends iOS's rubber band (0.55) and a spring back |
+| Edge fade | 16 DIP at the top, 40 at the bottom |
+| Actions | click: play (history: right after the current song); right-click a queued song: Remove from Now Playing |
+

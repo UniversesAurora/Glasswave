@@ -392,6 +392,13 @@ Updated: 2026-11-09
   filling blue word by word, aligned with the format / device rows on the right; NetEase
   bitrates show in kbps.
 
+- 2026-11-09 (later): files opened from outside go to Now Playing (the queue stays the active
+  playlist). Lyric lines are compositor visuals (blur and fade on the GPU): about 3 % of a
+  core while lyrics play instead of ~45 %. The pane gained Apple Music's queue side (bottom
+  bar switch, History / song card / shuffle-repeat / Up Next, reorder by handle, rubber-band
+  scrolling) and View > Up Next. Checked in the dev instance by capture; interaction not yet
+  tested by the owner.
+
 ## Next
 
 1. Owner tests the lyrics pane (session reply has the steps); the script host

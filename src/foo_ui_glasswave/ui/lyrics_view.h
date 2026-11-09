@@ -3,7 +3,7 @@
 #include "lyrics/lyrics_service.h"
 #include "ui/spring.h"
 
-// The lyrics pane: Apple Music's lyrics view (iOS 17+/macOS 14+) on the window's glass.
+// The lyrics in the now-playing pane: Apple Music's lyrics view (iOS 17+/macOS 14+) on the window's glass.
 // Lines move on springs with a staggered start, lines away from the current one are scaled
 // down and blurred, word-timed lines fill word by word with a soft edge and each word floats
 // up as it is sung (long words glow), long instrumental gaps show breathing dots. Scrolling
@@ -31,9 +31,10 @@ public:
     void SetVisible(bool visible);
     bool Visible() const { return m_visible; }
 
-    // The playing song for the header; `art` may be null.
-    void SetTrack(const std::wstring& title, const std::wstring& artist,
-                  const winrt::com_ptr<IWICBitmapSource>& art);
+    // Something is playing (otherwise the view says so).
+    void SetHasTrack(bool hasTrack);
+    // The view's own visual (the pane fades and moves it when switching to the queue).
+    const winrt::Windows::UI::Composition::ContainerVisual& Root() const { return m_root; }
     void SetResult(const lyrics::Result& result);
     void SetPlaying(bool playing, bool paused);
 
@@ -71,19 +72,18 @@ private:
     void PrepareGlow(LineView& line);  // command lists for emphasized words (outside a draw)
     void ReleaseLine(LineView& line);  // drops its visuals and surface (far off screen)
     void RenderInterlude(double now);
-    void PaintHeader();
     void PaintMessage();
-    void LayoutChrome();  // tint, header, message, lyrics layer and its fade mask
+    void LayoutChrome();  // message, lyrics layer and its fade mask
     int LineAt(POINT pt) const;
     double Now() const;  // playback position, seconds
     void StartFrames();
-    float ContentTop() const;  // DIP: top of the lyrics area below the header
+    float ContentTop() const;  // DIP: top of the lyrics (0: the view starts below the pane header)
     float AnchorY() const;     // DIP: where the focused line's top sits
     float FontSize() const;
     float ImagePad() const;    // DIP around a line's text in its surface (blur, float, glow)
 
     winrt::Windows::UI::Composition::ContainerVisual m_root{nullptr};
-    winrt::Windows::UI::Composition::SpriteVisual m_tint{nullptr}, m_header{nullptr}, m_message{nullptr};
+    winrt::Windows::UI::Composition::SpriteVisual m_message{nullptr};
     winrt::Windows::UI::Composition::LayerVisual m_layer{nullptr};  // the lines, with the edge fade
     winrt::Windows::UI::Composition::CompositionDrawingSurface m_maskSurface{nullptr};
     winrt::Windows::UI::Composition::CompositionEffectFactory m_blurFactory{nullptr};
@@ -94,9 +94,7 @@ private:
     float m_scale = 1.0f;
     bool m_visible = false;
 
-    std::wstring m_title, m_artist;
-    winrt::com_ptr<IWICBitmapSource> m_art;
-    winrt::com_ptr<ID2D1Bitmap> m_artBitmap;  // created lazily on m_dc
+    bool m_hasTrack = false;
     lyrics::Status m_status = lyrics::Status::None;
     std::shared_ptr<const lyrics::Lyrics> m_lyrics;
     std::vector<std::unique_ptr<LineView>> m_lines;

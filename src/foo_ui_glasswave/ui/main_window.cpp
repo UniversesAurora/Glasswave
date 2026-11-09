@@ -472,22 +472,27 @@ MainWindow* g_instance = nullptr;
 class LyricsCommand : public mainmenu_commands {
 public:
     // {6A1F3C69-2B7E-4D90-8C15-3E9A7B2D4F61}
-    static constexpr GUID kGuid{0x6a1f3c69, 0x2b7e, 0x4d90, {0x8c, 0x15, 0x3e, 0x9a, 0x7b, 0x2d, 0x4f, 0x61}};
-    t_uint32 get_command_count() override { return 1; }
-    GUID get_command(t_uint32) override { return kGuid; }
-    void get_name(t_uint32, pfc::string_base& out) override { out = "Lyrics"; }
-    bool get_description(t_uint32, pfc::string_base& out) override {
-        out = "Shows or hides the Glasswave lyrics pane.";
+    // {6A1F3C69-2B7E-4D90-8C15-3E9A7B2D4F61}, {6A1F3C6A-2B7E-4D90-8C15-3E9A7B2D4F61}
+    static constexpr GUID kLyrics{0x6a1f3c69, 0x2b7e, 0x4d90, {0x8c, 0x15, 0x3e, 0x9a, 0x7b, 0x2d, 0x4f, 0x61}};
+    static constexpr GUID kUpNext{0x6a1f3c6a, 0x2b7e, 0x4d90, {0x8c, 0x15, 0x3e, 0x9a, 0x7b, 0x2d, 0x4f, 0x61}};
+    t_uint32 get_command_count() override { return 2; }
+    GUID get_command(t_uint32 index) override { return index == 0 ? kLyrics : kUpNext; }
+    void get_name(t_uint32 index, pfc::string_base& out) override { out = index == 0 ? "Lyrics" : "Up Next"; }
+    bool get_description(t_uint32 index, pfc::string_base& out) override {
+        out = index == 0 ? "Shows or hides the Glasswave lyrics pane." : "Shows the queue and history in the Glasswave pane.";
         return true;
     }
     GUID get_parent() override { return mainmenu_groups::view; }
     bool get_display(t_uint32 index, pfc::string_base& text, t_uint32& flags) override {
-        flags = (g_instance && g_instance->LyricsPaneOpen()) ? flag_checked : 0;
+        const bool on = g_instance && (index == 0 ? g_instance->LyricsPaneOpen() : g_instance->QueuePaneShown());
+        flags = on ? flag_checked : 0;
         get_name(index, text);
         return g_instance != nullptr;
     }
-    void execute(t_uint32, service_ptr_t<service_base>) override {
-        if (g_instance) g_instance->ToggleLyricsPane();
+    void execute(t_uint32 index, service_ptr_t<service_base>) override {
+        if (!g_instance) return;
+        if (index == 0) g_instance->ToggleLyricsPane();
+        else g_instance->ToggleQueuePane();
     }
 };
 mainmenu_commands_factory_t<LyricsCommand> g_lyricsCommand;
@@ -689,15 +694,18 @@ void MainWindow::InitComposition() {
             m_list->SetSource(m_source.get(), true);
         }
     };
-    m_lyricsView = std::make_unique<LyricsView>(m_root);
-    m_lyricsView->onFrames = [this] { StartLyricsFrames(); };
-    m_lyricsView->onSeek = [](double seconds) {
+    m_pane = std::make_unique<NowPlayingPane>(m_root);
+    m_pane->onFrames = [this] { StartLyricsFrames(); };
+    m_pane->onSeek = [](double seconds) {
         // Like Apple Music: playback continues from the clicked line.
         auto pc = playback_control::get();
         if (!pc->is_playing()) return;
         pc->playback_seek(seconds);
         if (pc->is_paused()) pc->pause(false);
     };
+    m_pane->onLyricsMenu = [this](POINT screen) { ShowLyricsMenu(screen); };
+    m_pane->onQueueShown = [this] { RefreshPaneQueue(); };
+    ConnectPaneQueue();
     m_lyricsOpen = cfg_lyricsOpen.get() != 0;
 }
 
@@ -1252,9 +1260,9 @@ void MainWindow::UpdateLayout() {
     m_nav->SetBounds(L.navPane, m_scale);
     m_list->SetBounds(L.list, m_scale);
     m_search->SetBounds(L.search, m_scale);
-    if (m_lyricsView) {
-        m_lyricsView->SetBounds(L.lyricsPane, m_scale);
-        m_lyricsView->SetVisible(m_lyricsOpen && L.lyricsPane.right > L.lyricsPane.left);
+    if (m_pane) {
+        m_pane->SetBounds(L.lyricsPane, m_scale);
+        m_pane->SetVisible(m_lyricsOpen && L.lyricsPane.right > L.lyricsPane.left);
     }
 
     for (auto& w : m_widgets) {
@@ -1631,6 +1639,17 @@ void MainWindow::ToggleLyrics() {
     RepaintNowPlaying();
 }
 
+void MainWindow::ToggleQueuePane() {
+    if (!m_pane) return;
+    if (!m_lyricsOpen) {
+        m_pane->SetMode(NowPlayingPane::Mode::Queue);
+        ToggleLyrics();
+        return;
+    }
+    m_pane->SetMode(m_pane->CurrentMode() == NowPlayingPane::Mode::Queue ? NowPlayingPane::Mode::Lyrics
+                                                                           : NowPlayingPane::Mode::Queue);
+}
+
 void MainWindow::RequestLyrics(const metadb_handle_ptr& track, bool again) {
     m_lyricsTrack = track;
     auto done = [this, alive = std::weak_ptr<int>(m_alive)](const lyrics::Result& result) {
@@ -1642,7 +1661,7 @@ void MainWindow::RequestLyrics(const metadb_handle_ptr& track, bool again) {
 
 void MainWindow::OnLyrics(const lyrics::Result& result) {
     m_npLyrics = result.status == lyrics::Status::Found ? result.lyrics : nullptr;
-    if (m_lyricsView) m_lyricsView->SetResult(result);
+    if (m_pane) m_pane->SetResult(result);
     RepaintNowPlaying();
     if (m_npLyrics && m_npLyrics->synced && m_playing && !m_paused) StartLyricsFrames();
 }
@@ -1651,6 +1670,112 @@ void MainWindow::StartLyricsFrames() {
     if (!m_hwnd) return;
     if (!m_frameClock) m_frameClock = std::make_unique<gfx::FrameClock>(m_hwnd, kFrameMessage);
     m_frameClock->Start();
+}
+
+// The pane's queue: Up Next is the rest of Now Playing after the playing song (all of it when
+// the song plays from elsewhere), History the cross-source play history, oldest first.
+void MainWindow::RefreshPaneQueue() {
+    if (!m_pane || !m_lyricsOpen) return;
+    static titleformat_object::ptr s_title, s_artist;
+    if (!s_title) {
+        titleformat_compiler::get()->compile_safe(s_title, "$if2(%title%,%filename%)");
+        titleformat_compiler::get()->compile_safe(s_artist, "[%artist%]");
+    }
+    auto pm = playlist_manager::get();
+    std::vector<QueueView::Row> upNext;
+    const t_size queue = media::QueuePlaylist(false);
+    if (queue != SIZE_MAX) {
+        t_size playing = SIZE_MAX, index = SIZE_MAX;
+        const bool fromQueue = pm->get_playing_item_location(&playing, &index) && playing == queue;
+        const t_size count = pm->playlist_get_item_count(queue);
+        for (t_size i = fromQueue ? index + 1 : 0; i < count; ++i) {
+            QueueView::Row row;
+            row.handle = pm->playlist_get_item_handle(queue, i);
+            pfc::string8 text;
+            row.handle->format_title(nullptr, text, s_title, nullptr);
+            row.title = Wide(text);
+            row.handle->format_title(nullptr, text, s_artist, nullptr);
+            row.artist = Wide(text);
+            row.playlistIndex = i;
+            upNext.push_back(std::move(row));
+        }
+    }
+    std::vector<QueueView::Row> history;
+    metadb_handle_ptr now;
+    const bool loaded = playback_control::get()->get_now_playing(now);
+    auto records = media::PlayStats::Get().Recent(50);
+    for (auto it = records.rbegin(); it != records.rend(); ++it) {  // oldest first
+        QueueView::Row row;
+        if (!it->provider.empty()) {
+            if (auto* provider = stream::FindProvider(it->provider)) row.handle = provider->TrackItem(it->trackId);
+        } else {
+            row.handle = metadb::get()->handle_create(it->path.c_str(), it->subsong);
+        }
+        if (!row.handle.is_valid()) continue;
+        row.title = Wide(it->title.c_str());
+        row.artist = Wide(it->artist.c_str());
+        history.push_back(std::move(row));
+    }
+    // The newest record is the song playing now: it is the card, not history.
+    if (loaded && !history.empty() && history.back().handle == now) history.pop_back();
+    m_pane->Queue().SetHistory(std::move(history));
+    m_pane->Queue().SetUpNext(std::move(upNext));
+    m_pane->Queue().SetShuffleRepeat(m_shuffle, static_cast<int>(m_repeat));
+}
+
+void MainWindow::ConnectPaneQueue() {
+    auto& queue = m_pane->Queue();
+    queue.onPlay = [](size_t index) {
+        auto pm = playlist_manager::get();
+        const t_size p = media::QueuePlaylist(false);
+        if (p == SIZE_MAX || index >= pm->playlist_get_item_count(p)) return;
+        pm->set_playing_playlist(p);
+        pm->playlist_execute_default_action(p, index);
+    };
+    queue.onPlayHistory = [](const metadb_handle_ptr& track) {
+        // Plays now, right after the current song in the queue (Apple Music keeps the queue).
+        auto pm = playlist_manager::get();
+        const t_size p = media::QueuePlaylist(true);
+        t_size playing = SIZE_MAX, index = SIZE_MAX;
+        const t_size at = pm->get_playing_item_location(&playing, &index) && playing == p ? index + 1 : 0;
+        metadb_handle_list items;
+        items.add_item(track);
+        pm->playlist_insert_items(p, at, items, pfc::bit_array_false());
+        pm->set_playing_playlist(p);
+        pm->playlist_execute_default_action(p, at);
+    };
+    queue.onClearHistory = [this] {
+        ClearPlayStats(true);
+        RefreshPaneQueue();
+    };
+    queue.onShuffle = [this] { SetShuffleRepeat(!m_shuffle, m_repeat); };
+    queue.onRepeat = [this] {
+        SetShuffleRepeat(m_shuffle, m_repeat == Repeat::Off ? Repeat::All : m_repeat == Repeat::All ? Repeat::One : Repeat::Off);
+    };
+    queue.onMove = [](size_t from, size_t to) {
+        auto pm = playlist_manager::get();
+        const t_size p = media::QueuePlaylist(false);
+        const t_size count = p == SIZE_MAX ? 0 : pm->playlist_get_item_count(p);
+        if (from >= count || to >= count || from == to) return;
+        std::vector<t_size> order(count);
+        for (t_size i = 0; i < count; ++i) order[i] = i;
+        const t_size moved = order[from];
+        order.erase(order.begin() + static_cast<std::ptrdiff_t>(from));
+        order.insert(order.begin() + static_cast<std::ptrdiff_t>(to), moved);
+        pm->playlist_undo_backup(p);
+        pm->playlist_reorder_items(p, order.data(), count);
+    };
+    queue.onRowMenu = [this](size_t index, POINT screen) {
+        std::vector<MenuAction> actions;
+        actions.push_back({Tr(L"Remove from Now Playing"), [index] {
+                               auto pm = playlist_manager::get();
+                               const t_size p = media::QueuePlaylist(false);
+                               if (p == SIZE_MAX || index >= pm->playlist_get_item_count(p)) return;
+                               pm->playlist_undo_backup(p);
+                               pm->playlist_remove_items(p, pfc::bit_array_one(index));
+                           }});
+        ShowActionMenu(m_hwnd, screen, actions);
+    };
 }
 
 void MainWindow::ShowLyricsMenu(POINT screen) {
@@ -3626,7 +3751,7 @@ void MainWindow::OnPlaybackStateChanged() {
         if (auto* w = WidgetById(id)) w->Invalidate();
     if (m_taskbar) m_taskbar->SetPlayState(playing, paused);
     if (m_list) m_list->Refresh();  // playing marker
-    if (m_lyricsView) m_lyricsView->SetPlaying(playing, paused);
+    if (m_pane) m_pane->SetPlaying(playing, paused);
     if (playing && !paused && m_npLyrics && m_npLyrics->synced) StartLyricsFrames();
     OnTrackChanged();  // paused resume still has codec/bitrate information
 }
@@ -3701,8 +3826,9 @@ void MainWindow::OnTrackChanged() {
         }
     } else if (m_lyricsTrack != now) {
         RequestLyrics(now, false);
+        RefreshPaneQueue();  // the song that started left Up Next and joined History
     }
-    if (m_lyricsView) m_lyricsView->SetTrack(m_trackTitle, m_trackArtist, m_lyricsArt);
+    if (m_pane) m_pane->SetTrack(m_trackTitle, m_trackArtist, m_lyricsArt);
     RepaintStreamInfo();
     UpdateFavoriteState();
     RepaintNowPlaying();
@@ -3771,6 +3897,7 @@ void MainWindow::UpdateShuffleRepeat(bool shuffle, Repeat repeat) {
         if (auto* w = WidgetById(id)) w->Invalidate();
     cfg_shuffle = shuffle ? 1 : 0;
     cfg_repeat = static_cast<int>(repeat);
+    if (m_pane) m_pane->Queue().SetShuffleRepeat(shuffle, static_cast<int>(repeat));
 }
 
 void MainWindow::SetShuffleRepeat(bool shuffle, Repeat repeat) {
@@ -3829,6 +3956,7 @@ void MainWindow::UpdateFavoriteState() {
 
 void MainWindow::OnPlaylistContentChanged(size_t playlist) {
     if (playlist == media::FavoritesPlaylist(false)) UpdateFavoriteState();
+    if (media::IsQueue(playlist)) RefreshPaneQueue();
     if (m_view.kind == View::Kind::Playlist && m_view.playlist == playlist && m_source) {
         static_cast<media::PlaylistSource*>(m_source.get())->Rebuild();
         m_list->Refresh();
@@ -4135,7 +4263,7 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
         m_artNotify = now_playing_album_art_notify_manager::get()->add([this](album_art_data::ptr data) {
             m_art = DecodeArt(data, PxI(TransportHeight()));
             m_lyricsArt = DecodeArt(data, PxI(64));
-            if (m_lyricsView) m_lyricsView->SetTrack(m_trackTitle, m_trackArtist, m_lyricsArt);
+            if (m_pane) m_pane->SetTrack(m_trackTitle, m_trackArtist, m_lyricsArt);
             RepaintNowPlaying();
         });
         m_dropTarget = MakeFileDropTarget([this](IDataObject* data) { AddDroppedFiles(data); });
@@ -4185,7 +4313,7 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
     case kFrameMessage:
         if (m_frameClock) {
             m_frameClock->Ack();
-            bool more = m_lyricsView && m_lyricsView->Tick();
+            bool more = m_pane && m_pane->Tick();
             more |= TickNowPlayingLyric();
             if (!more) m_frameClock->Stop();
         }
@@ -4378,16 +4506,16 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
     case WM_MOUSEMOVE: {
         POINT pt{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
         if (m_capture == Capture::Lyrics) {
-            m_lyricsView->OnMouseMove(pt);
+            m_pane->OnMouseMove(pt);
             return 0;
         }
-        if (m_lyricsView) {
-            const bool over = m_capture == Capture::None && m_lyricsView->HitTest(pt);
+        if (m_pane) {
+            const bool over = m_capture == Capture::None && m_pane->HitTest(pt);
             if (over != m_lyricsHover) {
                 m_lyricsHover = over;
-                if (!over) m_lyricsView->OnMouseLeave();
+                if (!over) m_pane->OnMouseLeave();
             }
-            if (over) m_lyricsView->OnMouseMove(pt);
+            if (over) m_pane->OnMouseMove(pt);
         }
         if (m_capture == Capture::DetailScroll) {
             OnDetailBriefBarMove(pt);
@@ -4437,7 +4565,7 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
         m_trackingClient = false;
         if (m_lyricsHover && m_capture != Capture::Lyrics) {
             m_lyricsHover = false;
-            m_lyricsView->OnMouseLeave();
+            m_pane->OnMouseLeave();
         }
         if (m_detailBriefHot) {
             m_detailBriefHot = 0;
@@ -4457,8 +4585,8 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
     case WM_LBUTTONDBLCLK: {
         POINT pt{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
         const bool dbl = msg == WM_LBUTTONDBLCLK;
-        if (m_lyricsView && m_lyricsView->HitTest(pt)) {
-            m_lyricsView->OnLButtonDown(pt);
+        if (m_pane && m_pane->HitTest(pt)) {
+            m_pane->OnLButtonDown(pt);
             m_capture = Capture::Lyrics;
             SetCapture(hwnd);
             return 0;
@@ -4520,7 +4648,7 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
         if (m_capture == Capture::Lyrics) {
             m_capture = Capture::None;
             ReleaseCapture();
-            m_lyricsView->OnLButtonUp(pt);
+            m_pane->OnLButtonUp(pt);
             return 0;
         }
         if (m_capture == Capture::DetailScroll) {
@@ -4580,7 +4708,7 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
             }
             if (m_capture == Capture::List) m_list->CancelDrag();
             if (m_capture == Capture::Nav) m_nav->CancelDrag();
-            if (m_capture == Capture::Lyrics && m_lyricsView) m_lyricsView->OnCaptureLost();
+            if (m_capture == Capture::Lyrics && m_pane) m_pane->OnCaptureLost();
             if (m_capture == Capture::DetailScroll) {
                 m_detailBriefPressed = 0;
                 m_detailBriefTrackDir = 0;
@@ -4594,8 +4722,8 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
         POINT pt{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
         ScreenToClient(hwnd, &pt);
         const int delta = GET_WHEEL_DELTA_WPARAM(wp);
-        if (m_lyricsView && m_lyricsView->HitTest(pt)) {
-            m_lyricsView->OnWheel(delta);
+        if (m_pane && m_pane->HitTest(pt)) {
+            m_pane->OnWheel(delta);
             return 0;
         }
         if (m_detailBriefScrollable &&
@@ -4630,10 +4758,10 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
     }
     case WM_RBUTTONUP: {
         POINT pt{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
-        if (m_lyricsView && m_lyricsView->HitTest(pt)) {
+        if (m_pane && m_pane->HitTest(pt)) {
             POINT screen = pt;
             ClientToScreen(hwnd, &screen);
-            ShowLyricsMenu(screen);
+            m_pane->OnRButtonUp(pt, screen);
             return 0;
         }
         if (m_list->HitTest(pt)) {
@@ -4785,7 +4913,7 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
         m_nav.reset();
         m_search.reset();
         m_frameClock.reset();
-        m_lyricsView.reset();
+        m_pane.reset();
         lyrics::Service::Get().Cancel();
         m_source.reset();
         m_widgets.clear();

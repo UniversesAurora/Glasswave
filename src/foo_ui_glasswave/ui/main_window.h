@@ -7,7 +7,7 @@
 #include "media/list_sources.h"
 #include "stream/provider.h"
 #include "ui/list_view.h"
-#include "ui/lyrics_view.h"
+#include "ui/now_playing_pane.h"
 #include "ui/main_menu.h"
 #include "ui/i18n.h"
 #include "ui/nav_pane.h"
@@ -38,6 +38,11 @@ public:
     // The lyrics pane (View > Lyrics, the transport band's lyrics button).
     void ToggleLyricsPane() { ToggleLyrics(); }
     bool LyricsPaneOpen() const { return m_lyricsOpen; }
+    // View > Up Next: the pane on its queue side (again: back to the lyrics).
+    void ToggleQueuePane();
+    bool QueuePaneShown() const {
+        return m_lyricsOpen && m_pane && m_pane->CurrentMode() == NowPlayingPane::Mode::Queue;
+    }
 
     // Forwarded from the core callbacks.
     void OnPlaybackStateChanged();
@@ -214,7 +219,7 @@ private:
     void PaintNowPlayingLyric();
     bool TickNowPlayingLyric();  // per frame; returns whether frames are still needed
     // Lyrics pane (right of the client area, on the glass).
-    std::unique_ptr<LyricsView> m_lyricsView;
+    std::unique_ptr<NowPlayingPane> m_pane;  // lyrics and queue
     std::unique_ptr<gfx::FrameClock> m_frameClock;
     bool m_lyricsOpen = false;
     bool m_lyricsHover = false;          // the mouse is over the pane
@@ -225,6 +230,8 @@ private:
     void OnLyrics(const lyrics::Result& result);
     void StartLyricsFrames();
     void ShowLyricsMenu(POINT screen);
+    void RefreshPaneQueue();  // up next, history and shuffle / repeat for the pane's queue
+    void ConnectPaneQueue();
     RECT m_npTitleRect{}, m_npArtistRect{}, m_npStarRect{};  // client px, for clicks
     bool m_npFavorite = false;                                // the playing song is in Favorites
     D2D1_RECT_F m_deviceText{};             // DIP inside m_layout.stream

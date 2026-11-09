@@ -54,7 +54,10 @@ foobar2000.exe (core: decoding, playlists, library, DSP, output, components)
 - `ui::LyricsView` draws the pane with Direct2D through its own device context (effects
   and command lists persist across frames); `gfx::FrameClock` paces frames to the
   compositor clock while something moves. Behaviour: docs/design/lyrics-view.md.
-- The pane sits on the glass right of the client area; a restored window grows by its width.
+- The pane (`ui::NowPlayingPane`) sits on the glass right of the client area, joined to it;
+  a restored window grows by its width. It shows the header and either `ui::LyricsView` or
+  `ui::QueueView` (history, the song card, Up Next), switched from its bottom bar.
+- The queue stays foobar2000's active playlist, so files opened from outside land in it.
 
 ## Window
 
