@@ -169,7 +169,7 @@ public:
         if (!song->album.empty()) p_info.meta_set("album", Utf8(song->album).c_str());
         if (song->durationMs > 0) p_info.set_length(static_cast<double>(song->durationMs) / 1000.0);
         if (!song->codec.empty()) p_info.info_set("codec", Utf8(song->codec).c_str());
-        if (song->bitrate > 0) p_info.info_set_int("bitrate", song->bitrate);
+        if (song->bitrate > 0) p_info.info_set_int("bitrate", (song->bitrate + 500) / 1000);  // kbps
         if (song->sampleRate > 0) p_info.info_set_int("samplerate", song->sampleRate);
         if (song->bitsPerSample > 0) p_info.info_set_int("bitspersample", song->bitsPerSample);
         p_info.info_set_int("channels", 2);

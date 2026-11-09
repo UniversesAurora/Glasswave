@@ -25,7 +25,7 @@ struct Song {
     int fee = 0;
     int popularity = 0;  // NetEase pop score when the endpoint reports one
     std::wstring codec;
-    int bitrate = 0;
+    int bitrate = 0;  // bits per second, as NetEase reports it (foobar2000 shows kbps)
     int sampleRate = 0;
     int bitsPerSample = 0;
 };

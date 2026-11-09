@@ -180,7 +180,7 @@ void Catalog::Hint(const std::vector<Song>& songs) {
         setMeta("album", Utf8(song.album));
         if (song.durationMs > 0) info.set_length(static_cast<double>(song.durationMs) / 1000.0);
         if (!song.codec.empty()) info.info_set("codec", Utf8(song.codec).c_str());
-        if (song.bitrate > 0) info.info_set_int("bitrate", song.bitrate);
+        if (song.bitrate > 0) info.info_set_int("bitrate", (song.bitrate + 500) / 1000);  // kbps
         if (song.sampleRate > 0) info.info_set_int("samplerate", song.sampleRate);
         if (song.bitsPerSample > 0) info.info_set_int("bitspersample", song.bitsPerSample);
         info.info_set_int("channels", 2);
