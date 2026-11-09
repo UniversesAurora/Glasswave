@@ -386,6 +386,11 @@ Updated: 2026-11-09
   interlude dots while paused; animation during playback not yet seen by the owner.
   ESLyric-compatible script searchers are specified for the next implementer in
   docs/plan/lyrics-script-host.md.
+- 2026-11-09 (owner feedback): the pane joins the client area (one edge, no glass gap); the
+  focused line sits high (1.5 lines of sung lyrics above) and upcoming lines blur slowly;
+  the transport band shows title and artist on one row and the current lyric below it,
+  filling blue word by word, aligned with the format / device rows on the right; NetEase
+  bitrates show in kbps.
 
 ## Next
 
