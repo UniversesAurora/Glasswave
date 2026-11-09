@@ -1,5 +1,23 @@
 # Lyrics view
 
+## Source selection (owner clarification, 2026-11-09)
+
+An explicit selection is remembered per track, including across restarts. Automatic
+selection first checks embedded lyrics and the adjacent `.lrc`, then the streaming
+provider's native lyric endpoint. Fallback source results are cached by track identity,
+subsong, metadata and duration. Searchers execute concurrently, but a lower-priority source
+cannot replace a successful higher-priority source. Local files and each streaming
+provider have separate fallback orders in Preferences > Display > Glasswave > Lyrics.
+NetEase tracks retain their native endpoint ahead of every fallback script.
+
+Right-clicking either the sidebar lyric body or the transport lyric row opens the same
+menu. It offers source information, search / result selection, a specific-source search,
+loading an LRC or text file, a fresh automatic search and restoring automatic selection.
+Manual search permits edited title / artist, shows source and timing type, and previews
+the candidate before loading. Closing the search or changing tracks cancels the search.
+Clearing automatic caches preserves explicit selections. Re-searching resets the selected
+override for that track. Script enablement or priority changes invalidate automatic caches.
+
 The lyrics pane recreates Apple Music's lyrics (iOS 17+, macOS 14+) on the window's Aero
 glass. Code: `ui/lyrics_view.{h,cpp}` (rendering, motion, input), `ui/spring.h`,
 `gfx/frame_clock.{h,cpp}`. Owner references: `.local/refs` captures of Apple Music on iOS
@@ -18,7 +36,7 @@ glass. Code: `ui/lyrics_view.{h,cpp}` (rendering, motion, input), `ui/spring.h`,
 | Font | Segoe UI Variable Display (else Segoe UI), bold; translation semibold 0.55 F | AM: SF Pro bold |
 | Hover plate | from 12 to width - 12, radius 0.35 F; text inset 0.45 F | AM iOS capture |
 | Line block | padding 0.4 F above and below; translation 0.3 F below the line | AMLL |
-| Focused line | 1.5 median line blocks below the header (at most 40 % of the lyrics area): one and a half sung lines stay visible | owner, 2026-11-09 (AMLL uses 35 %) |
+| Focused line | 1.5 fixed reference blocks below the header. Each reference block has one unwrapped original line and one unwrapped translation line, using the current fonts and padding. The anchor is independent of the song's wrapping and translations | owner, 2026-11-09 |
 | Edge fades | lyrics fade out over 36 below the header and 72 at the bottom | AM |
 
 ## Colour (white with alpha)
@@ -105,6 +123,15 @@ under the selected half, whose icon and label turn dark. The thumb slides on the
 spring, and can be dragged: the content follows it and settles on the nearer side. View >
 Lyrics opens the pane, View > Up Next its queue side.
 
+The tab track, thumb and queue capsules use the same continuous-curvature outline from
+the owner's two iOS photos. Cubic transitions join the flat edges to circular sides with
+matching tangent and curvature. The profile is specified in `visual-spec.md`. These
+surfaces are painted at layout/DPI changes and slide as compositor visuals.
+
+The pane exposes the window's original Aero material and screen-anchored light streaks
+under its 30% black tint. The common client edge is hollow, and the opaque library base
+is a separate visual confined to the library rectangle.
+
 Switching (spring k 260, c 30): the lyrics fade out over the first two thirds and rise
 24 DIP; the queue fades in from 15 % on and rises 48 DIP into place; the header stays and,
 in the queue, follows the song card.
@@ -117,11 +144,28 @@ Queue, from Apple Music's "Playing Next" on a 390 pt screen scaled to the pane:
 | Opening position | the card at the top; scrolling up reveals the history |
 | Row | 56 high, cover 46 (radius 5), title 16 at 95 %, artist 14 at 60 %, reorder handle (3 lines, 18 wide, 40 %) |
 | Section titles | 20 bold; subtitle 14 at 55 % |
-| Capsules | 34 high, two halves; off: white 14 % with a white glyph, on: white 78 % with a dark glyph |
+| Capsules | 34 high, two halves; off: white 14 % with a white glyph, on: white 78 % with a dark glyph; shuffle/repeat glyphs are 16 DIP bold (700), owner 2026-11-09 |
 | Hover / pressed plate | white 8 % / 4 %, radius 10 |
-| Rows | springs (k 300, c 30): a song that starts slides out and the rest move up; history keeps the card in place when it grows |
+| Rows | ordinary reordering uses springs (k 300, c 30). Track changes use mass 0.9, k 220, c 26, following AMLL's cover swap. Departing rows move with the list and fade over about 0.22 s, following AMLL's song-information exit. Growing history preserves the card's screen position and existing spring velocities |
 | Reorder | drag by the handle: the row lifts (103 %, plate 14 %), the others make room, the queue playlist is reordered on release |
 | Scroll | wheel 80 DIP per notch on a spring; drag 1:1 with inertia (0.95 per 60 Hz frame); past the ends iOS's rubber band (0.55) and a spring back |
 | Edge fade | 16 DIP at the top, 40 at the bottom |
 | Actions | click: play (history: right after the current song); right-click a queued song: Remove from Now Playing |
+
+The sidebar reads the real Now Playing playlist. It starts after the current song, which
+appears in the card. Repeat-all appends the beginning of the playlist up to the current
+song, excluding that song. Without repeat-all only the remaining tail is shown. Finishing
+playback keeps the last cursor in the open window, so an exhausted tail stays empty.
+
+Shuffle remains foobar2000's native playback order. The sidebar follows the playlist's
+stored order and animates to the new playing position after each track starts. A forward
+jump moves the retained rows up, and a backward jump moves them down. A clicked row returns
+the view to the song card on the same spring. Programmatic return scrolling stays continuous
+when the list shrinks, while mouse scrolling keeps its rubber band. Wrapped drag reordering
+maps the visible slots back to the underlying playlist and keeps the playing slot fixed.
+
+Animation references are the locally supplied AMLL project's
+`packages/react-full/src/components/Cover/index.tsx` and
+`packages/react-full/src/components/MusicInfo/index.tsx`. The native implementation uses
+their numeric tuning and transition behaviour. No AMLL source or artwork is included.
 

@@ -23,6 +23,8 @@
 #include "stream/playback_source.h"
 #include "ui/art_cache.h"
 #include "ui/text_prompt.h"
+#include "ui/lyrics_search.h"
+#include "lyrics/scripts.h"
 #include "app/settings.h"
 #include "ui/remote_pages.h"
 #include "ui/song_actions.h"
@@ -395,7 +397,11 @@ struct MainWindow::PlayCallback : play_callback_impl_base {
     void on_playback_pause(bool) override { window.OnPlaybackStateChanged(); }
     void on_playback_seek(double) override { window.OnPlaybackTime(); }
     void on_playback_time(double) override { window.OnPlaybackTime(); }
-    void on_playback_edited(metadb_handle_ptr) override { window.OnTrackChanged(); }
+    void on_playback_edited(metadb_handle_ptr track) override {
+        window.OnTrackChanged();
+        CloseLyricsSearch();
+        window.RequestLyrics(track, false);
+    }
     void on_playback_dynamic_info(const file_info&) override { window.OnTrackChanged(); }
     void on_playback_dynamic_info_track(const file_info&) override { window.OnTrackChanged(); }
     void on_volume_change(float) override { window.OnVolumeChanged(); }
@@ -1660,6 +1666,7 @@ void MainWindow::ToggleQueuePane() {
 }
 
 void MainWindow::RequestLyrics(const metadb_handle_ptr& track, bool again) {
+    if (track != m_lyricsTrack) CloseLyricsSearch();
     m_lyricsTrack = track;
     auto done = [this, alive = std::weak_ptr<int>(m_alive)](const lyrics::Result& result) {
         if (!alive.expired()) OnLyrics(result);
@@ -1812,9 +1819,33 @@ void MainWindow::ConnectPaneQueue() {
 void MainWindow::ShowLyricsMenu(POINT screen) {
     metadb_handle_ptr now;
     std::vector<MenuAction> actions;
-    if (playback_control::get()->get_now_playing(now))
+    if (m_npLyrics && !m_npLyrics->source.empty()) actions.push_back({Tr(L"Lyric source") + L"  " + Tr(m_npLyrics->source), nullptr});
+    if (playback_control::get()->get_now_playing(now)) {
+        const auto search = [this, now](std::wstring source) {
+            ShowLyricsSearch(m_hwnd, now, std::move(source),
+                [this, now, alive = std::weak_ptr<int>(m_alive)](const lyrics::Candidate& candidate) {
+                    if (alive.expired() || m_lyricsTrack != now) return;
+                    OnLyrics(lyrics::Service::Get().Select(now, candidate));
+                });
+        };
+        actions.push_back({Tr(L"Search lyrics..."), [search] { search(L""); }});
+        std::vector<MenuAction> sources;
+        for (const auto& source : lyrics::scripts::Ordered(lyrics::Service::QueryFor(now).provider))
+            sources.push_back({source->Name(), [search, key = source->Key()] { search(key); }});
+        if (!sources.empty()) actions.push_back({Tr(L"Search lyric source"), nullptr, std::move(sources)});
+        actions.push_back({Tr(L"Load lyrics from file..."), [this, now, alive = std::weak_ptr<int>(m_alive)] {
+            const auto path = PickLyricsFile(m_hwnd);
+            if (alive.expired() || path.empty() || m_lyricsTrack != now) return;
+            const auto result = lyrics::Service::Get().LoadFile(now, path);
+            if (result.status == lyrics::Status::Found) OnLyrics(result);
+            else MessageBoxW(m_hwnd, Tr(L"The file contains no readable lyrics.").c_str(), Tr(L"Lyrics").c_str(), MB_OK | MB_ICONINFORMATION);
+        }});
         actions.push_back({Tr(L"Search for lyrics again"), [this, now] { RequestLyrics(now, true); }});
-    actions.push_back({Tr(L"Hide lyrics"), [this] { ToggleLyrics(); }});
+        actions.push_back({Tr(L"Use automatic lyrics"), [this, now] {
+            lyrics::Service::Get().UseAutomatic(now); RequestLyrics(now, false);
+        }});
+    }
+    if (m_lyricsOpen) actions.push_back({Tr(L"Hide lyrics"), [this] { ToggleLyrics(); }});
     ShowActionMenu(m_hwnd, screen, actions);
 }
 
@@ -4339,6 +4370,7 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
 
     case settings::kChangedMessage:  // Preferences > Display > Glasswave applied something
         ApplyLanguage(CurrentLanguageSetting());
+        if (m_lyricsTrack.is_valid()) RequestLyrics(m_lyricsTrack, false);
         if (m_view.kind == View::Kind::AllRecentPlayed || m_view.kind == View::Kind::AllMostPlayed)
             Navigate(m_view, false);
         return 0;
@@ -4791,6 +4823,11 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
     }
     case WM_RBUTTONUP: {
         POINT pt{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
+        const RECT lyricRect{m_layout.nowPlaying.left + PxI(m_npTextX),
+            m_layout.nowPlaying.top + PxI(m_npLyricTop), m_layout.nowPlaying.right, m_layout.nowPlaying.bottom};
+        if (PtInRect(&lyricRect, pt)) {
+            POINT screen = pt; ClientToScreen(hwnd, &screen); ShowLyricsMenu(screen); return 0;
+        }
         if (m_pane && m_pane->HitTest(pt)) {
             POINT screen = pt;
             ClientToScreen(hwnd, &screen);
@@ -4921,6 +4958,7 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
 
     case WM_DESTROY: {
+        CloseLyricsSearch();
         WINDOWPLACEMENT wpl{sizeof(wpl)};
         if (GetWindowPlacement(hwnd, &wpl)) cfg_placement.set(wpl);
         SaveLastView();

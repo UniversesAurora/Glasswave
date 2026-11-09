@@ -2,6 +2,7 @@
 #include "app/setting_fields.h"
 #include "app/settings.h"
 #include "media/play_stats.h"
+#include "lyrics/scripts.h"
 #include "stream/provider.h"
 #include "ui/art_cache.h"
 #include "ui/i18n.h"
@@ -80,6 +81,7 @@ std::vector<Section> BuildSections() {
               media::PlayStats::Get().ForgetAllRecent();
               media::PlayStats::Get().ClearAllCounts();
           })}});
+    sections.push_back({L"Lyrics", lyrics::scripts::SettingFields()});
     for (auto* provider : stream::Providers())
         if (auto fields = provider->SettingFields(); !fields.empty()) sections.push_back({provider->Name(), std::move(fields)});
     return sections;

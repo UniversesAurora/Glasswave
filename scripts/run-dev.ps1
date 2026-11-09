@@ -71,6 +71,33 @@ if (Test-Path -LiteralPath $langSrc) {
     Get-ChildItem -LiteralPath $langSrc -Filter '*.json' | Copy-Item -Destination $langDst -Force
 }
 
+# Original lyric source trees supplied locally by the owner. Keep every script and
+# dependency unchanged, scoped to the dev profile and excluded from the repository.
+$eslyricScripts = Join-Path $Root '.local/refs/lyrics/eslyric-pkg/emb_5923208/scripts'
+if (Test-Path -LiteralPath $eslyricScripts) {
+    $eslyricTarget = Join-Path $Instance 'profile/eslyric-data/scripts'
+    New-Item -ItemType Directory -Force -Path $eslyricTarget | Out-Null
+    Copy-Item -Path (Join-Path $eslyricScripts '*') -Destination $eslyricTarget -Recurse -Force
+}
+$communityScripts = Join-Path $Root '.local/refs/lyrics/ESLyric-LyricsSource/current'
+$communityTarget = Join-Path $art 'lyrics/scripts'
+foreach ($format in 'qrc', 'yrc', 'krc') {
+    foreach ($kind in 'searcher', 'parser', 'lib') {
+        $source = Join-Path $communityScripts "$format/$kind"
+        if (-not (Test-Path -LiteralPath $source)) { continue }
+        New-Item -ItemType Directory -Force -Path $communityTarget | Out-Null
+        Copy-Item -LiteralPath $source -Destination $communityTarget -Recurse -Force
+    }
+}
+
+# Glasswave-authored MIT lyric sources.
+$lyricSource = Join-Path $Root 'scripts/lyrics'
+$lyricTarget = Join-Path $art 'lyrics/scripts'
+if (Test-Path -LiteralPath $lyricSource) {
+    New-Item -ItemType Directory -Force -Path $lyricTarget | Out-Null
+    Copy-Item -Path (Join-Path $lyricSource '*') -Destination $lyricTarget -Recurse -Force
+}
+
 if (-not $NoLaunch) {
     Start-Process -FilePath $Exe -WorkingDirectory $Instance
     Write-Host 'Dev instance started'

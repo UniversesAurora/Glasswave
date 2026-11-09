@@ -3,6 +3,7 @@
 #include "lyrics/lyrics_service.h"
 
 #include "stream/provider.h"
+#include "lyrics/scripts.h"
 
 #include <filesystem>
 #include <fstream>
@@ -11,27 +12,35 @@ namespace glasswave::lyrics {
 
 namespace {
 
-constexpr int kSearchTimeoutMs = 20000;           // searchers still running then are abandoned
-constexpr long long kNotFoundRetrySeconds = 86400;  // a "nothing found" answer is kept a day
+constexpr int kSearchTimeoutMs = 20000;            // searchers still running then are abandoned
+constexpr long long kNotFoundRetrySeconds = 86400; // a "nothing found" answer is kept a day
 constexpr wchar_t kSourceTag[] = L"[glasswave-source:";
 constexpr wchar_t kNotFoundTag[] = L"[glasswave-notfound:";
+std::mutex g_cacheMutex;
 
 std::vector<std::shared_ptr<Searcher>>& Registry() {
     static std::vector<std::shared_ptr<Searcher>> searchers;
     return searchers;
 }
 
-std::wstring Wide(const char* s) { return s ? std::wstring(pfc::stringcvt::string_wide_from_utf8(s).get_ptr()) : L""; }
+std::wstring Wide(const char* s) {
+    return s ? std::wstring(pfc::stringcvt::string_wide_from_utf8(s).get_ptr()) : L"";
+}
 
 std::string Utf8(std::wstring_view s) {
     if (s.empty()) return {};
-    const int n = WideCharToMultiByte(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), nullptr, 0, nullptr, nullptr);
+    const int n =
+        WideCharToMultiByte(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), nullptr, 0, nullptr, nullptr);
     std::string out(static_cast<size_t>(std::max(n, 0)), '\0');
-    if (n > 0) WideCharToMultiByte(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), out.data(), n, nullptr, nullptr);
+    if (n > 0)
+        WideCharToMultiByte(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), out.data(), n, nullptr,
+                            nullptr);
     return out;
 }
 
 std::optional<std::string> ReadFile(const std::filesystem::path& path) {
+    std::error_code ec;
+    if (std::filesystem::file_size(path, ec) > 4 * 1024 * 1024 || ec) return std::nullopt;
     std::ifstream in(path, std::ios::binary);
     if (!in) return std::nullopt;
     return std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
@@ -47,14 +56,15 @@ bool WriteFile(const std::filesystem::path& path, std::string_view bytes) {
         out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
         if (!out) return false;
     }
-    std::filesystem::rename(part, path, ec);
-    return !ec;
+    return MoveFileExW(part.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) !=
+           FALSE;
 }
 
 Query MakeQuery(const metadb_handle_ptr& track) {
     Query q;
     q.path = Wide(track->get_path());
     q.subsong = track->get_subsong_index();
+    if (auto* provider = stream::ProviderOf(track)) q.provider = provider->Key();
     if (auto info = track->get_info_ref(); info.is_valid()) {
         const file_info& fi = info->info();
         q.title = Wide(fi.meta_get("title", 0));
@@ -67,7 +77,8 @@ Query MakeQuery(const metadb_handle_ptr& track) {
         std::wstring name = q.path;
         const size_t slash = name.find_last_of(L"\\/");
         if (slash != std::wstring::npos) name = name.substr(slash + 1);
-        if (const size_t dot = name.find_last_of(L'.'); dot != std::wstring::npos && dot > 0) name.resize(dot);
+        if (const size_t dot = name.find_last_of(L'.'); dot != std::wstring::npos && dot > 0)
+            name.resize(dot);
         q.title = name;
     }
     if (pfc::string8 native; filesystem::g_get_native_path(track->get_path(), native))
@@ -75,7 +86,7 @@ Query MakeQuery(const metadb_handle_ptr& track) {
     return q;
 }
 
-std::filesystem::path CacheFile(const Query& q) {
+std::filesystem::path CacheFile(const Query& q, bool identityOnly = false) {
     // FNV-1a over path and subsong: stable across sessions.
     uint64_t h = 1469598103934665603ull;
     auto mix = [&](std::wstring_view s) {
@@ -87,6 +98,12 @@ std::filesystem::path CacheFile(const Query& q) {
     mix(q.path);
     mix(L"|");
     mix(std::to_wstring(q.subsong));
+    if (!identityOnly) {
+        for (const auto& text : {q.title, q.artist, q.album, q.provider, std::to_wstring(q.duration)}) {
+            mix(L"|");
+            mix(text);
+        }
+    }
     wchar_t name[32];
     swprintf_s(name, L"%016llx.lrc", static_cast<unsigned long long>(h));
     return std::filesystem::path(Service::CacheFolder()) / name;
@@ -94,25 +111,23 @@ std::filesystem::path CacheFile(const Query& q) {
 
 // The track's own lyrics: tags first, then <file>.lrc.
 std::optional<std::wstring> LocalLyrics(const metadb_handle_ptr& track, const Query& q) {
+    std::optional<std::wstring> unsynced;
     if (auto info = track->get_info_ref(); info.is_valid()) {
-        std::optional<std::wstring> unsynced;
         for (const char* field : {"SYNCEDLYRICS", "LYRICS", "UNSYNCEDLYRICS", "UNSYNCED LYRICS"}) {
             const char* v = info->info().meta_get(field, 0);
             if (!v || !*v) continue;
             std::wstring text = Wide(v);
-            if (text.find(L'[') != std::wstring::npos) return text;
+            if (ParseLrc(text).synced) return text;
             if (!unsynced) unsynced = std::move(text);
         }
-        // An unsynced tag only wins if there is no .lrc file below.
-        if (unsynced && q.nativePath.empty()) return unsynced;
-        if (!q.nativePath.empty()) {
-            std::filesystem::path lrc(q.nativePath);
-            lrc.replace_extension(L".lrc");
-            if (auto bytes = ReadFile(lrc)) return DecodeText(*bytes);
-        }
-        return unsynced;
     }
-    return std::nullopt;
+    if (!q.nativePath.empty()) {
+        std::filesystem::path lrc(q.nativePath);
+        lrc.replace_extension(L".lrc");
+        if (auto bytes = ReadFile(lrc); bytes && !ParseLrc(DecodeText(*bytes)).lines.empty())
+            return DecodeText(*bytes);
+    }
+    return unsynced;
 }
 
 struct CacheEntry {
@@ -120,8 +135,14 @@ struct CacheEntry {
     std::shared_ptr<Lyrics> lyrics;
 };
 
-std::optional<CacheEntry> ReadCache(const Query& q) {
-    auto bytes = ReadFile(CacheFile(q));
+std::filesystem::path SelectedFile(const Query& q) {
+    auto path = CacheFile(q, true);
+    path.replace_extension(L".selected.lrc");
+    return path;
+}
+
+std::optional<CacheEntry> ReadCache(const Query& q, bool selected = false) {
+    auto bytes = ReadFile(selected ? SelectedFile(q) : CacheFile(q));
     if (!bytes) return std::nullopt;
     std::wstring text = DecodeText(*bytes);
     if (text.rfind(kNotFoundTag, 0) == 0) {
@@ -174,7 +195,8 @@ double Similarity(std::wstring_view a, std::wstring_view b) {
         return 0.75 + 0.25 * static_cast<double>(std::min(a.size(), b.size())) / std::max(a.size(), b.size());
     // Levenshtein ratio (titles are short).
     std::vector<size_t> prev(b.size() + 1), cur(b.size() + 1);
-    for (size_t j = 0; j <= b.size(); ++j) prev[j] = j;
+    for (size_t j = 0; j <= b.size(); ++j)
+        prev[j] = j;
     for (size_t i = 1; i <= a.size(); ++i) {
         cur[0] = i;
         for (size_t j = 1; j <= b.size(); ++j)
@@ -215,14 +237,15 @@ std::vector<std::wstring> SplitArtists(std::wstring_view s) {
 
 double ArtistSimilarity(std::wstring_view query, std::wstring_view found) {
     const auto a = SplitArtists(query), b = SplitArtists(found);
-    if (a.empty() || b.empty()) return 0.5;  // unknown: neither helps nor hurts much
+    if (a.empty() || b.empty()) return 0.5; // unknown: neither helps nor hurts much
     double best = 0;
     for (const auto& x : a)
-        for (const auto& y : b) best = std::max(best, Similarity(x, y));
+        for (const auto& y : b)
+            best = std::max(best, Similarity(x, y));
     return best;
 }
 
-}  // namespace
+} // namespace
 
 const Candidate* BestCandidate(const Query& query, const std::vector<Candidate>& candidates) {
     const std::wstring title = Normalize(query.title);
@@ -237,7 +260,8 @@ const Candidate* BestCandidate(const Query& query, const std::vector<Candidate>&
         double score = titleSim * 55 + artistSim * 30;
         if (parsed.synced) score += 5;
         if (parsed.karaoke) score += 6;
-        if (std::any_of(parsed.lines.begin(), parsed.lines.end(), [](const Line& l) { return !l.translation.empty(); }))
+        if (std::any_of(parsed.lines.begin(), parsed.lines.end(),
+                        [](const Line& l) { return !l.translation.empty(); }))
             score += 4;
         // Lyrics that run far past the song are for another version.
         if (query.duration > 0 && parsed.synced && parsed.lines.back().start / 1000.0 > query.duration + 10)
@@ -260,7 +284,9 @@ void UnregisterSearcher(const Searcher* searcher) {
     r.erase(std::remove_if(r.begin(), r.end(), [&](const auto& s) { return s.get() == searcher; }), r.end());
 }
 
-std::vector<std::shared_ptr<Searcher>> Searchers() { return Registry(); }
+std::vector<std::shared_ptr<Searcher>> Searchers() {
+    return Registry();
+}
 
 Service& Service::Get() {
     static Service service;
@@ -273,32 +299,161 @@ std::wstring Service::CacheFolder() {
     return (std::filesystem::path(Wide(native.get_ptr())) / L"glasswave" / L"lyrics").wstring();
 }
 
+Query Service::QueryFor(const metadb_handle_ptr& track) {
+    return track.is_valid() ? MakeQuery(track) : Query{};
+}
+
+void Service::Run(std::shared_ptr<abort_callback_impl> abort, std::function<void()> work) {
+    std::erase_if(m_workers, [](Worker& worker) {
+        if (!worker.finished->load()) return false;
+        worker.thread.join();
+        return true;
+    });
+    auto finished = std::make_shared<std::atomic<bool>>(false);
+    std::thread thread([work = std::move(work), finished] {
+        try {
+            work();
+        } catch (const std::exception& error) {
+            console::printf("Glasswave lyrics: %s", error.what());
+        }
+        finished->store(true);
+    });
+    m_workers.push_back({std::move(thread), std::move(abort), std::move(finished)});
+}
+
 void Service::Request(const metadb_handle_ptr& track, std::function<void(const Result&)> done) {
     Start(track, true, std::move(done));
 }
 
 void Service::Research(const metadb_handle_ptr& track, std::function<void(const Result&)> done) {
+    UseAutomatic(track);
     if (track.is_valid()) {
+        std::lock_guard lock(g_cacheMutex);
         std::error_code ec;
         std::filesystem::remove(CacheFile(MakeQuery(track)), ec);
     }
     Start(track, false, std::move(done));
 }
 
+void Service::CancelSearch() {
+    ++m_searchGeneration;
+    if (m_searchAbort) m_searchAbort->abort();
+    m_searchAbort.reset();
+}
+
 void Service::Cancel() {
     ++m_generation;
     if (m_abort) m_abort->abort();
     m_abort.reset();
+    CancelSearch();
 }
 
-void Service::Shutdown() { Cancel(); }
+void Service::Shutdown() {
+    Cancel();
+    for (auto& worker : m_workers)
+        worker.abort->abort();
+    for (auto& worker : m_workers)
+        if (worker.thread.joinable()) worker.thread.join();
+    m_workers.clear();
+}
+
+namespace {
+Result FromText(const std::wstring& text, const std::wstring& source) {
+    auto lyrics = std::make_shared<Lyrics>(ParseLrc(text));
+    if (lyrics->lines.empty()) return {Status::NotFound, nullptr};
+    lyrics->source = source;
+    return {Status::Found, std::move(lyrics)};
+}
+
+// Search concurrently, but automatic selection respects source order. A slow fallback
+// cannot delay a successful preferred source. All children are joined before returning.
+void SearchAll(const Query& query, const std::vector<std::shared_ptr<Searcher>>& searchers,
+               abort_callback& abort, bool automatic,
+               const std::function<void(std::vector<Candidate>, bool)>& update) {
+    struct Slot {
+        bool finished = false;
+        std::vector<Candidate> candidates;
+    };
+    std::vector<Slot> slots(searchers.size());
+    std::mutex mutex;
+    std::condition_variable changed;
+    abort_callback_impl childrenAbort;
+    std::vector<std::thread> children;
+    for (size_t i = 0; i < searchers.size(); ++i) {
+        children.emplace_back([&, i] {
+            std::vector<Candidate> candidates;
+            std::mutex candidateMutex;
+            try {
+                searchers[i]->Search(query, childrenAbort, [&](Candidate candidate) {
+                    if (childrenAbort.is_aborting()) return;
+                    if (candidate.source.empty()) candidate.source = searchers[i]->Name();
+                    if (!ParseLrc(candidate.lrc).lines.empty()) {
+                        std::lock_guard candidateLock(candidateMutex);
+                        candidates.push_back(std::move(candidate));
+                    }
+                });
+            } catch (const std::exception& error) {
+                console::printf("Glasswave lyrics: %s", error.what());
+            }
+            std::lock_guard lock(mutex);
+            slots[i] = {true, std::move(candidates)};
+            changed.notify_all();
+        });
+    }
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(kSearchTimeoutMs);
+    std::unique_lock lock(mutex);
+    size_t reported = SIZE_MAX;
+    while (!abort.is_aborting()) {
+        const size_t finished = static_cast<size_t>(
+            std::count_if(slots.begin(), slots.end(), [](const auto& slot) { return slot.finished; }));
+        std::vector<Candidate> all;
+        for (const auto& slot : slots)
+            all.insert(all.end(), slot.candidates.begin(), slot.candidates.end());
+        if (automatic) {
+            for (const auto& slot : slots) {
+                if (!slot.finished) break;
+                if (const Candidate* best = BestCandidate(query, slot.candidates)) {
+                    update({*best}, true);
+                    childrenAbort.abort();
+                    break;
+                }
+            }
+            if (childrenAbort.is_aborting()) break;
+        } else if (finished != reported) {
+            update(all, finished == slots.size());
+            reported = finished;
+        }
+        if (finished == slots.size() || std::chrono::steady_clock::now() >= deadline) {
+            if (automatic) {
+                // At timeout, prefer the earliest source that has produced a valid match.
+                const Candidate* best = nullptr;
+                for (const auto& slot : slots)
+                    if ((best = BestCandidate(query, slot.candidates))) break;
+                update(best ? std::vector<Candidate>{*best} : std::vector<Candidate>{}, true);
+            } else if (finished != slots.size())
+                update(std::move(all), true);
+            break;
+        }
+        changed.wait_for(lock, std::chrono::milliseconds(30));
+    }
+    childrenAbort.abort();
+    lock.unlock();
+    for (auto& child : children)
+        child.join();
+}
+} // namespace
 
 void Service::Start(const metadb_handle_ptr& track, bool useCache, std::function<void(const Result&)> done) {
     Cancel();
     if (!track.is_valid()) {
-        done(Result{Status::NotFound, nullptr});
+        done({Status::NotFound, nullptr});
         return;
     }
+    const Query query = MakeQuery(track);
+    auto* provider = stream::ProviderOf(track);
+    const auto id = provider ? provider->TrackId(track) : stream::Id();
+    const std::wstring providerName = provider ? provider->Name() : L"";
+    const auto searchers = scripts::Ordered(query.provider);
     const unsigned generation = m_generation;
     auto abort = std::make_shared<abort_callback_impl>();
     m_abort = abort;
@@ -307,104 +462,121 @@ void Service::Start(const metadb_handle_ptr& track, bool useCache, std::function
             if (generation == m_generation) done(result);
         });
     };
-    done(Result{Status::Searching, nullptr});
-
-    auto searchers = Registry();
-    std::thread([track, useCache, abort, deliver, searchers = std::move(searchers)] {
+    done({Status::Searching, nullptr});
+    Run(abort, [=] {
         try {
-            const Query query = MakeQuery(track);
-            if (useCache) {
-                if (auto cached = ReadCache(query)) {
-                    if (cached->notFound) {
-                        // Local lyrics may have been added since.
-                        if (auto local = LocalLyrics(track, query)) {
-                            auto lyrics = std::make_shared<Lyrics>(ParseLrc(*local));
-                            if (!lyrics->lines.empty()) {
-                                lyrics->source = L"Local";
-                                deliver({Status::Found, std::move(lyrics)});
-                                return;
-                            }
-                        }
-                        deliver({Status::NotFound, nullptr});
-                    } else {
-                        deliver({Status::Found, std::move(cached->lyrics)});
-                    }
+            // An explicit owner selection is a track override, distinct from automatic cache.
+            if (useCache)
+                if (auto selected = ReadCache(query, true); selected && !selected->notFound) {
+                    deliver({Status::Found, selected->lyrics});
                     return;
                 }
-            }
             if (auto local = LocalLyrics(track, query)) {
-                auto lyrics = std::make_shared<Lyrics>(ParseLrc(*local));
-                if (!lyrics->lines.empty()) {
-                    lyrics->source = L"Local";
-                    deliver({Status::Found, std::move(lyrics)});
+                const auto result = FromText(*local, L"Local file");
+                if (result.status == Status::Found) {
+                    deliver(result);
                     return;
                 }
             }
-            // A streaming provider's own lyrics for its track: an exact match, no search.
-            if (stream::Provider* provider = stream::ProviderOf(track)) {
-                const stream::Id id = provider->TrackId(track);
-                const std::wstring lrc = id.empty() ? std::wstring() : provider->Lyrics(id, *abort);
-                if (abort->is_aborting()) return;
-                auto lyrics = std::make_shared<Lyrics>(ParseLrc(lrc));
-                if (!lyrics->lines.empty()) {
-                    lyrics->source = provider->Name();
-                    WriteFile(CacheFile(query), Utf8(kSourceTag + lyrics->source + L"]\n" + lrc));
-                    deliver({Status::Found, std::move(lyrics)});
-                    return;
-                }
-            }
-            if (searchers.empty()) {
-                deliver({Status::NotFound, nullptr});
-                return;
-            }
-
-            // Every searcher on its own thread; collect until all finish or the timeout.
-            struct Shared {
-                std::mutex mutex;
-                std::condition_variable cv;
-                std::vector<Candidate> candidates;
-                size_t running = 0;
-            };
-            auto shared = std::make_shared<Shared>();
-            shared->running = searchers.size();
-            for (const auto& s : searchers) {
-                std::thread([s, query, abort, shared] {
-                    try {
-                        s->Search(query, *abort, [&](Candidate c) {
-                            if (c.source.empty()) c.source = s->Name();
-                            std::lock_guard lock(shared->mutex);
-                            shared->candidates.push_back(std::move(c));
-                        });
-                    } catch (...) {
+            if (provider && !id.empty()) {
+                try {
+                    const auto lrc = provider->Lyrics(id, *abort);
+                    abort->check();
+                    auto result = FromText(lrc, providerName);
+                    if (result.status == Status::Found) {
+                        deliver(std::move(result));
+                        return;
                     }
-                    std::lock_guard lock(shared->mutex);
-                    --shared->running;
-                    shared->cv.notify_all();
-                }).detach();
+                } catch (const exception_aborted&) {
+                    return;
+                } catch (const std::exception& error) {
+                    console::printf("Glasswave lyrics: %s", error.what());
+                }
             }
-            std::vector<Candidate> candidates;
-            {
-                std::unique_lock lock(shared->mutex);
-                shared->cv.wait_for(lock, std::chrono::milliseconds(kSearchTimeoutMs),
-                                    [&] { return shared->running == 0 || abort->is_aborting(); });
-                candidates = shared->candidates;
-            }
-            if (abort->is_aborting()) return;
-            abort->abort();  // searchers still running after the timeout stop
-            const Candidate* best = BestCandidate(query, candidates);
-            if (!best) {
-                WriteFile(CacheFile(query), Utf8(kNotFoundTag + std::to_wstring(_time64(nullptr)) + L"]\n"));
-                deliver({Status::NotFound, nullptr});
-                return;
-            }
-            auto lyrics = std::make_shared<Lyrics>(ParseLrc(best->lrc));
-            lyrics->source = best->source;
-            WriteFile(CacheFile(query), Utf8(kSourceTag + best->source + L"]\n" + best->lrc));
-            deliver({Status::Found, std::move(lyrics)});
-        } catch (...) {
-            deliver({Status::NotFound, nullptr});
+            abort->check();
+            if (useCache)
+                if (auto cached = ReadCache(query); cached && !cached->notFound) {
+                    deliver({Status::Found, cached->lyrics});
+                    return;
+                }
+            SearchAll(query, searchers, *abort, true, [&](std::vector<Candidate> candidates, bool) {
+                if (abort->is_aborting()) return;
+                if (candidates.empty()) {
+                    deliver({Status::NotFound, nullptr});
+                    return;
+                }
+                const auto& best = candidates.front();
+                {
+                    std::lock_guard lock(g_cacheMutex);
+                    if (abort->is_aborting()) return;
+                    WriteFile(CacheFile(query), Utf8(kSourceTag + best.source + L"]\n" + best.lrc));
+                }
+                deliver(FromText(best.lrc, best.source));
+            });
+        } catch (const exception_aborted&) {
+        } catch (const std::exception& error) {
+            console::printf("Glasswave lyrics: %s", error.what());
+            if (!abort->is_aborting()) deliver({Status::NotFound, nullptr});
         }
-    }).detach();
+    });
 }
 
-}  // namespace glasswave::lyrics
+void Service::FindCandidates(Query query, std::wstring source,
+                             std::function<void(std::vector<Candidate>, bool)> done) {
+    CancelSearch();
+    const unsigned generation = m_searchGeneration;
+    auto abort = std::make_shared<abort_callback_impl>();
+    m_searchAbort = abort;
+    auto searchers = scripts::Ordered(query.provider);
+    if (!source.empty())
+        std::erase_if(searchers, [&](const auto& searcher) { return searcher->Key() != source; });
+    Run(abort, [this, query = std::move(query), searchers = std::move(searchers), abort, done, generation] {
+        SearchAll(query, searchers, *abort, false, [&](std::vector<Candidate> candidates, bool finished) {
+            fb2k::inMainThread([this, generation, done, candidates = std::move(candidates), finished] {
+                if (generation == m_searchGeneration) done(candidates, finished);
+            });
+        });
+    });
+}
+
+Result Service::Select(const metadb_handle_ptr& track, const Candidate& candidate) {
+    if (!track.is_valid()) return {Status::NotFound, nullptr};
+    const auto result = FromText(candidate.lrc, candidate.source);
+    if (result.status != Status::Found) return result;
+    Cancel();
+    std::lock_guard lock(g_cacheMutex);
+    if (!WriteFile(SelectedFile(MakeQuery(track)),
+                   Utf8(kSourceTag + candidate.source + L"]\n" + candidate.lrc)))
+        console::print("Glasswave lyrics: unable to save lyric selection");
+    return result;
+}
+
+Result Service::LoadFile(const metadb_handle_ptr& track, const std::wstring& path) {
+    auto bytes = ReadFile(path);
+    if (!bytes || bytes->size() > 4 * 1024 * 1024) return {Status::NotFound, nullptr};
+    Candidate candidate;
+    candidate.source = L"Local file";
+    candidate.lrc = DecodeText(*bytes);
+    return Select(track, candidate);
+}
+
+void Service::UseAutomatic(const metadb_handle_ptr& track) {
+    if (!track.is_valid()) return;
+    Cancel();
+    std::lock_guard lock(g_cacheMutex);
+    std::error_code ec;
+    std::filesystem::remove(SelectedFile(MakeQuery(track)), ec);
+}
+
+void Service::ClearCache() {
+    Cancel();
+    std::lock_guard lock(g_cacheMutex);
+    std::error_code ec;
+    for (const auto& file : std::filesystem::directory_iterator(CacheFolder(), ec)) {
+        const auto name = file.path().filename().wstring();
+        if (file.is_regular_file(ec) && name.ends_with(L".lrc") && !name.ends_with(L".selected.lrc"))
+            std::filesystem::remove(file.path(), ec);
+    }
+}
+
+} // namespace glasswave::lyrics

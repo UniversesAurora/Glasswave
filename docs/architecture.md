@@ -48,9 +48,13 @@ foobar2000.exe (core: decoding, playlists, library, DSP, output, components)
 
 ## Lyrics (ADR 0010)
 
-- `lyrics/` is the model (`Lyrics`, `ParseLrc`) and `lyrics::Service`: cache, the track's
-  own lyrics, the provider's lyrics (`stream::Provider::Lyrics`), then registered
-  `lyrics::Searcher`s in parallel; results reach the window on the main thread.
+- `lyrics/` is the model (`Lyrics`, `ParseLrc`) and `lyrics::Service`: a manual per-track
+  selection, the track's own lyrics, the provider's lyrics (`stream::Provider::Lyrics`),
+  then cached / searched fallback sources in provider-specific order. Searchers run
+  concurrently, and results reach the window on the main thread. `ScriptHost` implements
+  ESLyric's JavaScript contract with QuickJS, while `scripts` discovers and registers
+  sources from the profile's ESLyric and Glasswave folders. Worker threads are cancelled
+  and joined on shutdown. `ui::ShowLyricsSearch` provides manual search and preview.
 - `ui::LyricsView` draws the pane with Direct2D through its own device context (effects
   and command lists persist across frames); `gfx::FrameClock` paces frames to the
   compositor clock while something moves. Behaviour: docs/design/lyrics-view.md.

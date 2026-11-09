@@ -1,7 +1,7 @@
 #Requires -Version 7.2
 <#
 .SYNOPSIS
-    Fetch and verify third-party dependencies: the foobar2000 SDK and the portable
+    Fetch and verify the foobar2000 SDK, lyric-script dependencies and portable
     foobar2000 instance used for local development.
 
 .DESCRIPTION
@@ -56,6 +56,23 @@ function Get-VerifiedDownload([pscustomobject]$Dep) {
 }
 
 $7z = Find-7Zip
+
+# Embedded lyric-script runtime and decompressor (pinned, local source archives).
+foreach ($name in 'quickjs-ng', 'miniz') {
+    $dep = $Lock.$name
+    $destination = Join-Path $Root $dep.dest
+    $stamp = Join-Path $destination '.version'
+    if (-not $Force -and (Test-Path -LiteralPath $stamp) -and ((Get-Content -LiteralPath $stamp -Raw).Trim() -eq $dep.version)) {
+        Write-Host "$name $($dep.version) is up to date"
+        continue
+    }
+    $archive = Get-VerifiedDownload $dep
+    New-Item -ItemType Directory -Force -Path $destination | Out-Null
+    & $7z x $archive "-o$destination" -y | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "Extracting $name failed (7z exit code $LASTEXITCODE)" }
+    Set-Content -LiteralPath $stamp -Value $dep.version
+    Write-Host "$name $($dep.version) extracted to $destination"
+}
 
 # --- foobar2000 SDK -----------------------------------------------------------------
 $sdk = $Lock.'foobar2000-sdk'

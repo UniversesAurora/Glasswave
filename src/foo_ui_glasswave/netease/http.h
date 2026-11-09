@@ -13,6 +13,8 @@ struct HttpResponse {
     unsigned long status = 0;
     std::string body;
     std::wstring contentType;
+    std::wstring statusMessage;
+    std::vector<std::pair<std::wstring, std::wstring>> headers;
     std::vector<std::wstring> setCookies;
     std::wstring error;
 

@@ -26,10 +26,13 @@ Survey (2026-11):
 ## Decision
 
 - **Lyric data**: `lyrics::Service` (src/foo_ui_glasswave/lyrics) finds lyrics in this order:
-  the cache (`<profile>\glasswave\lyrics`), the track's own lyrics (tags, a `.lrc` next to
+  an explicit per-track selection, the track's own lyrics (tags, a `.lrc` next to
   the file), the streaming provider's lyrics for its own tracks (`stream::Provider::Lyrics`;
-  NetEase returns word-timed YRC converted to enhanced LRC), then every registered
-  `lyrics::Searcher` in parallel, the best match winning. Everything is exchanged as LRC
+  NetEase returns word-timed YRC converted to enhanced LRC), then the automatic fallback
+  cache and registered `lyrics::Searcher`s. Searchers run concurrently, but selection
+  respects the configured order for local tracks and each streaming provider. Within one
+  source, the best match wins. This order follows the owner's 2026-11-09 clarification.
+  Everything is exchanged as LRC
   (enhanced LRC for word timing, ESLyric's same-timestamp reference lines for translations).
 - **Searchers run ESLyric's scripts**: Glasswave hosts the ESLyric script contract on an
   embedded QuickJS engine, so the maintained ESLyric sources and parsers run unchanged. Scripts

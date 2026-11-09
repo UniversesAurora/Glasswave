@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "netease/http.h"
+#include "netease/http_request.h"
 
 #include <winhttp.h>
 
@@ -17,27 +18,27 @@ struct InternetHandle {
     InternetHandle() = default;
     InternetHandle(const InternetHandle&) = delete;
     InternetHandle& operator=(const InternetHandle&) = delete;
-    HINTERNET* put() { return &handle; }
+    void Set(HINTERNET value) { handle = value; }
     HINTERNET get() const { return handle; }
-    explicit operator bool() const { return handle != nullptr; }
+    explicit operator bool() const { return get() != nullptr; }
 };
 
 std::wstring Win32Error(DWORD code) {
     wchar_t* buffer = nullptr;
-    const DWORD n = FormatMessageW(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM |
-                                       FORMAT_MESSAGE_IGNORE_INSERTS,
-                                   nullptr, code, MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
-                                   reinterpret_cast<wchar_t*>(&buffer), 0, nullptr);
+    const DWORD n = FormatMessageW(
+        FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS, nullptr,
+        code, MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT), reinterpret_cast<wchar_t*>(&buffer), 0, nullptr);
     std::wstring text = n && buffer ? std::wstring(buffer, n) : L"WinHTTP error " + std::to_wstring(code);
     if (buffer) LocalFree(buffer);
-    while (!text.empty() && (text.back() == L'\r' || text.back() == L'\n' || text.back() == L' ')) text.pop_back();
+    while (!text.empty() && (text.back() == L'\r' || text.back() == L'\n' || text.back() == L' '))
+        text.pop_back();
     return text;
 }
 
 bool QueryNumber(HINTERNET request, DWORD query, DWORD& value) {
     DWORD size = sizeof(value);
-    return WinHttpQueryHeaders(request, query | WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_HEADER_NAME_BY_INDEX, &value,
-                               &size, WINHTTP_NO_HEADER_INDEX) != FALSE;
+    return WinHttpQueryHeaders(request, query | WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_HEADER_NAME_BY_INDEX,
+                               &value, &size, WINHTTP_NO_HEADER_INDEX) != FALSE;
 }
 
 std::wstring QueryString(HINTERNET request, DWORD query) {
@@ -53,7 +54,7 @@ std::wstring QueryString(HINTERNET request, DWORD query) {
     return out;
 }
 
-}  // namespace
+} // namespace
 
 HttpResponse SendHttp(std::wstring_view url, const HttpOptions& options, abort_callback& abort) {
     HttpResponse result;
@@ -76,10 +77,10 @@ HttpResponse SendHttp(std::wstring_view url, const HttpOptions& options, abort_c
     const bool secure = parts.nScheme == INTERNET_SCHEME_HTTPS;
 
     InternetHandle session;
-    *session.put() = WinHttpOpen(L"Glasswave/0.1",
-                                 options.noProxy ? WINHTTP_ACCESS_TYPE_NO_PROXY
-                                                 : WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
-                                 WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+    session.Set(
+        WinHttpOpen(L"Glasswave/0.1",
+                    options.noProxy ? WINHTTP_ACCESS_TYPE_NO_PROXY : WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
+                    WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, WINHTTP_FLAG_ASYNC));
     if (!session) {
         result.error = L"WinHttpOpen: " + Win32Error(GetLastError());
         return result;
@@ -87,18 +88,17 @@ HttpResponse SendHttp(std::wstring_view url, const HttpOptions& options, abort_c
     WinHttpSetTimeouts(session.get(), 5000, 5000, options.timeoutMs, options.timeoutMs);
 
     InternetHandle connection;
-    *connection.put() = WinHttpConnect(session.get(), host.c_str(), parts.nPort, 0);
+    connection.Set(WinHttpConnect(session.get(), host.c_str(), parts.nPort, 0));
     if (!connection) {
         result.error = L"WinHttpConnect: " + Win32Error(GetLastError());
         return result;
     }
 
-    InternetHandle request;
-    *request.put() = WinHttpOpenRequest(connection.get(), options.method.c_str(), path.c_str(), nullptr,
-                                        WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES,
-                                        secure ? WINHTTP_FLAG_SECURE : 0);
+    detail::HttpRequest request(WinHttpOpenRequest(connection.get(), options.method.c_str(), path.c_str(),
+                                                   nullptr, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES,
+                                                   secure ? WINHTTP_FLAG_SECURE : 0));
     if (!request) {
-        result.error = L"WinHttpOpenRequest: " + Win32Error(GetLastError());
+        result.error = L"WinHttpOpenRequest: " + Win32Error(request.Error());
         return result;
     }
 
@@ -119,18 +119,26 @@ HttpResponse SendHttp(std::wstring_view url, const HttpOptions& options, abort_c
     void* body = options.body.empty() ? nullptr : const_cast<char*>(options.body.data());
     const DWORD bodySize = static_cast<DWORD>(options.body.size());
     abort.check();
-    if (!WinHttpSendRequest(request.get(), WINHTTP_NO_ADDITIONAL_HEADERS, 0, body, bodySize, bodySize, 0)) {
-        result.error = L"WinHttpSendRequest: " + Win32Error(GetLastError());
+    const HANDLE abortEvent = abort.get_abort_event();
+    request.Begin();
+    if (!request.Wait(WinHttpSendRequest(request.get(), WINHTTP_NO_ADDITIONAL_HEADERS, 0, body, bodySize,
+                                         bodySize, reinterpret_cast<DWORD_PTR>(&request)),
+                      abortEvent, options.timeoutMs)) {
+        abort.check();
+        result.error = L"WinHttpSendRequest: " + Win32Error(request.Error());
         return result;
     }
-    if (!WinHttpReceiveResponse(request.get(), nullptr)) {
-        result.error = L"WinHttpReceiveResponse: " + Win32Error(GetLastError());
+    request.Begin();
+    if (!request.Wait(WinHttpReceiveResponse(request.get(), nullptr), abortEvent, options.timeoutMs)) {
+        abort.check();
+        result.error = L"WinHttpReceiveResponse: " + Win32Error(request.Error());
         return result;
     }
 
     if (!QueryNumber(request.get(), WINHTTP_QUERY_STATUS_CODE, result.status))
         result.error = L"Cannot read the HTTP status";
     result.contentType = QueryString(request.get(), WINHTTP_QUERY_CONTENT_TYPE);
+    result.statusMessage = QueryString(request.get(), WINHTTP_QUERY_STATUS_TEXT);
 
     DWORD rawSize = 0;
     WinHttpQueryHeaders(request.get(), WINHTTP_QUERY_RAW_HEADERS_CRLF, WINHTTP_HEADER_NAME_BY_INDEX,
@@ -142,9 +150,16 @@ HttpResponse SendHttp(std::wstring_view url, const HttpOptions& options, abort_c
             size_t lineStart = 0;
             while (lineStart < raw.size()) {
                 const size_t lineEnd = raw.find(L"\r\n", lineStart);
-                const std::wstring line =
-                    raw.substr(lineStart, lineEnd == std::wstring::npos ? std::wstring::npos : lineEnd - lineStart);
+                const std::wstring line = raw.substr(
+                    lineStart, lineEnd == std::wstring::npos ? std::wstring::npos : lineEnd - lineStart);
                 const std::wstring prefix = L"set-cookie:";
+                if (const size_t colon = line.find(L':'); colon != std::wstring::npos) {
+                    std::wstring name = line.substr(0, colon), value = line.substr(colon + 1);
+                    std::transform(name.begin(), name.end(), name.begin(), towlower);
+                    while (!value.empty() && iswspace(value.front()))
+                        value.erase(value.begin());
+                    result.headers.emplace_back(std::move(name), std::move(value));
+                }
                 if (line.size() > prefix.size() &&
                     _wcsnicmp(line.c_str(), prefix.c_str(), prefix.size()) == 0) {
                     result.setCookies.push_back(line.substr(prefix.size()));
@@ -160,11 +175,13 @@ HttpResponse SendHttp(std::wstring_view url, const HttpOptions& options, abort_c
     long long received = 0;
     for (;;) {
         abort.check();
-        DWORD available = 0;
-        if (!WinHttpQueryDataAvailable(request.get(), &available)) {
-            result.error = L"WinHttpQueryDataAvailable: " + Win32Error(GetLastError());
+        request.Begin();
+        if (!request.Wait(WinHttpQueryDataAvailable(request.get(), nullptr), abortEvent, options.timeoutMs)) {
+            abort.check();
+            result.error = L"WinHttpQueryDataAvailable: " + Win32Error(request.Error());
             break;
         }
+        const DWORD available = request.Available();
         if (!available) break;
         const size_t old = result.body.size();
         if (old + available > options.maxBodyBytes) {
@@ -172,12 +189,15 @@ HttpResponse SendHttp(std::wstring_view url, const HttpOptions& options, abort_c
             break;
         }
         result.body.resize(old + available);
-        DWORD read = 0;
-        if (!WinHttpReadData(request.get(), result.body.data() + old, available, &read)) {
-            result.body.resize(old);
-            result.error = L"WinHttpReadData: " + Win32Error(GetLastError());
-            break;
+        request.Begin();
+        if (!request.Wait(WinHttpReadData(request.get(), result.body.data() + old, available, nullptr),
+                          abortEvent, options.timeoutMs)) {
+            // The request destructor drains HANDLE_CLOSING before the result buffer dies.
+            abort.check();
+            result.error = L"WinHttpReadData: " + Win32Error(request.Error());
+            return result;
         }
+        const DWORD read = request.Read();
         result.body.resize(old + read);
         received += read;
         if (options.progress) options.progress(received, total ? static_cast<long long>(total) : 0);
@@ -191,4 +211,4 @@ HttpResponse SendHttp(std::wstring_view url, const HttpOptions& options, abort_c
     return result;
 }
 
-}  // namespace glasswave::netease
+} // namespace glasswave::netease

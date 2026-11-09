@@ -6,6 +6,20 @@
     "dest": "third_party/foobar2000-sdk",
     "license": "BSD-style (sdk-license.txt); pfc/libPPUI zlib-style"
   },
+  "quickjs-ng": {
+    "version": "0.18.0",
+    "url": "https://github.com/quickjs-ng/quickjs/releases/download/v0.18.0/quickjs-amalgam.zip",
+    "sha256": "6C05066A6B62B483E2BA0F83D7A16688C6958182B214BFD693529434CEF84A9E",
+    "dest": "third_party/quickjs-ng",
+    "license": "MIT"
+  },
+  "miniz": {
+    "version": "3.1.2",
+    "url": "https://github.com/richgel999/miniz/releases/download/3.1.2/miniz-3.1.2.zip",
+    "sha256": "F0446D863F9C19926AD9483C523FDC42E42B8D4A6A431D27E09D49C79A140D9A",
+    "dest": "third_party/miniz",
+    "license": "MIT"
+  },
   "foobar2000-dev": {
     "version": "2.26.2",
     "arch": "x64",

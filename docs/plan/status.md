@@ -496,6 +496,58 @@ Updated: 2026-11-09
 - Capsule geometry is a fit to the owner's photographs. Apple's exact construction and
   pixel-for-pixel equivalence have not been established.
 
+## Lyrics sources and manual selection (2026-11-09)
+
+- Added pinned QuickJS-ng 0.18.0 and miniz 3.1.2 amalgamations, verified by bootstrap.
+  The host implements ES modules, synchronous request callbacks, persistent per-source
+  strings, Mini-XML traversal, base64, UTF-8 buffers, decompression, parser dispatch and
+  promise jobs. Each search has a 64 MB runtime and 20 s budget.
+- Discovers profile ESLyric scripts and Glasswave overrides. Third-party scripts remain
+  untracked. The original QRC parser delegates through a compatibility module to the user's
+  unchanged community JavaScript decryptor. Added our MIT LRCLIB source.
+- Priority follows the owner's clarification. Manual selections are remembered, followed
+  by tags / adjacent LRC, the streaming provider's own endpoint, then fallback cache /
+  sources in per-provider order. Sources run concurrently with deterministic selection.
+  Automatic-cache keys include metadata and duration.
+- Both lyric regions expose search, specific-source search, file loading, re-search and
+  automatic reset. Search supports edited title / artist, source / timing columns and
+  preview. Track changes invalidate old results. Automatic-cache clearing preserves manual
+  selections. Workers and HTTP requests cancel and join before component unload.
+- Release x64 builds warning-free. Offline host checks cover modules, XML, DTD rejection,
+  buffers, base64, zlib, HTTP ordering, parser dispatch, copy-on-add, promises and CPU-bound
+  cancellation, plus 11 unmodified reference configurations. Existing queue / motion /
+  source checks pass all 144927 assertions.
+- The shared HTTP transport keeps its blocking public interface over asynchronous WinHTTP.
+  Abort events interrupt waits, and the request context and buffers survive until the final
+  handle-closing callback. Loopback-only program tests cover normal / 404 bodies, blocked
+  header / body scenarios, repeated cancellation and timeout. After the owner's instruction,
+  verification uses programs and code review exclusively, with no further UI automation.
+- Live dev-instance search returned NetEase, Kugou word timing and LRCLIB results. Loading
+  a Kugou candidate updated both lyric views. A copied local FLAC used its adjacent LRC,
+  manual loading overrode it, restart retained the selection, and automatic reset restored
+  the adjacent LRC. Musixmatch successful retrieval remains unverified. Apple Music and
+  Spotify are deferred at the owner's request.
+
+## Original source compatibility follow-up (2026-11-09)
+
+- Verified the original ESLyric package's 49 script / dependency files byte-for-byte against
+  the dev profile, including QQ, NetEase, Kugou and Musixmatch. Community QQ Ex / NetEase Ex
+  and QRC / YRC / KRC parsers and libraries are unchanged too. `run-dev.ps1` now copies these
+  local reference trees automatically without tracking or bundling third-party code.
+- Fixed the host's Unicode Base64 contract, which blocked QQ Ex before its lyric request.
+  Original sources pass Unicode metadata to `btoa`, while KRC uses `atob` on UTF-8 JSON.
+  Added offline tests that execute the original QQ Ex script through the mocked search /
+  lyric request and validate the binary QRC parser adapter.
+- Program-only live probes of Jay Chou's Qing Tian returned 10 word-timed candidates from
+  original `qqmusic.js` and 10 from unchanged `qqmusic_ex.js`. The native-module adapter
+  delegates to the external community decryptor's byte API. No GPL algorithm was copied.
+- The same original-source program probe returned 20 Kugou word-timed candidates and five
+  NetEase candidates. Musixmatch's original source remains installed and enabled, but its
+  live Hello / Adele request returned no lyric body. Apple Music and Spotify remain deferred.
+- Commit preparation reused the completed program checks. Release x64 reports zero
+  warnings and errors, and queue / motion / source checks pass all 144927 assertions.
+  No further UI automation was performed.
+
 ## Next
 
 1. Owner tests lyric source priorities and manual search. Complete the remaining endpoint

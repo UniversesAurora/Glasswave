@@ -1,6 +1,6 @@
 # Lyrics script host (ESLyric-compatible searchers)
 
-Work order for the next implementer. Read [ADR 0010](../adr/0010-lyrics.md) first. The lyrics
+Implementation work order. Read [ADR 0010](../adr/0010-lyrics.md) first. The lyrics
 pane, the LRC model and `lyrics::Service` already exist; this task only adds searchers. Do not
 change the view, the service's public API or the LRC model without asking the owner.
 
@@ -50,11 +50,11 @@ Everything these scripts use, and therefore the complete required surface:
 | `evalLib(path)` | Evaluates `scripts/lib/<path>` as a classic script in the global scope (defines `querystring`). |
 | `mxml.loadString(xml)` | Returns the document node or null. Nodes: `findElement(name[, mode])` (first descendant element with that name; `mxml.MXML_DESCEND` is the default mode; the result is also iterable over every match in document order, because scripts write `for (const s of doc.findElement('songinfo') \|\| [])`), `getFirstChild()`, `getCDATA()` (text of a CDATA node), `getText()`, `getAttr(name)` (null if absent). Write a small XML reader; there is no need for a full DOM. |
 | `zlib.uncompress(buf)` | ArrayBuffer or typed array in, ArrayBuffer out (zlib stream), null on error. Use miniz. |
-| `atob`, `btoa` | Latin-1 strings, as in browsers. |
+| `atob`, `btoa` | UTF-8 strings. Original QQ scripts pass Unicode metadata directly, and KRC parsers decode UTF-8 JSON / translations. |
 | `arrayBufferToString(buf)` | UTF-8 decode. Add `stringToArrayBuffer(str)` (UTF-8 encode) too. |
 | `console.log(...)` | foobar2000 console, prefixed `Glasswave lyrics [script name]:`. |
 | `utils.createProfiler`, `debugWriteArrayBuffer` | Stubs (no-ops) are enough. |
-| `import * as decoder from "parser_ext.so"` | ESLyric's native module for `qrc.js`: `decodeQrc(ArrayBuffer)` returns the decrypted zlib data. Provide a built-in module of that name. Implement QQ Music's QRC decryption natively only from a permissively licensed or published description; do not port LDDC or `qrc-decryptor.js` (both GPL-3). If no clean source exists, return null: QQ Music still works through `qqmusic_ex.js` + `qrcjson.js`, whose decryptor is plain JavaScript. |
+| `import * as decoder from "parser_ext.so"` | `decodeQrc(ArrayBuffer)` returns decrypted zlib data. When the user's community `qrc-decryptor.js` is installed, a small compatibility module delegates to its exported `decryptQrcBytes`. It removes the original script's `[offset:0]` binary prefix and adapts bytes to hex. The GPL decryptor stays external and unchanged. Without it, return null. No decryption algorithm is ported into the component. |
 
 Parsers convert `lyricText` (or `lyricData` when `parsePlainText` is false) to LRC in
 `context.lyricText`; `context.duration` is the track length. Map `fileType` -> parser by the
@@ -160,10 +160,22 @@ and this file's checklist below. Claude reviews the result against this document
 
 ## Checklist
 
-- [ ] Dependencies fetched and verified by bootstrap
-- [ ] Engine + module loader + built-ins
-- [ ] mxml subset
-- [ ] Searcher wrapper + registration + parser dispatch
-- [ ] Script discovery + reload + preferences rows
-- [ ] Acceptance 1-5
-- [ ] Own scripts (LRCLIB first; Apple Music / Spotify after the owner agrees)
+- [x] Dependencies fetched and verified by bootstrap
+- [x] Engine + module loader + built-ins
+- [x] mxml subset (Windows MSXML tree, DTD / external resolution disabled)
+- [x] Searcher wrapper + registration + parser dispatch
+- [x] Script discovery + reload + preferences rows
+- [x] Offline host contract checks, including 11 unmodified reference script configs
+- [x] Live NetEase, Kugou word timing and LRCLIB search / selection
+- [x] Original QQ and QQ Ex live probes each returned 10 word-timed candidates
+- [x] Own LRCLIB script
+- [ ] Full acceptance across Chinese / English local libraries and Musixmatch endpoint
+- [ ] Apple Music / Spotify scripts (owner account setup still required)
+
+2026-11-09 implementation notes. The owner's subsequent request authorizes source-specific
+priority and manual result selection, extending the service API while retaining the model
+and existing rendering behavior. Search, source-specific search, LRC / text loading and
+automatic-selection reset are available from both lyric regions. Automatic fallback cache
+does not outrank the track's own lyrics. Explicit selections are separate `.selected.lrc`
+files and survive automatic-cache clearing. No third-party scripts are bundled or tracked.
+The dev profile contains the owner's reference scripts for integration verification.

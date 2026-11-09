@@ -50,7 +50,7 @@
       <SDLCheck>true</SDLCheck>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
       <AdditionalOptions>/utf-8 /bigobj /Zc:__cplusplus %(AdditionalOptions)</AdditionalOptions>
-      <AdditionalIncludeDirectories>$(MSBuildProjectDirectory);$(SdkRoot)foobar2000;$(SdkRoot);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(MSBuildProjectDirectory);$(RepoRoot)third_party\quickjs-ng;$(RepoRoot)third_party\miniz;$(SdkRoot)foobar2000;$(SdkRoot);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <PreprocessorDefinitions>_WINDOWS;_USRDLL;WIN32_LEAN_AND_MEAN;NOMINMAX;_WIN32_WINNT=0x0A00;WINVER=0x0A00;%(PreprocessorDefinitions)</PreprocessorDefinitions>
     </ClCompile>
     <Link>
@@ -87,7 +87,26 @@
     <ClCompile Include="gfx\effects.cpp" />
     <ClCompile Include="lyrics\lrc.cpp" />
     <ClCompile Include="lyrics\lyrics_service.cpp" />
+    <ClCompile Include="lyrics\scripts.cpp" />
+    <ClCompile Include="lyrics\script_host.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="$(RepoRoot)third_party\quickjs-ng\quickjs-amalgam.c">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <WarningLevel>TurnOffAllWarnings</WarningLevel>
+      <SDLCheck>false</SDLCheck>
+      <LanguageStandard_C>stdc11</LanguageStandard_C>
+      <AdditionalOptions>/experimental:c11atomics %(AdditionalOptions)</AdditionalOptions>
+      <PreprocessorDefinitions>_CRT_SECURE_NO_WARNINGS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+    <ClCompile Include="$(RepoRoot)third_party\miniz\miniz.c">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <WarningLevel>TurnOffAllWarnings</WarningLevel>
+      <SDLCheck>false</SDLCheck>
+      <PreprocessorDefinitions>_CRT_SECURE_NO_WARNINGS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
     <ClCompile Include="ui\lyrics_view.cpp" />
+    <ClCompile Include="ui\lyrics_search.cpp" />
     <ClCompile Include="ui\pane_common.cpp" />
     <ClCompile Include="ui\queue_view.cpp" />
     <ClCompile Include="ui\now_playing_pane.cpp" />
@@ -152,7 +171,10 @@
     <ClInclude Include="gfx\effects.h" />
     <ClInclude Include="lyrics\lyrics.h" />
     <ClInclude Include="lyrics\lyrics_service.h" />
+    <ClInclude Include="lyrics\scripts.h" />
+    <ClInclude Include="lyrics\script_host.h" />
     <ClInclude Include="ui\lyrics_view.h" />
+    <ClInclude Include="ui\lyrics_search.h" />
     <ClInclude Include="ui\pane_common.h" />
     <ClInclude Include="ui\queue_view.h" />
     <ClInclude Include="ui\now_playing_pane.h" />
@@ -208,6 +230,7 @@
     <ClInclude Include="netease\cover_cache.h" />
     <ClInclude Include="netease\handle.h" />
     <ClInclude Include="netease\http.h" />
+    <ClInclude Include="netease\http_request.h" />
     <ClInclude Include="netease\json.h" />
     <ClInclude Include="netease\log.h" />
     <ClInclude Include="netease\profile.h" />
