@@ -3,6 +3,9 @@
 #include "ui/lyrics_view.h"
 
 #include "gfx/composition_host.h"
+#include "gfx/effects.h"
+
+#include <winrt/Windows.Foundation.Collections.h>
 #include "ui/i18n.h"
 
 namespace glasswave::ui {
@@ -208,8 +211,20 @@ struct LyricsView::LineView {
     float glow = 0;  // 0 inactive .. 1 active (bright layer)
     float hover = 0;
     bool active = false;
-    com_ptr<ID2D1CommandList> image;  // dim look, for the blurred path
-    com_ptr<ID2D1Effect> blurFx, opacityFx;
+
+    // Composition: the block (position, scale) holds the hover plate and the text image.
+    wuc::ContainerVisual root{nullptr};
+    wuc::ShapeVisual plate{nullptr};
+    wuc::CompositionRoundedRectangleGeometry plateShape{nullptr};
+    wuc::CompositionColorBrush plateBrush{nullptr};
+    wuc::SpriteVisual text{nullptr};
+    wuc::CompositionDrawingSurface surface{nullptr};
+    wuc::CompositionSurfaceBrush surfaceBrush{nullptr};
+    wuc::CompositionEffectBrush blurBrush{nullptr};
+    bool blurred = false;    // the text uses the blur brush
+    int image = -1;          // what the surface shows: -1 nothing, 0 the dim image, 1 live
+    float imageGlow = -1;    // glow the live image was drawn at
+    float shownBlur = -1;    // last values sent to the compositor
 };
 
 namespace {
@@ -282,15 +297,56 @@ HRESULT RunCollector::DrawGlyphRun(void*, FLOAT x, FLOAT y, DWRITE_MEASURING_MOD
 
 LyricsView::LyricsView(const wuc::ContainerVisual& parent) {
     auto& host = gfx::CompositionHost::Get();
-    m_visual = host.Compositor().CreateSpriteVisual();
-    m_visual.IsVisible(false);
-    parent.Children().InsertAtTop(m_visual);
+    const auto& comp = host.Compositor();
     m_dc = host.CreateDeviceContext();
+    m_root = comp.CreateContainerVisual();
+    m_root.IsVisible(false);
+    parent.Children().InsertAtTop(m_root);
+    m_tint = comp.CreateSpriteVisual();
+    m_tint.Brush(comp.CreateColorBrush(winrt::Windows::UI::ColorHelper::FromArgb(
+        static_cast<uint8_t>(std::lround(kPaneTint * 255)), 0, 0, 0)));
+    m_root.Children().InsertAtTop(m_tint);
+    m_header = comp.CreateSpriteVisual();
+    m_message = comp.CreateSpriteVisual();
+    m_root.Children().InsertAtTop(m_header);
+    m_root.Children().InsertAtTop(m_message);
+
+    // The lines live in a layer whose alpha is multiplied by a vertical gradient: they fade
+    // out under the header and at the bottom (Apple Music's edge fade), on the GPU.
+    m_layer = comp.CreateLayerVisual();
+    m_root.Children().InsertAtTop(m_layer);
+    try {
+        auto mask = gfx::MakeAlphaMaskEffect(wuc::CompositionEffectSourceParameter(L"source"),
+                                             wuc::CompositionEffectSourceParameter(L"mask"));
+        auto brush = comp.CreateEffectFactory(mask).CreateBrush();
+        m_maskSurface = host.CreateSurface(1, 1);
+        auto maskBrush = comp.CreateSurfaceBrush(m_maskSurface);
+        maskBrush.Stretch(wuc::CompositionStretch::Fill);
+        brush.SetSourceParameter(L"mask", maskBrush);
+        m_layer.Effect(brush);
+    } catch (...) {
+        m_maskSurface = nullptr;  // no fade; everything else works
+    }
+    m_blurFactory = comp.CreateEffectFactory(
+        gfx::MakeGaussianBlurEffect(L"Blur", 0, wuc::CompositionEffectSourceParameter(L"source")),
+        std::vector<winrt::hstring>{L"Blur.BlurAmount"});
+
+    m_dots = comp.CreateContainerVisual();
+    for (size_t k = 0; k < 3; ++k) {
+        auto shape = comp.CreateShapeVisual();
+        auto ellipse = comp.CreateEllipseGeometry();
+        auto sprite = comp.CreateSpriteShape(ellipse);
+        m_dotBrush[k] = comp.CreateColorBrush(winrt::Windows::UI::Colors::White());
+        sprite.FillBrush(m_dotBrush[k]);
+        shape.Shapes().Append(sprite);
+        m_dots.Children().InsertAtTop(shape);
+    }
+    m_layer.Children().InsertAtTop(m_dots);
 }
 
 LyricsView::~LyricsView() {
-    if (m_visual) {
-        if (auto parent = m_visual.Parent()) parent.Children().Remove(m_visual);
+    if (m_root) {
+        if (auto parent = m_root.Parent()) parent.Children().Remove(m_root);
     }
 }
 
@@ -299,21 +355,21 @@ void LyricsView::SetBounds(const RECT& px, float scale) {
                              px.bottom - px.top != m_bounds.bottom - m_bounds.top || scale != m_scale;
     m_bounds = px;
     m_scale = scale;
-    m_visual.Offset(float3{static_cast<float>(px.left), static_cast<float>(px.top), 0});
-    m_visual.Size(float2{static_cast<float>(std::max<LONG>(0, px.right - px.left)),
-                         static_cast<float>(std::max<LONG>(0, px.bottom - px.top))});
+    m_root.Offset(float3{static_cast<float>(px.left), static_cast<float>(px.top), 0});
     if (sizeChanged && m_visible) {
+        LayoutChrome();
         Relayout();
         UpdateTargets(false, true, false);
-        Paint();
+        Render();
     }
 }
 
 void LyricsView::SetVisible(bool visible) {
     if (visible == m_visible) return;
     m_visible = visible;
-    m_visual.IsVisible(visible);
+    m_root.IsVisible(visible);
     if (visible) {
+        LayoutChrome();
         Relayout();
         m_lastNow = Now();
         m_focus = -2;  // recomputed by Tick
@@ -324,8 +380,10 @@ void LyricsView::SetVisible(bool visible) {
             l->scale.Snap(l->scale.Target());
             l->blur = l->blurTarget;
         }
-        Paint();
+        Render();
         StartFrames();
+    } else {
+        for (auto& l : m_lines) ReleaseLine(*l);  // surfaces are not kept while hidden
     }
 }
 
@@ -334,7 +392,10 @@ void LyricsView::SetTrack(const std::wstring& title, const std::wstring& artist,
     m_artist = artist;
     if (art.get() != m_art.get()) m_artBitmap = nullptr;
     m_art = art;
-    if (m_visible) Paint();
+    if (m_visible) {
+        PaintHeader();
+        PaintMessage();
+    }
 }
 
 void LyricsView::SetResult(const lyrics::Result& result) {
@@ -349,6 +410,7 @@ void LyricsView::SetResult(const lyrics::Result& result) {
     m_interludeShow = 0;
     Relayout();
     if (!m_visible) return;
+    PaintMessage();
     // New lyrics fly in from below, line after line.
     m_lastNow = Now();
     Tick();
@@ -400,6 +462,7 @@ float LyricsView::AnchorY() const {
 // ---- Layout -----------------------------------------------------------------------------
 
 void LyricsView::Relayout() {
+    for (auto& l : m_lines) ReleaseLine(*l);
     m_lines.clear();
     m_dc->SetDpi(96.0f * m_scale, 96.0f * m_scale);
     const float W = (m_bounds.right - m_bounds.left) / m_scale;
@@ -582,6 +645,7 @@ bool LyricsView::NeedsFrames() const {
             return true;
     if (m_interludeY.Moving() || m_interludeShow != (m_interlude != -2 ? 1.0f : 0.0f)) return true;
     if (m_browsing) return true;  // waits to return to the playing line
+    if (m_dim != kDim) return true;
     return false;
 }
 
@@ -665,56 +729,178 @@ bool LyricsView::Tick() {
     }
     m_interludeY.Step(dt);
     m_interludeShow = Approach(m_interludeShow, m_interlude != -2 ? 1.0f : 0.0f, dt, 0.4f);
-    Paint();
+    m_dim = Approach(m_dim, m_browsing ? kDimBrowsing : kDim, dt, 0.4f);
+    Render();
     return NeedsFrames();
 }
 
-// ---- Painting ---------------------------------------------------------------------------
+// ---- Rendering --------------------------------------------------------------------------
 
-void LyricsView::EnsureCommandList(ID2D1DeviceContext* dc, LineView& l) {
-    if (l.image) return;
-    const float F = FontSize();
-    com_ptr<ID2D1CommandList> list;
-    if (FAILED(dc->CreateCommandList(list.put()))) return;
-    dc->SetTarget(list.get());
-    dc->BeginDraw();
-    dc->SetTransform(D2D1::Matrix3x2F::Identity());
-    // Main text at 0.75 and the translation at 1: the opacity effect scales both.
-    auto mainInk = White(dc, 0.75f), subInk = White(dc, 0.75f * kSub / kDim);
-    dc->DrawTextLayout({0, 0}, l.main.get(), mainInk.get(), D2D1_DRAW_TEXT_OPTIONS_NONE);
-    if (l.sub) dc->DrawTextLayout({0, l.mainH + kSubGap * F}, l.sub.get(), subInk.get());
-    dc->EndDraw();
-    list->Close();
-    dc->SetTarget(nullptr);
-    l.image = list;
-    dc->CreateEffect(CLSID_D2D1GaussianBlur, l.blurFx.put());
-    dc->CreateEffect(CLSID_D2D1Opacity, l.opacityFx.put());
-    if (l.blurFx && l.opacityFx) {
-        l.blurFx->SetInput(0, l.image.get());
-        l.blurFx->SetValue(D2D1_GAUSSIANBLUR_PROP_OPTIMIZATION, D2D1_GAUSSIANBLUR_OPTIMIZATION_BALANCED);
-        l.opacityFx->SetInputEffect(0, l.blurFx.get());
+float LyricsView::ImagePad() const { return std::max(16.0f, 0.45f * FontSize()); }
+
+void LyricsView::LayoutChrome() {
+    auto& host = gfx::CompositionHost::Get();
+    const float w = static_cast<float>(std::max<LONG>(0, m_bounds.right - m_bounds.left));
+    const float h = static_cast<float>(std::max<LONG>(0, m_bounds.bottom - m_bounds.top));
+    m_tint.Size(float2{w, h});
+    const float top = std::round(ContentTop() * m_scale);
+    m_layer.Offset(float3{0, top, 0});
+    m_layer.Size(float2{w, std::max(0.0f, h - top)});
+    if (m_maskSurface && h > top) {
+        const int mh = static_cast<int>(h - top);
+        m_maskSurface.Resize(winrt::Windows::Graphics::SizeInt32{4, mh});
+        const float H = mh / m_scale;
+        host.Draw(m_maskSurface, m_scale, [&](ID2D1DeviceContext* dc) {
+            const D2D1_GRADIENT_STOP s[] = {{0.0f, D2D1::ColorF(1, 1, 1, 0)},
+                                            {std::min(0.45f, kTopFade / std::max(1.0f, H)), D2D1::ColorF(1, 1, 1, 1)},
+                                            {std::max(0.55f, 1.0f - kBottomFade / std::max(1.0f, H)), D2D1::ColorF(1, 1, 1, 1)},
+                                            {1.0f, D2D1::ColorF(1, 1, 1, 0)}};
+            com_ptr<ID2D1GradientStopCollection> stops;
+            dc->CreateGradientStopCollection(s, 4, stops.put());
+            com_ptr<ID2D1LinearGradientBrush> b;
+            dc->CreateLinearGradientBrush({{0, 0}, {0, H}}, stops.get(), b.put());
+            dc->FillRectangle({0, 0, 4 / m_scale, H}, b.get());
+        });
     }
-    // Glow images for the emphasized words.
+    PaintHeader();
+    PaintMessage();
+}
+
+void LyricsView::PaintHeader() {
+    auto& host = gfx::CompositionHost::Get();
+    const int w = std::max<int>(1, m_bounds.right - m_bounds.left), h = static_cast<int>(std::round(kHeaderHeight * m_scale));
+    m_header.Size(float2{static_cast<float>(w), static_cast<float>(h)});
+    auto surface = host.CreateSurface(w, h);
+    m_dc->SetDpi(96.0f * m_scale, 96.0f * m_scale);
+    host.Draw(surface, m_scale, m_dc.get(), [&](ID2D1DeviceContext* dc) {
+        if (m_title.empty()) return;
+        const float W = w / m_scale;
+        const float x0 = kSideMargin + 8, y0 = (kHeaderHeight - kCover) / 2;
+        float textX = x0;
+        if (m_art && !m_artBitmap) dc->CreateBitmapFromWicBitmap(m_art.get(), nullptr, m_artBitmap.put());
+        if (m_artBitmap) {
+            const D2D1_RECT_F box{x0, y0, x0 + kCover, y0 + kCover};
+            com_ptr<ID2D1Factory> factory;
+            dc->GetFactory(factory.put());
+            com_ptr<ID2D1RoundedRectangleGeometry> clip;
+            factory->CreateRoundedRectangleGeometry(D2D1::RoundedRect(box, 6, 6), clip.put());
+            com_ptr<ID2D1SolidColorBrush> shade;
+            dc->CreateSolidColorBrush(D2D1::ColorF(0, 0, 0, 0.18f), shade.put());
+            dc->FillRoundedRectangle(D2D1::RoundedRect({box.left, box.top + 2, box.right, box.bottom + 2}, 7, 7), shade.get());
+            dc->PushLayer(D2D1::LayerParameters1(D2D1::InfiniteRect(), clip.get()), nullptr);
+            const D2D1_SIZE_F s = m_artBitmap->GetSize();
+            const float k = std::max(kCover / std::max(1.0f, s.width), kCover / std::max(1.0f, s.height));
+            const float dw = s.width * k, dh = s.height * k;
+            const D2D1_RECT_F dst{box.left + (kCover - dw) / 2, box.top + (kCover - dh) / 2, box.left + (kCover + dw) / 2,
+                                  box.top + (kCover + dh) / 2};
+            dc->DrawBitmap(m_artBitmap.get(), &dst, 1.0f, D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC, nullptr, nullptr);
+            dc->PopLayer();
+            textX = box.right + 14;
+        }
+        auto* f = gfx::CompositionHost::Get().DWrite();
+        const float textW = std::max(10.0f, W - textX - kSideMargin - 8);
+        auto line = [&](const std::wstring& text, float size, DWRITE_FONT_WEIGHT weight, float y, float alpha) {
+            if (text.empty()) return;
+            auto format = MakeFormat(size, weight);
+            format->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+            com_ptr<IDWriteTextLayout> layout;
+            if (FAILED(f->CreateTextLayout(text.c_str(), static_cast<UINT32>(text.size()), format.get(), textW,
+                                           size * 1.5f, layout.put())))
+                return;
+            com_ptr<IDWriteInlineObject> ellipsis;
+            f->CreateEllipsisTrimmingSign(layout.get(), ellipsis.put());
+            const DWRITE_TRIMMING trim{DWRITE_TRIMMING_GRANULARITY_CHARACTER, 0, 0};
+            layout->SetTrimming(&trim, ellipsis.get());
+            dc->DrawTextLayout({textX, y}, layout.get(), White(dc, alpha).get());
+        };
+        const float mid = kHeaderHeight / 2;
+        line(m_title, 16, DWRITE_FONT_WEIGHT_SEMI_BOLD, mid - 22, 0.95f);
+        line(m_artist, 14, DWRITE_FONT_WEIGHT_NORMAL, mid + 1, 0.6f);
+    });
+    auto brush = host.Compositor().CreateSurfaceBrush(surface);
+    brush.Stretch(wuc::CompositionStretch::None);
+    brush.HorizontalAlignmentRatio(0);
+    brush.VerticalAlignmentRatio(0);
+    m_header.Brush(brush);
+}
+
+void LyricsView::PaintMessage() {
+    std::wstring text;
+    switch (m_status) {
+    case lyrics::Status::None: text = m_title.empty() ? Tr(L"Nothing playing") : L""; break;
+    case lyrics::Status::Searching: text = Tr(L"Searching for lyrics…"); break;
+    case lyrics::Status::NotFound: text = Tr(L"No lyrics found"); break;
+    case lyrics::Status::Found: break;
+    }
+    m_message.IsVisible(!text.empty());
+    if (text.empty()) return;
+    auto& host = gfx::CompositionHost::Get();
+    const int w = std::max<int>(1, m_bounds.right - m_bounds.left), h = std::max<int>(1, m_bounds.bottom - m_bounds.top);
+    m_message.Size(float2{static_cast<float>(w), static_cast<float>(h)});
+    m_message.Brush(nullptr);
+    auto surface = host.CreateSurface(w, h);
+    host.Draw(surface, m_scale, [&](ID2D1DeviceContext* dc) {
+        const float W = w / m_scale, H = h / m_scale;
+        auto format = MakeFormat(17, DWRITE_FONT_WEIGHT_SEMI_BOLD);
+        format->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+        com_ptr<IDWriteTextLayout> layout;
+        auto* f = gfx::CompositionHost::Get().DWrite();
+        if (FAILED(f->CreateTextLayout(text.c_str(), static_cast<UINT32>(text.size()), format.get(), W - 40, 200,
+                                       layout.put())))
+            return;
+        DWRITE_TEXT_METRICS tm{};
+        layout->GetMetrics(&tm);
+        const float top = ContentTop() + (H - ContentTop() - tm.height) / 2 - 20;
+        dc->DrawTextLayout({20, top}, layout.get(), White(dc, 0.55f).get());
+    });
+    auto brush = host.Compositor().CreateSurfaceBrush(surface);
+    brush.Stretch(wuc::CompositionStretch::None);
+    brush.HorizontalAlignmentRatio(0);
+    brush.VerticalAlignmentRatio(0);
+    m_message.Brush(brush);
+}
+
+void LyricsView::ReleaseLine(LineView& l) {
+    if (l.root) {
+        if (auto parent = l.root.Parent()) parent.Children().Remove(l.root);
+    }
+    l.root = nullptr;
+    l.plate = nullptr;
+    l.plateShape = nullptr;
+    l.plateBrush = nullptr;
+    l.text = nullptr;
+    l.surface = nullptr;
+    l.surfaceBrush = nullptr;
+    l.blurBrush = nullptr;
+    l.blurred = false;
+    l.image = -1;
+    l.imageGlow = -1;
+    l.shownBlur = -1;
+}
+
+// Command lists of the emphasized words in white, blurred into their glow while sung. They are
+// recorded outside any surface draw.
+void LyricsView::PrepareGlow(LineView& l) {
     for (size_t w = 0; w < l.words.size(); ++w) {
         auto& wv = l.words[w];
         if (!wv.emphasize || wv.glow) continue;
         com_ptr<ID2D1CommandList> g;
-        if (FAILED(dc->CreateCommandList(g.put()))) continue;
-        dc->SetTarget(g.get());
-        dc->BeginDraw();
-        dc->SetTransform(D2D1::Matrix3x2F::Identity());
-        auto ink = White(dc, 1.0f);
+        if (FAILED(m_dc->CreateCommandList(g.put()))) continue;
+        m_dc->SetTarget(g.get());
+        m_dc->BeginDraw();
+        m_dc->SetTransform(D2D1::Matrix3x2F::Identity());
+        auto ink = White(m_dc.get(), 1.0f);
         for (const auto& r : l.runs) {
             if (r.word != static_cast<int>(w)) continue;
             const auto run = r.Glyphs();
-            dc->DrawGlyphRun(r.origin, &run, ink.get());
+            m_dc->DrawGlyphRun(r.origin, &run, ink.get());
         }
-        dc->EndDraw();
+        m_dc->EndDraw();
         g->Close();
-        dc->SetTarget(nullptr);
+        m_dc->SetTarget(nullptr);
         wv.glow = g;
-        dc->CreateEffect(CLSID_D2D1GaussianBlur, wv.glowBlur.put());
-        dc->CreateEffect(CLSID_D2D1Opacity, wv.glowOpacity.put());
+        m_dc->CreateEffect(CLSID_D2D1GaussianBlur, wv.glowBlur.put());
+        m_dc->CreateEffect(CLSID_D2D1Opacity, wv.glowOpacity.put());
         if (wv.glowBlur && wv.glowOpacity) {
             wv.glowBlur->SetInput(0, g.get());
             wv.glowOpacity->SetInputEffect(0, wv.glowBlur.get());
@@ -722,183 +908,56 @@ void LyricsView::EnsureCommandList(ID2D1DeviceContext* dc, LineView& l) {
     }
 }
 
-void LyricsView::Paint() {
-    if (!m_visible) return;
-    const int w = std::max<int>(1, m_bounds.right - m_bounds.left), h = std::max<int>(1, m_bounds.bottom - m_bounds.top);
+// The line's surface: the dim image (white, the visual's opacity sets the level) or the live
+// image of an active line (exact alphas, word fill, float, glow).
+void LyricsView::DrawLineImage(LineView& l, double now, bool live) {
     auto& host = gfx::CompositionHost::Get();
-    if (!m_surface || m_surfaceSize.cx != w || m_surfaceSize.cy != h) {
-        m_surface = host.CreateSurface(w, h);
-        m_surfaceSize = {w, h};
-        auto brush = host.Compositor().CreateSurfaceBrush(m_surface);
-        brush.Stretch(wuc::CompositionStretch::None);
-        brush.HorizontalAlignmentRatio(0);
-        brush.VerticalAlignmentRatio(0);
-        m_visual.Brush(brush);
+    const float F = FontSize(), pad = ImagePad();
+    const float textH = l.mainH + (l.sub ? kSubGap * F + l.subH : 0);
+    const int w = static_cast<int>(std::ceil((m_layoutWidth + 2 * pad) * m_scale));
+    const int h = static_cast<int>(std::ceil((textH + 2 * pad) * m_scale));
+    if (!l.surface) {
+        l.surface = host.CreateSurface(w, h);
+        l.surfaceBrush = host.Compositor().CreateSurfaceBrush(l.surface);
+        l.surfaceBrush.Stretch(wuc::CompositionStretch::None);
+        l.surfaceBrush.HorizontalAlignmentRatio(0);
+        l.surfaceBrush.VerticalAlignmentRatio(0);
+        l.text.Size(float2{static_cast<float>(w), static_cast<float>(h)});
+        l.text.Brush(l.surfaceBrush);
+        l.blurred = false;
+        l.shownBlur = -1;
     }
-    // Command lists are recorded outside the surface's draw.
+    if (live) PrepareGlow(l);
     m_dc->SetDpi(96.0f * m_scale, 96.0f * m_scale);
-    for (auto& l : m_lines) EnsureCommandList(m_dc.get(), *l);
-    host.Draw(m_surface, m_scale, m_dc.get(), [&](ID2D1DeviceContext* dc) {
-        const float W = w / m_scale, H = h / m_scale;
-        dc->FillRectangle({0, 0, W, H}, White(dc, 0).get());
-        com_ptr<ID2D1SolidColorBrush> tint;
-        dc->CreateSolidColorBrush(D2D1::ColorF(0, 0, 0, kPaneTint), tint.put());
-        dc->FillRectangle({0, 0, W, H}, tint.get());
-        PaintHeader(dc);
-        switch (m_status) {
-        case lyrics::Status::None: PaintMessage(dc, m_title.empty() ? Tr(L"Nothing playing") : L""); break;
-        case lyrics::Status::Searching: PaintMessage(dc, Tr(L"Searching for lyrics…")); break;
-        case lyrics::Status::NotFound: PaintMessage(dc, Tr(L"No lyrics found")); break;
-        case lyrics::Status::Found: PaintLines(dc); break;
+    host.Draw(l.surface, m_scale, m_dc.get(), [&](ID2D1DeviceContext* dc) {
+        D2D1_MATRIX_3X2_F base;
+        dc->GetTransform(&base);
+        dc->SetTransform(D2D1::Matrix3x2F::Translation(pad, pad) * base);
+        if (live) {
+            DrawLiveText(dc, l, now);
+        } else {
+            // Main text at 0.75 and the translation at 1: the visual's opacity scales both.
+            dc->DrawTextLayout({0, 0}, l.main.get(), White(dc, 0.75f).get());
+            if (l.sub) dc->DrawTextLayout({0, l.mainH + kSubGap * F}, l.sub.get(), White(dc, 0.75f * kSub / kDim).get());
         }
     });
+    l.image = live ? 1 : 0;
+    l.imageGlow = l.glow;
 }
 
-void LyricsView::PaintHeader(ID2D1DeviceContext* dc) {
-    if (m_title.empty()) return;
-    const float W = (m_bounds.right - m_bounds.left) / m_scale;
-    const float x0 = kSideMargin + 8, y0 = (kHeaderHeight - kCover) / 2;
-    float textX = x0;
-    if (m_art && !m_artBitmap) dc->CreateBitmapFromWicBitmap(m_art.get(), nullptr, m_artBitmap.put());
-    if (m_artBitmap) {
-        const D2D1_RECT_F box{x0, y0, x0 + kCover, y0 + kCover};
-        com_ptr<ID2D1Factory> factory;
-        dc->GetFactory(factory.put());
-        com_ptr<ID2D1RoundedRectangleGeometry> clip;
-        factory->CreateRoundedRectangleGeometry(D2D1::RoundedRect(box, 6, 6), clip.put());
-        // Soft shadow below the cover.
-        com_ptr<ID2D1SolidColorBrush> shade;
-        dc->CreateSolidColorBrush(D2D1::ColorF(0, 0, 0, 0.18f), shade.put());
-        dc->FillRoundedRectangle(D2D1::RoundedRect({box.left, box.top + 2, box.right, box.bottom + 2}, 7, 7), shade.get());
-        dc->PushLayer(D2D1::LayerParameters1(D2D1::InfiniteRect(), clip.get()), nullptr);
-        const D2D1_SIZE_F s = m_artBitmap->GetSize();
-        const float k = std::max(kCover / std::max(1.0f, s.width), kCover / std::max(1.0f, s.height));
-        const float dw = s.width * k, dh = s.height * k;
-        const D2D1_RECT_F dst{box.left + (kCover - dw) / 2, box.top + (kCover - dh) / 2, box.left + (kCover + dw) / 2,
-                              box.top + (kCover + dh) / 2};
-        dc->DrawBitmap(m_artBitmap.get(), &dst, 1.0f, D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC, nullptr, nullptr);
-        dc->PopLayer();
-        textX = box.right + 14;
-    }
-    auto* f = gfx::CompositionHost::Get().DWrite();
-    const float textW = std::max(10.0f, W - textX - kSideMargin - 8);
-    auto line = [&](const std::wstring& text, float size, DWRITE_FONT_WEIGHT weight, float y, float alpha) {
-        if (text.empty()) return;
-        auto format = MakeFormat(size, weight);
-        format->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
-        com_ptr<IDWriteTextLayout> layout;
-        if (FAILED(f->CreateTextLayout(text.c_str(), static_cast<UINT32>(text.size()), format.get(), textW, size * 1.5f,
-                                       layout.put())))
-            return;
-        com_ptr<IDWriteInlineObject> ellipsis;
-        f->CreateEllipsisTrimmingSign(layout.get(), ellipsis.put());
-        const DWRITE_TRIMMING trim{DWRITE_TRIMMING_GRANULARITY_CHARACTER, 0, 0};
-        layout->SetTrimming(&trim, ellipsis.get());
-        dc->DrawTextLayout({textX, y}, layout.get(), White(dc, alpha).get());
-    };
-    const float mid = kHeaderHeight / 2;
-    line(m_title, 16, DWRITE_FONT_WEIGHT_SEMI_BOLD, mid - 22, 0.95f);
-    line(m_artist, 14, DWRITE_FONT_WEIGHT_NORMAL, mid + 1, 0.6f);
-}
-
-void LyricsView::PaintMessage(ID2D1DeviceContext* dc, const std::wstring& text) {
-    if (text.empty()) return;
-    const float W = (m_bounds.right - m_bounds.left) / m_scale, H = (m_bounds.bottom - m_bounds.top) / m_scale;
-    auto format = MakeFormat(17, DWRITE_FONT_WEIGHT_SEMI_BOLD);
-    format->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
-    com_ptr<IDWriteTextLayout> layout;
-    auto* f = gfx::CompositionHost::Get().DWrite();
-    if (FAILED(f->CreateTextLayout(text.c_str(), static_cast<UINT32>(text.size()), format.get(), W - 40, 200,
-                                   layout.put())))
-        return;
-    DWRITE_TEXT_METRICS tm{};
-    layout->GetMetrics(&tm);
-    const float top = ContentTop() + (H - ContentTop() - tm.height) / 2 - 20;
-    dc->DrawTextLayout({20, top}, layout.get(), White(dc, 0.55f).get());
-}
-
-void LyricsView::PaintLines(ID2D1DeviceContext* dc) {
-    const float W = (m_bounds.right - m_bounds.left) / m_scale, H = (m_bounds.bottom - m_bounds.top) / m_scale;
-    const D2D1_MATRIX_3X2_F base = [&] {
-        D2D1_MATRIX_3X2_F m;
-        dc->GetTransform(&m);
-        return m;
-    }();
-    // Lyrics fade out under the header and at the bottom edge.
-    com_ptr<ID2D1GradientStopCollection> stops;
-    const float top = ContentTop();
-    const D2D1_GRADIENT_STOP s[] = {{0.0f, D2D1::ColorF(0, 0, 0, 0)},
-                                    {kTopFade / std::max(1.0f, H - top), D2D1::ColorF(0, 0, 0, 1)},
-                                    {1.0f - kBottomFade / std::max(1.0f, H - top), D2D1::ColorF(0, 0, 0, 1)},
-                                    {1.0f, D2D1::ColorF(0, 0, 0, 0)}};
-    dc->CreateGradientStopCollection(s, 4, stops.put());
-    com_ptr<ID2D1LinearGradientBrush> mask;
-    dc->CreateLinearGradientBrush({{0, top}, {0, H}}, stops.get(), mask.put());
-    D2D1_LAYER_PARAMETERS1 layer = D2D1::LayerParameters1(D2D1::RectF(0, top, W, H), nullptr,
-                                                          D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1::IdentityMatrix(), 1.0f,
-                                                          mask.get());
-    dc->PushLayer(layer, nullptr);
-    const double now = Now();
-    for (auto& l : m_lines) {
-        const float y = l->y.Position();
-        if (y + l->height < top - 40 || y > H + 40) continue;
-        PaintLine(dc, *l, now);
-        dc->SetTransform(base);
-    }
-    if (m_lyrics && m_lyrics->synced) PaintInterlude(dc, now);
-    dc->SetTransform(base);
-    dc->PopLayer();
-}
-
-void LyricsView::PaintLine(ID2D1DeviceContext* dc, LineView& l, double now) {
+// Glyph runs with per-word fill, float and emphasis; the transform maps the text origin.
+void LyricsView::DrawLiveText(ID2D1DeviceContext* dc, LineView& l, double now) {
     const float F = FontSize();
-    const float W = (m_bounds.right - m_bounds.left) / m_scale;
-    D2D1_MATRIX_3X2_F base;
-    dc->GetTransform(&base);
-    const float y = l.y.Position();
-    const float s = l.scale.Position() / 100.0f * l.press.Position() / 100.0f;
-    const D2D1_POINT_2F pivot{kSideMargin, y + l.height / 2};
-    const D2D1_MATRIX_3X2_F lineM = D2D1::Matrix3x2F::Scale(s, s, pivot) * base;
-    dc->SetTransform(lineM);
-
-    // Hover plate (pressed: fainter).
-    if (l.hover > 0.001f) {
-        const bool pressed = m_pressed >= 0 && m_lines[static_cast<size_t>(m_pressed)].get() == &l;
-        const float a = (pressed ? kPressAlpha : kHoverAlpha) * l.hover;
-        const D2D1_RECT_F plate{kSideMargin, y, W - kSideMargin, y + l.height};
-        dc->FillRoundedRectangle(D2D1::RoundedRect(plate, kPlateRadius * F, kPlateRadius * F), White(dc, a).get());
-    }
-
-    const float textX = kSideMargin + kTextInset * F, textY = y + kLinePadding * F;
-    const bool synced = m_lyrics && m_lyrics->synced;
-    const float dim = m_browsing ? kDimBrowsing : kDim;
-
-    if (!synced) {
-        dc->DrawTextLayout({textX, textY}, l.main.get(), White(dc, kUnsynced).get());
-        if (l.sub) dc->DrawTextLayout({textX, textY + l.mainH + kSubGap * F}, l.sub.get(), White(dc, kUnsynced * 0.6f).get());
-        return;
-    }
-
-    // Far from the focus: the recorded dim image, blurred.
-    if (l.blur > 0.15f && l.glow < 0.01f && l.blurFx && l.opacityFx) {
-        l.blurFx->SetValue(D2D1_GAUSSIANBLUR_PROP_STANDARD_DEVIATION, l.blur);
-        l.opacityFx->SetValue(D2D1_OPACITY_PROP_OPACITY, dim / 0.75f);
-        dc->SetTransform(D2D1::Matrix3x2F::Translation(textX, textY) * lineM);
-        com_ptr<ID2D1Image> out;
-        l.opacityFx->GetOutput(out.put());
-        dc->DrawImage(out.get());
-        return;
-    }
-
-    // Live: glyph runs with per-word fill, float and emphasis.
+    D2D1_MATRIX_3X2_F lineM;
+    dc->GetTransform(&lineM);
     const int ms = static_cast<int>(now * 1000);
     const bool karaoke = !l.line->words.empty();
     const float fade = kFadeWidth * F;
+    const float dim = m_dim;
     for (size_t wi = 0; wi < l.words.size(); ++wi) {
         auto& wv = l.words[wi];
         const float dur = static_cast<float>(std::max(1, wv.end - wv.start));
         const float p = karaoke ? Clamp01((ms - wv.start) / dur) : (l.active ? 1.0f : 0.0f);
-        // Float: sung words rise a little and stay up while the line is active.
         float lift = 0, grow = 1, glowA = 0, glowR = 0;
         if (karaoke) {
             if (wv.emphasize) {
@@ -929,62 +988,140 @@ void LyricsView::PaintLine(ID2D1DeviceContext* dc, LineView& l, double now) {
             grow = 1 + (grow - 1) * l.glow;
             glowA *= l.glow;
         }
-        const D2D1_POINT_2F center{textX + (wv.box.left + wv.box.right) / 2, textY + wv.box.bottom};
+        const D2D1_POINT_2F center{(wv.box.left + wv.box.right) / 2, wv.box.bottom};
         const D2D1_MATRIX_3X2_F wordM =
             D2D1::Matrix3x2F::Scale(grow, grow, center) * D2D1::Matrix3x2F::Translation(0, lift) * lineM;
         if (glowA > 0.01f && wv.glowBlur && wv.glowOpacity) {
             wv.glowBlur->SetValue(D2D1_GAUSSIANBLUR_PROP_STANDARD_DEVIATION, std::max(0.5f, glowR / 2));
             wv.glowOpacity->SetValue(D2D1_OPACITY_PROP_OPACITY, Clamp01(glowA));
-            dc->SetTransform(D2D1::Matrix3x2F::Translation(textX, textY) * wordM);
+            dc->SetTransform(wordM);
             com_ptr<ID2D1Image> out;
             wv.glowOpacity->GetOutput(out.put());
             dc->DrawImage(out.get(), D2D1_INTERPOLATION_MODE_LINEAR, D2D1_COMPOSITE_MODE_PLUS);
         }
         dc->SetTransform(wordM);
-        // Colors: dim when inactive; when active, bright up to the fill edge and darker after.
         const float brightA = Mix(dim, kBright, l.glow), darkA = Mix(dim, kUnsung, l.glow);
         for (const auto& r : l.runs) {
             if (r.word != static_cast<int>(wi)) continue;
-            const D2D1_POINT_2F origin{textX + r.origin.x, textY + r.origin.y};
             const auto run = r.Glyphs();
             if (!karaoke || p >= 1 || l.glow < 0.01f) {
-                dc->DrawGlyphRun(origin, &run, White(dc, p >= 1 ? brightA : darkA).get());
+                dc->DrawGlyphRun(r.origin, &run, White(dc, p >= 1 ? brightA : darkA).get());
                 continue;
             }
             if (p <= 0) {
-                dc->DrawGlyphRun(origin, &run, White(dc, darkA).get());
+                dc->DrawGlyphRun(r.origin, &run, White(dc, darkA).get());
                 continue;
             }
             // Fill edge, in this run's coordinates: it crosses the whole word plus the fade.
             const float edge = -fade / 2 + p * (wv.width + fade) - r.wordX;
-            const float x0 = origin.x + edge - fade / 2, x1 = origin.x + edge + fade / 2;
+            const float x0 = r.origin.x + edge - fade / 2, x1 = r.origin.x + edge + fade / 2;
             const D2D1_GRADIENT_STOP g[] = {{0, D2D1::ColorF(1, 1, 1, brightA)}, {1, D2D1::ColorF(1, 1, 1, darkA)}};
             com_ptr<ID2D1GradientStopCollection> gs;
             dc->CreateGradientStopCollection(g, 2, gs.put());
             com_ptr<ID2D1LinearGradientBrush> brush;
             dc->CreateLinearGradientBrush({{x0, 0}, {x1, 0}}, gs.get(), brush.put());
-            dc->DrawGlyphRun(origin, &run, brush.get());
+            dc->DrawGlyphRun(r.origin, &run, brush.get());
         }
     }
     dc->SetTransform(lineM);
     if (l.sub) {
         // Translations stay at the same level whether the line is active or not.
-        dc->DrawTextLayout({textX, textY + l.mainH + kSubGap * F}, l.sub.get(),
+        dc->DrawTextLayout({0, l.mainH + kSubGap * F}, l.sub.get(),
                            White(dc, Mix(kSub * dim / kDim, kSub * 0.85f, l.glow)).get());
+    }
+}
+
+void LyricsView::RenderLine(LineView& l, double now, float areaH) {
+    const float F = FontSize(), pad = ImagePad();
+    const float top = ContentTop();
+    const float y = l.y.Position();
+    // Far off screen: no visuals, no surface.
+    if (y + l.height < top - areaH || y > top + 2 * areaH) {
+        if (l.root) ReleaseLine(l);
+        return;
+    }
+    auto& comp = gfx::CompositionHost::Get().Compositor();
+    const float W = (m_bounds.right - m_bounds.left) / m_scale;
+    if (!l.root) {
+        l.root = comp.CreateContainerVisual();
+        l.plate = comp.CreateShapeVisual();
+        l.plateShape = comp.CreateRoundedRectangleGeometry();
+        l.plateBrush = comp.CreateColorBrush(winrt::Windows::UI::Colors::White());
+        auto sprite = comp.CreateSpriteShape(l.plateShape);
+        sprite.FillBrush(l.plateBrush);
+        l.plate.Shapes().Append(sprite);
+        l.text = comp.CreateSpriteVisual();
+        l.root.Children().InsertAtTop(l.plate);
+        l.root.Children().InsertAtTop(l.text);
+        m_layer.Children().InsertAtBottom(l.root);
+        const float s = m_scale;
+        const float pw = (W - 2 * kSideMargin) * s, ph = l.height * s;
+        l.plate.Offset(float3{kSideMargin * s, 0, 0});
+        l.plate.Size(float2{pw, ph});
+        l.plateShape.Size(float2{pw, ph});
+        l.plateShape.CornerRadius(float2{kPlateRadius * F * s, kPlateRadius * F * s});
+        l.text.Offset(float3{std::round((kSideMargin + kTextInset * F - pad) * s), std::round((kLinePadding * F - pad) * s), 0});
+        l.root.CenterPoint(float3{kSideMargin * s, ph / 2, 0});
+    }
+    const bool visible = y + l.height >= top - 40 && y <= top + areaH + 40;
+    l.root.IsVisible(visible);
+    if (!visible) return;
+
+    const bool synced = m_lyrics && m_lyrics->synced;
+    // Live image while the line is (or is fading out of being) active; else the dim image.
+    const bool live = synced && l.glow > 0.01f;
+    const bool karaokeActive = live && !l.line->words.empty() &&
+                               static_cast<int>(now * 1000) <= l.line->end + 1200;  // floats settle after the end
+    if (live) {
+        if (l.image != 1 || karaokeActive || std::abs(l.imageGlow - l.glow) > 0.002f) DrawLineImage(l, now, true);
+    } else if (l.image != 0) {
+        DrawLineImage(l, now, false);
+    }
+
+    const float s = m_scale;
+    l.root.Offset(float3{0, std::round((y - top) * s), 0});
+    const float k = l.scale.Position() / 100.0f * l.press.Position() / 100.0f;
+    l.root.Scale(float3{k, k, 1});
+    const bool pressed = m_pressed >= 0 && m_lines[static_cast<size_t>(m_pressed)].get() == &l;
+    l.plate.Opacity(l.hover);
+    const uint8_t plateA = static_cast<uint8_t>(std::lround((pressed ? kPressAlpha : kHoverAlpha) * 255));
+    l.plateBrush.Color(winrt::Windows::UI::ColorHelper::FromArgb(plateA, 255, 255, 255));
+    l.text.Opacity(live ? 1.0f : (synced ? m_dim : kUnsynced) / 0.75f);
+
+    // Blur on the GPU: an effect brush while it shows, the plain surface otherwise.
+    const float blur = live ? 0.0f : l.blur * s;
+    if (blur > 0.15f) {
+        if (!l.blurBrush) {
+            l.blurBrush = m_blurFactory.CreateBrush();
+            l.blurBrush.SetSourceParameter(L"source", l.surfaceBrush);
+        }
+        if (!l.blurred) {
+            l.text.Brush(l.blurBrush);
+            l.blurred = true;
+        }
+        if (std::abs(blur - l.shownBlur) > 0.01f) {
+            l.blurBrush.Properties().InsertScalar(L"Blur.BlurAmount", blur);
+            l.shownBlur = blur;
+        }
+    } else if (l.blurred) {
+        l.text.Brush(l.surfaceBrush);
+        l.blurred = false;
+        l.shownBlur = -1;
     }
 }
 
 // Three dots that light up one after another through a long instrumental gap while the
 // group breathes; at the end they swell and vanish.
-void LyricsView::PaintInterlude(ID2D1DeviceContext* dc, double now) {
-    if (m_interludeShow < 0.01f) return;
-    const float F = FontSize();
-    const float y = m_interludeY.Position();
+void LyricsView::RenderInterlude(double now) {
+    const bool show = m_lyrics && m_lyrics->synced && m_interludeShow >= 0.01f;
+    m_dots.IsVisible(show);
+    if (!show) return;
+    const float F = FontSize(), s = m_scale;
     const float d = 0.3f * F, gap = 0.18f * F;
     const float x = kSideMargin + kTextInset * F;
-    const float cy = y + 0.65f * F;
+    const float cy = m_interludeY.Position() - ContentTop() + 0.65f * F;
     const double span = std::max(0.001, m_interludeEnd - m_interludeStart);
-    const float progress = static_cast<float>(Clamp01(static_cast<float>((now - m_interludeStart) / span)));
+    const float progress = Clamp01(static_cast<float>((now - m_interludeStart) / span));
     const float remaining = static_cast<float>((m_interludeEnd - now) * 1000.0);
     float scale = 1 + 0.08f * std::sin(static_cast<float>(now) * 2 * 3.14159265f / 4.0f);
     float alpha = m_interludeShow;
@@ -995,17 +1132,36 @@ void LyricsView::PaintInterlude(ID2D1DeviceContext* dc, double now) {
             alpha *= Clamp01(remaining / 250);
         }
     }
-    const D2D1_POINT_2F center{x + (3 * d + 2 * gap) / 2, cy};
-    D2D1_MATRIX_3X2_F base;
-    dc->GetTransform(&base);
-    dc->SetTransform(D2D1::Matrix3x2F::Scale(scale, scale, center) * base);
-    for (int k = 0; k < 3; ++k) {
-        const float lit = Clamp01(progress * 3 - k);
-        const float a = Mix(0.25f, 0.9f, lit) * alpha;
-        const float cx = x + d / 2 + k * (d + gap);
-        dc->FillEllipse(D2D1::Ellipse({cx, cy}, d / 2, d / 2), White(dc, a).get());
+    const float groupW = 3 * d + 2 * gap;
+    m_dots.Offset(float3{x * s, (cy - d / 2) * s, 0});
+    m_dots.Size(float2{groupW * s, d * s});
+    m_dots.CenterPoint(float3{groupW * s / 2, d * s / 2, 0});
+    m_dots.Scale(float3{scale, scale, 1});
+    m_dots.Opacity(alpha);
+    size_t k = 0;
+    for (auto child : m_dots.Children()) {
+        auto shape = child.as<wuc::ShapeVisual>();
+        shape.Offset(float3{k * (d + gap) * s, 0, 0});
+        shape.Size(float2{d * s, d * s});
+        auto ellipse = shape.Shapes().GetAt(0).as<wuc::CompositionSpriteShape>().Geometry().as<wuc::CompositionEllipseGeometry>();
+        ellipse.Center(float2{d * s / 2, d * s / 2});
+        ellipse.Radius(float2{d * s / 2, d * s / 2});
+        const float lit = Clamp01(progress * 3 - static_cast<float>(k));
+        m_dotBrush[k].Color(winrt::Windows::UI::ColorHelper::FromArgb(
+            static_cast<uint8_t>(std::lround(Mix(0.25f, 0.9f, lit) * 255)), 255, 255, 255));
+        ++k;
     }
-    dc->SetTransform(base);
+}
+
+void LyricsView::Render() {
+    if (!m_visible) return;
+    const float areaH = (m_bounds.bottom - m_bounds.top) / m_scale - ContentTop();
+    const bool found = m_status == lyrics::Status::Found;
+    m_layer.IsVisible(found);
+    if (!found) return;
+    const double now = Now();
+    for (auto& l : m_lines) RenderLine(*l, now, areaH);
+    RenderInterlude(now);
 }
 
 // ---- Input ------------------------------------------------------------------------------
@@ -1130,6 +1286,5 @@ void LyricsView::OnWheel(int delta) {
     StartFrames();
 }
 
-void LyricsView::EndInteraction() { m_interactionEnd = Clock::now(); }
 
 }  // namespace glasswave::ui

@@ -73,11 +73,20 @@ glass. Code: `ui/lyrics_view.{h,cpp}` (rendering, motion, input), `ui/spring.h`,
   3 s once the mouse has left the pane; seeking realigns at once (AMLL resume delay 0.5 s).
 - **Right-click**: Search for lyrics again, Hide lyrics. View > Lyrics toggles the pane.
 
-## Frame pacing
+## Rendering and frame pacing
+
+Each line is a composition visual (a container with the hover plate and a sprite with the
+line's own surface). The surface is drawn once with Direct2D in white; the compositor applies
+position, scale, opacity, the blur (a GaussianBlur effect brush, swapped for the plain
+surface brush when sharp) and the edge fade (the lines sit in a LayerVisual whose alpha is
+multiplied by a gradient mask). Only a line that is active or fading out is redrawn, with
+its word fill, float and glow. Lines more than a screen away release their visuals and
+surfaces.
 
 `gfx::FrameClock` waits on the compositor clock (`DCompositionWaitForCompositorClock`) and
 posts one frame message at a time, so animation runs at the display's refresh rate. It runs
-while lyrics play or anything moves and stops otherwise.
+while lyrics play or anything moves and stops otherwise. Measured in the dev instance while
+lyrics play: about 3 % of one core (the earlier full-surface Direct2D redraw used ~45 %).
 
 ## Transport band
 
