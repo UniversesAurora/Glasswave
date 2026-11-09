@@ -45,6 +45,10 @@ void Segment(ID2D1DeviceContext* dc, D2D1_SIZE_F size, bool left, Layer layer, T
 // Flat icon button (stop, shuffle, repeat, volume) with WMP's hover plate.
 void IconButton(ID2D1DeviceContext* dc, D2D1_SIZE_F size, Layer layer, TransportGlyph glyph, bool enabled,
                 bool checked);
+// IconButton's plate alone (hover / pressed / checked), and the brush its glyphs use.
+void ButtonPlate(ID2D1DeviceContext* dc, D2D1_SIZE_F size, Layer layer, bool checked);
+winrt::com_ptr<ID2D1Brush> TransportGlyphBrush(ID2D1DeviceContext* dc, float top, float bottom, bool enabled,
+                                               Layer layer);
 // Vertical divider inside the capsule.
 void CapsuleDivider(ID2D1DeviceContext* dc, D2D1_SIZE_F size);
 // Volume slider: track + blue thumb. value in [0, 1].

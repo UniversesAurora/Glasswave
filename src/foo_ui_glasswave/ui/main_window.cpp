@@ -51,6 +51,8 @@ constexpr UINT_PTR kLibraryTimer = 1;
 constexpr UINT_PTR kVolumeTipTimer = 2;
 constexpr UINT_PTR kScrollAnimTimer = 3;
 constexpr UINT_PTR kScrollRepeatTimer = 4;
+constexpr UINT kFrameMessage = WM_APP + 0x32;                  // FrameClock: the lyrics pane draws a frame
+constexpr float kLyricsPaneWidth = 440.0f, kLyricsGap = 8.0f;  // DIP (new UI, no Win7 measurement)
 constexpr float kNavPaneWidth = 190.0f;
 constexpr size_t kMenuItemLimit = 300;  // breadcrumb menus list at most this many items
 
@@ -58,7 +60,7 @@ enum WidgetId {
     kCapMin = 1, kCapMax, kCapClose,
     kBack, kForward, kOrganize, kAddFiles, kAddFolder, kNewPlaylist,
     kSeek, kShuffle, kRepeat, kStop, kPrev, kNext, kPlay, kMute, kVolume, kViewOptions,
-    kDetailAction, kDetailBriefToggle, kRefresh,
+    kDetailAction, kDetailBriefToggle, kRefresh, kLyricsToggle,
 };
 bool IsCaptionWidget(int id) { return id >= kCapMin && id <= kCapClose; }
 
@@ -122,6 +124,42 @@ cfg_var_modern::cfg_int cfg_navSmartAt({0x6a1f3c64, 0x2b7e, 0x4d90, {0x8c, 0x15,
 // {6A1F3C65-2B7E-4D90-8C15-3E9A7B2D4F61}
 cfg_var_modern::cfg_string cfg_lastView({0x6a1f3c65, 0x2b7e, 0x4d90, {0x8c, 0x15, 0x3e, 0x9a, 0x7b, 0x2d, 0x4f, 0x61}},
                                         "");
+// The lyrics pane is open.
+// {6A1F3C68-2B7E-4D90-8C15-3E9A7B2D4F61}
+cfg_var_modern::cfg_int cfg_lyricsOpen({0x6a1f3c68, 0x2b7e, 0x4d90, {0x8c, 0x15, 0x3e, 0x9a, 0x7b, 0x2d, 0x4f, 0x61}}, 0);
+
+// The lyrics button's glyph: a speech bubble with a quotation mark (as in Apple Music).
+void DrawLyricsGlyph(ID2D1DeviceContext* dc, D2D1_SIZE_F s, ID2D1Brush* brush) {
+    com_ptr<ID2D1Factory> f;
+    dc->GetFactory(f.put());
+    const float cx = std::round(s.width / 2), cy = std::round(s.height / 2);
+    const float l = cx - 7.5f, t = cy - 6.5f, r = cx + 7.5f, b = cy + 4.0f, rad = 3;
+    com_ptr<ID2D1PathGeometry> path;
+    if (FAILED(f->CreatePathGeometry(path.put()))) return;
+    com_ptr<ID2D1GeometrySink> sink;
+    if (FAILED(path->Open(sink.put()))) return;
+    const auto arc = [&](float x, float y) {
+        sink->AddArc({{x, y}, {rad, rad}, 0, D2D1_SWEEP_DIRECTION_CLOCKWISE, D2D1_ARC_SIZE_SMALL});
+    };
+    sink->BeginFigure({l + rad, t}, D2D1_FIGURE_BEGIN_HOLLOW);
+    sink->AddLine({r - rad, t});
+    arc(r, t + rad);
+    sink->AddLine({r, b - rad});
+    arc(r - rad, b);
+    sink->AddLine({l + 6.5f, b});
+    sink->AddLine({l + 2.5f, b + 3.5f});  // tail
+    sink->AddLine({l + rad, b});
+    arc(l, b - rad);
+    sink->AddLine({l, t + rad});
+    arc(l + rad, t);
+    sink->EndFigure(D2D1_FIGURE_END_CLOSED);
+    sink->Close();
+    dc->DrawGeometry(path.get(), brush, 1.3f);
+    for (const float x : {cx - 2.2f, cx + 2.4f}) {
+        dc->FillEllipse(D2D1::Ellipse({x, cy - 1.9f}, 1.35f, 1.35f), brush);
+        dc->DrawLine({x + 1.1f, cy - 1.6f}, {x - 0.6f, cy + 1.2f}, brush, 1.1f);
+    }
+}
 
 std::vector<media::GroupKind> LoadNavCategories() {
     std::vector<media::GroupKind> out;
@@ -423,9 +461,40 @@ struct MainWindow::ProviderListener : stream::Provider::Listener {
     MainWindow& window;
 };
 
-MainWindow::MainWindow() = default;
+namespace {
+MainWindow* g_instance = nullptr;
+
+// View > Lyrics: shows or hides the lyrics pane (bindable to a keyboard shortcut).
+class LyricsCommand : public mainmenu_commands {
+public:
+    // {6A1F3C69-2B7E-4D90-8C15-3E9A7B2D4F61}
+    static constexpr GUID kGuid{0x6a1f3c69, 0x2b7e, 0x4d90, {0x8c, 0x15, 0x3e, 0x9a, 0x7b, 0x2d, 0x4f, 0x61}};
+    t_uint32 get_command_count() override { return 1; }
+    GUID get_command(t_uint32) override { return kGuid; }
+    void get_name(t_uint32, pfc::string_base& out) override { out = "Lyrics"; }
+    bool get_description(t_uint32, pfc::string_base& out) override {
+        out = "Shows or hides the Glasswave lyrics pane.";
+        return true;
+    }
+    GUID get_parent() override { return mainmenu_groups::view; }
+    bool get_display(t_uint32 index, pfc::string_base& text, t_uint32& flags) override {
+        flags = (g_instance && g_instance->LyricsPaneOpen()) ? flag_checked : 0;
+        get_name(index, text);
+        return g_instance != nullptr;
+    }
+    void execute(t_uint32, service_ptr_t<service_base>) override {
+        if (g_instance) g_instance->ToggleLyricsPane();
+    }
+};
+mainmenu_commands_factory_t<LyricsCommand> g_lyricsCommand;
+}  // namespace
+
+MainWindow* MainWindow::Instance() { return g_instance; }
+
+MainWindow::MainWindow() { g_instance = this; }
 
 MainWindow::~MainWindow() {
+    if (g_instance == this) g_instance = nullptr;
     if (m_hwnd) DestroyWindow(m_hwnd);
 }
 
@@ -614,6 +683,16 @@ void MainWindow::InitComposition() {
             m_list->SetSource(m_source.get(), true);
         }
     };
+    m_lyricsView = std::make_unique<LyricsView>(m_root);
+    m_lyricsView->onFrames = [this] { StartLyricsFrames(); };
+    m_lyricsView->onSeek = [](double seconds) {
+        // Like Apple Music: playback continues from the clicked line.
+        auto pc = playback_control::get();
+        if (!pc->is_playing()) return;
+        pc->playback_seek(seconds);
+        if (pc->is_paused()) pc->pause(false);
+    };
+    m_lyricsOpen = cfg_lyricsOpen.get() != 0;
 }
 
 void MainWindow::CreateWidgets() {
@@ -826,6 +905,12 @@ void MainWindow::CreateWidgets() {
         if (m_win7Art) wt::Volume(dc, l, m_volume);
         else paint::VolumeSlider(dc, s, m_volume, l);
     }, {});
+
+    // Lyrics pane toggle, bottom-right of the transport band.
+    add(kLyricsToggle, [this](auto* dc, D2D1_SIZE_F s, Layer l) {
+        paint::ButtonPlate(dc, s, l, m_lyricsOpen);
+        DrawLyricsGlyph(dc, s, paint::TransportGlyphBrush(dc, s.height / 2 - 7, s.height / 2 + 7, true, l).get());
+    }, {})->onClick = [this] { ToggleLyrics(); };
 }
 
 // ---- Layout and painting -------------------------------------------------------------
@@ -844,6 +929,13 @@ void MainWindow::UpdateLayout() {
     const int capH = PxI(max ? m::kCaptionHeightMax : m::kCaptionHeight);
     L.caption = {0, 0, W, capH};
     L.client = {L.border, capH, W - L.border, H - L.border};
+    // The lyrics pane takes the right of the window, on the glass beside the client area.
+    L.lyricsPane = {};
+    if (m_lyricsOpen) {
+        const int paneW = std::min(PxI(kLyricsPaneWidth), std::max(0, (W - 2 * L.border) / 2));
+        L.lyricsPane = {W - L.border - paneW, capH, W - L.border, H - L.border};
+        L.client.right = L.lyricsPane.left - PxI(kLyricsGap);
+    }
     // Light + dark client edge lines, one device pixel each (DWM frame bitmap, 1:1).
     L.clientEdge = {L.client.left - 2, L.client.top - 2, L.client.right + 2, L.client.bottom + 2};
     L.navBar = {L.client.left, L.client.top, L.client.right, L.client.top + PxI(NavBarHeight())};
@@ -1061,8 +1153,10 @@ void MainWindow::UpdateLayout() {
         const int tcyMid = (L.transport.top + PxI(4) + L.transport.bottom) / 2;
         const int after = (m_win7Art ? ClusterRect(wt::kCapsuleVisible).right : L.volume.right) + PxI(12);
         L.time = {after, tcyMid - PxI(10), after + PxI(110), tcyMid + PxI(10)};
-        L.stream = {std::max<LONG>(L.time.right, L.client.right - PxI(10) - PxI(320)), L.transport.top + PxI(8),
-                    L.client.right - PxI(10), L.transport.bottom - PxI(4)};
+        L.lyricsToggle = {L.client.right - PxI(10) - PxI(28), tcyMid - PxI(12), L.client.right - PxI(10),
+                          tcyMid + PxI(12)};
+        L.stream = {std::max<LONG>(L.time.right, L.lyricsToggle.left - PxI(8) - PxI(320)), L.transport.top + PxI(8),
+                    L.lyricsToggle.left - PxI(8), L.transport.bottom - PxI(4)};
     }
     const int capsuleLeft = m_win7Art ? ClusterRect(wt::kCapsuleVisible).left : L.capsule.left;
     L.nowPlaying = {L.client.left + PxI(10), L.transport.top + PxI(7),
@@ -1144,6 +1238,10 @@ void MainWindow::UpdateLayout() {
     m_nav->SetBounds(L.navPane, m_scale);
     m_list->SetBounds(L.list, m_scale);
     m_search->SetBounds(L.search, m_scale);
+    if (m_lyricsView) {
+        m_lyricsView->SetBounds(L.lyricsPane, m_scale);
+        m_lyricsView->SetVisible(m_lyricsOpen && L.lyricsPane.right > L.lyricsPane.left);
+    }
 
     for (auto& w : m_widgets) {
         const RECT* r = nullptr;
@@ -1170,6 +1268,7 @@ void MainWindow::UpdateLayout() {
         case kPlay: r = &L.play; break;
         case kMute: r = &L.mute; break;
         case kVolume: r = &L.volume; break;
+        case kLyricsToggle: r = &L.lyricsToggle; break;
         }
         if (r) w->SetBounds(*r, m_scale);
     }
@@ -1309,7 +1408,8 @@ void MainWindow::RepaintNowPlaying() {
             if (at > m_position + 0.05) break;
             lyric = text;
         }
-        const float lh = 15, top = std::round((H - (m_lyrics.empty() ? 2 : 3) * lh) / 2);
+        const bool showLyric = !m_lyrics.empty() && !m_lyricsOpen;  // the pane shows them instead
+        const float lh = 15, top = std::round((H - (showLyric ? 3 : 2) * lh) / 2);
         auto line = [&](const std::wstring& text, float y, ID2D1SolidColorBrush* ink, bool hot) {
             auto layout = MakeText(text, 12.0f, DWRITE_FONT_WEIGHT_NORMAL, 350 - x, lh + 2);
             if (hot) layout->SetUnderline(TRUE, {0, static_cast<UINT32>(text.size())});
@@ -1338,7 +1438,7 @@ void MainWindow::RepaintNowPlaying() {
         m_npStarRect = toClient({sx - 3, sy - 3, sx + 17, sy + 17});
         m_npArtistRect = m_trackArtist.empty() ? RECT{}
                                                : toClient(line(m_trackArtist, top + lh, grey.get(), m_npHot == 2));
-        if (!m_lyrics.empty()) line(lyric, top + 2 * lh, lyricInk.get(), false);
+        if (showLyric) line(lyric, top + 2 * lh, lyricInk.get(), false);
     });
     if (m_trackTitle.empty()) m_npTitleRect = m_npArtistRect = m_npStarRect = {};
     // Time right of the controls.
@@ -1411,65 +1511,58 @@ RECT MainWindow::DeviceRect() const {
             s.top + PxI(m_deviceText.bottom)};
 }
 
-void MainWindow::LoadLyrics(const metadb_handle_ptr& track) {
-    // Synced lyrics only ([mm:ss.xx] lines): a SYNCEDLYRICS / LYRICS tag, else a .lrc file
-    // next to the audio file.
+void MainWindow::ToggleLyrics() {
+    m_lyricsOpen = !m_lyricsOpen;
+    cfg_lyricsOpen.set(m_lyricsOpen ? 1 : 0);
+    // A restored window grows to the right by the pane (moved left where the screen ends);
+    // a maximized one gives the pane part of its width.
+    if (!IsWindowMaximized() && !IsIconic(m_hwnd)) {
+        RECT wr{};
+        GetWindowRect(m_hwnd, &wr);
+        const int extra = PxI(kLyricsPaneWidth + kLyricsGap) * (m_lyricsOpen ? 1 : -1);
+        MONITORINFO mi{sizeof(mi)};
+        GetMonitorInfoW(MonitorFromWindow(m_hwnd, MONITOR_DEFAULTTONEAREST), &mi);
+        const RECT& work = mi.rcWork;
+        const int width = std::min<int>(wr.right - wr.left + extra, work.right - work.left);
+        int left = wr.left;
+        if (left + width > work.right) left = std::max<int>(work.left, work.right - width);
+        SetWindowPos(m_hwnd, nullptr, left, wr.top, width, wr.bottom - wr.top, SWP_NOZORDER | SWP_NOACTIVATE);
+    }
+    UpdateLayout();
+    if (auto* w = WidgetById(kLyricsToggle)) w->Invalidate();
+    RepaintNowPlaying();
+}
+
+void MainWindow::RequestLyrics(const metadb_handle_ptr& track, bool again) {
+    m_lyricsTrack = track;
+    auto done = [this, alive = std::weak_ptr<int>(m_alive)](const lyrics::Result& result) {
+        if (!alive.expired()) OnLyrics(result);
+    };
+    if (again) lyrics::Service::Get().Research(track, done);
+    else lyrics::Service::Get().Request(track, done);
+}
+
+void MainWindow::OnLyrics(const lyrics::Result& result) {
     m_lyrics.clear();
-    if (!track.is_valid()) return;
-    std::wstring text;
-    if (auto info = track->get_info_ref(); info.is_valid()) {
-        for (const char* field : {"SYNCEDLYRICS", "LYRICS", "UNSYNCEDLYRICS"}) {
-            if (const char* v = info->info().meta_get(field, 0); v && std::strchr(v, '[')) {
-                text = Wide(v);
-                break;
-            }
-        }
-    }
-    if (text.empty()) {
-        pfc::string8 native;
-        if (filesystem::g_get_native_path(track->get_path(), native)) {
-            std::wstring path = Wide(native);
-            if (const size_t dot = path.find_last_of(L'.'); dot != std::wstring::npos && dot > path.find_last_of(L"\\/"))
-                path = path.substr(0, dot);
-            path += L".lrc";
-            if (std::ifstream in{std::filesystem::path(path), std::ios::binary}) {
-                const std::string bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-                if (bytes.size() >= 2 && static_cast<unsigned char>(bytes[0]) == 0xFF &&
-                    static_cast<unsigned char>(bytes[1]) == 0xFE) {
-                    text.assign(reinterpret_cast<const wchar_t*>(bytes.data() + 2), (bytes.size() - 2) / 2);
-                } else {
-                    const size_t skip = bytes.rfind("\xEF\xBB\xBF", 0) == 0 ? 3 : 0;
-                    const char* p = bytes.data() + skip;
-                    const int n = static_cast<int>(bytes.size() - skip);
-                    UINT cp = CP_UTF8;
-                    int len = MultiByteToWideChar(cp, MB_ERR_INVALID_CHARS, p, n, nullptr, 0);
-                    if (len <= 0) {
-                        cp = CP_ACP;
-                        len = MultiByteToWideChar(cp, 0, p, n, nullptr, 0);
-                    }
-                    text.resize(static_cast<size_t>(std::max(len, 0)));
-                    if (len > 0) MultiByteToWideChar(cp, 0, p, n, text.data(), len);
-                }
-            }
-        }
-    }
-    std::wstringstream in(text);
-    for (std::wstring l; std::getline(in, l);) {
-        if (!l.empty() && l.back() == L'\r') l.pop_back();
-        std::vector<double> times;
-        size_t pos = 0;
-        while (pos < l.size() && l[pos] == L'[') {
-            const size_t end = l.find(L']', pos);
-            if (end == std::wstring::npos) break;
-            int mm = 0;
-            double ss = 0;
-            if (swscanf_s(l.c_str() + pos + 1, L"%d:%lf", &mm, &ss) == 2) times.push_back(mm * 60 + ss);
-            pos = end + 1;
-        }
-        const std::wstring words = l.substr(pos);
-        for (double t : times) m_lyrics.emplace_back(t, words);
-    }
-    std::stable_sort(m_lyrics.begin(), m_lyrics.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
+    if (result.lyrics && result.lyrics->synced)
+        for (const auto& l : result.lyrics->lines) m_lyrics.emplace_back(l.start / 1000.0, l.text);
+    if (m_lyricsView) m_lyricsView->SetResult(result);
+    RepaintNowPlaying();
+}
+
+void MainWindow::StartLyricsFrames() {
+    if (!m_hwnd) return;
+    if (!m_frameClock) m_frameClock = std::make_unique<gfx::FrameClock>(m_hwnd, kFrameMessage);
+    m_frameClock->Start();
+}
+
+void MainWindow::ShowLyricsMenu(POINT screen) {
+    metadb_handle_ptr now;
+    std::vector<MenuAction> actions;
+    if (playback_control::get()->get_now_playing(now))
+        actions.push_back({Tr(L"Search for lyrics again"), [this, now] { RequestLyrics(now, true); }});
+    actions.push_back({Tr(L"Hide lyrics"), [this] { ToggleLyrics(); }});
+    ShowActionMenu(m_hwnd, screen, actions);
 }
 
 int MainWindow::NowPlayingPartAt(POINT pt) const {
@@ -3413,6 +3506,7 @@ void MainWindow::OnPlaybackStateChanged() {
         if (auto* w = WidgetById(id)) w->Invalidate();
     if (m_taskbar) m_taskbar->SetPlayState(playing, paused);
     if (m_list) m_list->Refresh();  // playing marker
+    if (m_lyricsView) m_lyricsView->SetPlaying(playing, paused);
     OnTrackChanged();  // paused resume still has codec/bitrate information
 }
 
@@ -3431,6 +3525,7 @@ void MainWindow::OnTrackChanged() {
         pc->playback_format_title(nullptr, artist, s_artist, nullptr, playback_control::display_level_all);
     } else {
         m_art = nullptr;
+        m_lyricsArt = nullptr;
     }
     m_trackTitle = Wide(title);
     m_trackArtist = Wide(artist);
@@ -3477,8 +3572,16 @@ void MainWindow::OnTrackChanged() {
             add(ch);
         }
     }
-    if (loaded) LoadLyrics(now);
-    else m_lyrics.clear();
+    if (!loaded) {
+        if (m_lyricsTrack.is_valid()) {
+            m_lyricsTrack.release();
+            lyrics::Service::Get().Cancel();
+            OnLyrics({});
+        }
+    } else if (m_lyricsTrack != now) {
+        RequestLyrics(now, false);
+    }
+    if (m_lyricsView) m_lyricsView->SetTrack(m_trackTitle, m_trackArtist, m_lyricsArt);
     RepaintStreamInfo();
     UpdateFavoriteState();
     RepaintNowPlaying();
@@ -3910,6 +4013,8 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
         m_libraryCallback = std::make_unique<LibraryCallback>(*this);
         m_artNotify = now_playing_album_art_notify_manager::get()->add([this](album_art_data::ptr data) {
             m_art = DecodeArt(data, PxI(TransportHeight()));
+            m_lyricsArt = DecodeArt(data, PxI(64));
+            if (m_lyricsView) m_lyricsView->SetTrack(m_trackTitle, m_trackArtist, m_lyricsArt);
             RepaintNowPlaying();
         });
         m_dropTarget = MakeFileDropTarget([this](IDataObject* data) { AddDroppedFiles(data); });
@@ -3954,6 +4059,13 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
         ApplyLanguage(CurrentLanguageSetting());
         if (m_view.kind == View::Kind::AllRecentPlayed || m_view.kind == View::Kind::AllMostPlayed)
             Navigate(m_view, false);
+        return 0;
+
+    case kFrameMessage:
+        if (m_frameClock) {
+            m_frameClock->Ack();
+            if (!m_lyricsView || !m_lyricsView->Tick()) m_frameClock->Stop();
+        }
         return 0;
 
     case WM_TIMER:
@@ -4078,7 +4190,7 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
 
     case WM_GETMINMAXINFO: {
         auto* mmi = reinterpret_cast<MINMAXINFO*>(lp);
-        mmi->ptMinTrackSize = {PxI(640), PxI(420)};
+        mmi->ptMinTrackSize = {PxI(640 + (m_lyricsOpen ? kLyricsPaneWidth + kLyricsGap : 0.0f)), PxI(420)};
         return 0;
     }
 
@@ -4142,6 +4254,18 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
     // -- Client-area mouse --
     case WM_MOUSEMOVE: {
         POINT pt{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
+        if (m_capture == Capture::Lyrics) {
+            m_lyricsView->OnMouseMove(pt);
+            return 0;
+        }
+        if (m_lyricsView) {
+            const bool over = m_capture == Capture::None && m_lyricsView->HitTest(pt);
+            if (over != m_lyricsHover) {
+                m_lyricsHover = over;
+                if (!over) m_lyricsView->OnMouseLeave();
+            }
+            if (over) m_lyricsView->OnMouseMove(pt);
+        }
         if (m_capture == Capture::DetailScroll) {
             OnDetailBriefBarMove(pt);
             return 0;
@@ -4188,6 +4312,10 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
     }
     case WM_MOUSELEAVE:
         m_trackingClient = false;
+        if (m_lyricsHover && m_capture != Capture::Lyrics) {
+            m_lyricsHover = false;
+            m_lyricsView->OnMouseLeave();
+        }
         if (m_detailBriefHot) {
             m_detailBriefHot = 0;
             StartScrollAnimation();
@@ -4206,6 +4334,12 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
     case WM_LBUTTONDBLCLK: {
         POINT pt{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
         const bool dbl = msg == WM_LBUTTONDBLCLK;
+        if (m_lyricsView && m_lyricsView->HitTest(pt)) {
+            m_lyricsView->OnLButtonDown(pt);
+            m_capture = Capture::Lyrics;
+            SetCapture(hwnd);
+            return 0;
+        }
         if (m_detailBriefScrollable && PtInRect(&m_layout.detailBriefBar, pt)) {
             OnDetailBriefBarDown(pt);
             m_capture = Capture::DetailScroll;
@@ -4260,6 +4394,12 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
     case WM_LBUTTONUP: {
         POINT pt{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
         m_ncDownId = 0;
+        if (m_capture == Capture::Lyrics) {
+            m_capture = Capture::None;
+            ReleaseCapture();
+            m_lyricsView->OnLButtonUp(pt);
+            return 0;
+        }
         if (m_capture == Capture::DetailScroll) {
             m_capture = Capture::None;
             ReleaseCapture();
@@ -4317,6 +4457,7 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
             }
             if (m_capture == Capture::List) m_list->CancelDrag();
             if (m_capture == Capture::Nav) m_nav->CancelDrag();
+            if (m_capture == Capture::Lyrics && m_lyricsView) m_lyricsView->OnCaptureLost();
             if (m_capture == Capture::DetailScroll) {
                 m_detailBriefPressed = 0;
                 m_detailBriefTrackDir = 0;
@@ -4330,6 +4471,10 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
         POINT pt{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
         ScreenToClient(hwnd, &pt);
         const int delta = GET_WHEEL_DELTA_WPARAM(wp);
+        if (m_lyricsView && m_lyricsView->HitTest(pt)) {
+            m_lyricsView->OnWheel(delta);
+            return 0;
+        }
         if (m_detailBriefScrollable &&
             (PtInRect(&m_layout.detailBriefArea, pt) || PtInRect(&m_layout.detailBriefBar, pt))) {
             ScrollDetailBrief(-delta / static_cast<float>(WHEEL_DELTA) * 54.0f);
@@ -4362,6 +4507,12 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
     }
     case WM_RBUTTONUP: {
         POINT pt{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
+        if (m_lyricsView && m_lyricsView->HitTest(pt)) {
+            POINT screen = pt;
+            ClientToScreen(hwnd, &screen);
+            ShowLyricsMenu(screen);
+            return 0;
+        }
         if (m_list->HitTest(pt)) {
             m_list->OnRButtonUp(hwnd, pt);
             return 0;
@@ -4510,6 +4661,9 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
         m_list.reset();
         m_nav.reset();
         m_search.reset();
+        m_frameClock.reset();
+        m_lyricsView.reset();
+        lyrics::Service::Get().Cancel();
         m_source.reset();
         m_widgets.clear();
         m_glass.reset();

@@ -86,6 +86,10 @@
     <ClCompile Include="gfx\frame_clock.cpp" />
     <ClCompile Include="lyrics\lrc.cpp" />
     <ClCompile Include="lyrics\lyrics_service.cpp" />
+    <ClCompile Include="ui\lyrics_view.cpp" />
+    <ClCompile Include="gfx\frame_clock.cpp" />
+    <ClCompile Include="lyrics\lrc.cpp" />
+    <ClCompile Include="lyrics\lyrics_service.cpp" />
     <ClCompile Include="gfx\frame_clock.cpp" />
     <ClCompile Include="gfx\color_matrix_effect.cpp" />
     <ClCompile Include="aero\glass_material.cpp" />
@@ -143,6 +147,11 @@
   <ItemGroup>
     <ClInclude Include="pch.h" />
     <ClInclude Include="gfx\composition_host.h" />
+    <ClInclude Include="gfx\frame_clock.h" />
+    <ClInclude Include="lyrics\lyrics.h" />
+    <ClInclude Include="lyrics\lyrics_service.h" />
+    <ClInclude Include="ui\lyrics_view.h" />
+    <ClInclude Include="ui\spring.h" />
     <ClInclude Include="gfx\frame_clock.h" />
     <ClInclude Include="lyrics\lyrics.h" />
     <ClInclude Include="lyrics\lyrics_service.h" />

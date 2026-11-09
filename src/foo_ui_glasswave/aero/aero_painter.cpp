@@ -694,8 +694,7 @@ void Segment(ID2D1DeviceContext* dc, D2D1_SIZE_F size, bool left, Layer layer, T
     dc->FillGeometry(shape.get(), GlyphBrush(dc, c.y - 5, c.y + 5, enabled, layer).get());
 }
 
-void IconButton(ID2D1DeviceContext* dc, D2D1_SIZE_F size, Layer layer, TransportGlyph glyph, bool enabled,
-                bool checked) {
+void ButtonPlate(ID2D1DeviceContext* dc, D2D1_SIZE_F size, Layer layer, bool checked) {
     const Grid g = GridOf(dc);
     auto f = FactoryOf(dc);
     const D2D1_RECT_F rc = g.Snap(D2D1_RECT_F{0, 0, size.width, size.height});
@@ -710,6 +709,21 @@ void IconButton(ID2D1DeviceContext* dc, D2D1_SIZE_F size, Layer layer, Transport
         auto o = Solid(dc, checked && layer == Layer::Normal ? Hex(0xA9C1D9) : Hex(0x8FA9C3));
         dc->DrawGeometry(Ring(f.get(), g, rc, rad, 0).get(), o.get(), g.L);
     }
+}
+
+winrt::com_ptr<ID2D1Brush> TransportGlyphBrush(ID2D1DeviceContext* dc, float top, float bottom, bool enabled,
+                                               Layer layer) {
+    auto b = GlyphBrush(dc, top, bottom, enabled, layer);
+    winrt::com_ptr<ID2D1Brush> out;
+    b.as(out);
+    return out;
+}
+
+void IconButton(ID2D1DeviceContext* dc, D2D1_SIZE_F size, Layer layer, TransportGlyph glyph, bool enabled,
+                bool checked) {
+    const Grid g = GridOf(dc);
+    auto f = FactoryOf(dc);
+    ButtonPlate(dc, size, layer, checked);
     const D2D1_POINT_2F c{g.Snap(size.width / 2), g.Snap(size.height / 2)};
     auto brush = GlyphBrush(dc, c.y - 6, c.y + 6, enabled, layer);
     if (glyph == TransportGlyph::Stop) {

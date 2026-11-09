@@ -1,10 +1,13 @@
 #pragma once
 #include "aero/glass_material.h"
 #include "aero/shadow_frame.h"
+#include "gfx/frame_clock.h"
+#include "lyrics/lyrics_service.h"
 #include "media/library_model.h"
 #include "media/list_sources.h"
 #include "stream/provider.h"
 #include "ui/list_view.h"
+#include "ui/lyrics_view.h"
 #include "ui/main_menu.h"
 #include "ui/i18n.h"
 #include "ui/nav_pane.h"
@@ -30,6 +33,11 @@ public:
     HWND Create(user_interface::HookProc_t hook);
     void Destroy();
     HWND Hwnd() const { return m_hwnd; }
+    static MainWindow* Instance();  // the window while it exists (main menu commands)
+
+    // The lyrics pane (View > Lyrics, the transport band's lyrics button).
+    void ToggleLyricsPane() { ToggleLyrics(); }
+    bool LyricsPaneOpen() const { return m_lyricsOpen; }
 
     // Forwarded from the core callbacks.
     void OnPlaybackStateChanged();
@@ -74,6 +82,7 @@ private:
         RECT detailBriefBar{};   // its Win7 scrollbar, client px; empty when not scrollable
         RECT seek{}, capsule{}, divider{}, shuffle{}, repeat{}, stop{}, prev{}, next{}, play{}, mute{}, volume{};
         RECT nowPlaying{}, time{}, stream{};
+        RECT lyricsPane{}, lyricsToggle{};  // lyrics pane on the glass right of the client area
         POINT cluster{};  // origin of the WMP 12 transport cluster bitmap
     };
 
@@ -109,7 +118,7 @@ private:
     void UpdateCrumbHover(POINT pt);
     void OnCrumbClick(POINT pt);
 
-    enum class Capture { None, Widget, List, DetailScroll, Nav };
+    enum class Capture { None, Widget, List, DetailScroll, Nav, Lyrics };
 
     static LRESULT CALLBACK WndProcThunk(HWND, UINT, WPARAM, LPARAM);
     LRESULT WndProc(UINT msg, WPARAM wp, LPARAM lp);
@@ -192,7 +201,19 @@ private:
     // lyric line under them; the time right of the controls; stream format and the
     // output device (a menu) right-aligned.
     std::wstring m_streamInfo;
-    std::vector<std::pair<double, std::wstring>> m_lyrics;  // synced lines (seconds, text)
+    std::vector<std::pair<double, std::wstring>> m_lyrics;  // synced lines (seconds, text) for the transport band
+    // Lyrics pane (right of the client area, on the glass).
+    std::unique_ptr<LyricsView> m_lyricsView;
+    std::unique_ptr<gfx::FrameClock> m_frameClock;
+    bool m_lyricsOpen = false;
+    bool m_lyricsHover = false;          // the mouse is over the pane
+    metadb_handle_ptr m_lyricsTrack;     // track the lyrics were requested for
+    winrt::com_ptr<IWICBitmapSource> m_lyricsArt;  // cover for the pane's header
+    void ToggleLyrics();
+    void RequestLyrics(const metadb_handle_ptr& track, bool again);
+    void OnLyrics(const lyrics::Result& result);
+    void StartLyricsFrames();
+    void ShowLyricsMenu(POINT screen);
     RECT m_npTitleRect{}, m_npArtistRect{}, m_npStarRect{};  // client px, for clicks
     bool m_npFavorite = false;                                // the playing song is in Favorites
     D2D1_RECT_F m_deviceText{};             // DIP inside m_layout.stream
@@ -204,7 +225,6 @@ private:
     winrt::Windows::UI::Composition::SpriteVisual m_time{nullptr}, m_streamVisual{nullptr};
     service_ptr m_outputCallback;
     void RepaintStreamInfo();
-    void LoadLyrics(const metadb_handle_ptr& track);
     int NowPlayingPartAt(POINT pt) const;
     void UpdateNowPlayingHover(POINT pt);
     void OnNowPlayingClick(int part);
