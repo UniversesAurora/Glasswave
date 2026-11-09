@@ -46,6 +46,16 @@ foobar2000.exe (core: decoding, playlists, library, DSP, output, components)
 - Provider notifications: account changes re-open the provider's page; library changes
   update the navigation lists and the page in place; favorite changes refresh the stars.
 
+## Lyrics (ADR 0010)
+
+- `lyrics/` is the model (`Lyrics`, `ParseLrc`) and `lyrics::Service`: cache, the track's
+  own lyrics, the provider's lyrics (`stream::Provider::Lyrics`), then registered
+  `lyrics::Searcher`s in parallel; results reach the window on the main thread.
+- `ui::LyricsView` draws the pane with Direct2D through its own device context (effects
+  and command lists persist across frames); `gfx::FrameClock` paces frames to the
+  compositor clock while something moves. Behaviour: docs/design/lyrics-view.md.
+- The pane sits on the glass right of the client area; a restored window grows by its width.
+
 ## Window
 
 - Registered through `user_interface_factory` (`user_interface_v2`). The user selects

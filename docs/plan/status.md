@@ -1,6 +1,6 @@
 # Status
 
-Updated: 2026-11-08 (evening)
+Updated: 2026-11-09
 
 ## Where things stand
 
@@ -374,9 +374,25 @@ Updated: 2026-11-08 (evening)
   removes the selected rows only. NetEase stream URLs (signed for ~20 minutes) are renewed
   when they expire during a pause and the decoder seeks or reconnects.
 
+- 2026-11-09: lyrics pane (ADR 0010, docs/design/lyrics-view.md). A button at the right of
+  the transport band (and View > Lyrics) opens a pane on the glass to the right; a restored
+  window grows by the pane. Apple Music's lyrics look and motion: springs with staggered
+  starts, scaled and blurred inactive lines, word-by-word fill with float and emphasis,
+  translations, interlude dots, hover plate, press-to-seek, drag / wheel browsing with
+  inertia, header with cover. Frames follow the compositor clock (high refresh rates) and
+  stop when idle. Lyrics come from the cache, tags or a .lrc next to the file, NetEase's
+  own word-timed lyrics (YRC -> enhanced LRC with translation) for NetEase tracks, then
+  registered searchers. Checked in the dev instance: pane, header, NetEase lyrics, blur and
+  interlude dots while paused; animation during playback not yet seen by the owner.
+  ESLyric-compatible script searchers are specified for the next implementer in
+  docs/plan/lyrics-script-host.md.
+
 ## Next
 
-1. Owner tests the restructured NetEase pages and the preferences page (list in the session
+1. Owner tests the lyrics pane (session reply has the steps); the script host
+   (docs/plan/lyrics-script-host.md) goes to the next implementer; then the pane's queue and
+   history lists.
+2. Owner tests the restructured NetEase pages and the preferences page (list in the session
    reply); fix what they report.
 2. Open review items the owner chose to leave: the helper's loopback binding is not verified
    after start (ADR 0008 says it is); an external service address over plain http sends
