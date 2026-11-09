@@ -18,6 +18,11 @@ winrt::com_ptr<ID2D1SolidColorBrush> White(ID2D1DeviceContext* dc, float alpha);
 void DrawTextLine(ID2D1DeviceContext* dc, const std::wstring& text, float size, DWRITE_FONT_WEIGHT weight,
                   D2D1_POINT_2F at, float width, ID2D1Brush* brush,
                   DWRITE_TEXT_ALIGNMENT align = DWRITE_TEXT_ALIGNMENT_LEADING);
+// A glyph of Windows' icon font (Segoe Fluent Icons, else Segoe MDL2 Assets) centred on `c`.
+namespace icon {
+inline constexpr wchar_t kShuffle = 0xE8B1, kRepeatAll = 0xE8EE, kRepeatOne = 0xE8ED, kList = 0xE8FD;
+}
+void DrawIcon(ID2D1DeviceContext* dc, wchar_t glyph, float size, D2D1_POINT_2F c, ID2D1Brush* brush);
 // A cover cropped to fill `box` with rounded corners and a soft shadow below.
 void DrawCover(ID2D1DeviceContext* dc, ID2D1Bitmap* bitmap, D2D1_RECT_F box, float radius);
 // The current song's header: cover, title, artist (lyrics and queue share it).

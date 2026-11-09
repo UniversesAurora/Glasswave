@@ -45,46 +45,6 @@ float Rubber(float overshoot, float dimension) {
     return (1.0f - 1.0f / (overshoot * kRubber / dimension + 1.0f)) * dimension;
 }
 
-void DrawShuffleGlyph(ID2D1DeviceContext* dc, D2D1_POINT_2F c, ID2D1Brush* ink) {
-    com_ptr<ID2D1Factory> f;
-    dc->GetFactory(f.put());
-    const float w = 9, h = 6, stroke = 1.8f;
-    auto arrow = [&](D2D1_POINT_2F a, D2D1_POINT_2F b) {
-        dc->DrawLine(a, b, ink, stroke);
-        dc->DrawLine({b.x - 3, b.y - 2.6f}, b, ink, stroke);
-        dc->DrawLine({b.x - 3, b.y + 2.6f}, b, ink, stroke);
-    };
-    // Two crossing paths with arrowheads on the right.
-    com_ptr<ID2D1PathGeometry> path;
-    f->CreatePathGeometry(path.put());
-    com_ptr<ID2D1GeometrySink> sink;
-    path->Open(sink.put());
-    sink->BeginFigure({c.x - w, c.y + h}, D2D1_FIGURE_BEGIN_HOLLOW);
-    sink->AddBezier({{c.x - 2, c.y + h}, {c.x + 1, c.y - h}, {c.x + w - 1, c.y - h}});
-    sink->EndFigure(D2D1_FIGURE_END_OPEN);
-    sink->BeginFigure({c.x - w, c.y - h}, D2D1_FIGURE_BEGIN_HOLLOW);
-    sink->AddBezier({{c.x - 2, c.y - h}, {c.x + 1, c.y + h}, {c.x + w - 1, c.y + h}});
-    sink->EndFigure(D2D1_FIGURE_END_OPEN);
-    sink->Close();
-    dc->DrawGeometry(path.get(), ink, stroke);
-    arrow({c.x + w - 2, c.y - h}, {c.x + w, c.y - h});
-    arrow({c.x + w - 2, c.y + h}, {c.x + w, c.y + h});
-}
-
-void DrawRepeatGlyph(ID2D1DeviceContext* dc, D2D1_POINT_2F c, ID2D1Brush* ink, bool one) {
-    const float w = 8, h = 5, stroke = 1.8f;
-    // A loop of two rounded halves with arrowheads (top to the right, bottom to the left).
-    dc->DrawLine({c.x - w + 3, c.y - h}, {c.x + w, c.y - h}, ink, stroke);
-    dc->DrawLine({c.x + w, c.y - h}, {c.x + w - 3, c.y - h - 2.8f}, ink, stroke);
-    dc->DrawLine({c.x + w, c.y - h}, {c.x + w - 3, c.y - h + 2.8f}, ink, stroke);
-    dc->DrawLine({c.x - w, c.y + h}, {c.x + w - 3, c.y + h}, ink, stroke);
-    dc->DrawLine({c.x - w, c.y + h}, {c.x - w + 3, c.y + h - 2.8f}, ink, stroke);
-    dc->DrawLine({c.x - w, c.y + h}, {c.x - w + 3, c.y + h + 2.8f}, ink, stroke);
-    dc->DrawLine({c.x - w, c.y + h - 1}, {c.x - w, c.y - h + 2}, ink, stroke);
-    dc->DrawLine({c.x + w, c.y - h + 1}, {c.x + w, c.y + h - 2}, ink, stroke);
-    if (one) pane::DrawTextLine(dc, L"1", 8, DWRITE_FONT_WEIGHT_BOLD, {c.x - 3, c.y - 6}, 6, ink);
-}
-
 }  // namespace
 
 struct QueueView::RowView {
@@ -428,10 +388,11 @@ void QueueView::DrawChrome() {
         });
     };
     capsule(m_shuffle, m_shuffleOn, [&](ID2D1DeviceContext* dc, ID2D1Brush* ink) {
-        DrawShuffleGlyph(dc, {capW / 2, kCapsuleH / 2}, ink);
+        pane::DrawIcon(dc, pane::icon::kShuffle, 16, {capW / 2, kCapsuleH / 2}, ink);
     });
     capsule(m_repeat, m_repeatMode != 0, [&](ID2D1DeviceContext* dc, ID2D1Brush* ink) {
-        DrawRepeatGlyph(dc, {capW / 2, kCapsuleH / 2}, ink, m_repeatMode == 2);
+        pane::DrawIcon(dc, m_repeatMode == 2 ? pane::icon::kRepeatOne : pane::icon::kRepeatAll, 16,
+                       {capW / 2, kCapsuleH / 2}, ink);
     });
 }
 

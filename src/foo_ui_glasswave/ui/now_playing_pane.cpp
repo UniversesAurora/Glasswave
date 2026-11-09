@@ -62,14 +62,6 @@ void DrawLyricsIcon(ID2D1DeviceContext* dc, D2D1_POINT_2F c, ID2D1Brush* ink) {
     }
 }
 
-void DrawQueueIcon(ID2D1DeviceContext* dc, D2D1_POINT_2F c, ID2D1Brush* ink) {
-    for (int k = -1; k <= 1; ++k) {
-        const float y = c.y + k * 6.0f;
-        dc->FillEllipse(D2D1::Ellipse({c.x - 8, y}, 1.6f, 1.6f), ink);
-        dc->DrawLine({c.x - 4, y}, {c.x + 10, y}, ink, 1.8f);
-    }
-}
-
 }  // namespace
 
 NowPlayingPane::NowPlayingPane(const wuc::ContainerVisual& parent)
@@ -187,7 +179,7 @@ void NowPlayingPane::PaintBar() {
             auto ink = pane::White(dc, 0.95f);
             const D2D1_POINT_2F c{kButton / 2, kButton / 2};
             if (i == 0) DrawLyricsIcon(dc, c, ink.get());
-            else DrawQueueIcon(dc, c, ink.get());
+            else pane::DrawIcon(dc, pane::icon::kList, 20, c, ink.get());
         });
         m_buttonIcon[i].Size(float2{static_cast<float>(d), static_cast<float>(d)});
     }

@@ -65,6 +65,28 @@ void DrawTextLine(ID2D1DeviceContext* dc, const std::wstring& text, float size, 
     dc->DrawTextLayout(at, layout.get(), brush);
 }
 
+void DrawIcon(ID2D1DeviceContext* dc, wchar_t glyph, float size, D2D1_POINT_2F c, ID2D1Brush* brush) {
+    auto* f = gfx::CompositionHost::Get().DWrite();
+    static const std::wstring family = [f] {
+        com_ptr<IDWriteFontCollection> fonts;
+        if (SUCCEEDED(f->GetSystemFontCollection(fonts.put()))) {
+            UINT32 index = 0;
+            BOOL exists = FALSE;
+            if (SUCCEEDED(fonts->FindFamilyName(L"Segoe Fluent Icons", &index, &exists)) && exists)
+                return std::wstring(L"Segoe Fluent Icons");
+        }
+        return std::wstring(L"Segoe MDL2 Assets");
+    }();
+    com_ptr<IDWriteTextFormat> format;
+    if (FAILED(f->CreateTextFormat(family.c_str(), nullptr, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL,
+                                   DWRITE_FONT_STRETCH_NORMAL, size, L"", format.put())))
+        return;
+    format->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+    format->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+    const wchar_t text[1] = {glyph};
+    dc->DrawText(text, 1, format.get(), D2D1::RectF(c.x - size, c.y - size, c.x + size, c.y + size), brush);
+}
+
 void DrawCover(ID2D1DeviceContext* dc, ID2D1Bitmap* bitmap, D2D1_RECT_F box, float radius) {
     com_ptr<ID2D1Factory> factory;
     dc->GetFactory(factory.put());
