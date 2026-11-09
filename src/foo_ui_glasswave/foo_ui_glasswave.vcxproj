@@ -91,12 +91,6 @@
     <ClCompile Include="ui\pane_common.cpp" />
     <ClCompile Include="ui\queue_view.cpp" />
     <ClCompile Include="ui\now_playing_pane.cpp" />
-    <ClCompile Include="gfx\frame_clock.cpp" />
-    <ClCompile Include="gfx\effects.cpp" />
-    <ClCompile Include="lyrics\lrc.cpp" />
-    <ClCompile Include="lyrics\lyrics_service.cpp" />
-    <ClCompile Include="gfx\frame_clock.cpp" />
-    <ClCompile Include="gfx\effects.cpp" />
     <ClCompile Include="gfx\color_matrix_effect.cpp" />
     <ClCompile Include="aero\glass_material.cpp" />
     <ClCompile Include="aero\aero_painter.cpp" />
@@ -162,12 +156,6 @@
     <ClInclude Include="ui\queue_view.h" />
     <ClInclude Include="ui\now_playing_pane.h" />
     <ClInclude Include="ui\spring.h" />
-    <ClInclude Include="gfx\frame_clock.h" />
-    <ClInclude Include="gfx\effects.h" />
-    <ClInclude Include="lyrics\lyrics.h" />
-    <ClInclude Include="lyrics\lyrics_service.h" />
-    <ClInclude Include="gfx\frame_clock.h" />
-    <ClInclude Include="gfx\effects.h" />
     <ClInclude Include="gfx\color_matrix_effect.h" />
     <ClInclude Include="aero\aero_colorization.h" />
     <ClInclude Include="aero\aero_metrics.h" />
