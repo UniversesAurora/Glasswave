@@ -97,6 +97,12 @@ public:
     // True when two cover URLs show the same image (e.g. only a size parameter differs).
     virtual bool SameCover(std::wstring_view a, std::wstring_view b) const { return a == b; }
 
+    // ---- lyrics ------------------------------------------------------------------------
+    // The provider's own lyrics for one of its tracks as LRC: enhanced LRC (<mm:ss.xx>) for
+    // word timing, translations as reference lines with the line's timestamp. Blocking, on a
+    // worker thread (lyrics::Service). Empty when the provider has none.
+    virtual std::wstring Lyrics(const Id& /*track*/, abort_callback& /*abort*/) { return {}; }
+
     // ---- library snapshot (last fetched; cheap) ----------------------------------------
     virtual bool IsFavorite(const Id& track) const = 0;
     virtual std::vector<Playlist> Playlists(Shelf shelf) const = 0;

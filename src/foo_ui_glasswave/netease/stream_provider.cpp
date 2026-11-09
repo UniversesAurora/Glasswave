@@ -295,6 +295,12 @@ stream::Id StreamProvider::TrackId(const metadb_handle_ptr& item) const {
     return item.is_valid() && ParseSongPath(item->get_path(), id) ? Text(id) : Id();
 }
 
+std::wstring StreamProvider::Lyrics(const Id& track, abort_callback& abort) {
+    std::wstring lrc, error;
+    if (const int64_t id = Num(track)) Session::Get().Api().GetLyrics(id, abort, lrc, error);
+    return lrc;
+}
+
 metadb_handle_ptr StreamProvider::TrackItem(const Id& track) const {
     const int64_t id = Num(track);
     return id ? Catalog::Get().Handle(id) : metadb_handle_ptr();

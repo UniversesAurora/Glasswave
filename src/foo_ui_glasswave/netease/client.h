@@ -62,6 +62,9 @@ public:
     bool SongDetails(const std::vector<int64_t>& ids, abort_callback& abort, std::vector<Song>& out,
                      std::wstring& error);
     bool GetSongUrl(int64_t id, std::wstring_view level, abort_callback& abort, SongUrl& out, std::wstring& error);
+    // Lyrics as LRC (/lyric/new): word-timed YRC becomes enhanced LRC; the translation is
+    // added as reference lines. `lrc` stays empty when the song has none.
+    bool GetLyrics(int64_t id, abort_callback& abort, std::wstring& lrc, std::wstring& error);
     bool GetArtistDetail(int64_t artistId, abort_callback& abort, Artist& out, std::wstring& error);
     bool GetArtistDescription(int64_t artistId, abort_callback& abort, std::wstring& brief, std::wstring& full,
                               std::wstring& error);

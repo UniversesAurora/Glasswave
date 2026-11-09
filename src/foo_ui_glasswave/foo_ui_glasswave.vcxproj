@@ -84,6 +84,9 @@
     <ClCompile Include="component.cpp" />
     <ClCompile Include="gfx\composition_host.cpp" />
     <ClCompile Include="gfx\frame_clock.cpp" />
+    <ClCompile Include="lyrics\lrc.cpp" />
+    <ClCompile Include="lyrics\lyrics_service.cpp" />
+    <ClCompile Include="gfx\frame_clock.cpp" />
     <ClCompile Include="gfx\color_matrix_effect.cpp" />
     <ClCompile Include="aero\glass_material.cpp" />
     <ClCompile Include="aero\aero_painter.cpp" />
@@ -140,6 +143,9 @@
   <ItemGroup>
     <ClInclude Include="pch.h" />
     <ClInclude Include="gfx\composition_host.h" />
+    <ClInclude Include="gfx\frame_clock.h" />
+    <ClInclude Include="lyrics\lyrics.h" />
+    <ClInclude Include="lyrics\lyrics_service.h" />
     <ClInclude Include="gfx\frame_clock.h" />
     <ClInclude Include="gfx\color_matrix_effect.h" />
     <ClInclude Include="aero\aero_colorization.h" />

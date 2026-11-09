@@ -25,6 +25,7 @@ public:
     void RefreshLibrary(Done done) override;
 
     stream::Id TrackId(const metadb_handle_ptr& item) const override;
+    std::wstring Lyrics(const stream::Id& track, abort_callback& abort) override;
     metadb_handle_ptr TrackItem(const stream::Id& track) const override;
     std::optional<stream::Track> FindTrack(const stream::Id& track) const override;
     metadb_handle_ptr ArtItem(stream::ArtKind kind, const stream::Id& id) const override;

@@ -3,6 +3,7 @@
 #include "netease/cookie.h"
 #include "netease/http.h"
 #include "netease/log.h"
+#include "lyrics/lyrics.h"
 
 #include <chrono>
 #include <optional>
@@ -560,6 +561,105 @@ bool Client::SongDetails(const std::vector<int64_t>& ids, abort_callback& abort,
             if (song.id) out.push_back(std::move(song));
         }
     }
+    return true;
+}
+
+namespace {
+
+std::wstring LrcTime(long long ms) {
+    if (ms < 0) ms = 0;
+    wchar_t buf[32];
+    swprintf_s(buf, L"%02lld:%02lld.%03lld", ms / 60000, (ms / 1000) % 60, ms % 1000);
+    return buf;
+}
+
+// YRC: "[start,duration](start,duration,0)word(start,duration,0)word..." per line (times in
+// ms), plus JSON credit lines. Becomes "[mm:ss.xxx]<mm:ss.xxx>word<mm:ss.xxx>word<end>".
+std::wstring YrcToLrc(std::wstring_view yrc, const glasswave::lyrics::Lyrics& translation) {
+    std::wstring out;
+    size_t pos = 0;
+    while (pos < yrc.size()) {
+        size_t end = yrc.find(L'\n', pos);
+        if (end == std::wstring_view::npos) end = yrc.size();
+        std::wstring_view line = yrc.substr(pos, end - pos);
+        pos = end + 1;
+        while (!line.empty() && (line.back() == L'\r' || line.back() == L' ')) line.remove_suffix(1);
+        if (line.size() < 3 || line[0] != L'[') continue;
+        long long start = 0, duration = 0;
+        if (swscanf_s(std::wstring(line).c_str(), L"[%lld,%lld]", &start, &duration) != 2) continue;
+        size_t at = line.find(L']');
+        if (at == std::wstring_view::npos) continue;
+        ++at;
+        std::wstring text;
+        long long lastEnd = start + duration;
+        bool any = false;
+        while (at < line.size()) {
+            if (line[at] != L'(') {
+                ++at;
+                continue;
+            }
+            const size_t close = line.find(L')', at);
+            if (close == std::wstring_view::npos) break;
+            long long ws = 0, wd = 0, unused = 0;
+            if (swscanf_s(std::wstring(line.substr(at, close - at + 1)).c_str(), L"(%lld,%lld,%lld)", &ws, &wd, &unused) < 2) {
+                at = close + 1;
+                continue;
+            }
+            size_t next = line.find(L'(', close + 1);
+            // A '(' inside the lyric text is not a time tag unless "(digits," follows.
+            while (next != std::wstring_view::npos &&
+                   !(next + 1 < line.size() && iswdigit(line[next + 1]) && line.find(L',', next) < line.find(L')', next)))
+                next = line.find(L'(', next + 1);
+            const std::wstring_view word = line.substr(close + 1, (next == std::wstring_view::npos ? line.size() : next) - close - 1);
+            text += L'<' + LrcTime(ws) + L'>' + std::wstring(word);
+            lastEnd = ws + wd;
+            any = true;
+            at = next == std::wstring_view::npos ? line.size() : next;
+        }
+        if (!any) continue;
+        const std::wstring stamp = L'[' + LrcTime(start) + L']';
+        out += stamp + text + L'<' + LrcTime(lastEnd) + L">\n";
+        // The translation line closest in time (NetEase times them like the line-level LRC).
+        const glasswave::lyrics::Line* best = nullptr;
+        long long bestDiff = 1500;
+        for (const auto& t : translation.lines) {
+            const long long diff = std::llabs(t.start - start);
+            if (diff < bestDiff) {
+                bestDiff = diff;
+                best = &t;
+            }
+        }
+        if (best && !best->text.empty() && best->text != L"//") out += stamp + best->text + L'\n';
+    }
+    return out;
+}
+
+std::wstring LyricText(const json::Object& body, const wchar_t* key) {
+    if (auto o = json::GetObject(body, key)) return json::GetString(*o, L"lyric");
+    return {};
+}
+
+}  // namespace
+
+bool Client::GetLyrics(int64_t id, abort_callback& abort, std::wstring& lrc, std::wstring& error) {
+    lrc.clear();
+    json::Object body;
+    int code = 0;
+    if (!Request(L"/lyric/new", {{L"id", std::to_wstring(id)}}, false, abort, body, code, error)) return false;
+    if (code != 200) {
+        error = MessageOf(body, code);
+        return false;
+    }
+    const std::wstring yrc = LyricText(body, L"yrc");
+    const std::wstring line = LyricText(body, L"lrc");
+    std::wstring translation = LyricText(body, L"ytlrc");
+    if (translation.empty()) translation = LyricText(body, L"tlyric");
+    if (!yrc.empty()) {
+        lrc = YrcToLrc(yrc, glasswave::lyrics::ParseLrc(translation));
+        if (!lrc.empty()) return true;
+    }
+    lrc = line;
+    if (!lrc.empty() && !translation.empty()) lrc += L"\n" + translation;
     return true;
 }
 
