@@ -106,6 +106,46 @@ void CompositionHost::Draw(const wuc::CompositionDrawingSurface& surface, float 
     interop->EndDraw();
 }
 
+winrt::com_ptr<ID2D1DeviceContext> CompositionHost::CreateDeviceContext() {
+    winrt::com_ptr<ID2D1DeviceContext> dc;
+    winrt::check_hresult(m_d2dDevice->CreateDeviceContext(D2D1_DEVICE_CONTEXT_OPTIONS_NONE, dc.put()));
+    return dc;
+}
+
+void CompositionHost::Draw(const wuc::CompositionDrawingSurface& surface, float scale, ID2D1DeviceContext* dc,
+                           const std::function<void(ID2D1DeviceContext*)>& paint) {
+    auto interop = surface.as<abi_comp::ICompositionDrawingSurfaceInterop>();
+    winrt::com_ptr<IDXGISurface> dxgi;
+    POINT offset{};
+    if (FAILED(interop->BeginDraw(nullptr, __uuidof(IDXGISurface), dxgi.put_void(), &offset))) return;
+    const float dpi = 96.0f * scale;
+    const D2D1_BITMAP_PROPERTIES1 props = D2D1::BitmapProperties1(
+        D2D1_BITMAP_OPTIONS_TARGET | D2D1_BITMAP_OPTIONS_CANNOT_DRAW,
+        D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED), dpi, dpi);
+    winrt::com_ptr<ID2D1Bitmap1> target;
+    if (FAILED(dc->CreateBitmapFromDxgiSurface(dxgi.get(), &props, target.put()))) {
+        interop->EndDraw();
+        return;
+    }
+    dc->SetTarget(target.get());
+    dc->SetDpi(dpi, dpi);
+    dc->BeginDraw();
+    dc->SetTransform(D2D1::Matrix3x2F::Translation(offset.x / scale, offset.y / scale));
+    dc->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
+    dc->Clear(D2D1::ColorF(0, 0, 0, 0));
+    try {
+        paint(dc);
+    } catch (...) {
+        dc->EndDraw();
+        dc->SetTarget(nullptr);
+        interop->EndDraw();
+        throw;
+    }
+    dc->EndDraw();
+    dc->SetTarget(nullptr);
+    interop->EndDraw();
+}
+
 wuc::SpriteVisual CompositionHost::CreatePaintedVisual(int widthPx, int heightPx, float scale,
                                                        const std::function<void(ID2D1DeviceContext*)>& paint) {
     auto visual = m_compositor.CreateSpriteVisual();
