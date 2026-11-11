@@ -23,6 +23,13 @@ public:
     void Put(const Album& album);
     void Put(const std::vector<Album>& albums);
 
+    // Metadata restored from a provider list cache fills missing fields only. In particular,
+    // it never replaces an existing cover URL with the sparse record used by the disk cache.
+    void Restore(const Song& song);
+    void Restore(const Playlist& playlist);
+    void Restore(const Artist& artist);
+    void Restore(const Album& album);
+
     std::optional<Song> FindSong(int64_t id) const;
     std::optional<Playlist> FindPlaylist(int64_t id) const;
     std::optional<Artist> FindArtist(int64_t id) const;
@@ -44,6 +51,9 @@ public:
 
     // Main thread: store and feed file_info to metadb in one batch.
     void PutAndHint(const std::vector<Song>& songs);
+    // Main thread: merge cached list metadata into richer records, then feed the result to
+    // metadb without rewriting the legacy NetEase TSV cache.
+    void RestoreAndHint(const std::vector<Song>& songs);
 
     // Restart cache: <profile>\glasswave\netease\cache\songs.tsv. Load also pushes the
     // cached tags into metadb so persisted ncm:// playlist entries format correctly.

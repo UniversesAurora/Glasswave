@@ -18,7 +18,7 @@ struct View {
         Playlist, AllMusic, Category, Group, Playlists, SmartPlaylists, AllFavorites, AllRecentPlayed, AllMostPlayed,
         // a provider's pages
         RemoteFavorites, RemoteShelf, RemotePlaylist, RemoteArtists, RemoteAlbums, RemoteArtist, RemoteAlbum,
-        RemoteTopTracks
+        RemoteTopTracks, RemoteSearch, RemoteSectionTracks, RemoteGroups, RemoteGroupTracks
     };
     Library library = Library::Local;
     Kind kind = Kind::AllMusic;
@@ -29,7 +29,10 @@ struct View {
     std::wstring provider;                             // Remote: provider key
     stream::Shelf shelf = stream::Shelf::Created;      // RemoteShelf, RemotePlaylist (when shelfKnown)
     bool shelfKnown = false;
-    stream::Id remoteId;    // RemotePlaylist / RemoteArtist / RemoteAlbum / RemoteTopTracks (the artist)
+    // Playlist/artist/album/query id; for RemoteTopTracks this is the artist id.
+    stream::Id remoteId;
+    stream::Id sectionId;   // provider-defined section id
+    stream::Id groupId;     // RemoteGroupTracks: BrowseGroup id
     stream::Id parentId;    // RemoteAlbum opened from an artist page: that artist
     std::wstring parentName;
 

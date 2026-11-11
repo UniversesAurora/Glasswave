@@ -72,6 +72,18 @@ bool DrawWmpIcon(ID2D1DeviceContext* dc, D2D1_POINT_2F center, wmp::paint::NavIc
                    D2D1_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR);
     return true;
 }
+
+wp::NavIcon SectionIcon(stream::SectionKind kind) {
+    switch (kind) {
+    case stream::SectionKind::Favorites: return wp::NavIcon::Playlist;
+    case stream::SectionKind::Artists: return wp::NavIcon::Artist;
+    case stream::SectionKind::Albums: return wp::NavIcon::Album;
+    case stream::SectionKind::PlaylistShelf: return wp::NavIcon::Playlist;
+    case stream::SectionKind::Tracks: return wp::NavIcon::Music;
+    case stream::SectionKind::Groups: return wp::NavIcon::Genre;
+    }
+    return wp::NavIcon::Playlist;
+}
 }  // namespace
 
 // Label and WMP icon (wmploc icon group) of each Music category.
@@ -111,12 +123,7 @@ std::wstring NavPane::ItemKey(const Item& item) {
     case Target::AllMostPlayed: return L"mostplayed";
     case Target::PlaylistsHeader: return L"playlists";
     case Target::SmartHeader: return L"smart";
-    case Target::RemoteFavorites: return L"liked";
-    case Target::RemoteArtists: return L"artists";
-    case Target::RemoteAlbums: return L"albums";
-    case Target::RemoteCreatedHeader: return L"created";
-    case Target::RemoteSavedHeader: return L"collected";
-    case Target::RemoteRecommended: return L"recommended";
+    case Target::RemoteSection: return item.sectionId;
     default: return {};
     }
 }
@@ -310,27 +317,42 @@ void NavPane::Rebuild() {
     }
     for (const auto& section : m_providers) {
         stream::Provider* provider = section.provider;
-        auto add = [&](Target target, int level, std::wstring text, wp::NavIcon icon, bool expandable,
-                       stream::Id id = {}) {
-            Item item{target, 0, level, std::move(text), icon, expandable, provider, std::move(id)};
+        auto add = [&](Target target, int level, std::wstring text, wp::NavIcon icon, bool expandable) {
+            Item item{target, 0, level, std::move(text), icon, expandable, provider};
             m_items.push_back(std::move(item));
             return Expanded(m_items.back());
         };
         if (!add(Target::LibraryRemote, 0, provider->Name(), wp::NavIcon::Library, true)) continue;
-        const auto offers = provider->Offers();
-        if (section.signedIn) {
-            if (offers.favorites) add(Target::RemoteFavorites, 1, L"Favorites", wp::NavIcon::Playlist, false);
-            if (offers.followArtists) add(Target::RemoteArtists, 1, L"Artists", wp::NavIcon::Artist, false);
-            if (offers.saveAlbums) add(Target::RemoteAlbums, 1, L"Albums", wp::NavIcon::Album, false);
-            auto playlists = [&](Target header, const wchar_t* label, const std::vector<stream::Playlist>& list) {
-                if (!add(header, 1, label, wp::NavIcon::Playlist, true)) return;
-                for (const auto& playlist : list)
-                    add(Target::RemotePlaylist, 2, playlist.name.empty() ? L"Unnamed playlist" : playlist.name,
-                        wp::NavIcon::Playlist, false, playlist.id);
-            };
-            playlists(Target::RemoteCreatedHeader, L"Created playlists", section.created);
-            if (offers.savePlaylists) playlists(Target::RemoteSavedHeader, L"Collected playlists", section.saved);
-            if (offers.recommended) add(Target::RemoteRecommended, 1, L"Recommended", wp::NavIcon::Playlist, false);
+        if (!section.signedIn) continue;
+        std::set<stream::Id> seenSections;
+        for (const auto& navigation : section.sections) {
+            if (navigation.id.empty() || !seenSections.emplace(navigation.id).second) continue;
+            Item item{Target::RemoteSection, 0, 1, navigation.label, SectionIcon(navigation.kind),
+                      navigation.kind == stream::SectionKind::PlaylistShelf, provider};
+            item.sectionId = navigation.id;
+            item.sectionKind = navigation.kind;
+            item.sectionShelf = navigation.shelf;
+            item.reorderChildren = navigation.reorderChildren;
+            m_items.push_back(std::move(item));
+            if (navigation.kind != stream::SectionKind::PlaylistShelf || !Expanded(m_items.back())) continue;
+            const auto found = section.playlists.find(navigation.id);
+            if (found == section.playlists.end()) continue;
+            for (const auto& playlist : found->second) {
+                Item child{Target::RemotePlaylist,
+                           0,
+                           2,
+                           playlist.name.empty() ? provider->PlaylistText(L"Unnamed playlist")
+                                                 : playlist.name,
+                           wp::NavIcon::Playlist,
+                           false,
+                           provider,
+                           playlist.id};
+                child.sectionId = navigation.id;
+                child.sectionKind = navigation.kind;
+                child.sectionShelf = navigation.shelf;
+                child.reorderChildren = navigation.reorderChildren;
+                m_items.push_back(std::move(child));
+            }
         }
         // Signing in and out is on the preferences page (and the root's context menu).
     }
@@ -347,9 +369,23 @@ void NavPane::SetProviders(std::vector<ProviderSection> sections) {
         return std::equal(a.begin(), a.end(), b.begin(), b.end(),
                           [](const stream::Playlist& x, const stream::Playlist& y) { return x.id == y.id && x.name == y.name; });
     };
+    auto sameSections = [](const std::vector<stream::NavigationSection>& a,
+                           const std::vector<stream::NavigationSection>& b) {
+        return std::equal(a.begin(), a.end(), b.begin(), b.end(),
+                          [](const stream::NavigationSection& x, const stream::NavigationSection& y) {
+                              return x.id == y.id && x.label == y.label && x.kind == y.kind &&
+                                     x.shelf == y.shelf && x.reorderChildren == y.reorderChildren;
+                          });
+    };
     auto same = [&](const ProviderSection& a, const ProviderSection& b) {
-        return a.provider == b.provider && a.signedIn == b.signedIn &&
-               sameRows(a.created, b.created) && sameRows(a.saved, b.saved);
+        if (a.provider != b.provider || a.signedIn != b.signedIn || !sameSections(a.sections, b.sections) ||
+            a.playlists.size() != b.playlists.size())
+            return false;
+        for (const auto& [id, rows] : a.playlists) {
+            const auto found = b.playlists.find(id);
+            if (found == b.playlists.end() || !sameRows(rows, found->second)) return false;
+        }
+        return true;
     };
     if (std::equal(sections.begin(), sections.end(), m_providers.begin(), m_providers.end(), same)) return;
     m_providers = std::move(sections);
@@ -477,9 +513,12 @@ bool NavPane::MovableItem(size_t index) const {
     if (item.level != 2) return false;
     for (size_t i = index; i > 0; --i) {
         if (m_items[i - 1].level >= 2) continue;
-        const Target parent = m_items[i - 1].target;
-        return parent == Target::RemoteCreatedHeader || parent == Target::RemoteSavedHeader ||
-               parent == Target::PlaylistsHeader || parent == Target::SmartHeader;
+        const Item& parent = m_items[i - 1];
+        if (parent.target == Target::RemoteSection) {
+            return parent.sectionKind == stream::SectionKind::PlaylistShelf && parent.reorderChildren &&
+                   parent.provider && parent.provider->Offers().reorderPlaylists;
+        }
+        return parent.target == Target::PlaylistsHeader || parent.target == Target::SmartHeader;
     }
     return false;
 }
@@ -514,11 +553,8 @@ bool NavPane::SameSiblingGroup(size_t a, size_t b) const {
     const size_t pa = parentOf(a);
     const size_t pb = parentOf(b);
     if (pa == SIZE_MAX || pb == SIZE_MAX || pa != pb) return false;
-    // Groups whose order can be persisted: a provider's two playlist sections, the regular
-    // playlists under All Music and the smart playlists under Local Music.
-    const Target parent = m_items[pa].target;
-    return parent == Target::RemoteCreatedHeader || parent == Target::RemoteSavedHeader ||
-           parent == Target::PlaylistsHeader || parent == Target::SmartHeader;
+    // Playlist children are movable only when their own section explicitly permits it.
+    return MovableItem(a) && MovableItem(b);
 }
 
 void NavPane::UpdateDropTarget(POINT pt) {
@@ -611,7 +647,9 @@ void NavPane::Paint() {
             const bool autoPlaylist = it.target == Target::Playlist && media::IsAutoPlaylist(it.playlist);
             // Favorites: star; queue: WMP's playlist icon with the orbit; smart header: auto playlist.
             const int special = (it.target == Target::Playlist && it.text == L"Favorites") ||
-                                        it.target == Target::AllFavorites || it.target == Target::RemoteFavorites
+                                        it.target == Target::AllFavorites ||
+                                        (it.target == Target::RemoteSection &&
+                                         it.sectionKind == stream::SectionKind::Favorites)
                                     ? 29526
                                 : it.target == Target::Queue        ? 29513
                                 : it.target == Target::AllRecentPlayed ? 575   // clock with a music note
@@ -649,7 +687,11 @@ void NavPane::Paint() {
                 it.target == m_selTarget &&
                 (it.target == Target::Playlist || it.target == Target::Category
                      ? it.playlist == m_selPlaylist
-                     : it.target == Target::RemotePlaylist ? it.remoteId == m_selRemoteId : true) &&
+                     : it.target == Target::RemoteSection
+                           ? it.sectionId == m_selRemoteId
+                           : it.target == Target::RemotePlaylist
+                                 ? it.remoteId == m_selRemoteId
+                           : true) &&
                 (!it.provider || it.provider == m_selProvider);
             const bool hot = i == m_hot;
             if (selected || hot)

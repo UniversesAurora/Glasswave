@@ -1,6 +1,7 @@
 #include "pch.h"
 
 #include "ui/pane_common.h"
+#include "win7/win7_resources.h"
 
 #include "gfx/composition_host.h"
 
@@ -128,6 +129,8 @@ void DrawCapsule(ID2D1DeviceContext* dc, D2D1_RECT_F bounds, ID2D1Brush* brush) 
 }
 
 void DrawCover(ID2D1DeviceContext* dc, ID2D1Bitmap* bitmap, D2D1_RECT_F box, float radius) {
+    if (!bitmap)
+        bitmap = win7::Resources::Get().Bitmap(dc, win7::Module::Wmploc, L"ALBUM_0.PNG");
     com_ptr<ID2D1Factory> factory;
     dc->GetFactory(factory.put());
     com_ptr<ID2D1SolidColorBrush> shade;

@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "netease/config.h"
+#include "cache/prefetch_host.h"
 #include "stream/playback_source.h"
 
 namespace glasswave::netease {
@@ -36,8 +37,12 @@ Quality GetQuality() {
 }
 
 void SetQuality(Quality quality) {
+    const bool changed = GetQuality() != quality;
     cfg_quality.set(static_cast<int64_t>(quality));
     stream::ResetSourceAvailability();
+    if (changed) fb2k::inMainThread([] {
+        if (auto* host = cache::PrefetchHost::Existing()) host->NotifyContextChanged();
+    });
 }
 
 int CoverCacheLimitMb() {

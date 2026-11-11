@@ -1,5 +1,7 @@
 #include "pch.h"
 #include "netease/stream_provider.h"
+#include "cache/provider_snapshot.h"
+#include "cache/store.h"
 #include "stream/playback_source.h"
 #include "netease/catalog.h"
 #include "netease/config.h"
@@ -10,6 +12,10 @@
 #include "ui/netease_login.h"
 
 #include <ctime>
+#include <array>
+#include <limits>
+#include <list>
+#include <unordered_map>
 
 namespace glasswave::netease {
 
@@ -17,11 +23,38 @@ namespace {
 
 using stream::Id;
 
-Session& Ncm() { return Session::Get(); }
+Session& Ncm() {
+    return Session::Get();
+}
 
-int64_t Num(const Id& id) { return id.empty() ? 0 : static_cast<int64_t>(_wcstoi64(id.c_str(), nullptr, 10)); }
+std::string Utf8(std::wstring_view text) {
+    if (text.empty()) return {};
+    return pfc::stringcvt::string_utf8_from_wide(text.data(), text.size()).get_ptr();
+}
 
-Id Text(int64_t id) { return id ? std::to_wstring(id) : Id(); }
+std::wstring Wide(std::string_view text) {
+    if (text.empty()) return {};
+    const std::string copy(text);
+    return pfc::stringcvt::string_wide_from_utf8(copy.c_str()).get_ptr();
+}
+
+std::string SnapshotContext() {
+    const std::array<std::string_view, 1> parts{"ncm-bootstrap-v1"};
+    return cache::provider_snapshot::Context(parts);
+}
+
+std::string SourceIdentity() {
+    const std::wstring external = GetServiceUrlOverride();
+    return external.empty() ? "managed:ncm" : "external:" + Utf8(external);
+}
+
+int64_t Num(const Id& id) {
+    return id.empty() ? 0 : static_cast<int64_t>(_wcstoi64(id.c_str(), nullptr, 10));
+}
+
+Id Text(int64_t id) {
+    return id ? std::to_wstring(id) : Id();
+}
 
 std::vector<int64_t> Nums(const std::vector<Id>& ids) {
     std::vector<int64_t> out;
@@ -41,7 +74,8 @@ int Year(int64_t publishTimeMs) {
 std::vector<stream::ArtistRef> Refs(const std::vector<ArtistRef>& refs) {
     std::vector<stream::ArtistRef> out;
     out.reserve(refs.size());
-    for (const auto& ref : refs) out.push_back({Text(ref.id), ref.name});
+    for (const auto& ref : refs)
+        out.push_back({Text(ref.id), ref.name});
     return out;
 }
 
@@ -52,17 +86,36 @@ stream::Track ToTrack(const Song& song) {
     track.album = song.album;
     track.albumId = Text(song.albumId);
     track.artists = Refs(song.artistRefs);
-    if (track.artists.empty())  // songs cached before ids were stored
-        for (const auto& name : song.artists) track.artists.push_back({{}, name});
+    if (track.artists.empty()) // songs cached before ids were stored
+        for (const auto& name : song.artists)
+            track.artists.push_back({{}, name});
     track.durationMs = song.durationMs;
     track.popularity = song.popularity;
     return track;
 }
 
+Song FromTrack(const stream::Track& track) {
+    Song song;
+    song.id = Num(track.id);
+    song.title = track.title;
+    song.album = track.album;
+    song.albumId = Num(track.albumId);
+    song.durationMs = track.durationMs;
+    song.popularity = track.popularity;
+    for (const auto& ref : track.artists) {
+        if (ref.name.empty()) continue;
+        song.artists.push_back(ref.name);
+        song.artistRefs.push_back({Num(ref.id), ref.name});
+    }
+    if (!song.artists.empty()) song.albumArtist = song.artists.front();
+    return song;
+}
+
 std::vector<stream::Track> ToTracks(const std::vector<Song>& songs) {
     std::vector<stream::Track> out;
     out.reserve(songs.size());
-    for (const auto& song : songs) out.push_back(ToTrack(song));
+    for (const auto& song : songs)
+        out.push_back(ToTrack(song));
     return out;
 }
 
@@ -90,10 +143,26 @@ stream::Playlist ToPlaylist(const Playlist& playlist) {
     return out;
 }
 
+Playlist FromPlaylist(const stream::Playlist& playlist) {
+    Playlist out;
+    out.id = Num(playlist.id);
+    out.name = playlist.name;
+    out.coverUrl = playlist.coverUrl;
+    out.creatorName = playlist.creator;
+    out.description = playlist.description;
+    out.trackCount = playlist.trackCount == stream::kUnknownCount ? 0 : playlist.trackCount;
+    out.subscribed = playlist.saved;
+    // Catalog has no stream::Playlist boolean fields. A non-own sentinel keeps a cache
+    // restoration from turning recommended/other-user lists into owned lists.
+    out.creatorId = playlist.own ? Ncm().CurrentAccount().userId : -1;
+    return out;
+}
+
 std::vector<stream::Playlist> ToPlaylists(const std::vector<Playlist>& playlists) {
     std::vector<stream::Playlist> out;
     out.reserve(playlists.size());
-    for (const auto& playlist : playlists) out.push_back(ToPlaylist(playlist));
+    for (const auto& playlist : playlists)
+        out.push_back(ToPlaylist(playlist));
     return out;
 }
 
@@ -109,10 +178,35 @@ stream::Album ToAlbum(const Album& album) {
     return out;
 }
 
+int64_t YearTimestamp(int year) {
+    if (year <= 0) return 0;
+    std::tm value{};
+    value.tm_year = year - 1900;
+    value.tm_mon = 6;
+    value.tm_mday = 1;
+    value.tm_hour = 12;
+    return static_cast<int64_t>(mktime(&value)) * 1000;
+}
+
+Album FromAlbum(const stream::Album& album) {
+    Album out;
+    out.id = Num(album.id);
+    out.name = album.name;
+    out.coverUrl = album.coverUrl;
+    out.trackCount = album.trackCount == stream::kUnknownCount ? 0 : album.trackCount;
+    out.publishTime = YearTimestamp(album.year);
+    out.description = album.description;
+    for (const auto& ref : album.artists) {
+        if (!ref.id.empty() || !ref.name.empty()) out.artistRefs.push_back({Num(ref.id), ref.name});
+    }
+    return out;
+}
+
 std::vector<stream::Album> ToAlbums(const std::vector<Album>& albums) {
     std::vector<stream::Album> out;
     out.reserve(albums.size());
-    for (const auto& album : albums) out.push_back(ToAlbum(album));
+    for (const auto& album : albums)
+        out.push_back(ToAlbum(album));
     return out;
 }
 
@@ -135,19 +229,95 @@ stream::Artist ToArtist(const Artist& artist) {
     return out;
 }
 
-std::vector<stream::Artist> ToArtists(const std::vector<Artist>& artists) {
-    std::vector<stream::Artist> out;
-    out.reserve(artists.size());
-    for (const auto& artist : artists) out.push_back(ToArtist(artist));
+Artist FromArtist(const stream::Artist& artist) {
+    Artist out;
+    out.id = Num(artist.id);
+    out.name = artist.name;
+    out.avatarUrl = artist.avatarUrl;
+    out.brief = artist.bio;
+    out.albumCount = artist.albumCount == stream::kUnknownCount ? 0 : artist.albumCount;
+    out.songCount = artist.trackCount == stream::kUnknownCount ? 0 : artist.trackCount;
+    out.followKnown = artist.followKnown;
+    out.followed = artist.followed;
     return out;
 }
 
-// netease::Session reports (ok, error); stream reports an error text only.
-Session::DoneCallback Adapt(stream::Provider::Done done) {
-    if (!done) return {};
-    return [done = std::move(done)](bool ok, std::wstring error) {
-        done(ok ? std::wstring() : (error.empty() ? std::wstring(L"The request failed.") : std::move(error)));
-    };
+std::vector<stream::Artist> ToArtists(const std::vector<Artist>& artists) {
+    std::vector<stream::Artist> out;
+    out.reserve(artists.size());
+    for (const auto& artist : artists)
+        out.push_back(ToArtist(artist));
+    return out;
+}
+
+std::wstring ErrorOf(std::wstring error) {
+    return error.empty() ? std::wstring(L"The request failed.") : std::move(error);
+}
+
+bool ListCancelled(const std::shared_ptr<std::atomic_bool>& cancelled) {
+    return cancelled && cancelled->load(std::memory_order_acquire);
+}
+
+bool ToInt(size_t value, int& out, std::wstring& error) {
+    if (value > static_cast<size_t>(std::numeric_limits<int>::max())) {
+        error = L"The requested list page is too large.";
+        return false;
+    }
+    out = static_cast<int>(value);
+    return true;
+}
+
+std::wstring IdsRevision(uint64_t accountRevision, const std::vector<int64_t>& ids,
+                         int64_t sourceVersion = 0) {
+    uint64_t hash = 1469598103934665603ull;
+    for (const int64_t id : ids) {
+        uint64_t value = static_cast<uint64_t>(id);
+        for (int byte = 0; byte < 8; ++byte) {
+            hash ^= value & 0xff;
+            hash *= 1099511628211ull;
+            value >>= 8;
+        }
+    }
+    wchar_t digest[17];
+    swprintf_s(digest, L"%016llx", static_cast<unsigned long long>(hash));
+    return L"ids2:" + std::to_wstring(accountRevision) + L":" + std::to_wstring(sourceVersion) + L":" +
+           std::to_wstring(ids.size()) + L":" + digest;
+}
+
+std::vector<Song> OrderDetails(const std::vector<int64_t>& ids, const std::vector<Song>& details) {
+    std::unordered_map<int64_t, size_t> byId;
+    byId.reserve(details.size());
+    for (size_t i = 0; i < details.size(); ++i)
+        if (details[i].id) byId.emplace(details[i].id, i);
+    std::vector<Song> ordered;
+    ordered.reserve(ids.size());
+    for (const int64_t id : ids) {
+        const auto found = byId.find(id);
+        if (found != byId.end()) ordered.push_back(details[found->second]);
+    }
+    return ordered;
+}
+
+std::vector<int64_t> Unique(const std::vector<int64_t>& ids) {
+    std::vector<int64_t> unique;
+    unique.reserve(ids.size());
+    for (const int64_t id : ids) {
+        if (id && std::find(unique.begin(), unique.end(), id) == unique.end()) unique.push_back(id);
+    }
+    return unique;
+}
+
+bool RequiresLogin(stream::ListKind kind) {
+    switch (kind) {
+    case stream::ListKind::PlaylistTracks:
+    case stream::ListKind::Favorites:
+    case stream::ListKind::SavedAlbums:
+    case stream::ListKind::FollowedArtists:
+    case stream::ListKind::Playlists:
+        return true;
+    default:
+        return false;
+    }
 }
 
 // Registered while the component loads, so the UI finds it however early it is created.
@@ -160,13 +330,133 @@ const bool g_registered = [] {
 }();
 
 class StreamProviderInit : public initquit {
-public:
+  public:
     void on_init() override { StreamProvider::Get().Start(); }
     void on_quit() override { StreamProvider::Get().Shutdown(); }
 };
 FB2K_SERVICE_FACTORY(StreamProviderInit);
 
-}  // namespace
+} // namespace
+
+// Full ID lists are immutable generations shared by every page of one cursor. The LRU is
+// deliberately process-local: a cold continuation refetches and validates the revision.
+struct StreamProvider::IdSnapshotStore {
+    enum class Kind {
+        Playlist,
+        Favorites
+    };
+
+    struct Key {
+        uint64_t accountRevision = 0;
+        Kind kind = Kind::Playlist;
+        int64_t listId = 0;
+        std::wstring revision;
+
+        bool operator==(const Key&) const = default;
+    };
+
+    struct KeyHash {
+        size_t operator()(const Key& key) const noexcept {
+            size_t value = std::hash<uint64_t>{}(key.accountRevision);
+            value ^= std::hash<int>{}(static_cast<int>(key.kind)) + 0x9e3779b9u + (value << 6) + (value >> 2);
+            value ^= std::hash<int64_t>{}(key.listId) + 0x9e3779b9u + (value << 6) + (value >> 2);
+            value ^= std::hash<std::wstring>{}(key.revision) + 0x9e3779b9u + (value << 6) + (value >> 2);
+            return value;
+        }
+    };
+
+    struct Snapshot {
+        Key key;
+        std::vector<int64_t> ids;
+        Playlist info;
+        size_t estimatedBytes = 0;
+    };
+
+    static constexpr size_t kMaxBytes = 16u * 1024u * 1024u;
+    static constexpr size_t kMaxSnapshots = 32;
+
+    std::shared_ptr<const Snapshot> Find(const Key& key) {
+        std::lock_guard lock(m_mutex);
+        const auto found = m_index.find(key);
+        if (found == m_index.end()) return {};
+        m_order.splice(m_order.begin(), m_order, found->second);
+        return *found->second;
+    }
+
+    std::shared_ptr<const Snapshot> Put(Key key, std::vector<int64_t> ids, Playlist info = {}) {
+        const std::wstring& revision = key.revision;
+        size_t estimate = sizeof(Snapshot) + ids.capacity() * sizeof(int64_t) + 512;
+        // The revision string is held once by the immutable snapshot and once by the index.
+        estimate += 2 * revision.capacity() * sizeof(wchar_t);
+        const auto addString = [&estimate](const std::wstring& value) {
+            estimate += value.capacity() * sizeof(wchar_t);
+        };
+        addString(info.name);
+        addString(info.coverUrl);
+        addString(info.creatorName);
+        addString(info.description);
+        auto snapshot = std::make_shared<const Snapshot>(
+            Snapshot{std::move(key), std::move(ids), std::move(info), estimate});
+
+        std::lock_guard lock(m_mutex);
+        EraseResourceLocked(snapshot->key);
+        if (snapshot->estimatedBytes > kMaxBytes) return snapshot;
+
+        m_order.push_front(snapshot);
+        m_index.emplace(snapshot->key, m_order.begin());
+        m_bytes += snapshot->estimatedBytes;
+        while (m_order.size() > kMaxSnapshots || m_bytes > kMaxBytes) {
+            auto oldest = std::prev(m_order.end());
+            if (*oldest == snapshot) {
+                // A new, individually valid snapshot must still obey the byte budget. Keeping
+                // it here when no older entries remain would exceed the cache bound.
+                m_index.erase((*oldest)->key);
+                m_bytes -= (*oldest)->estimatedBytes;
+                m_order.pop_back();
+                break;
+            }
+            const auto erased = m_index.find((*oldest)->key);
+            if (erased != m_index.end()) EraseLocked(erased);
+        }
+        return snapshot;
+    }
+
+    void Clear() {
+        std::lock_guard lock(m_mutex);
+        m_index.clear();
+        m_order.clear();
+        m_bytes = 0;
+    }
+
+  private:
+    using Iterator = std::list<std::shared_ptr<const Snapshot>>::iterator;
+
+    void EraseResourceLocked(const Key& key) {
+        for (auto it = m_order.begin(); it != m_order.end();) {
+            const auto& current = (*it)->key;
+            if (current.accountRevision != key.accountRevision || current.kind != key.kind ||
+                current.listId != key.listId) {
+                ++it;
+                continue;
+            }
+            m_bytes -= (*it)->estimatedBytes;
+            m_index.erase(current);
+            it = m_order.erase(it);
+        }
+    }
+
+    void EraseLocked(std::unordered_map<Key, Iterator, KeyHash>::iterator found) {
+        const auto snapshot = *found->second;
+        m_bytes -= snapshot->estimatedBytes;
+        m_order.erase(found->second);
+        m_index.erase(found);
+    }
+
+    std::mutex m_mutex;
+    size_t m_bytes = 0;
+    std::list<std::shared_ptr<const Snapshot>> m_order;
+    std::unordered_map<Key, Iterator, KeyHash> m_index;
+};
 
 StreamProvider& StreamProvider::Get() {
     static StreamProvider provider;
@@ -175,21 +465,203 @@ StreamProvider& StreamProvider::Get() {
 
 void StreamProvider::Start() {
     if (m_started) return;
-    m_started = true;
     Ncm().Initialize();
+    m_abort = std::make_unique<abort_callback_impl>();
+    m_listTasks = std::make_unique<TaskQueue>(2);
+    m_idSnapshots = std::make_shared<IdSnapshotStore>();
+    m_started = true;
+    ++m_generation;
+    m_accountVerified = false;
+    m_sessionRestoring = false;
+    m_snapshotSavePosted = false;
+    m_snapshotSaveDirty = false;
+    m_accountId.clear();
+    m_cachedAccountId.clear();
+    m_cachedCreated.clear();
+    m_cachedSaved.clear();
     m_signedIn = Ncm().LoggedIn();
+    m_authPending = m_signedIn;
     // The session reports sign-in changes and account refreshes the same way; only a
     // changed sign-in state is an account change, the rest refreshes library lists.
     Ncm().SetStateCallback([this] { OnSessionChanged(); });
-    Ncm().SetLibraryCallback([this] { NotifyLibraryChanged(); });
+    Ncm().SetLibraryCallback([this] {
+        NotifyLibraryChanged();
+        if (AccountVerified()) QueueSnapshotSave();
+    });
     Ncm().SetLikesCallback([this] { NotifyFavoritesChanged(); });
+    if (m_signedIn) LoadBootstrapSnapshot();
+    if (m_signedIn) Ncm().RefreshAccount({});
 }
 
 void StreamProvider::Shutdown() {
+    std::optional<cache::provider_snapshot::Snapshot> finalSnapshot;
+    std::string finalAccountScope;
+    uint64_t finalAccountRevision = 0;
+    {
+        cache::provider_snapshot::Snapshot payload;
+        bool save = false;
+        std::wstring accountId;
+        {
+            std::lock_guard lock(m_cacheMutex);
+            save = m_started && m_accountVerified && !m_accountId.empty();
+            if (save) accountId = m_accountId;
+        }
+        const Account account = Ncm().CurrentAccount();
+        if (save) {
+            try {
+                payload.provider = "ncm";
+                payload.sourceOrigin = SourceIdentity();
+                payload.context = SnapshotContext();
+                payload.locale = ui::UsingChinese() ? "zh-Hans-CN" : "en-US";
+                payload.accountId = Utf8(accountId);
+                payload.accountName = Utf8(account.nickname);
+                payload.sourceStorefront = "CN";
+                payload.created = ToPlaylists(Ncm().CreatedPlaylists());
+                payload.saved = ToPlaylists(Ncm().CollectedPlaylists());
+                finalAccountScope = cache::AccountScope("ncm");
+                finalAccountRevision = cache::AccountRevision("ncm");
+                finalSnapshot = std::move(payload);
+            } catch (...) {
+            }
+        }
+    }
+
+    m_started = false;
+    ClearIdSnapshots();
+    if (m_abort) m_abort->abort();
+    if (m_listTasks) {
+        m_listTasks->Stop();
+        m_listTasks.reset();
+    }
+    m_abort.reset();
+    m_idSnapshots.reset();
     Ncm().SetStateCallback({});
     Ncm().SetLibraryCallback({});
     Ncm().SetLikesCallback({});
-    Ncm().Shutdown();  // stops the helper and its workers
+    Ncm().Shutdown(); // stops the helper and its workers
+    {
+        std::lock_guard lock(m_cacheMutex);
+        ++m_generation;
+        m_accountVerified = false;
+        m_authPending = false;
+        m_sessionRestoring = false;
+        m_snapshotSavePosted = false;
+        m_snapshotSaveDirty = false;
+        m_accountId.clear();
+        m_cachedAccountId.clear();
+        m_cachedCreated.clear();
+        m_cachedSaved.clear();
+    }
+    if (finalSnapshot) {
+        try {
+            if (cache::AccountRevision("ncm") == finalAccountRevision &&
+                cache::AccountScope("ncm") == finalAccountScope) {
+                cache::provider_snapshot::Save(cache::GetStore(), finalAccountScope, *finalSnapshot);
+            }
+        } catch (...) {
+        }
+    }
+}
+
+void StreamProvider::LoadBootstrapSnapshot() {
+    std::string accountScope;
+    std::string sourceOrigin;
+    try {
+        accountScope = cache::AccountScope("ncm");
+        sourceOrigin = SourceIdentity();
+    } catch (...) {
+        return;
+    }
+    const std::string context = SnapshotContext();
+    const auto cached =
+        cache::provider_snapshot::Load(cache::GetStore(), accountScope, "ncm", sourceOrigin, context);
+    if (!cached || cached->accountId.empty()) return;
+    std::wstring accountId = Wide(cached->accountId);
+    if (accountId.empty()) return;
+
+    {
+        std::lock_guard lock(m_cacheMutex);
+        if (!m_started || !m_signedIn || m_accountVerified) return;
+        m_cachedAccountId = std::move(accountId);
+        m_cachedCreated = cached->created;
+        m_cachedSaved = cached->saved;
+        m_sessionRestoring = true;
+    }
+    for (const auto& playlist : cached->created)
+        Catalog::Get().Restore(FromPlaylist(playlist));
+    for (const auto& playlist : cached->saved)
+        Catalog::Get().Restore(FromPlaylist(playlist));
+    NotifyLibraryChanged();
+}
+
+void StreamProvider::QueueSnapshotSave() {
+    cache::provider_snapshot::Snapshot payload;
+    uint64_t generation = 0;
+    uint64_t accountRevision = 0;
+    std::string accountScope;
+    std::wstring accountId;
+    {
+        std::lock_guard lock(m_cacheMutex);
+        if (!m_started || !m_accountVerified || m_accountId.empty() || m_sessionRestoring) return;
+        m_snapshotSaveDirty = true;
+        if (m_snapshotSavePosted) return;
+        m_snapshotSavePosted = true;
+        m_snapshotSaveDirty = false;
+        generation = m_generation;
+        accountId = m_accountId;
+    }
+    const Account account = Ncm().CurrentAccount();
+    try {
+        accountScope = cache::AccountScope("ncm");
+        accountRevision = cache::AccountRevision("ncm");
+        payload.provider = "ncm";
+        payload.sourceOrigin = SourceIdentity();
+        payload.context = SnapshotContext();
+        payload.locale = ui::UsingChinese() ? "zh-Hans-CN" : "en-US";
+        payload.accountId = Utf8(accountId);
+        payload.accountName = Utf8(account.nickname);
+        payload.sourceStorefront = "CN";
+        payload.created = ToPlaylists(Ncm().CreatedPlaylists());
+        payload.saved = ToPlaylists(Ncm().CollectedPlaylists());
+    } catch (...) {
+        std::lock_guard lock(m_cacheMutex);
+        if (generation == m_generation) m_snapshotSavePosted = false;
+        return;
+    }
+    if (m_listTasks) {
+        m_listTasks->Post([this, generation, accountRevision, accountScope = std::move(accountScope),
+                           payload = std::move(payload)]() mutable {
+            bool allowed = false;
+            {
+                std::lock_guard lock(m_cacheMutex);
+                allowed = m_started && generation == m_generation && m_accountVerified &&
+                          cache::AccountRevision("ncm") == accountRevision;
+            }
+            if (allowed) {
+                try {
+                    if (cache::AccountScope("ncm") == accountScope)
+                        cache::provider_snapshot::Save(cache::GetStore(), accountScope, payload);
+                } catch (...) {
+                }
+            }
+            fb2k::inMainThread([this, generation] { CompleteSnapshotSave(generation); });
+        });
+    } else {
+        std::lock_guard lock(m_cacheMutex);
+        m_snapshotSavePosted = false;
+    }
+}
+
+void StreamProvider::CompleteSnapshotSave(uint64_t generation) {
+    bool rerun = false;
+    {
+        std::lock_guard lock(m_cacheMutex);
+        if (generation != m_generation) return;
+        m_snapshotSavePosted = false;
+        rerun = m_snapshotSaveDirty && m_started && m_accountVerified && !m_sessionRestoring;
+        if (!rerun) m_snapshotSaveDirty = false;
+    }
+    if (rerun) QueueSnapshotSave();
 }
 
 stream::Provider::Features StreamProvider::Offers() const {
@@ -232,36 +704,6 @@ std::vector<settings::Field> StreamProvider::SettingFields() {
     quality.set = [](int value) { SetQuality(static_cast<Quality>(value)); };
     fields.push_back(std::move(quality));
 
-    Field cacheSize;
-    cacheSize.label = L"Cover disk cache";
-    cacheSize.unit = L"MB";
-    cacheSize.min = kCoverCacheMinMb;
-    cacheSize.max = kCoverCacheMaxMb;
-    cacheSize.defaultValue = kCoverCacheDefaultMb;
-    cacheSize.get = [] { return CoverCacheLimitMb(); };
-    cacheSize.set = [](int mb) {
-        SetCoverCacheLimitMb(mb);
-        CoverCache::Get().Trim();
-    };
-    fields.push_back(std::move(cacheSize));
-
-    Field usage;
-    usage.kind = Field::Kind::Note;
-    usage.label = L"Cover disk cache in use";
-    usage.note = [] {
-        const auto use = CoverCache::Get().CurrentUsage();
-        wchar_t text[64];
-        swprintf_s(text, L"%.1f MB, %zu ", static_cast<double>(use.bytes) / (1024.0 * 1024.0), use.files);
-        return text + ui::Tr(L"covers");
-    };
-    fields.push_back(std::move(usage));
-
-    Field clear;
-    clear.kind = Field::Kind::Button;
-    clear.label = L"Clear cover disk cache";
-    clear.press = [](HWND) { CoverCache::Get().Clear(); };
-    fields.push_back(std::move(clear));
-
     Field service;
     service.kind = Field::Kind::Text;
     service.label = L"Service address (empty: built-in)";
@@ -272,25 +714,100 @@ std::vector<settings::Field> StreamProvider::SettingFields() {
     return fields;
 }
 
-bool StreamProvider::SignedIn() const { return Ncm().LoggedIn(); }
+bool StreamProvider::SignedIn() const {
+    std::lock_guard lock(m_cacheMutex);
+    return m_accountVerified;
+}
 
-std::wstring StreamProvider::AccountName() const { return Ncm().CurrentAccount().nickname; }
+bool StreamProvider::SessionRestoring() const {
+    std::lock_guard lock(m_cacheMutex);
+    return m_sessionRestoring || m_authPending;
+}
+
+bool StreamProvider::AccountVerified() const {
+    std::lock_guard lock(m_cacheMutex);
+    return m_accountVerified;
+}
+
+std::wstring StreamProvider::AccountName() const {
+    return Ncm().CurrentAccount().nickname;
+}
 
 void StreamProvider::SignIn(HWND owner) {
-    ui::ShowNeteaseLogin(owner, [this] { OnSessionChanged(); });
+    ui::ShowNeteaseLogin(owner, [this] {
+        ClearIdSnapshots();
+        cache::RotateAccountScope("ncm");
+        {
+            std::lock_guard lock(m_cacheMutex);
+            m_authPending = true;
+        }
+        OnSessionChanged();
+    });
 }
 
 void StreamProvider::OnSessionChanged() {
-    stream::ResetSourceAvailability();
     const bool signedIn = Ncm().LoggedIn();
-    if (signedIn == m_signedIn) return NotifyLibraryChanged();
-    m_signedIn = signedIn;
-    NotifyAccountChanged();
+    const Account account = Ncm().CurrentAccount();
+    const std::wstring accountId = Text(account.userId);
+    bool accountChanged = false;
+    bool accountObserved = false;
+    {
+        std::lock_guard lock(m_cacheMutex);
+        const bool restoring = m_sessionRestoring;
+        const bool verified = m_accountVerified;
+        if (!signedIn || accountId.empty()) {
+            accountChanged = restoring || verified || m_signedIn != signedIn;
+        } else if (restoring && accountId != m_cachedAccountId) {
+            accountChanged = true;
+        } else if (verified && accountId != m_accountId) {
+            accountChanged = true;
+        }
+        if (accountChanged) {
+            ++m_generation;
+            m_accountVerified = false;
+            m_authPending = signedIn && accountId.empty();
+            m_sessionRestoring = false;
+            m_snapshotSavePosted = false;
+            m_snapshotSaveDirty = false;
+            m_accountId.clear();
+            m_cachedAccountId.clear();
+            m_cachedCreated.clear();
+            m_cachedSaved.clear();
+        } else if (signedIn) {
+            accountObserved = !verified || restoring;
+            m_accountVerified = true;
+            m_authPending = false;
+            m_sessionRestoring = false;
+            m_accountId = accountId;
+            m_cachedAccountId.clear();
+            m_cachedCreated.clear();
+            m_cachedSaved.clear();
+        }
+        m_signedIn = signedIn;
+    }
+    if (accountChanged) {
+        ClearIdSnapshots();
+        cache::RotateAccountScope("ncm");
+        stream::ResetSourceAvailability();
+        NotifyAccountChanged();
+        return;
+    }
+    if (accountObserved) NotifyAccountObserved();
+    NotifyLibraryChanged();
+    if (signedIn) QueueSnapshotSave();
 }
 
-void StreamProvider::SignOut() { Ncm().Logout(); }
+void StreamProvider::SignOut() {
+    ClearIdSnapshots();
+    cache::RotateAccountScope("ncm");
+    Ncm().Logout();
+}
 
-void StreamProvider::RefreshLibrary(Done done) { Ncm().RefreshAccount(Adapt(std::move(done))); }
+void StreamProvider::RefreshLibrary(Done done) {
+    Ncm().RefreshAccount([this, done = std::move(done)](bool ok, std::wstring error) mutable {
+        FinishListWrite(ok, std::move(error), std::move(done));
+    });
+}
 
 stream::Id StreamProvider::TrackId(const metadb_handle_ptr& item) const {
     int64_t id = 0;
@@ -317,10 +834,14 @@ metadb_handle_ptr StreamProvider::ArtItem(stream::ArtKind kind, const Id& id) co
     const int64_t n = Num(id);
     if (!n) return {};
     switch (kind) {
-    case stream::ArtKind::Track: return Catalog::Get().Handle(n);
-    case stream::ArtKind::Album: return Catalog::Get().AlbumHandle(n);
-    case stream::ArtKind::Artist: return Catalog::Get().ArtistHandle(n);
-    case stream::ArtKind::Playlist: return Catalog::Get().PlaylistHandle(n);
+    case stream::ArtKind::Track:
+        return Catalog::Get().Handle(n);
+    case stream::ArtKind::Album:
+        return Catalog::Get().AlbumHandle(n);
+    case stream::ArtKind::Artist:
+        return Catalog::Get().ArtistHandle(n);
+    case stream::ArtKind::Playlist:
+        return Catalog::Get().PlaylistHandle(n);
     }
     return {};
 }
@@ -331,30 +852,55 @@ bool StreamProvider::SameCover(std::wstring_view a, std::wstring_view b) const {
     return base(a) == base(b);
 }
 
-bool StreamProvider::IsFavorite(const Id& track) const { return Ncm().IsLiked(Num(track)); }
+bool StreamProvider::IsFavorite(const Id& track) const {
+    return Ncm().IsLiked(Num(track));
+}
 
 std::vector<stream::Playlist> StreamProvider::Playlists(stream::Shelf shelf) const {
     switch (shelf) {
-    case stream::Shelf::Created: return ToPlaylists(Ncm().CreatedPlaylists());
-    case stream::Shelf::Saved: return ToPlaylists(Ncm().CollectedPlaylists());
-    case stream::Shelf::Recommended: return ToPlaylists(Ncm().RecommendedPlaylists());
+    case stream::Shelf::Created: {
+        auto rows = ToPlaylists(Ncm().CreatedPlaylists());
+        if (rows.empty()) {
+            std::lock_guard lock(m_cacheMutex);
+            if (m_sessionRestoring) return m_cachedCreated;
+        }
+        return rows;
+    }
+    case stream::Shelf::Saved: {
+        auto rows = ToPlaylists(Ncm().CollectedPlaylists());
+        if (rows.empty()) {
+            std::lock_guard lock(m_cacheMutex);
+            if (m_sessionRestoring) return m_cachedSaved;
+        }
+        return rows;
+    }
+    case stream::Shelf::Recommended:
+        return ToPlaylists(Ncm().RecommendedPlaylists());
     }
     return {};
 }
 
 std::optional<stream::Shelf> StreamProvider::ShelfOf(const Id& playlist) const {
     switch (Ncm().FindPlaylistScope(Num(playlist))) {
-    case Session::PlaylistScope::Created: return stream::Shelf::Created;
-    case Session::PlaylistScope::Collected: return stream::Shelf::Saved;
-    case Session::PlaylistScope::Recommended: return stream::Shelf::Recommended;
-    case Session::PlaylistScope::Unknown: break;
+    case Session::PlaylistScope::Created:
+        return stream::Shelf::Created;
+    case Session::PlaylistScope::Collected:
+        return stream::Shelf::Saved;
+    case Session::PlaylistScope::Recommended:
+        return stream::Shelf::Recommended;
+    case Session::PlaylistScope::Unknown:
+        break;
     }
     return std::nullopt;
 }
 
-std::vector<stream::Artist> StreamProvider::FollowedArtists() const { return ToArtists(Ncm().FollowedArtists()); }
+std::vector<stream::Artist> StreamProvider::FollowedArtists() const {
+    return ToArtists(Ncm().FollowedArtists());
+}
 
-std::vector<stream::Album> StreamProvider::SavedAlbums() const { return ToAlbums(Ncm().CollectedAlbums()); }
+std::vector<stream::Album> StreamProvider::SavedAlbums() const {
+    return ToAlbums(Ncm().CollectedAlbums());
+}
 
 std::optional<stream::Playlist> StreamProvider::FindPlaylist(const Id& playlist) const {
     if (auto found = Catalog::Get().FindPlaylist(Num(playlist))) return ToPlaylist(*found);
@@ -392,25 +938,27 @@ void StreamProvider::FetchPlaylists(stream::Shelf shelf, PlaylistsDone done) {
         return;
     }
     // One request returns the created and the collected playlists together.
-    Ncm().FetchMyPlaylists([shelf, done = std::move(done)](std::vector<Playlist> playlists, std::wstring error) {
-        std::vector<stream::Playlist> out;
-        for (const auto& playlist : playlists)
-            if (IsOwn(playlist) == (shelf == stream::Shelf::Created)) out.push_back(ToPlaylist(playlist));
-        done(std::move(out), std::move(error));
-    });
+    Ncm().FetchMyPlaylists(
+        [shelf, done = std::move(done)](std::vector<Playlist> playlists, std::wstring error) {
+            std::vector<stream::Playlist> out;
+            for (const auto& playlist : playlists)
+                if (IsOwn(playlist) == (shelf == stream::Shelf::Created)) out.push_back(ToPlaylist(playlist));
+            done(std::move(out), std::move(error));
+        });
 }
 
 void StreamProvider::FetchPlaylist(const Id& playlist, PlaylistDone done) {
     Ncm().FetchPlaylist(Num(playlist), [done = std::move(done)](PlaylistDetail detail, std::wstring error) {
-        done(detail.info.id ? ToPlaylist(detail.info) : stream::Playlist{}, ToTracks(detail.songs), std::move(error));
+        done(detail.info.id ? ToPlaylist(detail.info) : stream::Playlist{}, ToTracks(detail.songs),
+             std::move(error));
     });
 }
 
 void StreamProvider::FetchAlbum(const Id& album, AlbumDone done) {
-    Ncm().FetchAlbumDetail(Num(album),
-                               [done = std::move(done)](Album info, std::vector<Song> songs, std::wstring error) {
-                                   done(info.id ? ToAlbum(info) : stream::Album{}, ToTracks(songs), std::move(error));
-                               });
+    Ncm().FetchAlbumDetail(
+        Num(album), [done = std::move(done)](Album info, std::vector<Song> songs, std::wstring error) {
+            done(info.id ? ToAlbum(info) : stream::Album{}, ToTracks(songs), std::move(error));
+        });
 }
 
 void StreamProvider::FetchAlbumsTracks(std::vector<Id> albums, TracksDone done) {
@@ -420,9 +968,10 @@ void StreamProvider::FetchAlbumsTracks(std::vector<Id> albums, TracksDone done) 
         album.id = id;
         wanted.push_back(album);
     }
-    Ncm().FetchAlbumTracks(std::move(wanted), [done = std::move(done)](std::vector<Song> songs, std::wstring error) {
-        done(ToTracks(songs), std::move(error));
-    });
+    Ncm().FetchAlbumTracks(std::move(wanted),
+                           [done = std::move(done)](std::vector<Song> songs, std::wstring error) {
+                               done(ToTracks(songs), std::move(error));
+                           });
 }
 
 void StreamProvider::FetchArtist(const Id& artist, ArtistDone done) {
@@ -442,8 +991,8 @@ void StreamProvider::FetchArtistBio(const Id& artist, TextDone done) {
 void StreamProvider::FetchArtistAlbums(const Id& artist, size_t offset, size_t limit, AlbumPageDone done) {
     Ncm().FetchArtistAlbumsPage(
         Num(artist), static_cast<int>(offset), static_cast<int>(limit),
-        [artist = Num(artist), done = std::move(done)](std::vector<Album> albums, bool more, bool followedKnown,
-                                                       bool followed, std::wstring error) {
+        [artist = Num(artist), done = std::move(done)](
+            std::vector<Album> albums, bool more, bool followedKnown, bool followed, std::wstring error) {
             std::optional<bool> follows;
             if (followedKnown) {
                 follows = followed;
@@ -455,10 +1004,11 @@ void StreamProvider::FetchArtistAlbums(const Id& artist, size_t offset, size_t l
 }
 
 void StreamProvider::FetchArtistTopTracks(const Id& artist, size_t offset, size_t limit, TrackPageDone done) {
-    Ncm().FetchArtistSongsPage(Num(artist), static_cast<int>(offset), static_cast<int>(limit),
-                                   [done = std::move(done)](std::vector<Song> songs, bool more, std::wstring error) {
-                                       done(ToTracks(songs), more, std::move(error));
-                                   });
+    Ncm().FetchArtistSongsPage(
+        Num(artist), static_cast<int>(offset), static_cast<int>(limit),
+        [done = std::move(done)](std::vector<Song> songs, bool more, std::wstring error) {
+            done(ToTracks(songs), more, std::move(error));
+        });
 }
 
 void StreamProvider::FetchFollowedArtists(ArtistsDone done) {
@@ -475,48 +1025,390 @@ void StreamProvider::FetchSavedAlbums(size_t offset, size_t limit, AlbumPageDone
         });
 }
 
-void StreamProvider::SetFavorite(const Id& track, bool favorite, Done done) {
-    Ncm().ToggleLike(Num(track), favorite, Adapt(std::move(done)));
+stream::ListCachePolicy StreamProvider::ListPolicy(const stream::ListQuery& query) const {
+    if (stream::IsCatalogSearch(query.kind)) return stream::ListCachePolicy::None;
+    if (query.cache) return *query.cache;
+    return stream::ListCachePolicy::Persistent;
 }
 
-void StreamProvider::SetFollowed(const Id& artist, bool follow, Done done) {
-    Ncm().SetArtistFollow(Num(artist), follow, Adapt(std::move(done)));
+void StreamProvider::RestoreListRecords(const stream::ListPage& page) {
+    if (const auto trackRows = std::get_if<std::vector<stream::Track>>(&page.rows)) {
+        std::vector<Song> songs;
+        songs.reserve(trackRows->size());
+        for (const auto& track : *trackRows) {
+            Song song = FromTrack(track);
+            if (song.id) songs.push_back(std::move(song));
+        }
+        Catalog::Get().RestoreAndHint(songs);
+    } else if (const auto playlistRows = std::get_if<std::vector<stream::Playlist>>(&page.rows)) {
+        for (const auto& playlist : *playlistRows)
+            Catalog::Get().Restore(FromPlaylist(playlist));
+    } else if (const auto albumRows = std::get_if<std::vector<stream::Album>>(&page.rows)) {
+        for (const auto& album : *albumRows)
+            Catalog::Get().Restore(FromAlbum(album));
+    } else if (const auto artistRows = std::get_if<std::vector<stream::Artist>>(&page.rows)) {
+        for (const auto& artist : *artistRows)
+            Catalog::Get().Restore(FromArtist(artist));
+    }
+    if (page.playlist) Catalog::Get().Restore(FromPlaylist(*page.playlist));
+    if (page.album) Catalog::Get().Restore(FromAlbum(*page.album));
+    if (page.artist) Catalog::Get().Restore(FromArtist(*page.artist));
 }
 
-void StreamProvider::SetAlbumSaved(const Id& album, bool saved, Done done) {
-    Ncm().SetAlbumCollected(Num(album), saved, Adapt(std::move(done)));
-}
-
-void StreamProvider::SetPlaylistSaved(const Id& playlist, bool saved, Done done) {
-    Ncm().SetPlaylistSubscribed(Num(playlist), saved, Adapt(std::move(done)));
-}
-
-void StreamProvider::AddToPlaylist(const Id& playlist, std::vector<Id> tracks, Done done) {
-    Ncm().AddToPlaylist(Num(playlist), Nums(tracks), Adapt(std::move(done)));
-}
-
-void StreamProvider::RemoveFromPlaylist(const Id& playlist, std::vector<Id> tracks, Done done) {
-    Ncm().RemoveFromPlaylist(Num(playlist), Nums(tracks), Adapt(std::move(done)));
-}
-
-void StreamProvider::CreatePlaylist(std::wstring name, CreatedDone done) {
-    Ncm().CreatePlaylist(std::move(name), [done = std::move(done)](bool ok, int64_t id, std::wstring error) {
-        if (!done) return;
-        if (ok && id) done(Text(id), {});
-        else done({}, error.empty() ? std::wstring(L"The request failed.") : std::move(error));
+void StreamProvider::PostListPage(stream::ListPageDone done, stream::ListPage page, std::vector<Song> songs,
+                                  std::wstring error, std::shared_ptr<std::atomic_bool> cancelled) {
+    if (ListCancelled(cancelled)) return;
+    fb2k::inMainThread([this, done = std::move(done), page = std::move(page), songs = std::move(songs),
+                        error = std::move(error), cancelled = std::move(cancelled)]() mutable {
+        if (!m_started || ListCancelled(cancelled)) return;
+        if (error.empty() && !songs.empty()) Catalog::Get().PutAndHint(songs);
+        if (ListCancelled(cancelled)) return;
+        if (done) done(std::move(page), std::move(error));
     });
 }
 
+void StreamProvider::ClearIdSnapshots() {
+    const auto snapshots = m_idSnapshots;
+    if (snapshots) snapshots->Clear();
+}
+
+void StreamProvider::FinishListWrite(bool ok, std::wstring error, Done done) {
+    if (ok) {
+        ClearIdSnapshots();
+        NotifyListChanged();
+    }
+    if (done) done(ok ? std::wstring() : ErrorOf(std::move(error)));
+}
+
+void StreamProvider::FetchListPage(const stream::ListQuery& query, const stream::ListCursor& cursor,
+                                   size_t limit, stream::ListPageDone done) {
+    if (!done || ListCancelled(query.cancelled)) return;
+    if (query.kind == stream::ListKind::Playlists) {
+        if (!SignedIn()) {
+            PostListPage(std::move(done), {}, {}, L"Please sign in to NetEase Cloud Music.", query.cancelled);
+            return;
+        }
+        stream::ListPage page;
+        const auto playlists = Playlists(query.shelf);
+        page.rows = playlists;
+        page.total = playlists.size();
+        PostListPage(std::move(done), std::move(page), {}, {}, query.cancelled);
+        return;
+    }
+    if (query.kind == stream::ListKind::SectionTracks || query.kind == stream::ListKind::Groups) {
+        PostListPage(std::move(done), {}, {}, L"This NetEase list is unavailable.", query.cancelled);
+        return;
+    }
+    if (!m_started || !m_listTasks || !m_abort) {
+        PostListPage(std::move(done), {}, {}, L"The NetEase provider has not started.", query.cancelled);
+        return;
+    }
+    m_listTasks->Post([this, query, cursor, limit, done = std::move(done)]() mutable {
+        if (ListCancelled(query.cancelled) || m_abort->is_aborting()) return;
+        if (RequiresLogin(query.kind) && !Ncm().LoggedIn()) {
+            PostListPage(std::move(done), {}, {}, L"Please sign in to NetEase Cloud Music.", query.cancelled);
+            return;
+        }
+        std::wstring error;
+        if (!Ncm().Service().EnsureStarted(*m_abort, &error)) {
+            PostListPage(std::move(done), {}, {}, ErrorOf(std::move(error)), query.cancelled);
+            return;
+        }
+        if (ListCancelled(query.cancelled)) return;
+
+        Client& client = Ncm().Api();
+        const auto snapshots = m_idSnapshots;
+        if (!snapshots) {
+            PostListPage(std::move(done), {}, {}, L"The NetEase list cache is unavailable.", query.cancelled);
+            return;
+        }
+        const uint64_t accountRevision = cache::AccountRevision("ncm");
+        stream::ListPage page;
+        std::vector<Song> hintSongs;
+
+        switch (query.kind) {
+        case stream::ListKind::PlaylistTracks: {
+            const int64_t playlistId = Num(query.id);
+            if (!playlistId) {
+                error = L"The playlist id is invalid.";
+                break;
+            }
+            if (cursor.offset != 0 && cursor.value.empty()) {
+                error = L"The playlist cursor has no snapshot revision.";
+                break;
+            }
+            IdSnapshotStore::Key key{accountRevision, IdSnapshotStore::Kind::Playlist, playlistId,
+                                     cursor.value};
+            std::shared_ptr<const IdSnapshotStore::Snapshot> snapshot;
+            if (cursor.offset != 0) snapshot = snapshots->Find(key);
+            if (!snapshot) {
+                PlaylistSnapshot fresh;
+                if (!client.GetPlaylistSnapshot(playlistId, *m_abort, fresh, error)) break;
+                key.revision = IdsRevision(accountRevision, fresh.trackIds, fresh.trackUpdateTime);
+                if (cursor.offset != 0 && cursor.value != key.revision) {
+                    error = L"The playlist changed while its pages were being loaded. Reload the list.";
+                    break;
+                }
+                snapshot = snapshots->Put(std::move(key), std::move(fresh.trackIds), std::move(fresh.info));
+            }
+            if (!snapshot) {
+                error = L"The playlist snapshot could not be retained.";
+                break;
+            }
+            if (cursor.offset > snapshot->ids.size()) {
+                error = L"The playlist cursor is outside the current track list.";
+                break;
+            }
+            const size_t count = std::min({limit, snapshot->ids.size() - cursor.offset, size_t{200}});
+            const auto begin = snapshot->ids.begin() + static_cast<std::ptrdiff_t>(cursor.offset);
+            std::vector<int64_t> ids(begin, begin + static_cast<std::ptrdiff_t>(count));
+            std::vector<Song> details;
+            const auto requestedIds = Unique(ids);
+            if (!requestedIds.empty() && !client.SongDetails(requestedIds, *m_abort, details, error)) break;
+            hintSongs = OrderDetails(ids, details);
+            page.rows = ToTracks(hintSongs);
+            page.playlist = ToPlaylist(snapshot->info);
+            page.total = snapshot->ids.size();
+            page.next = {snapshot->key.revision, cursor.offset + count};
+            page.more = cursor.offset + count < snapshot->ids.size();
+            page.revision = snapshot->key.revision;
+            Catalog::Get().Put(snapshot->info);
+            break;
+        }
+        case stream::ListKind::Favorites: {
+            const int64_t userId = Ncm().CurrentAccount().userId;
+            if (!userId) {
+                error = L"The NetEase account is not ready. Refresh the library and try again.";
+                break;
+            }
+            if (cursor.offset != 0 && cursor.value.empty()) {
+                error = L"The favorites cursor has no snapshot revision.";
+                break;
+            }
+            IdSnapshotStore::Key key{accountRevision, IdSnapshotStore::Kind::Favorites, 0, cursor.value};
+            std::shared_ptr<const IdSnapshotStore::Snapshot> snapshot;
+            if (cursor.offset != 0) snapshot = snapshots->Find(key);
+            if (!snapshot) {
+                std::vector<int64_t> ids;
+                if (!client.Likelist(userId, *m_abort, ids, error)) break;
+                key.revision = IdsRevision(accountRevision, ids);
+                if (cursor.offset != 0 && cursor.value != key.revision) {
+                    error = L"Favorites changed while their pages were being loaded. Reload the list.";
+                    break;
+                }
+                snapshot = snapshots->Put(std::move(key), std::move(ids));
+            }
+            if (!snapshot) {
+                error = L"The favorites snapshot could not be retained.";
+                break;
+            }
+            if (cursor.offset > snapshot->ids.size()) {
+                error = L"The favorites cursor is outside the current track list.";
+                break;
+            }
+            const size_t count = std::min({limit, snapshot->ids.size() - cursor.offset, size_t{200}});
+            const auto begin = snapshot->ids.begin() + static_cast<std::ptrdiff_t>(cursor.offset);
+            std::vector<int64_t> selected(begin, begin + static_cast<std::ptrdiff_t>(count));
+            std::vector<Song> details;
+            const auto requestedIds = Unique(selected);
+            if (!requestedIds.empty() && !client.SongDetails(requestedIds, *m_abort, details, error)) break;
+            hintSongs = OrderDetails(selected, details);
+            page.rows = ToTracks(hintSongs);
+            page.total = snapshot->ids.size();
+            page.next = {snapshot->key.revision, cursor.offset + count};
+            page.more = cursor.offset + count < snapshot->ids.size();
+            page.revision = snapshot->key.revision;
+            break;
+        }
+        case stream::ListKind::AlbumTracks: {
+            const int64_t albumId = Num(query.id);
+            if (!albumId) {
+                error = L"The album id is invalid.";
+                break;
+            }
+            Album info;
+            if (!client.GetAlbum(albumId, *m_abort, info, hintSongs, error)) break;
+            page.rows = ToTracks(hintSongs);
+            page.album = ToAlbum(info);
+            page.total = hintSongs.size();
+            Catalog::Get().Put(info);
+            break;
+        }
+        case stream::ListKind::ArtistTopTracks: {
+            const int64_t artistId = Num(query.id);
+            int offset = 0, count = 0;
+            if (!artistId) {
+                error = L"The artist id is invalid.";
+                break;
+            }
+            if (!ToInt(cursor.offset, offset, error) || !ToInt(limit, count, error)) break;
+            bool more = false;
+            size_t received = 0;
+            if (!client.GetArtistSongsPage(artistId, offset, count, L"hot", *m_abort, hintSongs, &more, error,
+                                           &received))
+                break;
+            page.rows = ToTracks(hintSongs);
+            page.next = {{}, cursor.offset + received};
+            page.more = more && received != 0;
+            break;
+        }
+        case stream::ListKind::ArtistAlbums: {
+            const int64_t artistId = Num(query.id);
+            int offset = 0, count = 0;
+            if (!artistId) {
+                error = L"The artist id is invalid.";
+                break;
+            }
+            if (!ToInt(cursor.offset, offset, error) || !ToInt(limit, count, error)) break;
+            std::vector<Album> albums;
+            bool followed = false, more = false;
+            size_t received = 0;
+            if (!client.GetArtistAlbumsPage(artistId, offset, count, *m_abort, albums, &followed, &more,
+                                            error, &received))
+                break;
+            Catalog::Get().Put(albums);
+            page.rows = ToAlbums(albums);
+            page.next = {{}, cursor.offset + received};
+            page.more = more && received != 0;
+            break;
+        }
+        case stream::ListKind::SavedAlbums: {
+            int offset = 0, count = 0;
+            if (!ToInt(cursor.offset, offset, error) || !ToInt(limit, count, error)) break;
+            std::vector<Album> albums;
+            bool more = false;
+            size_t received = 0;
+            if (!client.GetCollectedAlbumsPage(offset, count, *m_abort, albums, more, error, &received))
+                break;
+            Catalog::Get().Put(albums);
+            page.rows = ToAlbums(albums);
+            page.next = {{}, cursor.offset + received};
+            page.more = more && received != 0;
+            break;
+        }
+        case stream::ListKind::FollowedArtists: {
+            int offset = 0, count = 0;
+            if (!ToInt(cursor.offset, offset, error) || !ToInt(limit, count, error)) break;
+            std::vector<Artist> artists;
+            bool more = false;
+            size_t received = 0;
+            if (!client.GetFollowedArtistsPage(offset, count, *m_abort, artists, more, received, error))
+                break;
+            for (const auto& artist : artists)
+                Catalog::Get().Put(artist);
+            page.rows = ToArtists(artists);
+            page.next = {{}, cursor.offset + received};
+            page.more = more && received != 0;
+            break;
+        }
+        case stream::ListKind::CatalogSearch: {
+            int offset = 0, count = 0;
+            if (!ToInt(cursor.offset, offset, error) || !ToInt(limit, count, error)) break;
+            bool more = false;
+            size_t received = 0;
+            if (!client.SearchSongsPage(query.search, count, offset, *m_abort, hintSongs, more, page.total,
+                                        received, error))
+                break;
+            page.rows = ToTracks(hintSongs);
+            page.next = {{}, cursor.offset + received};
+            page.more = more && received != 0;
+            break;
+        }
+        case stream::ListKind::SectionTracks:
+        case stream::ListKind::Groups:
+        case stream::ListKind::Playlists:
+            error = L"This NetEase list is unavailable.";
+            break;
+        }
+
+        if (m_abort->is_aborting()) return;
+        if (cache::AccountRevision("ncm") != accountRevision) {
+            snapshots->Clear();
+            error = L"The NetEase account changed while the list was loading.";
+            page = {};
+            hintSongs.clear();
+        }
+        std::wstring resultError = error.empty() ? std::wstring() : ErrorOf(std::move(error));
+        PostListPage(std::move(done), std::move(page), std::move(hintSongs), std::move(resultError),
+                     query.cancelled);
+    });
+}
+
+void StreamProvider::SetFavorite(const Id& track, bool favorite, Done done) {
+    Ncm().ToggleLike(Num(track), favorite,
+                     [this, done = std::move(done)](bool ok, std::wstring error) mutable {
+                         FinishListWrite(ok, std::move(error), std::move(done));
+                     });
+}
+
+void StreamProvider::SetFollowed(const Id& artist, bool follow, Done done) {
+    Ncm().SetArtistFollow(Num(artist), follow,
+                          [this, done = std::move(done)](bool ok, std::wstring error) mutable {
+                              FinishListWrite(ok, std::move(error), std::move(done));
+                          });
+}
+
+void StreamProvider::SetAlbumSaved(const Id& album, bool saved, Done done) {
+    Ncm().SetAlbumCollected(Num(album), saved,
+                            [this, done = std::move(done)](bool ok, std::wstring error) mutable {
+                                FinishListWrite(ok, std::move(error), std::move(done));
+                            });
+}
+
+void StreamProvider::SetPlaylistSaved(const Id& playlist, bool saved, Done done) {
+    Ncm().SetPlaylistSubscribed(Num(playlist), saved,
+                                [this, done = std::move(done)](bool ok, std::wstring error) mutable {
+                                    FinishListWrite(ok, std::move(error), std::move(done));
+                                });
+}
+
+void StreamProvider::AddToPlaylist(const Id& playlist, std::vector<Id> tracks, Done done) {
+    Ncm().AddToPlaylist(Num(playlist), Nums(tracks),
+                        [this, done = std::move(done)](bool ok, std::wstring error) mutable {
+                            FinishListWrite(ok, std::move(error), std::move(done));
+                        });
+}
+
+void StreamProvider::RemoveFromPlaylist(const Id& playlist, std::vector<Id> tracks, Done done) {
+    Ncm().RemoveFromPlaylist(Num(playlist), Nums(tracks),
+                             [this, done = std::move(done)](bool ok, std::wstring error) mutable {
+                                 FinishListWrite(ok, std::move(error), std::move(done));
+                             });
+}
+
+void StreamProvider::CreatePlaylist(std::wstring name, CreatedDone done) {
+    Ncm().CreatePlaylist(
+        std::move(name), [this, done = std::move(done)](bool ok, int64_t id, std::wstring error) mutable {
+            if (ok) {
+                ClearIdSnapshots();
+                NotifyListChanged();
+            }
+            if (!done) return;
+            if (ok && id)
+                done(Text(id), {});
+            else
+                done({}, error.empty() ? std::wstring(L"The request failed.") : std::move(error));
+        });
+}
+
 void StreamProvider::RenamePlaylist(const Id& playlist, std::wstring name, Done done) {
-    Ncm().RenamePlaylist(Num(playlist), std::move(name), Adapt(std::move(done)));
+    Ncm().RenamePlaylist(Num(playlist), std::move(name),
+                         [this, done = std::move(done)](bool ok, std::wstring error) mutable {
+                             FinishListWrite(ok, std::move(error), std::move(done));
+                         });
 }
 
 void StreamProvider::DeletePlaylist(const Id& playlist, Done done) {
-    Ncm().DeletePlaylist(Num(playlist), Adapt(std::move(done)));
+    Ncm().DeletePlaylist(Num(playlist), [this, done = std::move(done)](bool ok, std::wstring error) mutable {
+        FinishListWrite(ok, std::move(error), std::move(done));
+    });
 }
 
 void StreamProvider::ReorderPlaylists(std::vector<Id> playlists, Done done) {
-    Ncm().ReorderPlaylists(Nums(playlists), Adapt(std::move(done)));
+    Ncm().ReorderPlaylists(Nums(playlists),
+                           [this, done = std::move(done)](bool ok, std::wstring error) mutable {
+                               FinishListWrite(ok, std::move(error), std::move(done));
+                           });
 }
 
-}  // namespace glasswave::netease
+} // namespace glasswave::netease

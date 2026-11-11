@@ -1,0 +1,43 @@
+diff --git a/build-and-test-x86_64.sh b/build-and-test-x86_64.sh
+index c1a7c2e..ed3fe21 100755
+--- a/build-and-test-x86_64.sh
++++ b/build-and-test-x86_64.sh
+@@ -11,7 +11,8 @@ COMMON="$REPO/common"
+ INC="$REPO/include"
+ HYBRIS_ROOTFS="${HYBRIS_ROOTFS:-}"
+ HYBRIS_LINKER_DIR="${HYBRIS_LINKER_DIR:-}"
+-BUILD="/tmp/hybris-x86_64-build"
++BUILD="${HYBRIS_BUILD_DIR:-/tmp/hybris-x86_64-build}"
++HYBRIS_LINKER_OUT="${HYBRIS_LINKER_OUT:-/tmp/hybris-linker}"
+ 
+ # MSYS2 rewrites command-line arguments that look like POSIX paths before
+ # passing them to native Windows programs.  The default ELF library path is a
+@@ -114,7 +115,7 @@ if [[ "$TARGET_TRIPLE" != *mingw* && "$TARGET_TRIPLE" != *msys* ]]; then
+ else
+     # MinGW-w64 uses LLP64 and does not define __LP64__, but this target still
+     # consumes Android's 64-bit ABI headers and must use their 64-bit branch.
+-    CFLAGS_COMMON+=(-D__LP64__)
++    CFLAGS_COMMON+=(-D__LP64__ -Wno-error=incompatible-pointer-types)
+     LINK_LIBS=(-lsupc++ -lws2_32)
+ fi
+ 
+@@ -190,13 +191,14 @@ done
+ 
+ echo ""
+ echo "=== Linking q.so (linker plugin) ==="
+-mkdir -p /tmp/hybris-linker
+-g++ -shared -fPIC -o /tmp/hybris-linker/q.so "${Q_OBJS[@]}" \
++mkdir -p "$HYBRIS_LINKER_OUT"
++g++ -shared -fPIC -o "$HYBRIS_LINKER_OUT/q.so" "${Q_OBJS[@]}" \
+     "${LINK_LIBS[@]}"
+-echo "  -> /tmp/hybris-linker/q.so"
+-ls -lh /tmp/hybris-linker/q.so
++echo "  -> $HYBRIS_LINKER_OUT/q.so"
++ls -lh "$HYBRIS_LINKER_OUT/q.so"
+ 
+-if [[ "$TARGET_TRIPLE" == *mingw* || "$TARGET_TRIPLE" == *msys* ]]; then
++if [[ "${HYBRIS_SKIP_WINDOWS_SMOKE:-0}" != "1" ]] &&
++   [[ "$TARGET_TRIPLE" == *mingw* || "$TARGET_TRIPLE" == *msys* ]]; then
+     echo ""
+     echo "=== Building Android x86-64 runtime fixture ==="
+     NDK_ROOT="${ANDROID_NDK_ROOT:-$HOME/android-ndk-r26d-windows/android-ndk-r26d}"

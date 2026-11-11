@@ -64,6 +64,12 @@ void PlayItems(const metadb_handle_list& items, size_t start) { PlayQueue(items,
 
 Column ArtColumn(bool hidden) { return {L"Album art", 42, false, false, hidden, kArtFormat}; }
 
+std::wstring ListSource::RowKey(size_t row) const {
+    if (const auto item = Item(row); item.is_valid())
+        return ui::Wide(item->get_path()) + L'\x1f' + std::to_wstring(item->get_subsong_index());
+    return ArtKey(row);
+}
+
 // ---- PlaylistsSource --------------------------------------------------------------------
 
 PlaylistsSource::PlaylistsSource(bool smart, Open open, Menu menu)
@@ -151,6 +157,10 @@ void PlaylistsSource::SetFilter(std::wstring_view filterLower) {
     }
     m_selected.assign(m_rows.size(), 0);
     if (m_focus >= m_rows.size()) m_focus = SIZE_MAX;
+}
+
+std::wstring PlaylistsSource::RowKey(size_t row) const {
+    return row < m_rows.size() ? L"playlist:" + Cell(row, 0) : std::wstring();
 }
 
 // ---- PlaylistSource ---------------------------------------------------------------------
@@ -1111,6 +1121,13 @@ void GroupSource::SetFilter(std::wstring_view filterLower) {
         if (filterLower.empty() || MatchesFilter(groups[i].search, filterLower)) m_rows.push_back(i);
     m_focus = SIZE_MAX;
     if (m_sortColumn != SIZE_MAX) Sort(m_sortColumn, m_sortDescending);
+}
+
+std::wstring GroupSource::RowKey(size_t row) const {
+    if (row >= m_rows.size()) return {};
+    const Group& group = m_model.Groups(m_kind)[m_rows[row]];
+    return L"group:" + std::to_wstring(static_cast<int>(m_kind)) + L'\x1f' +
+           (group.key.empty() ? Name(group) : group.key);
 }
 
 }  // namespace glasswave::media

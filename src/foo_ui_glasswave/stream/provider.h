@@ -2,6 +2,7 @@
 
 #include "app/setting_fields.h"
 #include "stream/model.h"
+#include "stream/list.h"
 
 #include <functional>
 #include <optional>
@@ -20,37 +21,81 @@
 // caller decides whether the result still matters (see ui::PageToken).
 namespace glasswave::stream {
 
+enum class LibraryAction {
+    Add,
+    Remove
+};
+enum class ArtistPreferenceAction {
+    Favorite,
+    Unfavorite
+};
+
 class Provider {
-public:
+  public:
     // Optional features; the UI hides what a provider does not offer.
     struct Features {
-        bool favorites = false;         // like / unlike tracks
+        bool favorites = false; // legacy full add/remove favorite capability
         bool followArtists = false;
-        bool saveAlbums = false;        // collect albums into the library
-        bool savePlaylists = false;     // collect other users' playlists
-        bool editPlaylists = false;     // create, rename, delete, add and remove tracks
-        bool reorderPlaylists = false;  // the library's playlist order can be changed
-        bool recommended = false;       // a daily set of recommended playlists
-        bool artistTopTracks = false;   // "Hot songs" on artist pages
+        bool favoriteArtists = false;
+        bool saveAlbums = false;       // collect albums into the library
+        bool savePlaylists = false;    // collect other users' playlists
+        bool editPlaylists = false;    // create, rename, delete, add and remove tracks
+        bool reorderPlaylists = false; // the library's playlist order can be changed
+        bool recommended = false;      // a daily set of recommended playlists
+        bool artistTopTracks = false;  // artist pages expose a track-list tile/page
+        // Read access and individual writes can differ (Apple permits playlist append,
+        // for example, without a documented removal endpoint).
+        bool libraryFavorites = false; // favorites can be read even when toggling is unsupported
+        bool addFavorites = false;
+        bool removeFavorites = false;
+        bool libraryArtists = false;
+        bool libraryAlbums = false;
+        bool libraryPlaylists = false;
+        bool createPlaylists = false;
+        bool appendPlaylistTracks = false;
+        bool removePlaylistTracks = false;
+        bool renamePlaylists = false;
+        bool deletePlaylists = false;
+        bool catalogSearch = false;
+
+        bool CanCreatePlaylist() const { return editPlaylists || createPlaylists; }
+        bool CanSetFavorite(bool favorite) const {
+            return favorites || (favorite ? addFavorites : removeFavorites);
+        }
+        bool CanAppendPlaylist() const { return editPlaylists || appendPlaylistTracks; }
+        bool CanRemovePlaylistTracks() const { return editPlaylists || removePlaylistTracks; }
+        bool CanRenamePlaylist() const { return editPlaylists || renamePlaylists; }
+        bool CanDeletePlaylist() const { return editPlaylists || deletePlaylists; }
     };
 
     // Changes the provider reports by itself (sign-in, a write finished, a background
     // refresh). None of them requires the open page to be re-read.
     class Listener {
-    public:
+      public:
         virtual ~Listener() = default;
+        // The same account was observed after a restore or bootstrap. Visible data may be
+        // reused while verification proceeds.
+        virtual void OnAccountObserved(Provider&) {}
+        // The account identity changed, was restored to a different identity, or signed out.
         virtual void OnAccountChanged(Provider&) {}
         // Names, covers, counts or the library lists changed.
         virtual void OnLibraryChanged(Provider&) {}
         // Only the favorite flags changed.
         virtual void OnFavoritesChanged(Provider&) {}
+        // Cached provider labels/snapshots were refreshed for a new UI language.
+        virtual void OnLanguageChanged(Provider&) {}
+        // Presentation metadata changed without changing provider/account/list identity.
+        // Consumers should re-project the visible page while retaining canonical records.
+        virtual void OnDisplayChanged(Provider&) {}
     };
 
-    using Done = std::function<void(std::wstring error)>;  // empty error = success
+    using Done = std::function<void(std::wstring error)>; // empty error = success
     using TracksDone = std::function<void(std::vector<Track> tracks, std::wstring error)>;
+    using GroupsDone = std::function<void(std::vector<BrowseGroup> groups, std::wstring error)>;
     using TrackPageDone = std::function<void(std::vector<Track> tracks, bool more, std::wstring error)>;
     using PlaylistsDone = std::function<void(std::vector<Playlist> playlists, std::wstring error)>;
-    using PlaylistDone = std::function<void(Playlist playlist, std::vector<Track> tracks, std::wstring error)>;
+    using PlaylistDone =
+        std::function<void(Playlist playlist, std::vector<Track> tracks, std::wstring error)>;
     using AlbumDone = std::function<void(Album album, std::vector<Track> tracks, std::wstring error)>;
     // Some providers only learn whether the user follows the artist from its album list.
     using AlbumPageDone = std::function<void(std::vector<Album> albums, bool more,
@@ -59,6 +104,21 @@ public:
     using ArtistsDone = std::function<void(std::vector<Artist> artists, std::wstring error)>;
     using TextDone = std::function<void(std::wstring text, std::wstring error)>;
     using CreatedDone = std::function<void(Id playlist, std::wstring error)>;
+    struct CatalogSearchSuggestionQuery {
+        std::wstring term;
+        std::shared_ptr<std::atomic_bool> cancelled;
+    };
+    struct CatalogSearchSuggestionTerm {
+        std::wstring searchTerm;
+        std::wstring displayTerm;
+    };
+    using CatalogSearchSuggestionItem = std::variant<CatalogSearchSuggestionTerm, CatalogSearchItem>;
+    struct CatalogSearchSuggestions {
+        // The original interleaving of completion terms and typed top results.
+        std::vector<CatalogSearchSuggestionItem> ordered;
+    };
+    using CatalogSearchSuggestionsDone =
+        std::function<void(CatalogSearchSuggestions suggestions, std::wstring error)>;
 
     virtual ~Provider() = default;
 
@@ -70,17 +130,51 @@ public:
     virtual std::wstring_view Key() const = 0;
     // Display name, untranslated (the UI passes it through Tr).
     virtual std::wstring Name() const = 0;
+    // Provider-scoped wording for playlist controls and empty states. The default is the
+    // common translation key; a provider may map it to wording that fits its service.
+    virtual std::wstring PlaylistText(std::wstring_view english) const;
+    // Untranslated label for an artist's track-list tile and page.
+    virtual std::wstring ArtistTracksLabel(const Id& artist) const;
+    // Read-only, network-free descriptors for independently loadable artist views. Labels
+    // follow the normal untranslated-key contract and are passed through Tr by display code.
+    virtual std::vector<ArtistSection> ArtistSections(const Id& artist) const;
+    // Typed catalog-search categories available from this provider. The default preserves
+    // the legacy song-only catalogSearch capability; Apple may advertise all five kinds.
+    virtual std::vector<ListKind> CatalogSearchKinds() const;
+    virtual bool SupportsCatalogSearchSuggestions() const { return false; }
     virtual Features Offers() const = 0;
+    virtual std::wstring LibraryActionText(LibraryAction action) const;
+    virtual std::wstring LibraryStateText(bool saved) const;
+    virtual std::wstring ArtistPreferenceActionText(ArtistPreferenceAction action) const;
+    virtual bool IsAlbumSaved(const Id& album) const;
+    virtual std::optional<bool> PlaylistSavedState(const Id& playlist) const;
+    virtual std::optional<bool> ArtistPreferenceState(const Id& artist) const;
     // The provider's own rows on the preferences page (quality, caches, account, ...).
     virtual std::vector<settings::Field> SettingFields() { return {}; }
 
     // ---- account ---------------------------------------------------------------------
     virtual bool SignedIn() const = 0;
     virtual std::wstring AccountName() const = 0;
-    virtual void SignIn(HWND owner) = 0;  // the provider's own sign-in dialog
+    // A persisted session snapshot may make cached navigation visible before network
+    // verification. These capabilities do not grant write or authenticated-read access.
+    virtual bool SessionRestoring() const { return false; }
+    virtual bool AccountVerified() const { return SignedIn(); }
+    // An explicit foreground read may observe a failed session restore without discarding
+    // cached rows. Providers without an asynchronous restore path keep both defaults inert.
+    virtual std::wstring SessionRestoreError() const { return {}; }
+    // Joins the current restore attempt or starts one when none is pending. The callback runs on
+    // the main thread. Repeated calls while an attempt is active must share that attempt.
+    virtual bool RetrySessionRestore(Done done = {}) {
+        (void)done;
+        return false;
+    }
+    virtual void SignIn(HWND owner) = 0; // the provider's own sign-in dialog
     virtual void SignOut() = 0;
     // Re-reads the account's library lists (followed artists, saved albums, playlists).
     virtual void RefreshLibrary(Done done = {}) = 0;
+    // Called by the UI only after an effective language transition. Providers may override
+    // this to update cached labels without network access; the default re-reads the snapshot.
+    virtual void OnLanguageChanged();
 
     // ---- tracks as foobar2000 items ---------------------------------------------------
     // Empty when the item does not belong to this provider.
@@ -102,6 +196,7 @@ public:
     // word timing, translations as reference lines with the line's timestamp. Blocking, on a
     // worker thread (lyrics::Service). Empty when the provider has none.
     virtual std::wstring Lyrics(const Id& /*track*/, abort_callback& /*abort*/) { return {}; }
+    virtual bool HasNativeLyrics() const { return false; }
 
     // ---- library snapshot (last fetched; cheap) ----------------------------------------
     virtual bool IsFavorite(const Id& track) const = 0;
@@ -129,6 +224,46 @@ public:
     virtual void FetchArtistTopTracks(const Id& artist, size_t offset, size_t limit, TrackPageDone done) = 0;
     virtual void FetchFollowedArtists(ArtistsDone done) = 0;
     virtual void FetchSavedAlbums(size_t offset, size_t limit, AlbumPageDone done) = 0;
+    // Cached provider-defined navigation. This method must not trigger network access.
+    virtual std::vector<NavigationSection> Sections() const;
+    virtual std::vector<Playlist> SectionPlaylists(const Id& section) const;
+    virtual void FetchSectionPlaylists(const Id& section, PlaylistsDone done);
+    virtual std::optional<NavigationSection> SectionOfPlaylist(const Id& playlist) const;
+    virtual void FetchGroups(const Id&, GroupsDone done) {
+        if (done) done({}, L"Grouped browsing is unavailable for this provider.");
+    }
+    virtual void FetchSectionTracks(const Id&, const Id&, TracksDone done) {
+        if (done) done({}, L"Section tracks are unavailable for this provider.");
+    }
+    virtual void SearchCatalog(std::wstring, TracksDone done) {
+        if (done) done({}, L"Catalog search is unavailable for this provider.");
+    }
+    // Separate from paged search and ListSession caching. The caller owns debounce scheduling
+    // and the query's cancellation token; providers must reject stale context generations.
+    virtual void FetchCatalogSearchSuggestions(CatalogSearchSuggestionQuery query,
+                                               CatalogSearchSuggestionsDone done) {
+        (void)query;
+        if (done) done({}, L"Catalog search suggestions are unavailable for this provider.");
+    }
+
+    // Generic paged reads. The default adapts legacy full-list methods as one final page;
+    // providers with a paged service override this to return exactly one network page.
+    virtual void FetchListPage(const ListQuery& query, const ListCursor& cursor, size_t limit,
+                               ListPageDone done);
+    // Optional second stage, called after usable rows have been published. Return true
+    // when accepted and deliver once unless canceled. Row type/count/order/IDs must stay
+    // identical; only metadata may change. False means no further metadata is needed.
+    virtual bool EnrichListPage(const ListQuery&, const ListPage&, ListPageDone) { return false; }
+    // Opaque context for data whose meaning depends on more than ListQuery, such as an account
+    // or display locale. ListSession captures it when a read is opened and compares the current
+    // value before Fetch and callback publication.
+    virtual std::string ListCacheContext(const ListQuery& query) const {
+        (void)query;
+        return {};
+    }
+    virtual ListCachePolicy ListPolicy(const ListQuery& query) const;
+    // Rehydrate metadata required by TrackItem/FindTrack and artwork on a disk cache hit.
+    virtual void RestoreListRecords(const ListPage& page) { (void)page; }
 
     // ---- writes (the snapshot is updated before `done` runs) ------------------------
     virtual void SetFavorite(const Id& track, bool favorite, Done done = {}) = 0;
@@ -146,23 +281,27 @@ public:
     void AddListener(Listener* listener);
     void RemoveListener(Listener* listener);
 
-protected:
+  protected:
+    void NotifyListChanged();
+    void NotifyAccountObserved();
     void NotifyAccountChanged();
     void NotifyLibraryChanged();
     void NotifyFavoritesChanged();
+    void NotifyLanguageChanged();
+    void NotifyDisplayChanged();
 
-private:
+  private:
     std::vector<Listener*> m_listeners;
 };
 
 // The providers compiled into the component, in navigation order. Providers register
 // themselves while the component loads; Providers() is safe from then on (main thread).
 const std::vector<Provider*>& Providers();
-void StartProviders();  // Start() on every provider
+void StartProviders(); // Start() on every provider
 void Register(Provider& provider);
 void Unregister(Provider& provider);
 Provider* FindProvider(std::wstring_view key);
 // The provider an item belongs to, or nullptr for local files.
 Provider* ProviderOf(const metadb_handle_ptr& item);
 
-}  // namespace glasswave::stream
+} // namespace glasswave::stream

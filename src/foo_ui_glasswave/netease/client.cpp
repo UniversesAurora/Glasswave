@@ -6,6 +6,7 @@
 #include "lyrics/lyrics.h"
 
 #include <chrono>
+#include <limits>
 #include <optional>
 
 namespace glasswave::netease {
@@ -470,6 +471,35 @@ bool Client::GetPlaylist(int64_t playlistId, abort_callback& abort, PlaylistDeta
     return true;
 }
 
+bool Client::GetPlaylistSnapshot(int64_t playlistId, abort_callback& abort, PlaylistSnapshot& out,
+                                 std::wstring& error) {
+    out = {};
+    json::Object body;
+    int code = 0;
+    if (!Request(L"/playlist/detail", {{L"id", std::to_wstring(playlistId)}, {L"n", L"1"}, {L"s", L"8"}},
+                 false, abort, body, code, error))
+        return false;
+    if (code != 200) {
+        error = MessageOf(body, code);
+        return false;
+    }
+    auto playlist = json::GetObject(body, L"playlist");
+    if (!playlist) {
+        error = L"The playlist response has no playlist object.";
+        return false;
+    }
+    out.info = ParsePlaylist(*playlist);
+    out.info.id = out.info.id ? out.info.id : playlistId;
+    out.trackUpdateTime =
+        json::GetInt64(*playlist, L"trackUpdateTime", json::GetInt64(*playlist, L"updateTime"));
+    if (auto trackIds = json::GetArray(*playlist, L"trackIds")) out.trackIds = IdsOf(*trackIds);
+    if (out.trackIds.empty() && out.info.trackCount != 0) {
+        error = L"The playlist response has no complete trackIds list.";
+        return false;
+    }
+    return true;
+}
+
 bool Client::GetPlaylistInfo(int64_t playlistId, abort_callback& abort, Playlist& out, std::wstring& error) {
     json::Object body;
     int code = 0;
@@ -513,7 +543,19 @@ bool Client::RecommendPlaylists(abort_callback& abort, std::vector<Playlist>& ou
 
 bool Client::SearchSongs(std::wstring_view query, int limit, int offset, abort_callback& abort,
                          std::vector<Song>& out, std::wstring& error) {
+    bool more = false;
+    std::optional<size_t> total;
+    size_t received = 0;
+    return SearchSongsPage(query, limit, offset, abort, out, more, total, received, error);
+}
+
+bool Client::SearchSongsPage(std::wstring_view query, int limit, int offset, abort_callback& abort,
+                             std::vector<Song>& out, bool& more, std::optional<size_t>& total,
+                             size_t& received, std::wstring& error) {
     out.clear();
+    more = false;
+    total.reset();
+    received = 0;
     json::Object body;
     int code = 0;
     if (!Request(L"/cloudsearch",
@@ -536,10 +578,27 @@ bool Client::SearchSongs(std::wstring_view query, int limit, int offset, abort_c
     if (result) songs = json::GetArray(*result, L"songs");
     if (!songs) songs = json::GetArray(body, L"songs");
     if (songs) {
+        received = songs->Size();
         for (const auto& object : json::Objects(*songs)) {
             Song song = ParseSong(object);
             if (song.id) out.push_back(std::move(song));
         }
+    }
+    const auto setTotal = [&total](int64_t count) {
+        if (count >= 0 && static_cast<uint64_t>(count) <= std::numeric_limits<size_t>::max())
+            total = static_cast<size_t>(count);
+    };
+    if (result && result->HasKey(L"songCount"))
+        setTotal(json::GetInt64(*result, L"songCount"));
+    else if (body.HasKey(L"songCount"))
+        setTotal(json::GetInt64(body, L"songCount"));
+    if (total) {
+        const auto end = static_cast<uint64_t>(offset) + received;
+        more = end < *total;
+    } else {
+        // The endpoint normally reports songCount. A full short page is the conservative
+        // fallback; an empty page always terminates.
+        more = received != 0 && limit > 0 && received >= static_cast<size_t>(limit);
     }
     return true;
 }
@@ -770,10 +829,12 @@ bool Client::GetArtistDescription(int64_t artistId, abort_callback& abort, std::
 }
 
 bool Client::GetArtistAlbumsPage(int64_t artistId, int offset, int limit, abort_callback& abort,
-                                 std::vector<Album>& out, bool* followed, bool* more, std::wstring& error) {
+                                 std::vector<Album>& out, bool* followed, bool* more, std::wstring& error,
+                                 size_t* received) {
     out.clear();
     if (followed) *followed = false;
     if (more) *more = false;
+    if (received) *received = 0;
     json::Object body;
     int code = 0;
     if (!Request(L"/artist/album",
@@ -792,6 +853,7 @@ bool Client::GetArtistAlbumsPage(int64_t artistId, int offset, int limit, abort_
     }
     if (more) *more = json::GetBool(body, L"more");
     if (auto albums = json::GetArray(body, L"hotAlbums")) {
+        if (received) *received = albums->Size();
         for (const auto& object : json::Objects(*albums)) {
             Album album = ParseAlbum(object);
             if (album.id) out.push_back(std::move(album));
@@ -801,9 +863,11 @@ bool Client::GetArtistAlbumsPage(int64_t artistId, int offset, int limit, abort_
 }
 
 bool Client::GetArtistSongsPage(int64_t artistId, int offset, int limit, std::wstring_view order,
-                                abort_callback& abort, std::vector<Song>& out, bool* more, std::wstring& error) {
+                                abort_callback& abort, std::vector<Song>& out, bool* more,
+                                std::wstring& error, size_t* received) {
     out.clear();
     if (more) *more = false;
+    if (received) *received = 0;
     json::Object body;
     int code = 0;
     if (!Request(L"/artist/songs",
@@ -819,6 +883,7 @@ bool Client::GetArtistSongsPage(int64_t artistId, int offset, int limit, std::ws
     }
     if (more) *more = json::GetBool(body, L"more");
     if (auto songs = json::GetArray(body, L"songs")) {
+        if (received) *received = songs->Size();
         for (const auto& object : json::Objects(*songs)) {
             Song song = ParseSong(object);
             if (song.id) out.push_back(std::move(song));
@@ -849,26 +914,29 @@ bool Client::GetAlbum(int64_t albumId, abort_callback& abort, Album& info, std::
     return true;
 }
 
-bool Client::GetFollowedArtists(abort_callback& abort, std::vector<Artist>& out, std::wstring& error) {
+bool Client::GetFollowedArtistsPage(int offset, int limit, abort_callback& abort, std::vector<Artist>& out,
+                                    bool& more, size_t& received, std::wstring& error) {
     out.clear();
-    int offset = 0;
-    for (int page = 0; page < 50; ++page) {
-        json::Object body;
-        int code = 0;
-        if (!Request(L"/artist/sublist",
-                     {{L"limit", L"100"}, {L"offset", std::to_wstring(offset)}}, false, abort, body, code, error))
-            return false;
-        if (code == 301) {
-            error = L"Please sign in to NetEase Cloud Music.";
-            return false;
-        }
-        if (code != 200) {
-            error = MessageOf(body, code);
-            return false;
-        }
-        auto artists = json::GetArray(body, L"data");  // the helper returns followed artists here
-        if (!artists) artists = json::GetArray(body, L"artists");
-        if (!artists) break;
+    more = false;
+    received = 0;
+    json::Object body;
+    int code = 0;
+    if (!Request(L"/artist/sublist",
+                 {{L"limit", std::to_wstring(limit)}, {L"offset", std::to_wstring(offset)}}, false, abort,
+                 body, code, error))
+        return false;
+    if (code == 301) {
+        error = L"Please sign in to NetEase Cloud Music.";
+        return false;
+    }
+    if (code != 200) {
+        error = MessageOf(body, code);
+        return false;
+    }
+    auto artists = json::GetArray(body, L"data"); // the helper returns followed artists here
+    if (!artists) artists = json::GetArray(body, L"artists");
+    if (artists) {
+        received = artists->Size();
         for (const auto& object : json::Objects(*artists)) {
             Artist artist = ParseArtist(object);
             if (!artist.id) continue;
@@ -876,16 +944,32 @@ bool Client::GetFollowedArtists(abort_callback& abort, std::vector<Artist>& out,
             artist.followKnown = true;
             out.push_back(std::move(artist));
         }
-        if (!json::GetBool(body, L"hasMore") || artists->Size() == 0) break;
-        offset += static_cast<int>(artists->Size());
+    }
+    more = json::GetBool(body, L"hasMore") && received != 0;
+    return true;
+}
+
+bool Client::GetFollowedArtists(abort_callback& abort, std::vector<Artist>& out, std::wstring& error) {
+    out.clear();
+    int offset = 0;
+    for (int page = 0; page < 50; ++page) {
+        std::vector<Artist> artists;
+        bool more = false;
+        size_t received = 0;
+        if (!GetFollowedArtistsPage(offset, 100, abort, artists, more, received, error)) return false;
+        out.insert(out.end(), std::make_move_iterator(artists.begin()),
+                   std::make_move_iterator(artists.end()));
+        if (!more || received == 0) break;
+        offset += static_cast<int>(received);
     }
     return true;
 }
 
-bool Client::GetCollectedAlbumsPage(int offset, int limit, abort_callback& abort, std::vector<Album>& out, bool& more,
-                                    std::wstring& error) {
+bool Client::GetCollectedAlbumsPage(int offset, int limit, abort_callback& abort, std::vector<Album>& out,
+                                    bool& more, std::wstring& error, size_t* received) {
     out.clear();
     more = false;
+    if (received) *received = 0;
     json::Object body;
     int code = 0;
     if (!Request(L"/album/sublist",
@@ -902,11 +986,13 @@ bool Client::GetCollectedAlbumsPage(int offset, int limit, abort_callback& abort
     }
     auto albums = json::GetArray(body, L"data");
     if (!albums) return true;
+    const size_t receivedCount = albums->Size();
+    if (received) *received = receivedCount;
     for (const auto& object : json::Objects(*albums)) {
         Album album = ParseAlbum(object);
         if (album.id) out.push_back(std::move(album));
     }
-    more = json::GetBool(body, L"hasMore") && !out.empty();
+    more = json::GetBool(body, L"hasMore") && receivedCount != 0;
     return true;
 }
 
@@ -916,11 +1002,12 @@ bool Client::GetCollectedAlbums(abort_callback& abort, std::vector<Album>& out, 
     for (int page = 0; page < 50; ++page) {
         std::vector<Album> albums;
         bool more = false;
-        if (!GetCollectedAlbumsPage(offset, 100, abort, albums, more, error)) return false;
-        if (albums.empty()) break;
+        size_t received = 0;
+        if (!GetCollectedAlbumsPage(offset, 100, abort, albums, more, error, &received)) return false;
+        if (received == 0) break;
         out.insert(out.end(), std::make_move_iterator(albums.begin()), std::make_move_iterator(albums.end()));
         if (!more) break;
-        offset += static_cast<int>(albums.size());
+        offset += static_cast<int>(received);
     }
     return true;
 }

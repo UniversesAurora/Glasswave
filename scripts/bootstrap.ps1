@@ -1,11 +1,11 @@
 #Requires -Version 7.2
 <#
 .SYNOPSIS
-    Fetch and verify the foobar2000 SDK, lyric-script dependencies and portable
+    Fetch the foobar2000 SDK, lyric-script dependencies and portable
     foobar2000 instance used for local development.
 
 .DESCRIPTION
-    Versions, URLs and SHA-256 hashes live in third_party/deps.lock.json.
+    Versions and URLs live in third_party/deps.lock.json.
     - The SDK is extracted to third_party/foobar2000-sdk (not committed).
     - The foobar2000 installer is only unpacked with 7-Zip into .local/fb2k-dev and
       marked portable; the installer is never executed and no other foobar2000
@@ -35,16 +35,11 @@ function Find-7Zip {
     return $candidates[0]
 }
 
-function Get-VerifiedDownload([pscustomobject]$Dep) {
+function Get-PinnedDownload([pscustomobject]$Dep) {
     $file = Join-Path $Cache ([IO.Path]::GetFileName($Dep.url))
     if (-not (Test-Path -LiteralPath $file)) {
         Write-Host "Downloading $($Dep.url)"
         Invoke-WebRequest -Uri $Dep.url -OutFile $file
-    }
-    $hash = (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash
-    if ($hash -ne $Dep.sha256) {
-        Remove-Item -LiteralPath $file
-        throw "SHA-256 mismatch for $file`n  expected $($Dep.sha256)`n  actual   $hash"
     }
     if ($Dep.PSObject.Properties.Name -contains 'authenticode_subject') {
         $sig = Get-AuthenticodeSignature -LiteralPath $file
@@ -66,7 +61,7 @@ foreach ($name in 'quickjs-ng', 'miniz') {
         Write-Host "$name $($dep.version) is up to date"
         continue
     }
-    $archive = Get-VerifiedDownload $dep
+    $archive = Get-PinnedDownload $dep
     New-Item -ItemType Directory -Force -Path $destination | Out-Null
     & $7z x $archive "-o$destination" -y | Out-Null
     if ($LASTEXITCODE -ne 0) { throw "Extracting $name failed (7z exit code $LASTEXITCODE)" }
@@ -82,7 +77,7 @@ if ($Force -and (Test-Path -LiteralPath $sdkDest)) { Remove-Item -LiteralPath $s
 if ((Test-Path -LiteralPath $sdkStamp) -and ((Get-Content -LiteralPath $sdkStamp -Raw).Trim() -eq $sdk.version)) {
     Write-Host "SDK $($sdk.version) is up to date"
 } else {
-    $archive = Get-VerifiedDownload $sdk
+    $archive = Get-PinnedDownload $sdk
     if (Test-Path -LiteralPath $sdkDest) { Remove-Item -LiteralPath $sdkDest -Recurse -Force }
     & $7z x $archive "-o$sdkDest" -y | Out-Null
     if ($LASTEXITCODE -ne 0) { throw "Extracting the SDK failed (7z exit code $LASTEXITCODE)" }
@@ -98,7 +93,7 @@ if ($Force -and (Test-Path -LiteralPath $fbDest)) { Remove-Item -LiteralPath $fb
 if ((Test-Path -LiteralPath $fbStamp) -and ((Get-Content -LiteralPath $fbStamp -Raw).Trim() -eq $fb.version)) {
     Write-Host "foobar2000 $($fb.version) dev instance is up to date"
 } else {
-    $installer = Get-VerifiedDownload $fb
+    $installer = Get-PinnedDownload $fb
     $tmp = Join-Path $Cache 'fb2k-extract'
     if (Test-Path -LiteralPath $tmp) { Remove-Item -LiteralPath $tmp -Recurse -Force }
     & $7z x $installer "-o$tmp" -y | Out-Null

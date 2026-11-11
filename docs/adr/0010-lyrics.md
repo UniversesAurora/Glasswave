@@ -2,6 +2,9 @@
 
 Status: accepted (2026-11-09)
 
+The fixed automatic source precedence below is superseded by
+[ADR 0017](0017-unified-lyrics-source-priority.md). Explicit manual selections remain unchanged.
+
 ## Context
 
 The owner wants a lyrics pane that opens to the right of the window and looks and moves

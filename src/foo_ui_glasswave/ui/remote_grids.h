@@ -4,6 +4,7 @@
 #include "stream/provider.h"
 
 #include <functional>
+#include <unordered_set>
 #include <vector>
 
 // Cover-tile pages of a streaming provider: albums (an artist's, or the saved ones),
@@ -17,7 +18,9 @@ public:
     const std::vector<media::Column>& Columns() const override { return m_columns; }
     size_t Count() const override { return m_rows.size(); }
     std::wstring EmptyText() const override { return m_emptyText; }
-    bool IsSelected(size_t row) const override { return row < m_selected.size() && m_selected[row]; }
+    bool IsSelected(size_t row) const override {
+        return row < m_rows.size() && m_selected.count(SelectionKey(m_rows[row])) != 0;
+    }
     void SelectOnly(size_t row) override;
     void Toggle(size_t row) override;
     void SelectRange(size_t a, size_t b, bool keepOthers) override;
@@ -25,38 +28,55 @@ public:
     void SetSelection(const std::vector<size_t>& rows) override;
     size_t Focus() const override { return m_focus; }
     void SetFocus(size_t row) override { m_focus = row; }
+    std::wstring RowKey(size_t row) const override;
     metadb_handle_list SelectedItems() const override { return {}; }
     void SetFilter(std::wstring_view filterLower) override;
+    bool HasFilter() const override { return !m_filter.empty(); }
+    bool CanSort(size_t column) const override;
+    void Sort(size_t column, bool descending) override;
+    size_t SortColumn() const override { return m_sortColumn; }
+    bool SortDescending() const override { return m_sortDescending; }
 
 protected:
     GridSource(std::vector<media::Column> columns, std::wstring emptyText);
     // Item count and the text the search box matches for item i.
     virtual size_t ItemCount() const = 0;
+    virtual std::wstring ItemCell(size_t item, size_t column) const = 0;
     virtual std::wstring FilterText(size_t item) const = 0;
-    // Items always listed before the filtered ones (an artist's Hot songs tile).
+    // Stable identity of one data item. Duplicate identities remain separate occurrences.
+    virtual std::wstring Identity(size_t item) const = 0;
+    // Items always listed before the filtered ones (an artist's track-list tile).
     virtual size_t Leading() const { return 0; }
-    void Refilter() { SetFilter(m_filter); }
+    void Refilter();
+    void ForgetIdentity(const std::wstring& identity);
+    void SetEmptyText(std::wstring text) { m_emptyText = std::move(text); }
 
     std::vector<size_t> m_rows;  // item index per row; leading tiles use their own indices
     std::vector<media::Column> m_columns;
 
 private:
-    std::vector<uint8_t> m_selected;
+    std::wstring SelectionKey(size_t item) const;
+    std::wstring FocusKey() const;
+    void RebuildItemKeys();
+    std::unordered_set<std::wstring> m_selected;
+    std::vector<std::wstring> m_itemKeys;
     size_t m_focus = SIZE_MAX;
     std::wstring m_emptyText;
     std::wstring m_filter;
+    size_t m_sortColumn = SIZE_MAX;
+    bool m_sortDescending = false;
 };
 
-// Albums as tiles: an artist's albums (optionally after a Hot songs tile) or the saved
+// Albums as tiles: an artist's albums (optionally after a track-list tile) or the saved
 // albums. The page offers Expanded tile as a separate song list, built by the page.
 class AlbumGridSource : public GridSource {
 public:
-    // album = nullptr: the Hot songs tile.
+    // album = nullptr: the leading track-list tile.
     using Open = std::function<void(const stream::Album* album)>;
     using Menu = std::function<void(POINT screen, const stream::Album* album)>;
-    // hotSongsArtist: non-empty adds the Hot songs tile first.
-    AlbumGridSource(stream::Provider& provider, std::vector<stream::Album> albums, std::wstring hotSongsArtist,
-                    std::wstring emptyText, Open open, Menu menu);
+    // tracksLabel: non-empty adds a provider-labelled track-list tile first.
+    AlbumGridSource(stream::Provider& provider, std::vector<stream::Album> albums, std::wstring tracksArtist,
+                    std::wstring tracksLabel, std::wstring emptyText, Open open, Menu menu);
 
     std::wstring ColumnSetKey() const override { return L"stream-albums"; }
     std::wstring Cell(size_t row, size_t column) const override;
@@ -68,18 +88,22 @@ public:
     void Activate(size_t row) override;
     void ContextMenu(HWND owner, POINT screen) override;
 
+    void ReplaceAlbums(const std::vector<stream::Album>& albums);
     void AppendAlbums(const std::vector<stream::Album>& albums);
     void RemoveAlbum(const stream::Id& album);
 
 private:
     size_t ItemCount() const override { return m_albums.size(); }
+    std::wstring ItemCell(size_t item, size_t column) const override;
     std::wstring FilterText(size_t item) const override { return m_albums[item].name; }
-    size_t Leading() const override { return m_hotSongsArtist.empty() ? 0 : 1; }
-    const stream::Album* AlbumAt(size_t row) const;  // nullptr for the Hot songs tile
+    std::wstring Identity(size_t item) const override;
+    size_t Leading() const override { return m_tracksLabel.empty() ? 0 : 1; }
+    const stream::Album* AlbumAt(size_t row) const;  // nullptr for the track-list tile
 
     stream::Provider& m_provider;
     std::vector<stream::Album> m_albums;
-    std::wstring m_hotSongsArtist;
+    std::wstring m_tracksArtist;
+    std::wstring m_tracksLabel;
     Open m_open;
     Menu m_menu;
 };
@@ -102,9 +126,15 @@ public:
     void Activate(size_t row) override;
     void ContextMenu(HWND owner, POINT screen) override;
 
+    void ReplaceArtists(const std::vector<stream::Artist>& artists);
+    void AppendArtists(const std::vector<stream::Artist>& artists);
+    void RemoveArtist(const stream::Id& artist);
+
 private:
     size_t ItemCount() const override { return m_artists.size(); }
+    std::wstring ItemCell(size_t item, size_t column) const override;
     std::wstring FilterText(size_t item) const override { return m_artists[item].name; }
+    std::wstring Identity(size_t item) const override;
 
     stream::Provider& m_provider;
     std::vector<stream::Artist> m_artists;
@@ -129,16 +159,20 @@ public:
     std::wstring ArtKey(size_t row) const override;
     bool SupportsViewStyle(media::ViewStyle style) const override { return style != media::ViewStyle::Tiles; }
     media::ViewStyle GetViewStyle() const override { return m_style; }
-    void SetViewStyle(media::ViewStyle style) override { m_style = style; }
+    void SetViewStyle(media::ViewStyle style) override;
     void Activate(size_t row) override;
     void ContextMenu(HWND owner, POINT screen) override;
 
+    void ReplacePlaylists(const std::vector<stream::Playlist>& playlists);
+    void AppendPlaylists(const std::vector<stream::Playlist>& playlists);
     void RemovePlaylist(const stream::Id& playlist);
     void RenamePlaylist(const stream::Id& playlist, const std::wstring& name);
 
 private:
     size_t ItemCount() const override { return m_playlists.size(); }
+    std::wstring ItemCell(size_t item, size_t column) const override;
     std::wstring FilterText(size_t item) const override { return m_playlists[item].name; }
+    std::wstring Identity(size_t item) const override;
 
     stream::Provider& m_provider;
     std::vector<stream::Playlist> m_playlists;

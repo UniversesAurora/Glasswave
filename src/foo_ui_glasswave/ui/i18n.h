@@ -17,6 +17,8 @@ bool UsingChinese();
 
 // Translation of `english` (the English text itself when there is none).
 const std::wstring& Tr(const std::wstring& english);
+// Source-specific keys use "<context> | <english>" and fall back to Tr(english).
+const std::wstring& Tr(const std::wstring& english, std::wstring_view context);
 inline const wchar_t* TrC(const wchar_t* english) { return Tr(english).c_str(); }
 
 // Menu text: translates the label and keeps an "\t" shortcut and "&" accelerator working.

@@ -3,7 +3,9 @@
 #include "lyrics/lyrics_service.h"
 
 #include "stream/provider.h"
+#include "lyrics/cache_format.h"
 #include "lyrics/scripts.h"
+#include "cache/store.h"
 
 #include <filesystem>
 #include <fstream>
@@ -14,8 +16,6 @@ namespace {
 
 constexpr int kSearchTimeoutMs = 20000;            // searchers still running then are abandoned
 constexpr long long kNotFoundRetrySeconds = 86400; // a "nothing found" answer is kept a day
-constexpr wchar_t kSourceTag[] = L"[glasswave-source:";
-constexpr wchar_t kNotFoundTag[] = L"[glasswave-notfound:";
 std::mutex g_cacheMutex;
 
 std::vector<std::shared_ptr<Searcher>>& Registry() {
@@ -60,11 +60,28 @@ bool WriteFile(const std::filesystem::path& path, std::string_view bytes) {
            FALSE;
 }
 
+std::wstring EmbeddedLyrics(const metadb_handle_ptr& track) {
+    std::wstring unsynced;
+    if (auto info = track->get_info_ref(); info.is_valid()) {
+        for (const char* field : {"SYNCEDLYRICS", "LYRICS", "UNSYNCEDLYRICS", "UNSYNCED LYRICS"}) {
+            const char* value = info->info().meta_get(field, 0);
+            if (!value || !*value) continue;
+            std::wstring text = Wide(value);
+            if (ParseLrc(text).synced) return text;
+            if (unsynced.empty()) unsynced = std::move(text);
+        }
+    }
+    return unsynced;
+}
+
 Query MakeQuery(const metadb_handle_ptr& track) {
     Query q;
     q.path = Wide(track->get_path());
     q.subsong = track->get_subsong_index();
-    if (auto* provider = stream::ProviderOf(track)) q.provider = provider->Key();
+    if (auto* provider = stream::ProviderOf(track)) {
+        q.provider = provider->Key();
+        q.providerId = provider->TrackId(track);
+    }
     if (auto info = track->get_info_ref(); info.is_valid()) {
         const file_info& fi = info->info();
         q.title = Wide(fi.meta_get("title", 0));
@@ -83,6 +100,7 @@ Query MakeQuery(const metadb_handle_ptr& track) {
     }
     if (pfc::string8 native; filesystem::g_get_native_path(track->get_path(), native))
         q.nativePath = Wide(native.get_ptr());
+    q.embeddedLyrics = EmbeddedLyrics(track);
     return q;
 }
 
@@ -109,31 +127,54 @@ std::filesystem::path CacheFile(const Query& q, bool identityOnly = false) {
     return std::filesystem::path(Service::CacheFolder()) / name;
 }
 
-// The track's own lyrics: tags first, then <file>.lrc.
-std::optional<std::wstring> LocalLyrics(const metadb_handle_ptr& track, const Query& q) {
-    std::optional<std::wstring> unsynced;
-    if (auto info = track->get_info_ref(); info.is_valid()) {
-        for (const char* field : {"SYNCEDLYRICS", "LYRICS", "UNSYNCEDLYRICS", "UNSYNCED LYRICS"}) {
-            const char* v = info->info().meta_get(field, 0);
-            if (!v || !*v) continue;
-            std::wstring text = Wide(v);
-            if (ParseLrc(text).synced) return text;
-            if (!unsynced) unsynced = std::move(text);
-        }
-    }
-    if (!q.nativePath.empty()) {
-        std::filesystem::path lrc(q.nativePath);
-        lrc.replace_extension(L".lrc");
-        if (auto bytes = ReadFile(lrc); bytes && !ParseLrc(DecodeText(*bytes)).lines.empty())
-            return DecodeText(*bytes);
-    }
-    return unsynced;
-}
-
 struct CacheEntry {
     bool notFound = false;
     std::shared_ptr<Lyrics> lyrics;
+    std::optional<Candidate> candidate;
 };
+
+bool CacheScopeCurrent(std::wstring_view provider, std::wstring_view scope) {
+    if (provider.empty() || scope.empty()) return false;
+    try {
+        return cache::AccountScope(Utf8(provider)) == Utf8(scope);
+    } catch (...) {
+        return false;
+    }
+}
+
+struct AccountBinding {
+    std::wstring provider;
+    std::wstring scope;
+    uint64_t revision = 0;
+};
+
+std::optional<AccountBinding> BindingFor(const Candidate& candidate) {
+    if (candidate.cacheProvider.empty()) return std::nullopt;
+    return AccountBinding{candidate.cacheProvider, candidate.cacheScope, candidate.accountRevision};
+}
+
+bool AccountBindingCurrent(const AccountBinding& binding) {
+    try {
+        return cache::AccountRevision(Utf8(binding.provider)) == binding.revision &&
+               CacheScopeCurrent(binding.provider, binding.scope);
+    } catch (...) {
+        return false;
+    }
+}
+
+bool CandidateCurrent(const Candidate& candidate) {
+    const auto binding = BindingFor(candidate);
+    return !binding || AccountBindingCurrent(*binding);
+}
+
+std::wstring CachedText(const Candidate& candidate) {
+    return cache_format::Automatic(candidate.source, candidate.sourceKey, candidate.cacheProvider,
+                                   candidate.cacheScope, candidate.lrc);
+}
+
+std::wstring ManualSelectionText(const Candidate& candidate) {
+    return cache_format::Manual(candidate.source, candidate.lrc);
+}
 
 std::filesystem::path SelectedFile(const Query& q) {
     auto path = CacheFile(q, true);
@@ -145,20 +186,34 @@ std::optional<CacheEntry> ReadCache(const Query& q, bool selected = false) {
     auto bytes = ReadFile(selected ? SelectedFile(q) : CacheFile(q));
     if (!bytes) return std::nullopt;
     std::wstring text = DecodeText(*bytes);
-    if (text.rfind(kNotFoundTag, 0) == 0) {
-        const long long when = _wtoi64(text.c_str() + wcslen(kNotFoundTag));
-        if (_time64(nullptr) - when < kNotFoundRetrySeconds) return CacheEntry{true, nullptr};
+    const cache_format::Headers headers = cache_format::Parse(text);
+    if (!selected) {
+        if (headers.provider.empty() != headers.scope.empty()) return std::nullopt;
+        if (!headers.provider.empty() && !CacheScopeCurrent(headers.provider, headers.scope))
+            return std::nullopt;
+    }
+    if (headers.notFoundAt) {
+        const long long when = *headers.notFoundAt;
+        if (_time64(nullptr) - when < kNotFoundRetrySeconds) return CacheEntry{true, nullptr, std::nullopt};
         return std::nullopt;
     }
-    std::wstring source;
-    if (text.rfind(kSourceTag, 0) == 0) {
-        const size_t close = text.find(L']');
-        if (close != std::wstring::npos) source = text.substr(wcslen(kSourceTag), close - wcslen(kSourceTag));
-    }
-    auto lyrics = std::make_shared<Lyrics>(ParseLrc(text));
+    const std::wstring body = text.substr(headers.body);
+    auto lyrics = std::make_shared<Lyrics>(ParseLrc(body));
     if (lyrics->lines.empty()) return std::nullopt;
-    lyrics->source = source;
-    return CacheEntry{false, std::move(lyrics)};
+    lyrics->source = headers.source;
+    Candidate candidate;
+    candidate.title = lyrics->title;
+    candidate.artist = lyrics->artist;
+    candidate.album = lyrics->album;
+    candidate.source = headers.source;
+    candidate.sourceKey = headers.sourceKey;
+    candidate.lrc = body;
+    if (!headers.provider.empty()) {
+        candidate.cacheProvider = headers.provider;
+        candidate.cacheScope = headers.scope;
+        candidate.accountRevision = cache::AccountRevision(Utf8(headers.provider));
+    }
+    return CacheEntry{false, std::move(lyrics), std::move(candidate)};
 }
 
 // ---- Matching --------------------------------------------------------------------------
@@ -303,6 +358,17 @@ Query Service::QueryFor(const metadb_handle_ptr& track) {
     return track.is_valid() ? MakeQuery(track) : Query{};
 }
 
+std::wstring Service::TrackIdentity(const metadb_handle_ptr& track) {
+    if (!track.is_valid()) return {};
+    if (auto* provider = stream::ProviderOf(track)) {
+        const auto id = provider->TrackId(track);
+        if (!id.empty())
+            return L"provider\037" + std::wstring(provider->Key()) + L"\037" + id + L"\037" +
+                   std::to_wstring(track->get_subsong_index());
+    }
+    return L"path\037" + Wide(track->get_path()) + L"\037" + std::to_wstring(track->get_subsong_index());
+}
+
 void Service::Run(std::shared_ptr<abort_callback_impl> abort, std::function<void()> work) {
     std::erase_if(m_workers, [](Worker& worker) {
         if (!worker.finished->load()) return false;
@@ -326,7 +392,6 @@ void Service::Request(const metadb_handle_ptr& track, std::function<void(const R
 }
 
 void Service::Research(const metadb_handle_ptr& track, std::function<void(const Result&)> done) {
-    UseAutomatic(track);
     if (track.is_valid()) {
         std::lock_guard lock(g_cacheMutex);
         std::error_code ec;
@@ -368,26 +433,32 @@ Result FromText(const std::wstring& text, const std::wstring& source) {
 // Search concurrently, but automatic selection respects source order. A slow fallback
 // cannot delay a successful preferred source. All children are joined before returning.
 void SearchAll(const Query& query, const std::vector<std::shared_ptr<Searcher>>& searchers,
-               abort_callback& abort, bool automatic,
+               std::optional<Candidate> cached, abort_callback& abort, bool automatic,
                const std::function<void(std::vector<Candidate>, bool)>& update) {
     struct Slot {
         bool finished = false;
         std::vector<Candidate> candidates;
     };
     std::vector<Slot> slots(searchers.size());
+    if (cached) {
+        for (size_t i = 0; i < searchers.size(); ++i)
+            if (searchers[i]->Cacheable() && cached->sourceKey == searchers[i]->Key())
+                slots[i].candidates.push_back(*cached);
+    }
     std::mutex mutex;
     std::condition_variable changed;
     abort_callback_impl childrenAbort;
     std::vector<std::thread> children;
     for (size_t i = 0; i < searchers.size(); ++i) {
-        children.emplace_back([&, i] {
+        children.emplace_back([&, i, cached] {
             std::vector<Candidate> candidates;
             std::mutex candidateMutex;
             try {
                 searchers[i]->Search(query, childrenAbort, [&](Candidate candidate) {
                     if (childrenAbort.is_aborting()) return;
                     if (candidate.source.empty()) candidate.source = searchers[i]->Name();
-                    if (!ParseLrc(candidate.lrc).lines.empty()) {
+                    if (candidate.sourceKey.empty()) candidate.sourceKey = searchers[i]->Key();
+                    if (CandidateCurrent(candidate) && !ParseLrc(candidate.lrc).lines.empty()) {
                         std::lock_guard candidateLock(candidateMutex);
                         candidates.push_back(std::move(candidate));
                     }
@@ -396,7 +467,9 @@ void SearchAll(const Query& query, const std::vector<std::shared_ptr<Searcher>>&
                 console::printf("Glasswave lyrics: %s", error.what());
             }
             std::lock_guard lock(mutex);
-            slots[i] = {true, std::move(candidates)};
+            if (!candidates.empty() || slots[i].candidates.empty())
+                slots[i].candidates = std::move(candidates);
+            slots[i].finished = true;
             changed.notify_all();
         });
     }
@@ -443,80 +516,68 @@ void SearchAll(const Query& query, const std::vector<std::shared_ptr<Searcher>>&
 }
 } // namespace
 
-void Service::Start(const metadb_handle_ptr& track, bool useCache, std::function<void(const Result&)> done) {
+void Service::Start(const metadb_handle_ptr& track, bool useAutomaticCache,
+                    std::function<void(const Result&)> done) {
     Cancel();
     if (!track.is_valid()) {
         done({Status::NotFound, nullptr});
         return;
     }
     const Query query = MakeQuery(track);
-    auto* provider = stream::ProviderOf(track);
-    const auto id = provider ? provider->TrackId(track) : stream::Id();
-    const std::wstring providerName = provider ? provider->Name() : L"";
     const auto searchers = scripts::Ordered(query.provider);
     const unsigned generation = m_generation;
     auto abort = std::make_shared<abort_callback_impl>();
     m_abort = abort;
-    auto deliver = [this, generation, done](Result result) {
-        fb2k::inMainThread([this, generation, done, result = std::move(result)] {
-            if (generation == m_generation) done(result);
-        });
+    auto deliver = [this, generation, done](Result result, std::optional<AccountBinding> binding) {
+        fb2k::inMainThread(
+            [this, generation, done, result = std::move(result), binding = std::move(binding)] {
+                if (generation != m_generation) return;
+                if (binding && !AccountBindingCurrent(*binding)) return;
+                done(result);
+            });
     };
+    auto deliverNeutral = [deliver](Result result) { deliver(std::move(result), std::nullopt); };
     done({Status::Searching, nullptr});
     Run(abort, [=] {
         try {
-            // An explicit owner selection is a track override, distinct from automatic cache.
-            if (useCache)
+            // An explicit owner selection is user data, not an automatic-cache preference.
+            if (cache_format::ManualSelectionApplies(useAutomaticCache)) {
                 if (auto selected = ReadCache(query, true); selected && !selected->notFound) {
-                    deliver({Status::Found, selected->lyrics});
+                    deliverNeutral({Status::Found, selected->lyrics});
                     return;
-                }
-            if (auto local = LocalLyrics(track, query)) {
-                const auto result = FromText(*local, L"Local file");
-                if (result.status == Status::Found) {
-                    deliver(result);
-                    return;
-                }
-            }
-            if (provider && !id.empty()) {
-                try {
-                    const auto lrc = provider->Lyrics(id, *abort);
-                    abort->check();
-                    auto result = FromText(lrc, providerName);
-                    if (result.status == Status::Found) {
-                        deliver(std::move(result));
-                        return;
-                    }
-                } catch (const exception_aborted&) {
-                    return;
-                } catch (const std::exception& error) {
-                    console::printf("Glasswave lyrics: %s", error.what());
                 }
             }
             abort->check();
-            if (useCache)
-                if (auto cached = ReadCache(query); cached && !cached->notFound) {
-                    deliver({Status::Found, cached->lyrics});
-                    return;
-                }
-            SearchAll(query, searchers, *abort, true, [&](std::vector<Candidate> candidates, bool) {
-                if (abort->is_aborting()) return;
-                if (candidates.empty()) {
-                    deliver({Status::NotFound, nullptr});
-                    return;
-                }
-                const auto& best = candidates.front();
-                {
-                    std::lock_guard lock(g_cacheMutex);
-                    if (abort->is_aborting()) return;
-                    WriteFile(CacheFile(query), Utf8(kSourceTag + best.source + L"]\n" + best.lrc));
-                }
-                deliver(FromText(best.lrc, best.source));
-            });
+            std::optional<Candidate> cached;
+            if (useAutomaticCache)
+                if (auto entry = ReadCache(query); entry && !entry->notFound && entry->candidate)
+                    cached = std::move(entry->candidate);
+            SearchAll(query, searchers, std::move(cached), *abort, true,
+                      [&](std::vector<Candidate> candidates, bool) {
+                          if (abort->is_aborting()) return;
+                          if (candidates.empty()) {
+                              deliverNeutral({Status::NotFound, nullptr});
+                              return;
+                          }
+                          const auto& best = candidates.front();
+                          if (!CandidateCurrent(best)) return;
+                          const auto source =
+                              std::find_if(searchers.begin(), searchers.end(), [&](const auto& searcher) {
+                                  return searcher->Key() == best.sourceKey && searcher->Cacheable();
+                              });
+                          {
+                              std::lock_guard lock(g_cacheMutex);
+                              if (abort->is_aborting() || !CandidateCurrent(best)) return;
+                              if (source != searchers.end())
+                                  WriteFile(CacheFile(query), Utf8(CachedText(best)));
+                          }
+                          if (!CandidateCurrent(best)) return;
+                          deliver(FromText(best.lrc, best.source), BindingFor(best));
+                      });
         } catch (const exception_aborted&) {
         } catch (const std::exception& error) {
             console::printf("Glasswave lyrics: %s", error.what());
-            if (!abort->is_aborting()) deliver({Status::NotFound, nullptr});
+            if (!abort->is_aborting()) deliverNeutral({Status::NotFound, nullptr});
         }
     });
 }
@@ -531,11 +592,13 @@ void Service::FindCandidates(Query query, std::wstring source,
     if (!source.empty())
         std::erase_if(searchers, [&](const auto& searcher) { return searcher->Key() != source; });
     Run(abort, [this, query = std::move(query), searchers = std::move(searchers), abort, done, generation] {
-        SearchAll(query, searchers, *abort, false, [&](std::vector<Candidate> candidates, bool finished) {
-            fb2k::inMainThread([this, generation, done, candidates = std::move(candidates), finished] {
-                if (generation == m_searchGeneration) done(candidates, finished);
-            });
-        });
+        SearchAll(query, searchers, std::nullopt, *abort, false,
+                  [&](std::vector<Candidate> candidates, bool finished) {
+                      fb2k::inMainThread(
+                          [this, generation, done, candidates = std::move(candidates), finished] {
+                              if (generation == m_searchGeneration) done(candidates, finished);
+                          });
+                  });
     });
 }
 
@@ -545,8 +608,7 @@ Result Service::Select(const metadb_handle_ptr& track, const Candidate& candidat
     if (result.status != Status::Found) return result;
     Cancel();
     std::lock_guard lock(g_cacheMutex);
-    if (!WriteFile(SelectedFile(MakeQuery(track)),
-                   Utf8(kSourceTag + candidate.source + L"]\n" + candidate.lrc)))
+    if (!WriteFile(SelectedFile(MakeQuery(track)), Utf8(ManualSelectionText(candidate))))
         console::print("Glasswave lyrics: unable to save lyric selection");
     return result;
 }

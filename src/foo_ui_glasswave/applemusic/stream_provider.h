@@ -1,0 +1,331 @@
+#pragma once
+
+#include "applemusic/catalog.h"
+#include "applemusic/client.h"
+#include "netease/task_queue.h"
+#include "stream/provider.h"
+
+#include <chrono>
+#include <condition_variable>
+#include <cstdint>
+#include <memory>
+#include <mutex>
+#include <optional>
+#include <set>
+#include <string>
+#include <unordered_map>
+#include <vector>
+
+namespace glasswave::applemusic {
+
+class StreamProvider final : public stream::Provider {
+  public:
+    static StreamProvider& Get();
+
+    void Start() override;
+    void Shutdown();
+
+    std::wstring_view Key() const override { return L"apple"; }
+    std::wstring Name() const override { return L"Apple Music"; }
+    std::wstring PlaylistText(std::wstring_view english) const override;
+    std::wstring ArtistTracksLabel(const stream::Id& artist) const override;
+    std::vector<stream::ArtistSection> ArtistSections(const stream::Id& artist) const override;
+    std::vector<stream::ListKind> CatalogSearchKinds() const override;
+    bool SupportsCatalogSearchSuggestions() const override { return true; }
+    Features Offers() const override;
+    std::wstring LibraryActionText(stream::LibraryAction action) const override;
+    std::wstring LibraryStateText(bool saved) const override;
+    std::wstring ArtistPreferenceActionText(stream::ArtistPreferenceAction action) const override;
+    bool IsAlbumSaved(const stream::Id& album) const override;
+    std::optional<bool> PlaylistSavedState(const stream::Id& playlist) const override;
+    std::optional<bool> ArtistPreferenceState(const stream::Id& artist) const override;
+    std::vector<settings::Field> SettingFields() override;
+
+    bool SignedIn() const override;
+    std::wstring AccountName() const override;
+    bool SessionRestoring() const override;
+    bool AccountVerified() const override;
+    std::wstring SessionRestoreError() const override;
+    bool RetrySessionRestore(Done done = {}) override;
+    void SignIn(HWND owner) override;
+    void SignOut() override;
+    void RefreshLibrary(Done done = {}) override;
+
+    stream::Id TrackId(const metadb_handle_ptr& item) const override;
+    std::wstring Lyrics(const stream::Id& track, abort_callback& abort) override;
+    bool HasNativeLyrics() const override { return true; }
+    metadb_handle_ptr TrackItem(const stream::Id& track) const override;
+    std::optional<stream::Track> FindTrack(const stream::Id& track) const override;
+    metadb_handle_ptr ArtItem(stream::ArtKind kind, const stream::Id& id) const override;
+    bool SameCover(std::wstring_view a, std::wstring_view b) const override;
+
+    bool IsFavorite(const stream::Id& track) const override;
+    std::vector<stream::Playlist> Playlists(stream::Shelf shelf) const override;
+    std::optional<stream::Shelf> ShelfOf(const stream::Id& playlist) const override;
+    std::vector<stream::Artist> FollowedArtists() const override;
+    std::vector<stream::Album> SavedAlbums() const override;
+    std::optional<stream::Playlist> FindPlaylist(const stream::Id& playlist) const override;
+    std::optional<stream::Album> FindAlbum(const stream::Id& album) const override;
+    std::optional<std::vector<stream::Track>> CachedFavorites() const override;
+    std::optional<std::vector<stream::Track>> CachedPlaylist(const stream::Id& playlist) const override;
+    std::optional<std::vector<stream::Track>> CachedAlbum(const stream::Id& album) const override;
+
+    void FetchFavorites(TracksDone done) override;
+    void FetchPlaylists(stream::Shelf shelf, PlaylistsDone done) override;
+    void FetchPlaylist(const stream::Id& playlist, PlaylistDone done) override;
+    void FetchAlbum(const stream::Id& album, AlbumDone done) override;
+    void FetchAlbumsTracks(std::vector<stream::Id> albums, TracksDone done) override;
+    void FetchArtist(const stream::Id& artist, ArtistDone done) override;
+    void FetchArtistBio(const stream::Id& artist, TextDone done) override;
+    void FetchArtistAlbums(const stream::Id& artist, size_t offset, size_t limit,
+                           AlbumPageDone done) override;
+    void FetchArtistTopTracks(const stream::Id& artist, size_t offset, size_t limit,
+                              TrackPageDone done) override;
+    void FetchFollowedArtists(ArtistsDone done) override;
+    void FetchSavedAlbums(size_t offset, size_t limit, AlbumPageDone done) override;
+    void FetchListPage(const stream::ListQuery& query, const stream::ListCursor& cursor, size_t limit,
+                       stream::ListPageDone done) override;
+    bool EnrichListPage(const stream::ListQuery& query, const stream::ListPage& page,
+                        stream::ListPageDone done) override;
+    stream::ListCachePolicy ListPolicy(const stream::ListQuery& query) const override;
+    std::string ListCacheContext(const stream::ListQuery& query) const override;
+    void RestoreListRecords(const stream::ListPage& page) override;
+
+    // These write routes mirror the private Apple Music current-web contract. They are not
+    // a documented stable API and have not been exercised against a real account here.
+    void SetFavorite(const stream::Id& track, bool favorite, Done done = {}) override;
+    void SetFollowed(const stream::Id& artist, bool follow, Done done = {}) override;
+    void SetAlbumSaved(const stream::Id& album, bool saved, Done done = {}) override;
+    void SetPlaylistSaved(const stream::Id& playlist, bool saved, Done done = {}) override;
+    void AddToPlaylist(const stream::Id& playlist, std::vector<stream::Id> tracks, Done done = {}) override;
+    void RemoveFromPlaylist(const stream::Id& playlist, std::vector<stream::Id> tracks,
+                            Done done = {}) override;
+    void CreatePlaylist(std::wstring name, CreatedDone done) override;
+    void RenamePlaylist(const stream::Id& playlist, std::wstring name, Done done = {}) override;
+    void DeletePlaylist(const stream::Id& playlist, Done done = {}) override;
+    void ReorderPlaylists(std::vector<stream::Id> playlists, Done done = {}) override;
+
+    void SearchCatalog(std::wstring query, TracksDone done) override;
+    void FetchCatalogSearchSuggestions(CatalogSearchSuggestionQuery query,
+                                       CatalogSearchSuggestionsDone done) override;
+    std::vector<stream::NavigationSection> Sections() const override;
+    void FetchGroups(const stream::Id& section, GroupsDone done) override;
+    void FetchSectionTracks(const stream::Id& section, const stream::Id& group, TracksDone done) override;
+
+    void OnLanguageChanged() override;
+
+  private:
+    StreamProvider() = default;
+    ~StreamProvider() override;
+    StreamProvider(const StreamProvider&) = delete;
+    StreamProvider& operator=(const StreamProvider&) = delete;
+
+    struct Snapshot {
+        bool accountVerified = false;
+        uint64_t libraryMutationEpoch = 0;
+        uint64_t artistPreferenceEpoch = 0;
+        uint64_t refreshToken = 0;
+        AccountState account;
+        DrmState drm;
+        std::vector<stream::Playlist> createdPlaylists;
+        std::vector<stream::Playlist> savedPlaylists;
+        std::vector<stream::Album> savedAlbums;
+        std::vector<stream::Artist> libraryArtists;
+        std::unordered_map<stream::Id, std::vector<stream::Track>> playlistTracks;
+        std::unordered_map<stream::Id, std::vector<Song>> playlistSongs;
+        std::unordered_map<stream::Id, std::vector<stream::Track>> albumTracks;
+        std::unordered_map<stream::Id, stream::Id> playlistLibraryIds;
+        std::unordered_map<stream::Id, stream::Id> albumLibraryIds;
+        std::unordered_map<stream::Id, stream::Id> artistCatalogIds;
+        std::set<stream::Id> savedAlbumIds;
+        std::set<stream::Id> editablePlaylists;
+        std::set<stream::Id> renameablePlaylists;
+        std::set<stream::Id> deletablePlaylists;
+        stream::Id favoritePlaylistId;
+        std::vector<Song> librarySongs;
+        std::vector<Song> favoriteSongs;
+        bool librarySongsLoaded = false;
+        bool favoriteSongsLoaded = false;
+    };
+
+    void Post(uint64_t generation, std::function<void()> callback);
+    void PostMutation(uint64_t generation, std::function<void()> callback);
+    bool PostDetail(uint64_t generation, std::function<void()> callback);
+    void PostMain(uint64_t generation, std::function<void()> callback);
+    void RefreshAccountAsync(uint64_t generation, Done done, bool preservePlaylistDetails = false);
+    void RefreshLibraryPreservingDetails(Done done = {});
+    void RefreshLibraryAfterMutation(Done done = {});
+    uint64_t ApplyVerifiedAccount(uint64_t generation, uint64_t refreshToken, const AccountState& account);
+    void CompleteRefresh(uint64_t generation, Snapshot snapshot, std::wstring error);
+    void LoadBootstrapSnapshot(uint64_t generation);
+    void QueueSnapshotSave();
+    void CompleteSnapshotSave(uint64_t generation);
+    void StartFavoriteBindingRead(uint64_t generation, uint64_t bindingEpoch);
+    void CompleteFavoriteBinding(uint64_t generation, uint64_t bindingEpoch, stream::Id playlist,
+                                 bool complete, std::wstring error);
+    std::vector<stream::Playlist> RawPlaylists(stream::Shelf shelf) const;
+    bool VerifyCatalogArtist(uint64_t generation, std::wstring_view storefront, std::wstring_view catalogId,
+                             abort_callback& abort);
+    void ClearLibraryLocked();
+    void ClearPlaylistDetailsLocked();
+    void CancelPlaylistFetchesLocked();
+    bool PutIfCurrent(uint64_t generation, const Song& song);
+    bool PutIfCurrent(uint64_t generation, const std::vector<Song>& songs);
+    bool PutIfCurrent(uint64_t generation, const stream::Playlist& playlist);
+    bool PutIfCurrent(uint64_t generation, const stream::Album& album);
+    bool PutIfCurrent(uint64_t generation, const std::vector<stream::Album>& albums);
+    bool PutIfCurrent(uint64_t generation, const stream::Artist& artist);
+    bool PutIfCurrent(uint64_t generation, const std::vector<stream::Artist>& artists);
+    bool RequireSignedIn(std::wstring& error) const;
+    std::wstring Storefront() const;
+    void OnDisplayMetadataChanged();
+    void ApplyDisplayMetadataChange();
+    stream::Id CatalogIdForAlbum(const stream::Id& id) const;
+    struct AlbumRequest {
+        stream::Id id;
+        bool library = false;
+    };
+    AlbumRequest ResolveAlbumRequest(const stream::Id& id) const;
+    stream::Id CatalogIdForArtist(const stream::Id& id) const;
+    stream::Id CatalogIdForPlaylist(const stream::Id& id) const;
+    void ResolveSongDisplayNames(std::vector<Song>& songs, uint64_t generation, abort_callback& abort);
+    void ResolveAlbumDisplayNames(std::vector<stream::Album>& albums, uint64_t generation,
+                                  abort_callback& abort);
+    void ResolveArtistDisplayNames(std::vector<stream::Artist>& artists, uint64_t generation,
+                                   abort_callback& abort);
+    void ResolvePlaylistDisplayNames(std::vector<stream::Playlist>& playlists, uint64_t generation,
+                                     abort_callback& abort);
+    void ApplyArtistPreferenceOverlay(stream::Artist& artist, uint64_t capturedEpoch) const;
+    void ApplyArtistPreferenceOverlayLocked(stream::Artist& artist, uint64_t capturedEpoch) const;
+    std::optional<bool> PlaylistSavedStateLocked(const stream::Id& playlist) const;
+    bool IsEditablePlaylist(const stream::Id& id) const;
+    bool IsFavoritePlaylist(const stream::Id& id) const;
+    stream::Id KnownLibraryId(bool album, const stream::Id& id) const;
+    stream::Id ArtistCatalogId(const stream::Id& artist) const;
+    void EnrichArtistCountsAsync(uint64_t generation);
+    void RefreshKnownPlaylist(const stream::Id& id, Done done = {}, bool invalidateLists = false);
+    void RefreshKnownAlbum(const stream::Id& id);
+    void RefreshLibrarySongsAsync(uint64_t generation, TracksDone done);
+    void FetchFavoritesWithInvalidation(TracksDone done, bool invalidateLists);
+
+    mutable std::mutex m_mutex;
+    std::condition_variable m_artistVerificationCondition;
+    bool m_started = false;
+    // True after the helper returns a successful account snapshot. The initial
+    // signed-out placeholder is not an identity and must not invalidate startup work.
+    bool m_accountVerified = false;
+    bool m_authPending = false;
+    bool m_sessionRestoring = false;
+    std::wstring m_lastAuthError;
+    bool m_cachedAccountBound = false;
+    bool m_snapshotSavePosted = false;
+    bool m_snapshotSaveDirty = false;
+    uint64_t m_generation = 0;
+    bool m_refreshInFlight = false;
+    uint64_t m_refreshGeneration = 0;
+    uint64_t m_refreshSequence = 0;
+    bool m_refreshPreservePlaylistDetails = false;
+    bool m_refreshInvalidatesLists = false;
+    bool m_displayChangePosted = false;
+    std::vector<Done> m_refreshWaiters;
+    bool m_artistCountsInFlight = false;
+    bool m_librarySnapshotLoaded = false;
+    std::chrono::steady_clock::time_point m_librarySnapshotValidUntil{};
+    std::unique_ptr<netease::TaskQueue> m_tasks;
+    std::unique_ptr<netease::TaskQueue> m_mutationTasks;
+    std::unique_ptr<netease::TaskQueue> m_detailTasks;
+    std::unique_ptr<netease::TaskQueue> m_enrichTasks;
+    std::unique_ptr<abort_callback_impl> m_abort;
+    AccountState m_account;
+    std::wstring m_cachedAccountId;
+    std::wstring m_cachedAccountName;
+    std::wstring m_cachedStorefront;
+    DrmState m_drm;
+    std::vector<stream::Playlist> m_createdPlaylists;
+    std::vector<stream::Playlist> m_savedPlaylists;
+    std::vector<stream::Album> m_savedAlbums;
+    std::vector<stream::Artist> m_libraryArtists;
+    std::unordered_map<stream::Id, std::vector<stream::Track>> m_playlistTracks;
+    std::unordered_map<stream::Id, std::vector<Song>> m_playlistSongs;
+    struct PlaylistFetch {
+        uint64_t generation = 0;
+        uint64_t epoch = 0;
+        std::vector<PlaylistDone> waiters;
+    };
+    enum class FavoriteBindingState {
+        Unknown,
+        Pending,
+        Ready,
+        Empty
+    };
+    struct FavoritePageWaiter {
+        uint64_t generation = 0;
+        stream::ListQuery query;
+        stream::ListCursor cursor;
+        size_t limit = 0;
+        stream::ListPageDone done;
+    };
+    struct ArtistExistenceEntry {
+        uint64_t generation = 0;
+        bool known = false;
+        bool exists = false;
+        std::chrono::steady_clock::time_point validUntil{};
+    };
+    struct AlbumMutation {
+        stream::Id catalogId;
+        stream::Id libraryId;
+        stream::Album album;
+        uint64_t epoch = 0;
+        bool saved = false;
+        bool pending = false;
+    };
+    struct PlaylistMutation {
+        stream::Id catalogId;
+        stream::Id libraryId;
+        stream::Playlist playlist;
+        uint64_t epoch = 0;
+        bool saved = false;
+        bool pending = false;
+    };
+    struct ArtistPreferenceMutation {
+        stream::Id sourceId;
+        stream::Id catalogId;
+        uint64_t epoch = 0;
+        bool favorite = false;
+        bool pending = true;
+    };
+    uint64_t m_playlistDetailEpoch = 0;
+    std::unordered_map<stream::Id, std::shared_ptr<PlaylistFetch>> m_playlistFetches;
+    std::unordered_map<stream::Id, std::vector<stream::Track>> m_albumTracks;
+    std::unordered_map<stream::Id, std::vector<stream::Track>> m_artistLibraryTracks;
+    std::unordered_map<stream::Id, stream::Id> m_playlistLibraryIds;
+    std::unordered_map<stream::Id, stream::Id> m_albumLibraryIds;
+    std::unordered_map<stream::Id, stream::Id> m_artistCatalogIds;
+    std::unordered_map<std::wstring, ArtistExistenceEntry> m_artistExistence;
+    std::unordered_map<stream::Id, AlbumMutation> m_albumMutations;
+    std::unordered_map<stream::Id, PlaylistMutation> m_playlistMutations;
+    mutable std::unordered_map<stream::Id, ArtistPreferenceMutation> m_artistPreferenceMutations;
+    uint64_t m_libraryMutationEpoch = 0;
+    uint64_t m_libraryMutationSequence = 0;
+    uint64_t m_appliedLibraryMutationSequence = 0;
+    mutable uint64_t m_artistPreferenceEpoch = 0;
+    uint64_t m_artistPreferenceSequence = 0;
+    uint64_t m_appliedArtistPreferenceSequence = 0;
+    std::set<stream::Id> m_savedAlbumIds;
+    std::set<stream::Id> m_editablePlaylists;
+    std::set<stream::Id> m_renameablePlaylists;
+    std::set<stream::Id> m_deletablePlaylists;
+    std::wstring m_locale;
+    stream::Id m_favoritePlaylistId;
+    FavoriteBindingState m_favoriteBindingState = FavoriteBindingState::Unknown;
+    uint64_t m_favoriteBindingEpoch = 0;
+    bool m_favoriteBindingReadInFlight = false;
+    std::vector<FavoritePageWaiter> m_favoritePageWaiters;
+    std::vector<Song> m_librarySongs;
+    std::vector<Song> m_favoriteSongs;
+    std::set<stream::Id> m_favoriteIds;
+    bool m_librarySongsLoaded = false;
+    bool m_favoriteSongsLoaded = false;
+};
+
+} // namespace glasswave::applemusic

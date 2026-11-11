@@ -18,6 +18,10 @@ std::wstring ViewKey(const View& view) {
     key += L'|';
     key += view.remoteId;
     key += L'|';
+    key += view.sectionId;
+    key += L'|';
+    key += view.groupId;
+    key += L'|';
     key += std::to_wstring(static_cast<int>(view.shelf));
     key += view.shelfKnown ? L"|s|" : L"|u|";
     key += view.parentId;

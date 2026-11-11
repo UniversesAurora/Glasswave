@@ -36,7 +36,60 @@ std::filesystem::path CacheFile() {
     return dir.empty() ? dir : dir / L"songs.tsv";
 }
 
-}  // namespace
+void Fill(std::wstring& target, const std::wstring& value) {
+    if (!value.empty() && (target.empty() || target == L"Unknown")) target = value;
+}
+
+void MergeRestored(Song& target, const Song& source) {
+    Fill(target.title, source.title);
+    Fill(target.album, source.album);
+    Fill(target.albumArtist, source.albumArtist);
+    if (target.artists.empty()) target.artists = source.artists;
+    if (target.artistRefs.empty()) target.artistRefs = source.artistRefs;
+    if (!target.albumId) target.albumId = source.albumId;
+    if (target.durationMs <= 0) target.durationMs = source.durationMs;
+    if (target.fee == 0) target.fee = source.fee;
+    if (target.popularity == 0) target.popularity = source.popularity;
+    if (target.coverUrl.empty()) target.coverUrl = source.coverUrl;
+    if (target.codec.empty()) target.codec = source.codec;
+    if (target.bitrate == 0) target.bitrate = source.bitrate;
+    if (target.sampleRate == 0) target.sampleRate = source.sampleRate;
+    if (target.bitsPerSample == 0) target.bitsPerSample = source.bitsPerSample;
+}
+
+void MergeRestored(Playlist& target, const Playlist& source) {
+    Fill(target.name, source.name);
+    if (target.coverUrl.empty()) target.coverUrl = source.coverUrl;
+    if (target.trackCount == 0) target.trackCount = source.trackCount;
+    if (!target.creatorId) target.creatorId = source.creatorId;
+    Fill(target.creatorName, source.creatorName);
+    Fill(target.description, source.description);
+    target.subscribed = target.subscribed || source.subscribed;
+}
+
+void MergeRestored(Artist& target, const Artist& source) {
+    Fill(target.name, source.name);
+    if (target.avatarUrl.empty()) target.avatarUrl = source.avatarUrl;
+    Fill(target.brief, source.brief);
+    if (target.albumCount == 0) target.albumCount = source.albumCount;
+    if (target.songCount == 0) target.songCount = source.songCount;
+    if (source.followKnown) {
+        target.followKnown = true;
+        target.followed = target.followed || source.followed;
+    }
+}
+
+void MergeRestored(Album& target, const Album& source) {
+    Fill(target.name, source.name);
+    if (target.coverUrl.empty()) target.coverUrl = source.coverUrl;
+    if (target.artistRefs.empty()) target.artistRefs = source.artistRefs;
+    Fill(target.description, source.description);
+    Fill(target.company, source.company);
+    if (target.trackCount == 0) target.trackCount = source.trackCount;
+    if (target.publishTime == 0) target.publishTime = source.publishTime;
+}
+
+} // namespace
 
 Catalog& Catalog::Get() {
     static Catalog catalog;
@@ -77,6 +130,34 @@ void Catalog::Put(const std::vector<Album>& albums) {
     std::lock_guard lock(m_mutex);
     for (const auto& album : albums)
         if (album.id) m_albums[album.id] = album;
+}
+
+void Catalog::Restore(const Song& song) {
+    if (!song.id) return;
+    std::lock_guard lock(m_mutex);
+    auto [it, inserted] = m_songs.try_emplace(song.id, song);
+    if (!inserted) MergeRestored(it->second, song);
+}
+
+void Catalog::Restore(const Playlist& playlist) {
+    if (!playlist.id) return;
+    std::lock_guard lock(m_mutex);
+    auto [it, inserted] = m_playlists.try_emplace(playlist.id, playlist);
+    if (!inserted) MergeRestored(it->second, playlist);
+}
+
+void Catalog::Restore(const Artist& artist) {
+    if (!artist.id) return;
+    std::lock_guard lock(m_mutex);
+    auto [it, inserted] = m_artists.try_emplace(artist.id, artist);
+    if (!inserted) MergeRestored(it->second, artist);
+}
+
+void Catalog::Restore(const Album& album) {
+    if (!album.id) return;
+    std::lock_guard lock(m_mutex);
+    auto [it, inserted] = m_albums.try_emplace(album.id, album);
+    if (!inserted) MergeRestored(it->second, album);
 }
 
 std::optional<Song> Catalog::FindSong(int64_t id) const {
@@ -163,6 +244,22 @@ void Catalog::PutAndHint(const std::vector<Song>& songs) {
     Save();
 }
 
+void Catalog::RestoreAndHint(const std::vector<Song>& songs) {
+    if (songs.empty()) return;
+    std::vector<Song> restored;
+    restored.reserve(songs.size());
+    {
+        std::lock_guard lock(m_mutex);
+        for (const auto& song : songs) {
+            if (!song.id) continue;
+            auto [it, inserted] = m_songs.try_emplace(song.id, song);
+            if (!inserted) MergeRestored(it->second, song);
+            restored.push_back(it->second);
+        }
+    }
+    Hint(restored);
+}
+
 void Catalog::Hint(const std::vector<Song>& songs) {
     if (songs.empty()) return;
     auto hints = metadb_io_v2::get()->create_hint_list();
@@ -180,7 +277,7 @@ void Catalog::Hint(const std::vector<Song>& songs) {
         setMeta("album", Utf8(song.album));
         if (song.durationMs > 0) info.set_length(static_cast<double>(song.durationMs) / 1000.0);
         if (!song.codec.empty()) info.info_set("codec", Utf8(song.codec).c_str());
-        if (song.bitrate > 0) info.info_set_int("bitrate", (song.bitrate + 500) / 1000);  // kbps
+        if (song.bitrate > 0) info.info_set_int("bitrate", (song.bitrate + 500) / 1000); // kbps
         if (song.sampleRate > 0) info.info_set_int("samplerate", song.sampleRate);
         if (song.bitsPerSample > 0) info.info_set_int("bitspersample", song.bitsPerSample);
         info.info_set_int("channels", 2);
@@ -209,7 +306,7 @@ void Catalog::Load() {
             if (end == std::string::npos) break;
             start = end + 1;
         }
-        if (fields.size() < 12) continue;
+        if (fields.size() != 14) continue;
         Song song;
         song.id = _strtoi64(fields[0].c_str(), nullptr, 10);
         if (!song.id) continue;
@@ -225,12 +322,13 @@ void Catalog::Load() {
         size_t pos = 0;
         while (pos <= artists.size()) {
             const size_t end = artists.find(L'\x1f', pos);
-            const std::wstring name = artists.substr(pos, end == std::wstring::npos ? std::wstring::npos : end - pos);
+            const std::wstring name =
+                artists.substr(pos, end == std::wstring::npos ? std::wstring::npos : end - pos);
             if (!name.empty()) song.artists.push_back(name);
             if (end == std::wstring::npos) break;
             pos = end + 1;
         }
-        if (fields.size() >= 13 && !fields[12].empty()) {  // artist ids added with the artist pages
+        if (!fields[12].empty()) {
             std::vector<int64_t> ids;
             const std::wstring values = Wide(fields[12]);
             size_t idPos = 0;
@@ -251,13 +349,14 @@ void Catalog::Load() {
         }
         song.coverUrl = Wide(fields[10]);
         song.codec = Wide(fields[11]);
-        if (fields.size() >= 14) song.albumId = _strtoi64(fields[13].c_str(), nullptr, 10);
+        song.albumId = _strtoi64(fields[13].c_str(), nullptr, 10);
         loaded.push_back(std::move(song));
     }
     if (loaded.empty()) return;
     {
         std::lock_guard lock(m_mutex);
-        for (const auto& song : loaded) m_songs[song.id] = song;
+        for (const auto& song : loaded)
+            m_songs[song.id] = song;
     }
     Hint(loaded);
 }
@@ -269,7 +368,8 @@ void Catalog::Save() const {
     {
         std::lock_guard lock(m_mutex);
         songs.reserve(m_songs.size());
-        for (const auto& [id, song] : m_songs) songs.push_back(song);
+        for (const auto& [id, song] : m_songs)
+            songs.push_back(song);
     }
     if (songs.empty()) return;
 
@@ -296,7 +396,7 @@ void Catalog::Save() const {
                 << song.albumId << '\n';
         }
         out.close();
-        if (!out) {  // disk full or similar: keep the previous cache
+        if (!out) { // disk full or similar: keep the previous cache
             DeleteFileW(tmp.c_str());
             return;
         }
@@ -304,4 +404,4 @@ void Catalog::Save() const {
     MoveFileExW(tmp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
 }
 
-}  // namespace glasswave::netease
+} // namespace glasswave::netease

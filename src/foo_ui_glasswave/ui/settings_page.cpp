@@ -1,9 +1,12 @@
 #include "pch.h"
 #include "app/setting_fields.h"
 #include "app/settings.h"
+#include "cache/config.h"
+#include "cache/store.h"
 #include "media/play_stats.h"
 #include "lyrics/scripts.h"
 #include "stream/provider.h"
+#include "stream/list_session.h"
 #include "ui/art_cache.h"
 #include "ui/i18n.h"
 
@@ -68,6 +71,28 @@ std::vector<Section> BuildSections() {
           Number(L"Cover loading threads", L"", settings::kCoverThreads, settings::CoverThreads,
                  settings::SetCoverThreads, true),
           Button(L"Reload all covers", [](HWND) { ArtCache::Get().Invalidate(L""); })}});
+    sections.push_back(
+        {L"Shared cache",
+         {Number(L"Song disk cache", L"MiB",
+                 {cache::kAudioMinMiB, cache::kAudioMaxMiB, cache::kAudioDefaultMiB},
+                 cache::AudioLimitMiB, cache::SetAudioLimitMiB),
+          Number(L"Image disk cache", L"MiB",
+                 {cache::kImagesMinMiB, cache::kImagesMaxMiB, cache::kImagesDefaultMiB},
+                 cache::ImageLimitMiB, cache::SetImageLimitMiB),
+          Number(L"List disk cache", L"MiB",
+                 {cache::kListsMinMiB, cache::kListsMaxMiB, cache::kListsDefaultMiB},
+                 cache::ListLimitMiB, cache::SetListLimitMiB),
+          Button(L"Clear song cache", [](HWND) {
+              try { cache::GetStore().Clear(cache::Kind::Audio); } catch (...) {}
+          }),
+          Button(L"Clear image cache", [](HWND) {
+              try { cache::GetStore().Clear(cache::Kind::Image); } catch (...) {}
+              ArtCache::Get().Invalidate(L"");
+          }),
+          Button(L"Clear list cache", [](HWND) {
+              for (auto* provider : stream::Providers()) stream::InvalidateListCache(provider->Key());
+              try { cache::GetStore().Clear(cache::Kind::Data); } catch (...) {}
+          })}});
     sections.push_back(
         {L"Play history",
          {Number(L"Songs remembered", L"songs", settings::kPlayHistory, settings::PlayHistoryLimit,

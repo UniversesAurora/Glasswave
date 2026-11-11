@@ -1,5 +1,6 @@
 #pragma once
 #include "aero/aero_painter.h"
+#include "gfx/composition_host.h"
 
 // An interactive control made of pre-painted layers:
 //   [halo] normal / inactive -> hover -> pressed
@@ -63,6 +64,12 @@ private:
     winrt::Windows::UI::Composition::SpriteVisual m_inactiveLayer{nullptr};
     winrt::Windows::UI::Composition::SpriteVisual m_hoverLayer{nullptr};
     winrt::Windows::UI::Composition::SpriteVisual m_pressedLayer{nullptr};
+    gfx::RetainedSurface m_haloBacking;
+    gfx::RetainedSurface m_glowBacking;
+    gfx::RetainedSurface m_normalBacking;
+    gfx::RetainedSurface m_inactiveBacking;
+    gfx::RetainedSurface m_hoverBacking;
+    gfx::RetainedSurface m_pressedBacking;
 };
 
 }  // namespace glasswave::ui

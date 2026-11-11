@@ -52,6 +52,8 @@ public:
     std::function<void(POINT screen)> onEmptyContext;
     // Called after SetSource; the window restores a saved scroll position when possible.
     std::function<void()> onSourceChanged;
+    // Sorting or grouping changed the presented list; the page may need another drain mode.
+    std::function<void()> onPresentationChanged;
     // Start the window's fade/repeat timers when a scrollbar state changes / is held.
     std::function<void()> onScrollAnim;
     std::function<void()> onScrollHold;
@@ -60,7 +62,21 @@ public:
 
 private:
     enum class Mode { Plain, Grouped, Tiles };
-    enum class Part { None, HeaderCell, HeaderEdge, Row, GroupHeader, AlbumColumn, Link, Empty, ArrowUp, ArrowDown, Track, Thumb };
+    enum class Part {
+        None,
+        Status,
+        HeaderCell,
+        HeaderEdge,
+        Row,
+        GroupHeader,
+        AlbumColumn,
+        Link,
+        Empty,
+        ArrowUp,
+        ArrowDown,
+        Track,
+        Thumb
+    };
     enum class Drag { None, Thumb, Resize, PendingMove, Move, Marquee };
     struct Line {
         enum Kind : uint8_t { GroupHeader, Item, Filler } kind = Item;
@@ -108,6 +124,8 @@ private:
     size_t LineAtDip(float y) const;
     float RowsHeightDip() const;
     int HeaderHeightPx() const;
+    int StatusHeightPx() const;
+    int ContentOffsetPx() const;
     int ScrollWidthPx() const;
     RECT RowsRect() const;
     float RowsWidth() const;  // DIP
@@ -120,6 +138,10 @@ private:
     void ScrollTo(size_t top);
     void CheckNearEnd();
     void MoveFocus(size_t row, bool ctrl, bool shift);
+    void UpdateStatusText();
+    float ContentTopDip() const;
+    void ScrollTopTo(float top);
+    void PaintStatus();
     void PaintHeader();
     void PaintRows();
     void PaintScrollBar();
@@ -134,7 +156,9 @@ private:
     bool ThumbGeometry(float* top, float* height) const;  // in px, relative to the scrollbar
 
     winrt::Windows::UI::Composition::ContainerVisual m_root{nullptr};
-    winrt::Windows::UI::Composition::SpriteVisual m_header{nullptr}, m_rows{nullptr}, m_scroll{nullptr};
+    winrt::Windows::UI::Composition::CompositionRectangleGeometry m_clipGeometry{nullptr};
+    winrt::Windows::UI::Composition::SpriteVisual m_header{nullptr}, m_status{nullptr}, m_rows{nullptr},
+        m_scroll{nullptr};
     winrt::Windows::UI::Composition::CompositionDrawingSurface m_rowsSurface{nullptr};
     SIZE m_rowsSurfaceSize{};
 
@@ -156,6 +180,8 @@ private:
     float m_scale = 1.0f;
     bool m_focused = true;
     size_t m_top = 0;  // first visible line
+    float m_topOffsetDip = 0; // pixel scroll into m_top, used to anchor status-band changes
+    std::wstring m_statusText;
     size_t m_hot = SIZE_MAX;
     size_t m_hotGroup = SIZE_MAX;
     size_t m_hotGroupHeader = SIZE_MAX;  // group bar under the mouse: outline only, no fill

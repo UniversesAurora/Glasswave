@@ -163,12 +163,17 @@ float TextWidth(const std::wstring& text, float maxW) {
 ListView::ListView(const wuc::ContainerVisual& parent) {
     const auto& comp = gfx::CompositionHost::Get().Compositor();
     m_root = comp.CreateContainerVisual();
+    m_clipGeometry = comp.CreateRectangleGeometry();
+    m_root.Clip(comp.CreateGeometricClip(m_clipGeometry));
     m_header = comp.CreateSpriteVisual();
+    m_status = comp.CreateSpriteVisual();
     m_rows = comp.CreateSpriteVisual();
     m_scroll = comp.CreateSpriteVisual();
     m_root.Children().InsertAtTop(m_rows);
+    m_root.Children().InsertAtTop(m_status);
     m_root.Children().InsertAtTop(m_header);
     m_root.Children().InsertAtTop(m_scroll);
+    m_status.IsVisible(false);
     parent.Children().InsertAtTop(m_root);
     // A plain list draws covers only in its Album art column.
     m_artToken = ArtCache::Get().Subscribe([this] {
@@ -187,6 +192,12 @@ int ListView::RowHeightPx() const {
 }
 int ListView::HeaderHeightPx() const {
     return m_mode == Mode::Tiles ? 0 : static_cast<int>(std::lround(kHeaderHeight * m_scale));
+}
+int ListView::StatusHeightPx() const {
+    return m_statusText.empty() ? 0 : static_cast<int>(std::lround(kRowHeight * m_scale));
+}
+int ListView::ContentOffsetPx() const {
+    return HeaderHeightPx() + StatusHeightPx();
 }
 int ListView::ScrollWidthPx() const { return static_cast<int>(std::lround(kScrollWidth * m_scale)); }
 
@@ -218,7 +229,8 @@ size_t ListView::TileColumns() const {
 }
 
 RECT ListView::RowsRect() const {
-    return {m_bounds.left, m_bounds.top + HeaderHeightPx(), m_bounds.right - ScrollWidthPx(), m_bounds.bottom};
+    return {m_bounds.left, m_bounds.top + ContentOffsetPx(), m_bounds.right - ScrollWidthPx(),
+            m_bounds.bottom};
 }
 
 float ListView::RowsWidth() const {
@@ -279,14 +291,15 @@ size_t ListView::VisibleLines() const {
     const float viewH = RowsHeightDip();
     if (m_mode == Mode::Grouped && !m_lineTop.empty()) {
         size_t n = 0;
-        float y = 0;
+        float y = -m_topOffsetDip;
         for (size_t i = m_top; i < m_lines.size() && y < viewH; ++i) {
             y += LineHeightDip(m_lines[i]);
             ++n;
         }
         return n;
     }
-    return static_cast<size_t>(viewH / std::max(LineHeightPx() / m_scale, 0.001f));
+    const float lineH = std::max(LineHeightPx() / m_scale, 0.001f);
+    return static_cast<size_t>((viewH + std::max(m_topOffsetDip, 0.0f)) / lineH);
 }
 
 size_t ListView::MaxTop() const {
@@ -369,7 +382,42 @@ int ListView::StarAt(POINT pt) const {
 
 D2D1_POINT_2F ListView::ContentPoint(POINT pt) const {
     const RECT rr = RowsRect();
-    return {(pt.x - rr.left) / m_scale + ScrollX(), (pt.y - rr.top) / m_scale + LineTopDip(m_top)};
+    return {(pt.x - rr.left) / m_scale + ScrollX(), (pt.y - rr.top) / m_scale + ContentTopDip()};
+}
+
+float ListView::ContentTopDip() const {
+    return LineTopDip(m_top) + m_topOffsetDip;
+}
+
+void ListView::ScrollTopTo(float top) {
+    top = std::max(top, 0.0f);
+    const size_t n = LineCount();
+    if (n == 0) {
+        m_top = 0;
+        m_topOffsetDip = 0;
+        return;
+    }
+    if (m_mode == Mode::Grouped && !m_lineTop.empty()) {
+        const auto it = std::upper_bound(m_lineTop.begin(), m_lineTop.end(), top);
+        const size_t line = it == m_lineTop.begin() ? 0 : static_cast<size_t>(it - m_lineTop.begin() - 1);
+        m_top = std::min(line, n - 1);
+        m_topOffsetDip = std::max(top - LineTopDip(m_top), 0.0f);
+        return;
+    }
+    const float lineH = std::max(LineHeightPx() / m_scale, 0.001f);
+    const size_t line = top > 0 ? static_cast<size_t>(top / lineH) : 0;
+    m_top = std::min(line, n - 1);
+    m_topOffsetDip = std::max(top - LineTopDip(m_top), 0.0f);
+}
+
+void ListView::UpdateStatusText() {
+    std::wstring next = m_source ? m_source->LoadingText() : std::wstring();
+    if (next == m_statusText) return;
+    const bool wasVisible = !m_statusText.empty(), willBeVisible = !next.empty();
+    const int oldHeightPx = StatusHeightPx();
+    m_statusText = std::move(next);
+    if (wasVisible != willBeVisible)
+        ScrollTopTo(ContentTopDip() + (StatusHeightPx() - oldHeightPx) / std::max(m_scale, 0.001f));
 }
 
 // ---- Data -----------------------------------------------------------------------------------
@@ -464,6 +512,8 @@ void ListView::SetSource(media::ListSource* source, bool resetScroll) {
     m_anchor = source ? source->Focus() : SIZE_MAX;
     if (resetScroll) {
         m_top = 0;
+        m_topOffsetDip = 0;
+        m_statusText = m_source ? m_source->LoadingText() : std::wstring();
         m_scrollX = 0;
     }
     BuildLines();
@@ -481,6 +531,7 @@ void ListView::SetBounds(const RECT& px, float scale) {
     const float w = static_cast<float>(px.right - px.left), h = static_cast<float>(px.bottom - px.top);
     m_root.Offset(float3{static_cast<float>(px.left), static_cast<float>(px.top), 0});
     m_root.Size(float2{w, h});
+    m_clipGeometry.Size(float2{std::max(w, 0.0f), std::max(h, 0.0f)});
     if (sizeChanged || scaleChanged) {
         PaintHeader();
         Refresh();
@@ -494,6 +545,7 @@ void ListView::SetFocused(bool focused) {
 }
 
 void ListView::Refresh() {
+    UpdateStatusText();
     BuildLines();  // rows, groups or the view style may have changed
     m_top = std::min(m_top, MaxTop());
     m_scrollX = std::clamp(m_scrollX, 0.0f, std::max(0.0f, ContentWidth() + 4 - RowsWidth()));
@@ -501,6 +553,7 @@ void ListView::Refresh() {
     m_hotGroup = SIZE_MAX;
     m_hotGroupHeader = SIZE_MAX;
     m_hotLinkGroup = SIZE_MAX;
+    PaintStatus();
     PaintHeader();
     PaintRows();
     PaintScrollBar();
@@ -509,8 +562,9 @@ void ListView::Refresh() {
 
 void ListView::ScrollTo(size_t top) {
     top = std::min(top, MaxTop());
-    if (top == m_top) return;
+    if (top == m_top && m_topOffsetDip == 0) return;
     m_top = top;
+    m_topOffsetDip = 0;
     PaintRows();
     PaintScrollBar();
     CheckNearEnd();
@@ -533,7 +587,7 @@ void ListView::EnsureVisible(size_t row) {
         line = rowLine - 1;
     if (m_mode == Mode::Grouped && !m_lineTop.empty()) {
         const float viewH = RowsHeightDip();
-        const float top = LineTopDip(m_top);
+        const float top = ContentTopDip();
         // Visibility is decided by the row itself, not by the group header: a header at the
         // bottom edge does not mean the track below it is visible.
         const float rowTop = LineTopDip(rowLine);
@@ -576,6 +630,26 @@ void ListView::ScrollToRow(size_t row) {
 }
 
 // ---- Painting -------------------------------------------------------------------------------
+
+void ListView::PaintStatus() {
+    const int h = StatusHeightPx();
+    if (h <= 0) {
+        m_status.IsVisible(false);
+        return;
+    }
+    m_status.IsVisible(true);
+    auto& host = gfx::CompositionHost::Get();
+    const int w = std::max<int>(m_bounds.right - m_bounds.left, 1);
+    const float s = m_scale;
+    host.Repaint(m_status, w, h, s, [&](ID2D1DeviceContext* dc) {
+        const D2D1_SIZE_F size{w / s, h / s};
+        wp::HeaderBackground(dc, size);
+        Text(dc, m_statusText, {kCellPad, 0, size.width - kCellPad, size.height}, kSecondaryInk,
+             DWRITE_TEXT_ALIGNMENT_CENTER);
+    });
+    PlaceVisual(m_status, 0, static_cast<float>(HeaderHeightPx()), static_cast<float>(w),
+                static_cast<float>(h));
+}
 
 void ListView::PaintHeader() {
     if (m_mode == Mode::Tiles) {  // icon views have no column header
@@ -676,7 +750,8 @@ void ListView::PaintRows() {
         brush.VerticalAlignmentRatio(0);
         m_rows.Brush(brush);
     }
-    PlaceVisual(m_rows, 0, static_cast<float>(HeaderHeightPx()), static_cast<float>(w), static_cast<float>(h));
+    PlaceVisual(m_rows, 0, static_cast<float>(ContentOffsetPx()), static_cast<float>(w),
+                static_cast<float>(h));
     const float s = m_scale;
     host.Draw(m_rowsSurface, s, [&](ID2D1DeviceContext* dc) {
         const D2D1_SIZE_F size{w / s, h / s};
@@ -720,7 +795,7 @@ void ListView::PaintRows() {
         dc->SetTransform(base);
         if (m_drag == Drag::Marquee) {
             // Win7 rubber band: #3399FF border over a translucent fill.
-            const float top = LineTopDip(m_top);
+            const float top = ContentTopDip();
             const float px = 1.0f / s;
             auto snap = [&](float v) { return std::round(v * s) / s; };
             const D2D1_RECT_F r{snap(std::min(m_marqueeFrom.x, m_marqueeTo.x) - ScrollX()),
@@ -802,7 +877,7 @@ void ListView::PaintPlain(ID2D1DeviceContext* dc, D2D1_SIZE_F size) {
     const float right = ContentWidth();  // rows end with the last column
     for (size_t i = 0; i < visible && m_top + i < n; ++i) {
         const size_t row = m_top + i;
-        const float y = i * rowH;
+        const float y = i * rowH - m_topOffsetDip;
         const bool sel = m_source->IsSelected(row), hot = row == m_hot;
         const wp::RowState st = sel ? (hot ? wp::RowState::SelectedHot : wp::RowState::Selected)
                                     : (hot ? wp::RowState::Hot : wp::RowState::Normal);
@@ -826,7 +901,7 @@ void ListView::PaintGrouped(ID2D1DeviceContext* dc, D2D1_SIZE_F size) {
     const float titleX = art ? albumL + 8 : kGutter + 2;
 
     std::vector<size_t> shownGroups;
-    float y = 0;
+    float y = -m_topOffsetDip;
     for (size_t i = 0; m_top + i < m_lines.size() && y < size.height; ++i) {
         const Line& line = m_lines[m_top + i];
         const float rowH = LineHeightDip(line);
@@ -874,7 +949,7 @@ void ListView::PaintGrouped(ID2D1DeviceContext* dc, D2D1_SIZE_F size) {
     const float albumRowH = RowHeightPx() / m_scale;  // album column only exists in uniform tiles
     for (size_t gi : shownGroups) {
         const auto& g = groups[gi];
-        const float top = LineTopDip(m_groupLine[gi] + 1) - LineTopDip(m_top);
+        const float top = LineTopDip(m_groupLine[gi] + 1) - ContentTopDip();
         // Only the cover and its four lines belong to the album cell; below them (long
         // albums) the column is empty space, e.g. to start a rubber band from.
         const size_t lines = kGroupMinLines;
@@ -905,7 +980,7 @@ void ListView::PaintTiles(ID2D1DeviceContext* dc) {
     const float lineH = LineHeightPx() / m_scale;
     const size_t visible = VisibleLines() + 1;
     for (size_t i = 0; i < visible; ++i) {
-        const float y = i * lineH;
+        const float y = i * lineH - m_topOffsetDip;
         for (size_t c = 0; c < cols; ++c) {
             const size_t idx = (m_top + i) * cols + c;
             if (idx >= n) return;
@@ -963,6 +1038,10 @@ void ListView::DrawArt(ID2D1DeviceContext* dc, const std::wstring& key, const me
         bmp = cached->second.bitmap;
     } else {
         const auto state = artCache.Find(key, track, sizePx, &src);
+        if (!src && state == ArtCache::State::Missing && cached != m_artBitmaps.end()) {
+            m_artBitmaps.erase(cached);
+            cached = m_artBitmaps.end();
+        }
         if (src) {
             src->GetSize(&sw, &sh);
             if (SUCCEEDED(dc->CreateBitmapFromWicBitmap(src.get(), nullptr, bmp.put()))) {
@@ -980,8 +1059,6 @@ void ListView::DrawArt(ID2D1DeviceContext* dc, const std::wstring& key, const me
         if (!bmp && cached != m_artBitmaps.end()) {
             // The invalidation keeps the previous cover; draw it until the new one decodes.
             bmp = cached->second.bitmap;
-        } else if (!bmp) {
-            if (state == ArtCache::State::Pending) return;  // painted when it arrives
         }
     }
     if (bmp) {
@@ -1017,7 +1094,13 @@ bool ListView::ThumbGeometry(float* top, float* height) const {
     if (n <= v || trackH <= 0) return false;
     const float minH = 24.0f * m_scale;
     *height = std::min(trackH, std::max(minH, trackH * v / n));
-    *top = arrow + (trackH - *height) * m_top / std::max<size_t>(MaxTop(), 1);
+    const float lineH =
+        std::max(LineHeightDip(m_lines.empty() ? Line{} : m_lines[std::min(m_top, m_lines.size() - 1)]),
+                 m_mode == Mode::Grouped ? 0.001f : LineHeightPx() / m_scale);
+    const float position = std::clamp((static_cast<float>(m_top) + m_topOffsetDip / std::max(lineH, 0.001f)) /
+                                          static_cast<float>(std::max<size_t>(MaxTop(), 1)),
+                                      0.0f, 1.0f);
+    *top = arrow + (trackH - *height) * position;
     return true;
 }
 
@@ -1083,7 +1166,7 @@ void ListView::PaintScrollBar() {
     host.Repaint(m_scroll, w, h, s, [&](ID2D1DeviceContext* dc) {
         wp::ScrollBar(dc, {w / s, h / s}, top / s, has ? height / s : 0, m_scrollBlend.data());
     });
-    PlaceVisual(m_scroll, static_cast<float>(rr.right - m_bounds.left), static_cast<float>(HeaderHeightPx()),
+    PlaceVisual(m_scroll, static_cast<float>(rr.right - m_bounds.left), static_cast<float>(ContentOffsetPx()),
                 static_cast<float>(w), static_cast<float>(h));
 }
 
@@ -1106,6 +1189,10 @@ ListView::Hit ListView::HitAt(POINT pt) const {
             }
         for (size_t d = 0; d < cols.size(); ++d)
             if (x >= cols[d].x && x < cols[d].x + cols[d].w) hit.col = d;
+        return hit;
+    }
+    if (pt.y < m_bounds.top + ContentOffsetPx()) {
+        hit.part = Part::Status;
         return hit;
     }
     const RECT rr = RowsRect();
@@ -1480,6 +1567,7 @@ void ListView::OnDoubleClick(POINT pt) {
 void ListView::OnRButtonUp(HWND owner, POINT pt) {
     if (!m_source) return;
     const Hit hit = HitAt(pt);
+    if (hit.part == Part::Status) return;
     if (hit.part == Part::Row && !m_source->IsSelected(hit.row)) {
         m_source->SelectOnly(hit.row);
         m_source->SetFocus(hit.row);
@@ -1525,6 +1613,7 @@ void ListView::SortBy(size_t src) {
     else
         m_source->Sort(SIZE_MAX, false);
     Refresh();
+    if (onPresentationChanged) onPresentationChanged();
 }
 
 void ListView::ShowHeaderMenu(HWND owner, POINT pt, size_t displayCol) {
@@ -1563,6 +1652,7 @@ void ListView::ShowHeaderMenu(HWND owner, POINT pt, size_t displayCol) {
         cfg_showGroups.set(show ? 1 : 0);
         m_source->SetGrouping(show);
         Refresh();
+        if (onPresentationChanged) onPresentationChanged();
     } else if (cmd == kReset) {
         Store().erase(m_columnKey);
         Persist();

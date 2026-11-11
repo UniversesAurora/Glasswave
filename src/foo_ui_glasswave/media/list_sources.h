@@ -1,6 +1,9 @@
 #pragma once
 #include "media/library_model.h"
 
+#include <functional>
+#include <string_view>
+
 // Data sources behind the content list. The ListView only knows this interface.
 
 namespace glasswave::media {
@@ -89,11 +92,16 @@ public:
     virtual void Sort(size_t /*column*/, bool /*descending*/) {}
     virtual size_t SortColumn() const { return SIZE_MAX; }
     virtual bool SortDescending() const { return false; }
-
     // View options offered by the view button.
     virtual bool SupportsViewStyle(ViewStyle) const { return false; }
     virtual ViewStyle GetViewStyle() const { return ViewStyle::Details; }
     virtual void SetViewStyle(ViewStyle) {}
+    // A non-empty local filter matches items from every page. A sorted or expanded layout
+    // also needs the whole logical list before it can present a truthful final order.
+    virtual bool HasFilter() const { return false; }
+    virtual bool NeedsCompleteList() const {
+        return HasFilter() || SortColumn() != SIZE_MAX || GetViewStyle() == ViewStyle::Tiles;
+    }
 
     // Details sections: rows are split by the sort column while grouping is on. Expanded
     // tile always groups by album and does not offer the option.
@@ -113,6 +121,9 @@ public:
     // and decoded once. ArtTrack is the track whose front cover represents the album.
     virtual std::wstring ArtKey(size_t /*row*/) const { return {}; }
     virtual metadb_handle_ptr ArtTrack(size_t row) const { return Item(row); }
+    // Stable identity before duplicate occurrences are counted by the host. A local item
+    // uses its core path and subsong; an object without an item falls back to its art key.
+    virtual std::wstring RowKey(size_t row) const;
     // Row showing this track, or SIZE_MAX ("jump to the playing song").
     virtual size_t FindRow(const metadb_handle_ptr& /*track*/) const { return SIZE_MAX; }
     // Exactly these rows selected, all others not (rubber-band selection).
@@ -127,6 +138,14 @@ public:
     virtual metadb_handle_list SelectedItems() const = 0;
 
     virtual void SetFilter(std::wstring_view filterLower) = 0;
+
+    // A transient band above the list (initial load, background revalidation or a partial
+    // page error). Empty when the source is settled.
+    virtual std::wstring LoadingText() const { return m_loadingText; }
+    void SetLoadingText(std::wstring text) { m_loadingText = std::move(text); }
+
+private:
+    std::wstring m_loadingText;
 };
 
 // A foobar2000 playlist. Selection and focus live in the playlist itself so foobar2000's
@@ -284,6 +303,7 @@ public:
     void SetSelection(const std::vector<size_t>& rows) override;
     size_t Focus() const override { return m_focus; }
     void SetFocus(size_t row) override { m_focus = row; }
+    std::wstring RowKey(size_t row) const override;
     void Activate(size_t row) override;
     void ContextMenu(HWND owner, POINT screen) override;
     metadb_handle_list SelectedItems() const override;
@@ -332,6 +352,7 @@ public:
     void SetSelection(const std::vector<size_t>& rows) override;
     size_t Focus() const override { return m_focus; }
     void SetFocus(size_t row) override { m_focus = row; }
+    std::wstring RowKey(size_t row) const override;
     void Activate(size_t row) override;
     void ContextMenu(HWND owner, POINT screen) override;
     metadb_handle_list SelectedItems() const override;

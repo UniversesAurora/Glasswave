@@ -44,6 +44,18 @@ $pdb = Join-Path $built 'foo_ui_glasswave.pdb'
 if (Test-Path -LiteralPath $pdb) { Copy-Item -LiteralPath $pdb -Destination $dest -Force }
 Write-Host "Deployed $Configuration build to $dest"
 
+# Native object renderer, built separately from its pinned source with no system installation.
+$atmosRenderer = Join-Path $Root '.local/applemusic/renderers/build/win-x64/glasswave_cavern.dll'
+if (Test-Path -LiteralPath $atmosRenderer -PathType Leaf) {
+    Copy-Item -LiteralPath $atmosRenderer -Destination (Join-Path $dest 'glasswave_cavern.dll') -Force
+    $atmosLicense = Join-Path (Split-Path $atmosRenderer -Parent) 'Cavern-LICENSE.md'
+    if (Test-Path -LiteralPath $atmosLicense -PathType Leaf) {
+        Copy-Item -LiteralPath $atmosLicense -Destination (Join-Path $dest 'Cavern-LICENSE.md') -Force
+    }
+    Copy-Item -LiteralPath (Join-Path $Root 'third_party/glasswave-cavern/NOTICE.md') `
+        -Destination (Join-Path $dest 'Cavern-NOTICE.md') -Force
+}
+
 # Original Win7 artwork (ADR 0007): never committed; copied from the owner's local
 # references into the dev profile, where Glasswave looks for it at run time.
 $art = Join-Path $Instance 'profile/glasswave'
@@ -57,10 +69,8 @@ foreach ($name in $sources.Keys) {
     if (-not (Test-Path -LiteralPath $src)) { continue }
     New-Item -ItemType Directory -Force -Path $art | Out-Null
     $dst = Join-Path $art $name
-    if (-not (Test-Path -LiteralPath $dst) -or (Get-Item -LiteralPath $src).Length -ne (Get-Item -LiteralPath $dst).Length) {
-        Copy-Item -LiteralPath $src -Destination $dst -Force
-        Write-Host "Copied Win7 artwork $name"
-    }
+    Copy-Item -LiteralPath $src -Destination $dst -Force
+    Write-Host "Copied Win7 artwork $name"
 }
 
 # UI translations (lang/<code>.json, ours to ship) next to the artwork.
@@ -99,6 +109,32 @@ if (Test-Path -LiteralPath $lyricSource) {
 }
 
 if (-not $NoLaunch) {
+    # foobar2000 owns the lifecycle of the installed production runtime. Fixture
+    # bridges and explicitly selected alternate endpoints remain unchanged.
+    . (Join-Path $PSScriptRoot 'applemusic/windows/common.ps1')
+    $apple = Get-GlasswavePaths
+    $appleInstalled = Test-GlasswaveRuntimeComplete
+    $prepareAppleBridge = $false
+    if ($appleInstalled) {
+        if (-not (Test-Path -LiteralPath $apple.BridgeConfigPath -PathType Leaf)) {
+            $prepareAppleBridge = $true
+        }
+        elseif (-not (Test-GlasswaveBridgeConfig -Port 20025)) {
+            try {
+                $appleConfig = Get-Content -LiteralPath $apple.BridgeConfigPath -Raw |
+                    ConvertFrom-Json -ErrorAction Stop
+                $prepareAppleBridge = $appleConfig.url -eq 'http://127.0.0.1:20025'
+            }
+            catch {
+                Write-Warning 'Existing Apple Music bridge is not valid JSON and was left unchanged.'
+            }
+        }
+    }
+    if ($prepareAppleBridge) {
+        Initialize-GlasswaveApiToken
+        Write-GlasswaveBridgeConfig -Port 20025
+        Write-Host 'Configured the app-managed native Apple Music runtime'
+    }
     Start-Process -FilePath $Exe -WorkingDirectory $Instance
     Write-Host 'Dev instance started'
 }

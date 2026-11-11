@@ -3,6 +3,7 @@
 #include "media/library_model.h"
 #include "stream/provider.h"
 
+#include <map>
 #include <set>
 
 namespace glasswave::ui {
@@ -21,14 +22,14 @@ public:
         None, Queue, PlaylistsHeader, Playlist, SmartHeader, Category,
         LibraryAll, AllFavorites, AllRecentPlayed, AllMostPlayed, LibraryLocal,
         // a provider's section (Item::provider): its root, pages, playlists and account row
-        LibraryRemote, RemoteFavorites, RemoteArtists, RemoteAlbums, RemoteCreatedHeader, RemoteSavedHeader,
-        RemotePlaylist, RemoteRecommended
+        LibraryRemote, RemoteSection, RemotePlaylist
     };
     // What the pane shows for a provider.
     struct ProviderSection {
         stream::Provider* provider = nullptr;
         bool signedIn = false;
-        std::vector<stream::Playlist> created, saved;
+        std::vector<stream::NavigationSection> sections;
+        std::map<stream::Id, std::vector<stream::Playlist>> playlists;
     };
     struct Item {
         Target target = Target::None;
@@ -38,7 +39,11 @@ public:
         wmp::paint::NavIcon icon = wmp::paint::NavIcon::None;
         bool expandable = false;
         stream::Provider* provider = nullptr;
-        stream::Id remoteId;  // RemotePlaylist
+        stream::Id remoteId;        // RemotePlaylist
+        stream::Id sectionId;       // RemoteSection / RemotePlaylist parent
+        stream::SectionKind sectionKind = stream::SectionKind::Tracks;
+        stream::Shelf sectionShelf = stream::Shelf::Created;
+        bool reorderChildren = false;
     };
 
     explicit NavPane(const winrt::Windows::UI::Composition::ContainerVisual& parent);

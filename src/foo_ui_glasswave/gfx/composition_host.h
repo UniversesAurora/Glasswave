@@ -6,9 +6,122 @@
 //  - helpers for drawing surfaces, painting and animations.
 // Main thread only.
 
+#include <algorithm>
+#include <functional>
+#include <utility>
+
 namespace glasswave::gfx {
 
 namespace wuc = winrt::Windows::UI::Composition;
+
+namespace detail {
+
+// Runs a cleanup action exactly once. Destructors unwind in reverse declaration order.
+template <typename F>
+class ScopeExit {
+public:
+    explicit ScopeExit(F callback) : m_callback(std::move(callback)) {}
+
+    ScopeExit(const ScopeExit&) = delete;
+    ScopeExit& operator=(const ScopeExit&) = delete;
+
+    ~ScopeExit() noexcept {
+        if (m_active) m_callback();
+    }
+
+    void Dismiss() noexcept { m_active = false; }
+
+private:
+    F m_callback;
+    bool m_active = true;
+};
+
+template <typename F>
+ScopeExit(F) -> ScopeExit<F>;
+
+}  // namespace detail
+
+// BeginDraw can return a sub-rectangle of a larger, pooled drawing allocation. This is the
+// clip in DIPs, with an identity transform, that covers updateOffset + the logical surface.
+inline D2D1_RECT_F SurfaceDrawClip(POINT offset, int widthPx, int heightPx, float scale) noexcept {
+    const float safeScale = scale > 0.0f ? scale : 1.0f;
+    const float left = static_cast<float>(offset.x) / safeScale;
+    const float top = static_cast<float>(offset.y) / safeScale;
+    return D2D1::RectF(left, top, left + std::max(widthPx, 1) / safeScale,
+                       top + std::max(heightPx, 1) / safeScale);
+}
+
+// Allocation decision shared by retained surfaces and their standalone regression test.
+class SurfaceReusePolicy {
+public:
+    enum class Update {
+        Create,
+        Resize,
+        Reuse,
+    };
+
+    Update Plan(bool hasSurface, int widthPx, int heightPx) noexcept {
+        widthPx = std::max(widthPx, 1);
+        heightPx = std::max(heightPx, 1);
+        if (!hasSurface) {
+            m_widthPx = widthPx;
+            m_heightPx = heightPx;
+            return Update::Create;
+        }
+        if (m_widthPx != widthPx || m_heightPx != heightPx) {
+            m_widthPx = widthPx;
+            m_heightPx = heightPx;
+            return Update::Resize;
+        }
+        return Update::Reuse;
+    }
+
+    void Clear() noexcept {
+        m_widthPx = 0;
+        m_heightPx = 0;
+    }
+
+    int WidthPx() const noexcept { return m_widthPx; }
+    int HeightPx() const noexcept { return m_heightPx; }
+
+private:
+    int m_widthPx = 0;
+    int m_heightPx = 0;
+};
+
+// Caller-owned backing for a visual whose content changes repeatedly. The cache keeps its
+// drawing surface and brush until the caller clears it or the visual is removed.
+class RetainedSurface {
+public:
+    SurfaceReusePolicy::Update Prepare(int widthPx, int heightPx) noexcept;
+    void Clear() noexcept;
+    bool Empty() const noexcept { return !m_surface; }
+    int WidthPx() const noexcept { return m_policy.WidthPx(); }
+    int HeightPx() const noexcept { return m_policy.HeightPx(); }
+
+private:
+    friend class CompositionHost;
+
+    wuc::CompositionDrawingSurface m_surface{nullptr};
+    wuc::CompositionSurfaceBrush m_brush{nullptr};
+    SurfaceReusePolicy m_policy;
+};
+
+// Coalesces repaint requests while presentation is unavailable.
+class PaintCoalescer {
+public:
+    void Request() noexcept { m_pending = true; }
+    bool Pending() const noexcept { return m_pending; }
+    void Clear() noexcept { m_pending = false; }
+    bool Take(bool canPaint) noexcept {
+        if (!canPaint || !m_pending) return false;
+        m_pending = false;
+        return true;
+    }
+
+private:
+    bool m_pending = false;
+};
 
 class CompositionHost {
 public:
@@ -40,6 +153,10 @@ public:
                                           const std::function<void(ID2D1DeviceContext*)>& paint);
     void Repaint(const wuc::SpriteVisual& visual, int widthPx, int heightPx, float scale,
                  const std::function<void(ID2D1DeviceContext*)>& paint);
+    // Repaint through caller-owned backing. Content-only updates redraw the existing surface;
+    // a size change resizes or recreates it without changing the visual's identity.
+    void Repaint(const wuc::SpriteVisual& visual, RetainedSurface& retained, int widthPx, int heightPx,
+                 float scale, const std::function<void(ID2D1DeviceContext*)>& paint);
 
     // Animations
     void AnimateOpacity(const wuc::Visual& v, float to, int durationMs);

@@ -5,6 +5,8 @@
 #include "ui/i18n.h"
 #include "ui/text.h"
 
+#include <set>
+
 namespace glasswave::ui {
 
 std::vector<LocalPlaylistTarget> LocalPlaylistTargets(size_t exclude) {
@@ -26,7 +28,8 @@ void AddToLocalPlaylist(const LocalPlaylistTarget& target, const metadb_handle_l
     auto pm = playlist_manager::get();
     t_size p = target.index;
     pfc::string8 name;
-    if (p >= pm->get_playlist_count() || !pm->playlist_get_name(p, name) || Wide(name.get_ptr()) != target.name)
+    if (p >= pm->get_playlist_count() || !pm->playlist_get_name(p, name) ||
+        Wide(name.get_ptr()) != target.name)
         p = pm->find_playlist(pfc::stringcvt::string_utf8_from_wide(target.name.c_str()).get_ptr());
     if (p != SIZE_MAX) pm->playlist_add_items(p, items, pfc::bit_array_false());
 }
@@ -50,26 +53,34 @@ void ShowProviderError(const stream::Provider& provider, const std::wstring& err
 
 void AddRemotePlaylistMenu(std::vector<MenuAction>& actions, stream::Provider& provider, SongsFetch songs,
                            const stream::Id& exclude) {
-    if (!provider.Offers().editPlaylists || !provider.SignedIn()) return;
+    if (!provider.Offers().CanAppendPlaylist() || !provider.AccountVerified()) return;
     std::vector<MenuAction> targets;
-    for (const auto& playlist : provider.Playlists(stream::Shelf::Created)) {
-        if (playlist.id == exclude) continue;  // the songs are already there
-        targets.push_back({playlist.name.empty() ? Tr(L"Unnamed playlist") : playlist.name,
-                           [&provider, songs, id = playlist.id] {
-                               songs([&provider, id](metadb_handle_list items) {
-                                   if (auto ids = TrackIds(provider, items); !ids.empty())
-                                       provider.AddToPlaylist(id, std::move(ids));
-                               });
-                           }});
+    std::set<stream::Id> seen;
+    for (const auto& section : provider.Sections()) {
+        if (section.kind != stream::SectionKind::PlaylistShelf || section.shelf != stream::Shelf::Created)
+            continue;
+        for (const auto& playlist : provider.SectionPlaylists(section.id)) {
+            if (playlist.id == exclude || !seen.insert(playlist.id).second) continue;
+            targets.push_back(
+                {playlist.name.empty() ? Tr(provider.PlaylistText(L"Unnamed playlist")) : playlist.name,
+                 [&provider, songs, id = playlist.id] {
+                     songs([&provider, id](metadb_handle_list items) {
+                         if (auto ids = TrackIds(provider, items); !ids.empty())
+                             provider.AddToPlaylist(id, std::move(ids));
+                     });
+                 }});
+        }
     }
-    if (targets.empty()) targets.push_back({Tr(L"No created playlists"), nullptr});
+    if (targets.empty()) targets.push_back({Tr(provider.PlaylistText(L"No created playlists")), nullptr});
     actions.push_back({Tr(L"Add to " + provider.Name() + L" playlist"), nullptr, std::move(targets)});
 }
 
 void AddBulkActions(std::vector<MenuAction>& actions, SongsFetch songs, stream::Provider* remote,
                     const stream::Id& excludeRemote, size_t excludeLocal) {
-    actions.push_back({L"Play", [songs] { songs([](metadb_handle_list items) { media::PlayQueue(items, 0); }); }});
-    actions.push_back({L"Play next", [songs] { songs([](metadb_handle_list items) { media::PlayNext(items); }); }});
+    actions.push_back(
+        {L"Play", [songs] { songs([](metadb_handle_list items) { media::PlayQueue(items, 0); }); }});
+    actions.push_back(
+        {L"Play next", [songs] { songs([](metadb_handle_list items) { media::PlayNext(items); }); }});
     actions.push_back(
         {L"Add to queue", [songs] { songs([](metadb_handle_list items) { media::AddToQueue(items); }); }});
     std::vector<MenuAction> local;
@@ -84,4 +95,4 @@ void AddBulkActions(std::vector<MenuAction>& actions, SongsFetch songs, stream::
     if (remote) AddRemotePlaylistMenu(actions, *remote, std::move(songs), excludeRemote);
 }
 
-}  // namespace glasswave::ui
+} // namespace glasswave::ui

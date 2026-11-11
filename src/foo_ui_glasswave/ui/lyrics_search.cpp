@@ -118,10 +118,11 @@ void Search(const std::shared_ptr<State>& state) {
             for (size_t i = 0; i < state->candidates.size(); ++i) {
                 auto& candidate = state->candidates[i];
                 const auto parsed = lyrics::ParseLrc(candidate.lrc);
+                std::wstring source = Tr(candidate.source);
                 LVITEMW item{};
                 item.mask = LVIF_TEXT;
                 item.iItem = static_cast<int>(i);
-                item.pszText = candidate.source.data();
+                item.pszText = source.data();
                 const int row = ListView_InsertItem(list, &item);
                 const std::wstring title = candidate.title.empty() ? parsed.title : candidate.title;
                 const std::wstring artist = candidate.artist.empty() ? parsed.artist : candidate.artist;
@@ -131,7 +132,8 @@ void Search(const std::shared_ptr<State>& state) {
                 ListView_SetItemText(list, row, 1, const_cast<wchar_t*>(title.c_str()));
                 ListView_SetItemText(list, row, 2, const_cast<wchar_t*>(artist.c_str()));
                 ListView_SetItemText(list, row, 3, const_cast<wchar_t*>(timing.c_str()));
-                if (!selectedText.empty() && candidate.lrc == selectedText && candidate.source == selectedSource)
+                if (!selectedText.empty() && candidate.lrc == selectedText &&
+                    candidate.source == selectedSource)
                     selection = row;
             }
             if (!state->candidates.empty())
@@ -267,8 +269,9 @@ void ShowLyricsSearch(HWND owner, const metadb_handle_ptr& track, std::wstring s
     state->sourceKeys.push_back(L"");
     int selection = 0;
     for (const auto& searcher : lyrics::scripts::Ordered(state->query.provider)) {
+        const std::wstring name = Tr(searcher->Name());
         const int index = static_cast<int>(
-            SendMessageW(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(searcher->Name().c_str())));
+            SendMessageW(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(name.c_str())));
         state->sourceKeys.push_back(searcher->Key());
         if (source == searcher->Key()) selection = index;
     }

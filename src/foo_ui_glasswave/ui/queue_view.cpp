@@ -10,6 +10,8 @@
 #include "ui/pane_common.h"
 
 #include <winrt/Windows.Foundation.Collections.h>
+#include <deque>
+#include <unordered_map>
 
 namespace glasswave::ui {
 
@@ -22,26 +24,28 @@ using Clock = std::chrono::steady_clock;
 namespace {
 
 // Apple Music's "Playing Next" (iOS 18) measured on a 390 pt screen, scaled to the pane.
-constexpr float kRowH = 56;          // DIP
-constexpr float kRowCover = 46;      // DIP
-constexpr float kCoverRadius = 5;    // DIP
-constexpr float kContentX = 20;      // DIP: covers and section titles
-constexpr float kSectionH = 48;      // DIP: "History" with Clear
-constexpr float kUpNextH = 58;       // DIP: "Continue Playing" with its subtitle
-constexpr float kCapsuleH = 34;      // DIP
-constexpr float kCapsuleGap = 10;    // DIP
-constexpr float kHandleW = 18;       // DIP: the reorder handle's three lines
-constexpr float kPlateRadius = 10;   // DIP
+constexpr float kRowH = 56;        // DIP
+constexpr float kRowCover = 46;    // DIP
+constexpr float kCoverRadius = 5;  // DIP
+constexpr float kContentX = 20;    // DIP: covers and section titles
+constexpr float kSectionH = 48;    // DIP: "History" with Clear
+constexpr float kUpNextH = 58;     // DIP: "Continue Playing" with its subtitle
+constexpr float kCapsuleH = 34;    // DIP
+constexpr float kCapsuleGap = 10;  // DIP
+constexpr float kHandleW = 18;     // DIP: the reorder handle's three lines
+constexpr float kPlateRadius = 10; // DIP
 constexpr float kHoverAlpha = 0.08f, kPressAlpha = 0.04f;
-constexpr float kTopFade = 16, kBottomFade = 40;  // DIP
-constexpr float kRubber = 0.55f;     // iOS rubber band constant
+constexpr float kTopFade = 16, kBottomFade = 40; // DIP
+constexpr float kRubber = 0.55f;                 // iOS rubber band constant
 constexpr SpringParams kRowSpring{1, 300, 30};
 constexpr SpringParams kScrollSpring{1, 220, 30};
 // AMLL Cover's swap spring and MusicInfo's outgoing opacity duration.
 constexpr SpringParams kAdvanceSpring{0.9f, 220, 26};
 constexpr float kExitSeconds = 0.22f;
 
-float Clamp01(float v) { return std::clamp(v, 0.0f, 1.0f); }
+float Clamp01(float v) {
+    return std::clamp(v, 0.0f, 1.0f);
+}
 
 // iOS rubber band: the further past the end, the less the content follows.
 float Rubber(float overshoot, float dimension) {
@@ -49,13 +53,13 @@ float Rubber(float overshoot, float dimension) {
     return (1.0f - 1.0f / (overshoot * kRubber / dimension + 1.0f)) * dimension;
 }
 
-}  // namespace
+} // namespace
 
 struct QueueView::RowView {
     Row data;
     bool history = false;
     Spring y{0};
-    bool placed = false;  // the spring has a position
+    bool placed = false; // the spring has a position
     float hover = 0;
     float opacity = 1;
     float enterOffset = 0;
@@ -104,8 +108,10 @@ QueueView::QueueView(const wuc::ContainerVisual& parent) {
 
 QueueView::~QueueView() {
     if (auto* cache = ArtCache::Existing()) cache->Unsubscribe(m_artToken);
-    for (auto& r : m_rows) ReleaseRow(*r);
-    for (auto& r : m_retiringRows) ReleaseRow(*r);
+    for (auto& r : m_rows)
+        ReleaseRow(*r);
+    for (auto& r : m_retiringRows)
+        ReleaseRow(*r);
     if (m_root) {
         if (auto parent = m_root.Parent()) parent.Children().Remove(m_root);
     }
@@ -129,10 +135,11 @@ void QueueView::SetBounds(const RECT& px, float scale) {
         m_maskSurface.Resize(winrt::Windows::Graphics::SizeInt32{4, static_cast<int32_t>(h)});
         const float H = h / m_scale;
         gfx::CompositionHost::Get().Draw(m_maskSurface, m_scale, [&](ID2D1DeviceContext* dc) {
-            const D2D1_GRADIENT_STOP s[] = {{0.0f, D2D1::ColorF(1, 1, 1, 0)},
-                                            {std::min(0.45f, kTopFade / std::max(1.0f, H)), D2D1::ColorF(1, 1, 1, 1)},
-                                            {std::max(0.55f, 1.0f - kBottomFade / std::max(1.0f, H)), D2D1::ColorF(1, 1, 1, 1)},
-                                            {1.0f, D2D1::ColorF(1, 1, 1, 0)}};
+            const D2D1_GRADIENT_STOP s[] = {
+                {0.0f, D2D1::ColorF(1, 1, 1, 0)},
+                {std::min(0.45f, kTopFade / std::max(1.0f, H)), D2D1::ColorF(1, 1, 1, 1)},
+                {std::max(0.55f, 1.0f - kBottomFade / std::max(1.0f, H)), D2D1::ColorF(1, 1, 1, 1)},
+                {1.0f, D2D1::ColorF(1, 1, 1, 0)}};
             com_ptr<ID2D1GradientStopCollection> stops;
             dc->CreateGradientStopCollection(s, 4, stops.put());
             com_ptr<ID2D1LinearGradientBrush> b;
@@ -140,8 +147,10 @@ void QueueView::SetBounds(const RECT& px, float scale) {
             dc->FillRectangle({0, 0, 4 / m_scale, H}, b.get());
         });
     }
-    for (auto& r : m_rows) ReleaseRow(*r);  // widths changed: redraw
-    for (auto& r : m_retiringRows) ReleaseRow(*r);
+    for (auto& r : m_rows)
+        ReleaseRow(*r); // widths changed: redraw
+    for (auto& r : m_retiringRows)
+        ReleaseRow(*r);
     m_retiringRows.clear();
     Layout();
     DrawChrome();
@@ -157,8 +166,10 @@ void QueueView::SetVisible(bool visible) {
         DrawChrome();
         Render();
     } else {
-        for (auto& r : m_rows) ReleaseRow(*r);
-        for (auto& r : m_retiringRows) ReleaseRow(*r);
+        for (auto& r : m_rows)
+            ReleaseRow(*r);
+        for (auto& r : m_retiringRows)
+            ReleaseRow(*r);
         m_retiringRows.clear();
     }
 }
@@ -170,7 +181,8 @@ void QueueView::SetRows(std::vector<Row> rows, bool history, bool playbackChange
     // song that starts slides out and the others move up instead of the list jumping.
     std::vector<std::unique_ptr<RowView>> old;
     std::vector<std::unique_ptr<RowView>> keep;
-    for (auto& r : m_rows) (r->history == history ? old : keep).push_back(std::move(r));
+    for (auto& r : m_rows)
+        (r->history == history ? old : keep).push_back(std::move(r));
     // Reuse rows along one continuous movement. Wrapped rows leave and re-enter at the
     // opposite end, while native shuffle can move the whole list up or down.
     std::ptrdiff_t shift = 0;
@@ -192,17 +204,30 @@ void QueueView::SetRows(std::vector<Row> rows, bool history, bool playbackChange
     // large empty area before the new first song reaches the section heading.
     const float movement = std::clamp(static_cast<float>(shift), -1.0f, 1.0f) * kRowH;
     const bool replace = playbackChanged && (shift < -1 || shift > 1);
+    const auto rowKey = [history](const Row& data) {
+        return std::to_string(reinterpret_cast<uintptr_t>(data.handle.get_ptr())) + ':' +
+               std::to_string(history ? 0 : data.playlistIndex);
+    };
+    std::unordered_map<std::string, std::deque<size_t>> reusable;
+    if (!replace && !playbackChanged)
+        for (size_t i = 0; i < old.size(); ++i)
+            reusable[rowKey(old[i]->data)].push_back(i);
     std::vector<std::unique_ptr<RowView>> fresh;
     for (auto& data : rows) {
         std::unique_ptr<RowView> view;
-        for (size_t i = 0; i < old.size(); ++i)
-            if (!replace && old[i] && old[i]->data.handle == data.handle &&
-                (history || old[i]->data.playlistIndex == data.playlistIndex) &&
-                (!playbackChanged || static_cast<std::ptrdiff_t>(fresh.size()) ==
-                                         static_cast<std::ptrdiff_t>(i) + shift)) {
-                view = std::move(old[i]);
-                break;
+        if (!replace && playbackChanged) {
+            const auto index = static_cast<std::ptrdiff_t>(fresh.size()) - shift;
+            if (index >= 0 && static_cast<size_t>(index) < old.size()) {
+                auto& candidate = old[static_cast<size_t>(index)];
+                if (candidate && rowKey(candidate->data) == rowKey(data)) view = std::move(candidate);
             }
+        } else if (!replace) {
+            auto found = reusable.find(rowKey(data));
+            if (found != reusable.end() && !found->second.empty()) {
+                view = std::move(old[found->second.front()]);
+                found->second.pop_front();
+            }
+        }
         if (!view) {
             view = std::make_unique<RowView>();
             view->history = history;
@@ -228,11 +253,15 @@ void QueueView::SetRows(std::vector<Row> rows, bool history, bool playbackChange
     m_rows.clear();
     if (history) {
         m_historyCount = fresh.size();
-        for (auto& r : fresh) m_rows.push_back(std::move(r));
-        for (auto& r : keep) m_rows.push_back(std::move(r));
+        for (auto& r : fresh)
+            m_rows.push_back(std::move(r));
+        for (auto& r : keep)
+            m_rows.push_back(std::move(r));
     } else {
-        for (auto& r : keep) m_rows.push_back(std::move(r));
-        for (auto& r : fresh) m_rows.push_back(std::move(r));
+        for (auto& r : keep)
+            m_rows.push_back(std::move(r));
+        for (auto& r : fresh)
+            m_rows.push_back(std::move(r));
     }
     m_reorder = -1;
     m_hover = m_press = {};
@@ -267,8 +296,8 @@ void QueueView::ScrollToCard(bool animate) {
     if (m_followingPlayback) {
         m_scroll.SetParams(kAdvanceSpring);
         m_scroll.SetTarget(target);
-    }
-    else m_scroll.Snap(target);
+    } else
+        m_scroll.Snap(target);
     m_velocity = 0;
     m_dragging = m_pending = false;
     if (m_visible) StartFrames();
@@ -288,7 +317,9 @@ float QueueView::ShownScroll() const {
     return s;
 }
 
-float QueueView::CardTop() const { return m_cardTop - ShownScroll(); }
+float QueueView::CardTop() const {
+    return m_cardTop - ShownScroll();
+}
 
 // ---- Layout and rendering --------------------------------------------------------------
 
@@ -320,7 +351,8 @@ void QueueView::Layout() {
         m_downScroll += delta;
         for (auto& r : m_rows)
             if (!r->history && r->placed) r->y.Shift(delta);
-        for (auto& r : m_retiringRows) r->y.Shift(delta);
+        for (auto& r : m_retiringRows)
+            r->y.Shift(delta);
     }
     y += pane::kHeaderHeight;
     m_capsulesTop = y + 4;
@@ -372,7 +404,8 @@ void QueueView::ReleaseRow(RowView& r) {
 void QueueView::DrawRow(RowView& r) {
     auto& host = gfx::CompositionHost::Get();
     const float W = (m_bounds.right - m_bounds.left) / m_scale;
-    const int w = std::max(1, static_cast<int>(std::ceil(W * m_scale))), h = static_cast<int>(std::ceil(kRowH * m_scale));
+    const int w = std::max(1, static_cast<int>(std::ceil(W * m_scale))),
+              h = static_cast<int>(std::ceil(kRowH * m_scale));
     if (!r.surface) {
         r.surface = host.CreateSurface(w, h);
         auto brush = host.Compositor().CreateSurfaceBrush(r.surface);
@@ -383,15 +416,17 @@ void QueueView::DrawRow(RowView& r) {
         r.sprite.Size(float2{static_cast<float>(w), static_cast<float>(h)});
     }
     com_ptr<IWICBitmapSource> art;
-    const auto state = r.data.handle.is_valid()
-                           ? ArtCache::Get().Find(r.data.handle, static_cast<int>(std::ceil(kRowCover * m_scale)), &art)
-                           : ArtCache::State::Missing;
+    const auto state =
+        r.data.handle.is_valid()
+            ? ArtCache::Get().Find(r.data.handle, static_cast<int>(std::ceil(kRowCover * m_scale)), &art)
+            : ArtCache::State::Missing;
     m_dc->SetDpi(96.0f * m_scale, 96.0f * m_scale);
     host.Draw(r.surface, m_scale, m_dc.get(), [&](ID2D1DeviceContext* dc) {
         com_ptr<ID2D1Bitmap> bitmap;
         if (art) dc->CreateBitmapFromWicBitmap(art.get(), nullptr, bitmap.put());
         const float cy = kRowH / 2;
-        pane::DrawCover(dc, bitmap.get(), {kContentX, cy - kRowCover / 2, kContentX + kRowCover, cy + kRowCover / 2},
+        pane::DrawCover(dc, bitmap.get(),
+                        {kContentX, cy - kRowCover / 2, kContentX + kRowCover, cy + kRowCover / 2},
                         kCoverRadius);
         const float textX = kContentX + kRowCover + 12;
         const float right = r.history ? W - kContentX : W - kContentX - kHandleW - 16;
@@ -415,35 +450,40 @@ void QueueView::DrawChrome() {
     if (!m_visible || m_bounds.right <= m_bounds.left) return;
     auto& host = gfx::CompositionHost::Get();
     const float W = (m_bounds.right - m_bounds.left) / m_scale;
-    auto paint = [&](const wuc::SpriteVisual& visual, float wDip, float hDip, const std::function<void(ID2D1DeviceContext*)>& draw) {
-        const int w = std::max(1, static_cast<int>(std::ceil(wDip * m_scale))), h = std::max(1, static_cast<int>(std::ceil(hDip * m_scale)));
+    auto paint = [&](const wuc::SpriteVisual& visual, float wDip, float hDip,
+                     const std::function<void(ID2D1DeviceContext*)>& draw) {
+        const int w = std::max(1, static_cast<int>(std::ceil(wDip * m_scale))),
+                  h = std::max(1, static_cast<int>(std::ceil(hDip * m_scale)));
         host.Repaint(visual, w, h, m_scale, draw);
         visual.Size(float2{static_cast<float>(w), static_cast<float>(h)});
     };
     paint(m_historyTitle, W, kSectionH, [&](ID2D1DeviceContext* dc) {
-        pane::DrawTextLine(dc, Tr(L"History"), 20, DWRITE_FONT_WEIGHT_BOLD, {kContentX, 12}, W / 2, pane::White(dc, 0.95f).get());
+        pane::DrawTextLine(dc, Tr(L"History"), 20, DWRITE_FONT_WEIGHT_BOLD, {kContentX, 12}, W / 2,
+                           pane::White(dc, 0.95f).get());
         pane::DrawTextLine(dc, Tr(L"Clear"), 16, DWRITE_FONT_WEIGHT_NORMAL, {W / 2, 15}, W / 2 - kContentX,
                            pane::White(dc, 0.6f).get(), DWRITE_TEXT_ALIGNMENT_TRAILING);
     });
     const size_t upNext = m_rows.size() - m_historyCount;
     paint(m_upNextTitle, W, kUpNextH, [&](ID2D1DeviceContext* dc) {
-        pane::DrawTextLine(dc, Tr(L"Continue Playing"), 20, DWRITE_FONT_WEIGHT_BOLD, {kContentX, 6}, W - 2 * kContentX,
-                           pane::White(dc, 0.95f).get());
+        pane::DrawTextLine(dc, Tr(L"Continue Playing"), 20, DWRITE_FONT_WEIGHT_BOLD, {kContentX, 6},
+                           W - 2 * kContentX, pane::White(dc, 0.95f).get());
         const std::wstring sub = std::to_wstring(upNext) + Tr(upNext == 1 ? L" song" : L" songs");
         pane::DrawTextLine(dc, sub, 14, DWRITE_FONT_WEIGHT_NORMAL, {kContentX, 33}, W - 2 * kContentX,
                            pane::White(dc, 0.55f).get());
     });
     paint(m_empty, W, kRowH, [&](ID2D1DeviceContext* dc) {
-        pane::DrawTextLine(dc, Tr(L"Nothing up next"), 15, DWRITE_FONT_WEIGHT_NORMAL, {kContentX, 18}, W - 2 * kContentX,
-                           pane::White(dc, 0.45f).get());
+        pane::DrawTextLine(dc, Tr(L"Nothing up next"), 15, DWRITE_FONT_WEIGHT_NORMAL, {kContentX, 18},
+                           W - 2 * kContentX, pane::White(dc, 0.45f).get());
     });
     // Capsules: translucent when off, light with a dark glyph when on (Apple Music).
     const float capW = (W - 2 * kContentX - kCapsuleGap) / 2;
-    auto capsule = [&](const wuc::SpriteVisual& visual, bool on, const std::function<void(ID2D1DeviceContext*, ID2D1Brush*)>& glyph) {
+    auto capsule = [&](const wuc::SpriteVisual& visual, bool on,
+                       const std::function<void(ID2D1DeviceContext*, ID2D1Brush*)>& glyph) {
         paint(visual, capW, kCapsuleH, [&](ID2D1DeviceContext* dc) {
             pane::DrawCapsule(dc, {0, 0, capW, kCapsuleH}, pane::White(dc, on ? 0.78f : 0.14f).get());
             com_ptr<ID2D1SolidColorBrush> ink;
-            dc->CreateSolidColorBrush(on ? D2D1::ColorF(0.18f, 0.16f, 0.18f, 0.9f) : D2D1::ColorF(1, 1, 1, 0.9f), ink.put());
+            dc->CreateSolidColorBrush(
+                on ? D2D1::ColorF(0.18f, 0.16f, 0.18f, 0.9f) : D2D1::ColorF(1, 1, 1, 0.9f), ink.put());
             glyph(dc, ink.get());
         });
     };
@@ -491,12 +531,13 @@ void QueueView::RenderRow(RowView& r) {
     r.root.Offset(float3{0, std::round(shown * s), 0});
     r.root.Opacity(r.opacity);
     const bool lifted = m_reorder >= 0 && m_rows[static_cast<size_t>(m_reorder)].get() == &r;
-    const float k = lifted ? 1.03f : 1.0f;  // a dragged row lifts a little
+    const float k = lifted ? 1.03f : 1.0f; // a dragged row lifts a little
     r.root.Scale(float3{k, k, 1});
     const bool pressed = m_press.row >= 0 && m_rows[static_cast<size_t>(m_press.row)].get() == &r;
     r.plate.Opacity(lifted ? 1.0f : r.hover);
     const float a = lifted ? 0.14f : pressed ? kPressAlpha : kHoverAlpha;
-    r.plateBrush.Color(winrt::Windows::UI::ColorHelper::FromArgb(static_cast<uint8_t>(std::lround(a * 255)), 255, 255, 255));
+    r.plateBrush.Color(
+        winrt::Windows::UI::ColorHelper::FromArgb(static_cast<uint8_t>(std::lround(a * 255)), 255, 255, 255));
 }
 
 void QueueView::Render() {
@@ -513,8 +554,10 @@ void QueueView::Render() {
     place(m_repeat, kContentX + capW + kCapsuleGap, m_capsulesTop, true);
     place(m_upNextTitle, 0, m_upNextTop, true);
     place(m_empty, 0, m_upNextTop + kUpNextH, m_rows.size() == m_historyCount);
-    for (auto& r : m_retiringRows) RenderRow(*r);
-    for (auto& r : m_rows) RenderRow(*r);
+    for (auto& r : m_retiringRows)
+        RenderRow(*r);
+    for (auto& r : m_rows)
+        RenderRow(*r);
     // A dragged row draws above the others.
     if (m_reorder >= 0) {
         auto& r = *m_rows[static_cast<size_t>(m_reorder)];
@@ -531,7 +574,8 @@ void QueueView::Render() {
 bool QueueView::NeedsFrames() const {
     if (!m_visible) return false;
     if (m_dragging || m_reorder >= 0 || m_velocity != 0 || m_scroll.Moving() || m_coversDirty ||
-        !m_retiringRows.empty()) return true;
+        !m_retiringRows.empty())
+        return true;
     for (size_t i = 0; i < m_rows.size(); ++i) {
         const auto& r = *m_rows[i];
         const bool hovered = m_hover.row == static_cast<int>(i) && m_reorder < 0;
@@ -580,7 +624,9 @@ bool QueueView::Tick(float dt) {
 
 // ---- Input -----------------------------------------------------------------------------
 
-bool QueueView::HitTest(POINT pt) const { return m_visible && PtInRect(&m_bounds, pt) != FALSE; }
+bool QueueView::HitTest(POINT pt) const {
+    return m_visible && PtInRect(&m_bounds, pt) != FALSE;
+}
 
 QueueView::Hit QueueView::HitAt(POINT pt) const {
     Hit hit;
@@ -593,8 +639,10 @@ QueueView::Hit QueueView::HitAt(POINT pt) const {
     }
     if (y >= m_capsulesTop && y < m_capsulesTop + kCapsuleH) {
         const float capW = (W - 2 * kContentX - kCapsuleGap) / 2;
-        if (x >= kContentX && x < kContentX + capW) hit.part = Part::Shuffle;
-        else if (x >= kContentX + capW + kCapsuleGap && x < W - kContentX) hit.part = Part::Repeat;
+        if (x >= kContentX && x < kContentX + capW)
+            hit.part = Part::Shuffle;
+        else if (x >= kContentX + capW + kCapsuleGap && x < W - kContentX)
+            hit.part = Part::Repeat;
         return hit;
     }
     if (x < pane::kSideMargin || x > W - pane::kSideMargin) return hit;
@@ -678,7 +726,8 @@ void QueueView::OnLButtonUp(POINT pt) {
             // Reorder locally (the playlist change arrives later and finds the same rows).
             auto moved = std::move(m_rows[m_historyCount + static_cast<size_t>(from)]);
             m_rows.erase(m_rows.begin() + static_cast<std::ptrdiff_t>(m_historyCount + from));
-            m_rows.insert(m_rows.begin() + static_cast<std::ptrdiff_t>(m_historyCount + to), std::move(moved));
+            m_rows.insert(m_rows.begin() + static_cast<std::ptrdiff_t>(m_historyCount + to),
+                          std::move(moved));
             std::vector<size_t> items;
             for (size_t u = 0; u < slots.size(); ++u) {
                 auto& row = m_rows[m_historyCount + u]->data;
@@ -760,4 +809,4 @@ void QueueView::OnRButtonUp(POINT pt, POINT screen) {
     if (!r.history && onRowMenu) onRowMenu(r.data.playlistIndex, screen);
 }
 
-}  // namespace glasswave::ui
+} // namespace glasswave::ui

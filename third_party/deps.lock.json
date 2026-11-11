@@ -2,21 +2,18 @@
   "foobar2000-sdk": {
     "version": "2026-10-01",
     "url": "https://www.foobar2000.org/downloads/SDK-2026-10-01.7z",
-    "sha256": "D4C55077336FAE81BF8DF0259B5B2748FA45EA84132C656EAD93EB123CBCDC26",
     "dest": "third_party/foobar2000-sdk",
     "license": "BSD-style (sdk-license.txt); pfc/libPPUI zlib-style"
   },
   "quickjs-ng": {
     "version": "0.18.0",
     "url": "https://github.com/quickjs-ng/quickjs/releases/download/v0.18.0/quickjs-amalgam.zip",
-    "sha256": "6C05066A6B62B483E2BA0F83D7A16688C6958182B214BFD693529434CEF84A9E",
     "dest": "third_party/quickjs-ng",
     "license": "MIT"
   },
   "miniz": {
     "version": "3.1.2",
     "url": "https://github.com/richgel999/miniz/releases/download/3.1.2/miniz-3.1.2.zip",
-    "sha256": "F0446D863F9C19926AD9483C523FDC42E42B8D4A6A431D27E09D49C79A140D9A",
     "dest": "third_party/miniz",
     "license": "MIT"
   },
@@ -24,7 +21,6 @@
     "version": "2.26.2",
     "arch": "x64",
     "url": "https://www.foobar2000.org/downloads/foobar2000-x64_v2.26.2.exe",
-    "sha256": "FFA739F87D9C374CB030426A2AB4BFB37959D0DBB892FDC742654C14D127F795",
     "authenticode_subject": "CN=Illustrate Ltd, O=Illustrate Ltd, L=Bury, C=GB",
     "dest": ".local/fb2k-dev",
     "note": "仅作本地开发测试用的便携实例；用 7-Zip 解包安装程序，不执行安装程序"

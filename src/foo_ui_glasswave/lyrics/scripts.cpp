@@ -1,6 +1,9 @@
 #include "pch.h"
 #include "lyrics/scripts.h"
 #include "lyrics/script_host.h"
+#include "applemusic/lyrics_source.h"
+#include "lyrics/native_sources.h"
+#include "lyrics/source_order.h"
 #include "netease/http.h"
 #include "stream/provider.h"
 #include "app/settings.h"
@@ -41,9 +44,9 @@ std::shared_ptr<int> g_alive;
 std::mutex g_dataMutex;
 
 std::string DefaultOrder(std::wstring_view provider) {
-    if (provider == L"ncm")
-        return "netease_ex.js,netease.js,qqmusic_ex.js,kugou.js,qqmusic.js,musixmatch.js,lrclib.js";
-    return "qqmusic_ex.js,netease_ex.js,kugou.js,netease.js,qqmusic.js,musixmatch.js,lrclib.js";
+    (void)provider;
+    return "source,sidecar,applemusic,netease_ex.js,netease.js,qqmusic_ex.js,kugou.js,qqmusic.js,"
+           "musixmatch.js,lrclib.js";
 }
 
 std::map<std::string, std::string> Orders() {
@@ -193,6 +196,8 @@ void Start() {
     if (!g_started) {
         g_started = true;
         g_alive = std::make_shared<int>(0);
+        native_sources::Start();
+        applemusic::lyrics_source::Start();
         Reload();
     }
 }
@@ -251,26 +256,23 @@ void Shutdown() {
     g_stopping = true;
     g_alive.reset();
     if (g_loader.joinable()) g_loader.join();
+    applemusic::lyrics_source::Shutdown();
+    native_sources::Shutdown();
     Service::Get().Shutdown();
 }
 
 std::vector<std::shared_ptr<Searcher>> Ordered(std::wstring_view provider) {
-    auto searchers = Searchers();
-    std::erase_if(searchers, [](const auto& searcher) { return !Enabled(searcher->Key()); });
-    std::vector<std::wstring> order;
-    std::istringstream entries(Order(provider));
-    std::string entry;
-    while (std::getline(entries, entry, ',')) {
-        entry.erase(std::remove_if(entry.begin(), entry.end(), [](unsigned char ch) { return isspace(ch); }),
-                    entry.end());
-        order.push_back(Wide(entry));
+    const auto all = Searchers();
+    std::vector<source_order::Entry> entries;
+    entries.reserve(all.size());
+    for (const auto& searcher : all) {
+        entries.push_back({searcher->Key(), searcher->OrderKey(provider), Enabled(searcher->Key()),
+                           searcher->AppliesTo(provider)});
     }
-    const auto rank = [&](const auto& searcher) {
-        return std::find(order.begin(), order.end(), searcher->Key()) - order.begin();
-    };
-    std::stable_sort(searchers.begin(), searchers.end(),
-                     [&](const auto& a, const auto& b) { return rank(a) < rank(b); });
-    return searchers;
+    std::vector<std::shared_ptr<Searcher>> ordered;
+    for (const size_t index : source_order::OrderedIndexes(entries, Wide(Order(provider))))
+        ordered.push_back(all[index]);
+    return ordered;
 }
 
 std::vector<settings::Field> SettingFields() {
@@ -278,9 +280,14 @@ std::vector<settings::Field> SettingFields() {
     std::vector<Field> fields;
     Field note;
     note.kind = Field::Kind::Note;
-    note.label = L"Lyrics scripts";
+    note.label = L"Lyrics sources";
     note.note = [] { return std::to_wstring(Searchers().size()); };
     fields.push_back(std::move(note));
+    Field tokens;
+    tokens.kind = Field::Kind::Note;
+    tokens.label = L"Lyrics source order tokens";
+    tokens.note = [] { return Wide(DefaultOrder(L"local")); };
+    fields.push_back(std::move(tokens));
     for (size_t i = 0; i < Roots().size(); ++i) {
         Field folder;
         folder.kind = Field::Kind::Note;
@@ -319,7 +326,6 @@ std::vector<settings::Field> SettingFields() {
             for (const auto& [name, value] : orders)
                 serialized += name + "=" + value + "\n";
             cfg_order = serialized.c_str();
-            Service::Get().ClearCache();
         };
         fields.push_back(std::move(field));
     }
@@ -336,7 +342,6 @@ std::vector<settings::Field> SettingFields() {
             if (value && at == std::string::npos) disabled += tag;
             if (!value && at != std::string::npos) disabled.erase(at, tag.size());
             cfg_disabled = disabled.c_str();
-            Service::Get().ClearCache();
         };
         fields.push_back(std::move(field));
     }

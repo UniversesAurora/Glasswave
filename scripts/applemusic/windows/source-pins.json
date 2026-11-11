@@ -1,0 +1,26 @@
+{
+  "schema": 1,
+  "adam": {
+    "repository": "https://github.com/silentone12725/apple-music-linux.git",
+    "branch": "nightly",
+    "commit": "72d835ebf4c73f3b5f8b4e2b2496a2042a4a214c",
+    "patch": "scripts/applemusic/glasswave.patch"
+  },
+  "libhybrisWin": {
+    "repository": "https://github.com/silentone12725/libhybris-win.git",
+    "commit": "606bae7cdb49eaf8be79828de6cda0ce9d414295",
+    "patch": "scripts/applemusic/windows/libhybris-win.patch"
+  },
+  "buildTools": {
+    "go": "1.26.0",
+    "mingw": "16.1.0",
+    "llvm": "23.1.3",
+    "postLink": "editbin"
+  },
+  "windowsLink": {
+    "stackReserveBytes": 67108864,
+    "stackCommitBytes": 2097152,
+    "goExternalLdflags": "-extldflags=-Wl,--stack,67108864",
+    "postLinkEditbinStack": "/STACK:67108864,2097152"
+  }
+}

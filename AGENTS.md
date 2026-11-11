@@ -42,11 +42,47 @@ pwsh -File scripts/run-dev.ps1      # deploy to .local/fb2k-dev and start it
 - Release is the default because foobar2000 blocks start-up with a modal dialog for Debug
   components.
 - Builds must stay warning-free at /W4.
-- Verify visual changes in the running dev instance (screenshot + zoom) and compare with the
-  reference images before claiming a visual task is done.
+- Run only necessary tests directly affected by the current changes. Do not run exhaustive
+  test sweeps or repeat accepted tests whose code and assumptions have not changed.
+- Prefer asking the owner to check visual changes and actual interaction in the running
+  dev instance. Do not proactively automate the UI or take screenshots for visual checks;
+  use those only when the owner explicitly requests them. Keep builds and meaningful
+  automated functional tests autonomous, and distinguish them from owner visual acceptance.
 - Update `docs/plan/status.md` at the end of a work session (what changed, what is next).
 
 ## Conventions
+
+- **Codex only — delegation:** This rule applies only when the coordinating agent is Codex;
+  it does not constrain OpenCode, Claude Code or other agents. Delegate substantial coding
+  and investigation to subagents while the coordinator reads and decomposes the work,
+  assigns bounded tasks, then reviews and accepts the results. Use the default subagent
+  invocation without specifying a model or reasoning effort; the configured runtime owns
+  model routing. Do not substitute a manually selected model, a free/manual OpenCode CLI or
+  a separate CLI workflow. If default delegation fails, report the actual error and pause
+  only delegation-dependent work.
+  Verify the effective model recorded for a new or resumed session against the configured
+  default before assigning substantial work. A resumed session may use a different model;
+  preserve its handoff and use a fresh default invocation rather than overriding parameters.
+  Thread-slot failures and generic provider errors do not establish an owner account quota.
+  Delegate only through dedicated subagent tools, never by creating or forking ordinary
+  app chats/tasks. Workers that need another split must ask the coordinator instead of
+  creating user-visible side conversations.
+- This is a development project: do not add or retain backward compatibility for older
+  configuration, cache or storage formats. Keep one current format. When it changes,
+  explicitly update the existing development data or remove only the affected derived
+  storage and fetch it again. Do not hide migrations in runtime compatibility branches.
+- Do not hash data unless a feature actually requires it (for example protocol signatures,
+  cryptographic authentication, or an indexed lookup whose identity requires hashing).
+  Do not verify identical content after ordinary assignment, copying, packaging or deployment.
+  Use generation IDs and atomic publication for cache ownership, not redundant payload hashes.
+- During memory-fault investigation, keep the repository memory watchdog running. Record
+  system commit, available physical memory and kernel pools as well as process private bytes;
+  stop only repository audio processes immediately when pressure crosses the safety limit.
+- When API metadata, downloaded media and observed playback disagree, distinguish facts
+  from hypotheses. Promptly ask the owner to verify the original file, official client or
+  listening behavior when firsthand evidence is needed; do not unilaterally declare an
+  upstream service wrong. Continue independent implementation and automated checks while
+  that verification is pending, and report unresolved user-verification items explicitly.
 
 - Language: code, comments, docs, commit messages and script output in **English**.
 - C++20, `/W4`, `.clang-format` (Microsoft base, 110 columns). Namespaces `glasswave::*`.

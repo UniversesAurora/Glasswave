@@ -63,21 +63,29 @@ void Widget::Repaint() {
     std::vector<std::pair<winrt::Windows::UI::Composition::SpriteVisual, Layer>> layers{
         {m_normal, Layer::Normal}, {m_hoverLayer, Layer::Hover}, {m_pressedLayer, Layer::Pressed}};
     if (m_inactiveLayer) layers.emplace_back(m_inactiveLayer, Layer::Inactive);
-    for (auto& [visual, layer] : layers)
-        host.Repaint(visual, w, h, m_scale, [&](ID2D1DeviceContext* dc) { m_painter(dc, dip, layer); });
+    for (auto& [visual, layer] : layers) {
+        gfx::RetainedSurface* backing = &m_normalBacking;
+        if (layer == Layer::Hover) backing = &m_hoverBacking;
+        if (layer == Layer::Pressed) backing = &m_pressedBacking;
+        if (layer == Layer::Inactive) backing = &m_inactiveBacking;
+        host.Repaint(visual, *backing, w, h, m_scale,
+                     [&](ID2D1DeviceContext* dc) { m_painter(dc, dip, layer); });
+    }
     if (m_glow) {
         const auto& o = m_options.glowOutset;
         const float k = m_options.glowOutsetInPixels ? 1.0f : m_scale;
         const int l = static_cast<int>(std::lround(o.left * k)), t = static_cast<int>(std::lround(o.top * k));
         const int gw = w + l + static_cast<int>(std::lround(o.right * k));
         const int gh = h + t + static_cast<int>(std::lround(o.bottom * k));
-        host.Repaint(m_glow, gw, gh, m_scale,
-                     [&](ID2D1DeviceContext* dc) { m_options.glow(dc, D2D1::SizeF(gw / m_scale, gh / m_scale)); });
+        host.Repaint(
+            m_glow, m_glowBacking, gw, gh, m_scale,
+            [&](ID2D1DeviceContext* dc) { m_options.glow(dc, D2D1::SizeF(gw / m_scale, gh / m_scale)); });
         m_glow.Offset(float3{static_cast<float>(-l), static_cast<float>(-t), 0});
     }
     if (m_halo) {
         const int hs = static_cast<int>(std::lround(std::max(w, h) * m_options.haloFactor));
-        host.Repaint(m_halo, hs, hs, m_scale, [&](ID2D1DeviceContext* dc) { m_options.halo(dc, hs / m_scale); });
+        host.Repaint(m_halo, m_haloBacking, hs, hs, m_scale,
+                     [&](ID2D1DeviceContext* dc) { m_options.halo(dc, hs / m_scale); });
         m_halo.Offset(float3{std::round((w - hs) / 2.0f), std::round((h - hs) / 2.0f), 0});
     }
 }

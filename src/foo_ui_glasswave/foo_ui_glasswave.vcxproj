@@ -56,7 +56,7 @@
     <Link>
       <SubSystem>Windows</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
-      <AdditionalDependencies>$(SdkRoot)foobar2000\shared\shared-$(Platform).lib;dwmapi.lib;d3d11.lib;dxgi.lib;d2d1.lib;dwrite.lib;dxguid.lib;CoreMessaging.lib;runtimeobject.lib;uxtheme.lib;windowscodecs.lib;imm32.lib;icu.lib;ole32.lib;winhttp.lib;bcrypt.lib;crypt32.lib;ws2_32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>$(SdkRoot)foobar2000\shared\shared-$(Platform).lib;dwmapi.lib;d3d11.lib;dxgi.lib;d2d1.lib;dwrite.lib;dxguid.lib;CoreMessaging.lib;runtimeobject.lib;uxtheme.lib;windowscodecs.lib;imm32.lib;icu.lib;ole32.lib;winhttp.lib;bcrypt.lib;crypt32.lib;ws2_32.lib;winsqlite3.lib;advapi32.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)'=='Debug'">
@@ -82,11 +82,79 @@
       <PrecompiledHeader>Create</PrecompiledHeader>
     </ClCompile>
     <ClCompile Include="component.cpp" />
+    <ClCompile Include="cache\store.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="cache\provider_snapshot.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="cache\audio.cpp" />
+    <ClCompile Include="cache\images.cpp" />
+    <ClCompile Include="cache\prefetch.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="cache\prefetch_host.cpp" />
+    <ClCompile Include="cache\audio_probe.cpp" />
+    <ClCompile Include="cache\image_probe.cpp" />
+    <ClCompile Include="cache\prefetch_probe.cpp" />
+    <ClCompile Include="cache\lists.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="stream\list_session.cpp" />
+    <ClCompile Include="stream\list_session_probe.cpp" />
+    <ClCompile Include="media\playback_schedule.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="media\playback_scheduler.cpp" />
+    <ClCompile Include="media\playback_scheduler_probe.cpp" />
+    <ClCompile Include="cache\service.cpp">
+      <ObjectFileName>$(IntDir)cache_service.obj</ObjectFileName>
+    </ClCompile>
+    <ClCompile Include="applemusic\client.cpp">
+      <ObjectFileName>$(IntDir)applemusic_client.obj</ObjectFileName>
+    </ClCompile>
+    <ClCompile Include="applemusic\service.cpp">
+      <ObjectFileName>$(IntDir)applemusic_service.obj</ObjectFileName>
+    </ClCompile>
+    <ClCompile Include="applemusic\catalog.cpp">
+      <ObjectFileName>$(IntDir)applemusic_catalog.obj</ObjectFileName>
+    </ClCompile>
+    <ClCompile Include="applemusic\config.cpp">
+      <ObjectFileName>$(IntDir)applemusic_config.obj</ObjectFileName>
+    </ClCompile>
+    <ClCompile Include="applemusic\display_metadata.cpp">
+      <ObjectFileName>$(IntDir)applemusic_display_metadata.obj</ObjectFileName>
+    </ClCompile>
+    <ClCompile Include="applemusic\artist_preference.cpp">
+      <ObjectFileName>$(IntDir)applemusic_artist_preference.obj</ObjectFileName>
+    </ClCompile>
+    <ClCompile Include="applemusic\lyrics_protocol.cpp">
+      <ObjectFileName>$(IntDir)applemusic_lyrics_protocol.obj</ObjectFileName>
+    </ClCompile>
+    <ClCompile Include="applemusic\lyrics_source.cpp">
+      <ObjectFileName>$(IntDir)applemusic_lyrics_source.obj</ObjectFileName>
+    </ClCompile>
+    <ClCompile Include="applemusic\handle.cpp">
+      <ObjectFileName>$(IntDir)applemusic_handle.obj</ObjectFileName>
+    </ClCompile>
+    <ClCompile Include="applemusic\stream_provider.cpp">
+      <ObjectFileName>$(IntDir)applemusic_stream_provider.obj</ObjectFileName>
+    </ClCompile>
+    <ClCompile Include="applemusic\album_art_applemusic.cpp" />
+    <ClCompile Include="applemusic\input_applemusic.cpp" />
+    <ClCompile Include="applemusic\atmos_renderer.cpp" />
+    <ClCompile Include="applemusic\login.cpp" />
+    <ClCompile Include="applemusic\probe.cpp" />
+    <ClCompile Include="applemusic\library_probe.cpp" />
+    <ClCompile Include="applemusic\provider_probe.cpp" />
     <ClCompile Include="gfx\composition_host.cpp" />
     <ClCompile Include="gfx\frame_clock.cpp" />
     <ClCompile Include="gfx\effects.cpp" />
     <ClCompile Include="lyrics\lrc.cpp" />
     <ClCompile Include="lyrics\lyrics_service.cpp" />
+    <ClCompile Include="lyrics\native_sources.cpp">
+      <ObjectFileName>$(IntDir)lyrics_native_sources.obj</ObjectFileName>
+    </ClCompile>
     <ClCompile Include="lyrics\scripts.cpp" />
     <ClCompile Include="lyrics\script_host.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
@@ -166,11 +234,15 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="pch.h" />
+    <ClInclude Include="cache\provider_snapshot.h" />
     <ClInclude Include="gfx\composition_host.h" />
     <ClInclude Include="gfx\frame_clock.h" />
     <ClInclude Include="gfx\effects.h" />
     <ClInclude Include="lyrics\lyrics.h" />
+    <ClInclude Include="lyrics\cache_format.h" />
     <ClInclude Include="lyrics\lyrics_service.h" />
+    <ClInclude Include="lyrics\native_sources.h" />
+    <ClInclude Include="lyrics\source_order.h" />
     <ClInclude Include="lyrics\scripts.h" />
     <ClInclude Include="lyrics\script_host.h" />
     <ClInclude Include="ui\lyrics_view.h" />
@@ -202,6 +274,28 @@
     <ClInclude Include="app\settings.h" />
     <ClInclude Include="app\setting_fields.h" />
     <ClInclude Include="stream\model.h" />
+    <ClInclude Include="applemusic\client.h" />
+    <ClInclude Include="applemusic\service.h" />
+    <ClInclude Include="cache\store.h" />
+    <ClInclude Include="cache\config.h" />
+    <ClInclude Include="cache\audio.h" />
+    <ClInclude Include="cache\images.h" />
+    <ClInclude Include="cache\prefetch.h" />
+    <ClInclude Include="cache\prefetch_host.h" />
+    <ClInclude Include="cache\lists.h" />
+    <ClInclude Include="stream\list.h" />
+    <ClInclude Include="stream\list_session.h" />
+    <ClInclude Include="media\playback_schedule.h" />
+    <ClInclude Include="media\playback_scheduler.h" />
+    <ClInclude Include="applemusic\catalog.h" />
+    <ClInclude Include="applemusic\config.h" />
+    <ClInclude Include="applemusic\display_metadata.h" />
+    <ClInclude Include="applemusic\artist_preference.h" />
+    <ClInclude Include="applemusic\lyrics_protocol.h" />
+    <ClInclude Include="applemusic\lyrics_source.h" />
+    <ClInclude Include="applemusic\handle.h" />
+    <ClInclude Include="applemusic\stream_provider.h" />
+    <ClInclude Include="applemusic\login.h" />
     <ClInclude Include="stream\provider.h" />
     <ClInclude Include="stream\playback_source.h" />
     <ClInclude Include="netease\stream_provider.h" />

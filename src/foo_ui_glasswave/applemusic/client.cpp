@@ -1,0 +1,474 @@
+#include "pch.h"
+#include "applemusic/client.h"
+#include "applemusic/service.h"
+#include "netease/http.h"
+#include "netease/json.h"
+#include "netease/profile.h"
+#include "ui/i18n.h"
+
+#include <atomic>
+#include <filesystem>
+#include <fstream>
+#include <set>
+
+namespace glasswave::applemusic {
+
+namespace {
+
+namespace json = netease::json;
+using winrt::Windows::Data::Json::JsonValue;
+
+constexpr uintmax_t kBridgeFileLimit = 64u * 1024u;
+constexpr size_t kBridgeTokenLimit = 16u * 1024u;
+constexpr size_t kCollectionPageLimit = 256;
+constexpr size_t kCollectionItemLimit = 100'000;
+
+std::atomic_bool g_chineseLocale = false;
+std::atomic_bool g_localeKnown = false;
+thread_local std::wstring g_probeUrl;
+thread_local std::string g_probeToken;
+thread_local std::string g_probeTag;
+
+struct BridgeConfig {
+    std::wstring url;
+    std::string token;
+    std::filesystem::path runtime;
+    std::string fixtureTransactionTag;
+};
+
+[[noreturn]] void Fail(const char* message) {
+    throw std::runtime_error(message);
+}
+
+std::string Utf8(std::wstring_view text) {
+    if (text.empty()) return {};
+    return pfc::stringcvt::string_utf8_from_wide(text.data(), text.size()).get_ptr();
+}
+
+std::wstring Wide(std::string_view text) {
+    if (text.empty()) return {};
+    const std::string copy(text);
+    return pfc::stringcvt::string_wide_from_utf8(copy.c_str()).get_ptr();
+}
+
+bool AsciiLetter(wchar_t c) {
+    return (c >= L'a' && c <= L'z') || (c >= L'A' && c <= L'Z');
+}
+
+bool HasControl(std::wstring_view text) {
+    return std::any_of(text.begin(), text.end(), [](wchar_t c) { return c < 0x20 || c == 0x7f; });
+}
+
+std::wstring LowerAscii(std::wstring_view text) {
+    std::wstring out(text);
+    for (auto& c : out)
+        if (c >= L'A' && c <= L'Z') c = static_cast<wchar_t>(c + L'a' - L'A');
+    return out;
+}
+
+bool ValidPort(std::wstring_view port) {
+    if (port.empty() || port.size() > 5) return false;
+    unsigned value = 0;
+    for (wchar_t c : port) {
+        if (c < L'0' || c > L'9') return false;
+        value = value * 10 + static_cast<unsigned>(c - L'0');
+    }
+    return value > 0 && value <= 65535;
+}
+
+std::wstring ValidateBridgeUrl(std::wstring_view value) {
+    static constexpr std::wstring_view prefix = L"http://";
+    if (value.size() <= prefix.size() || _wcsnicmp(value.data(), prefix.data(), prefix.size()) != 0 ||
+        HasControl(value) || value.find_first_of(L"/?#@\\", prefix.size()) != std::wstring_view::npos) {
+        Fail("The Apple Music bridge URL must use http://127.0.0.1.");
+    }
+
+    const std::wstring_view authority = value.substr(prefix.size());
+    static constexpr std::wstring_view loopback = L"127.0.0.1";
+    if (authority == loopback) return std::wstring(value);
+    if (authority.size() <= loopback.size() || authority.substr(0, loopback.size()) != loopback ||
+        authority[loopback.size()] != L':' || !ValidPort(authority.substr(loopback.size() + 1))) {
+        Fail("The Apple Music bridge URL must use http://127.0.0.1.");
+    }
+    return std::wstring(value);
+}
+
+bool ValidJsonToken(std::wstring_view token) {
+    if (token.empty() || token.size() > kBridgeTokenLimit || HasControl(token)) return false;
+    return true;
+}
+
+bool ValidCatalogId(std::wstring_view id) {
+    if (id.empty() || id.size() > 256 || HasControl(id) || id.find(L'/') != std::wstring_view::npos ||
+        id.find(L'\\') != std::wstring_view::npos || id.find(L'?') != std::wstring_view::npos ||
+        id.find(L'#') != std::wstring_view::npos) {
+        return false;
+    }
+    return std::all_of(id.begin(), id.end(), [](wchar_t c) { return c >= L'0' && c <= L'9'; });
+}
+
+BridgeConfig ReadBridge() {
+    const auto profile = netease::ProfileDir();
+    if (profile.empty()) Fail("The foobar2000 profile is unavailable.");
+    const auto path = profile.parent_path() / L"applemusic" / L"bridge.json";
+
+    std::error_code ec;
+    const auto status = std::filesystem::symlink_status(path, ec);
+    if (ec || status.type() != std::filesystem::file_type::regular) {
+        Fail("The Apple Music bridge is not configured.");
+    }
+    const uintmax_t size = std::filesystem::file_size(path, ec);
+    if (ec || size == 0 || size > kBridgeFileLimit) Fail("The Apple Music bridge file is invalid.");
+
+    std::ifstream input(path, std::ios::binary);
+    if (!input) Fail("The Apple Music bridge file cannot be read.");
+    std::string bytes(static_cast<size_t>(size), '\0');
+    input.read(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+    if (!input || static_cast<size_t>(input.gcount()) != bytes.size()) {
+        Fail("The Apple Music bridge file cannot be read.");
+    }
+    if (input.peek() != std::char_traits<char>::eof()) Fail("The Apple Music bridge file is invalid.");
+    if (bytes.size() >= 3 && static_cast<unsigned char>(bytes[0]) == 0xef &&
+        static_cast<unsigned char>(bytes[1]) == 0xbb && static_cast<unsigned char>(bytes[2]) == 0xbf) {
+        bytes.erase(0, 3);
+    }
+    if (bytes.empty()) Fail("The Apple Music bridge file is invalid.");
+
+    std::wstring parseError;
+    const auto root = json::Parse(bytes, &parseError);
+    if (!root) Fail("The Apple Music bridge file is not valid JSON.");
+    BridgeConfig config;
+    config.url = ValidateBridgeUrl(json::GetString(*root, L"url"));
+    const std::wstring token = json::GetString(*root, L"token");
+    if (!ValidJsonToken(token)) Fail("The Apple Music bridge token is invalid.");
+    config.token = Utf8(token);
+    if (config.token.empty() || config.token.size() > kBridgeTokenLimit) {
+        Fail("The Apple Music bridge token is invalid.");
+    }
+    if (const auto managed = json::GetObject(*root, L"managed")) {
+        const auto directory = json::GetString(*managed, L"runtimeDirectory");
+        if (directory.empty() || HasControl(directory))
+            Fail("The managed Apple Music runtime path is invalid.");
+        config.runtime = directory;
+        if (!config.runtime.is_absolute()) Fail("The managed Apple Music runtime path must be absolute.");
+    }
+    const auto fixtureAsset = json::GetString(*root, L"fixturePlaybackAssetId");
+    if (config.runtime.empty() && json::GetString(*root, L"fixtureAssetId") == L"glasswave-test" &&
+        (fixtureAsset == L"glasswave-test" || fixtureAsset == L"1237064886")) {
+        const auto tag = json::GetString(*root, L"fixtureTransactionTag");
+        if (tag.size() == 32 && std::all_of(tag.begin(), tag.end(), [](wchar_t c) {
+                return (c >= L'0' && c <= L'9') || (c >= L'a' && c <= L'f');
+            }))
+            config.fixtureTransactionTag = Utf8(tag);
+    }
+    if (!g_probeTag.empty() && (config.url != g_probeUrl || config.token != g_probeToken ||
+                                config.fixtureTransactionTag != g_probeTag))
+        Fail("The Apple Music fixture bridge changed during the probe.");
+    return config;
+}
+
+std::wstring Method(std::wstring_view method) {
+    if (method.empty() || method.size() > 16 || HasControl(method)) Fail("The HTTP method is invalid.");
+    std::wstring out(method);
+    for (auto& c : out) {
+        if (!AsciiLetter(c)) Fail("The HTTP method is invalid.");
+        if (c >= L'a' && c <= L'z') c = static_cast<wchar_t>(c + L'A' - L'a');
+    }
+    return out;
+}
+
+void ValidateApiPath(std::wstring_view path) {
+    static constexpr std::wstring_view prefix = L"/api/v1/";
+    if (path.size() <= prefix.size() || path.substr(0, prefix.size()) != prefix || HasControl(path) ||
+        path.find(L'#') != std::wstring_view::npos || path.find(L'\\') != std::wstring_view::npos) {
+        Fail("The Apple Music bridge path is invalid.");
+    }
+}
+
+void ValidateApplePath(std::wstring_view path) {
+    static constexpr std::wstring_view prefix = L"/v1/";
+    if (path.size() <= prefix.size() || path.substr(0, prefix.size()) != prefix || HasControl(path) ||
+        path.find(L'#') != std::wstring_view::npos || path.find(L'\\') != std::wstring_view::npos) {
+        Fail("The Apple Music API path is invalid.");
+    }
+}
+
+std::wstring PathOnly(std::wstring_view path) {
+    const size_t query = path.find(L'?');
+    return std::wstring(path.substr(0, query));
+}
+
+std::wstring NormalizeNext(std::wstring_view initial, std::wstring_view next) {
+    if (next.empty() || HasControl(next) || next.find(L'#') != std::wstring_view::npos ||
+        next.find(L'\\') != std::wstring_view::npos) {
+        Fail("Apple Music returned an invalid pagination link.");
+    }
+
+    std::wstring path;
+    if (next[0] == L'/') {
+        path.assign(next);
+    } else {
+        const size_t scheme = next.find(L"://");
+        if (scheme == std::wstring_view::npos) Fail("Apple Music returned an invalid pagination link.");
+        const std::wstring protocol = LowerAscii(next.substr(0, scheme));
+        const size_t pathStart = next.find(L'/', scheme + 3);
+        if (protocol != L"https" || pathStart == std::wstring_view::npos) {
+            Fail("Apple Music returned an unexpected pagination origin.");
+        }
+        const std::wstring_view authority = next.substr(scheme + 3, pathStart - scheme - 3);
+        const std::wstring host = LowerAscii(authority);
+        if (host != L"amp-api.music.apple.com" && host != L"api.music.apple.com") {
+            Fail("Apple Music returned an unexpected pagination origin.");
+        }
+        path.assign(next.substr(pathStart));
+    }
+    ValidateApplePath(path);
+    if (PathOnly(path) != PathOnly(initial)) Fail("Apple Music returned an unexpected pagination path.");
+    return path;
+}
+
+bool HasLocaleParameter(std::wstring_view path) {
+    const size_t query = path.find(L'?');
+    if (query == std::wstring_view::npos) return false;
+    size_t at = query + 1;
+    while (at <= path.size()) {
+        const size_t end = path.find(L'&', at);
+        const std::wstring_view parameter =
+            path.substr(at, end == std::wstring_view::npos ? std::wstring_view::npos : end - at);
+        const size_t equals = parameter.find(L'=');
+        const std::wstring_view name = parameter.substr(0, equals);
+        if (name == L"l") return true;
+        if (end == std::wstring_view::npos) break;
+        at = end + 1;
+    }
+    return false;
+}
+
+bool ChineseLocale() {
+    if (!g_localeKnown.load(std::memory_order_acquire)) SetAppleLocale(ui::UsingChinese());
+    return g_chineseLocale.load(std::memory_order_relaxed);
+}
+
+std::wstring WithLocale(std::wstring path) {
+    if (HasLocaleParameter(path)) return path;
+    path += path.find(L'?') == std::wstring::npos ? L'?' : L'&';
+    path += ChineseLocale() ? L"l=zh-Hans-CN" : L"l=en-US";
+    return path;
+}
+
+Object EmptyObject() {
+    return Object();
+}
+
+} // namespace
+
+BridgeHttpError::BridgeHttpError(int status)
+    : std::runtime_error("Apple Music bridge request failed (HTTP " + std::to_string(status) + ")."),
+      m_status(status) {}
+
+int BridgeHttpError::status() const noexcept {
+    return m_status;
+}
+
+ScopedFixtureProbeTransaction::ScopedFixtureProbeTransaction() {
+    auto config = ReadBridge();
+    if (config.fixtureTransactionTag.empty()) Fail("The Apple Music probe requires a mock fixture bridge.");
+    // All validation and allocation precede these nonthrowing swaps.
+    m_previousUrl.swap(g_probeUrl);
+    m_previousToken.swap(g_probeToken);
+    m_previousTag.swap(g_probeTag);
+    g_probeUrl.swap(config.url);
+    g_probeToken.swap(config.token);
+    g_probeTag.swap(config.fixtureTransactionTag);
+}
+
+ScopedFixtureProbeTransaction::~ScopedFixtureProbeTransaction() {
+    g_probeUrl.swap(m_previousUrl);
+    g_probeToken.swap(m_previousToken);
+    g_probeTag.swap(m_previousTag);
+}
+
+std::string ProbeTransactionTag() {
+    if (!g_probeTag.empty()) (void)ReadBridge();
+    return g_probeTag;
+}
+
+std::wstring BridgeUrl() {
+    return ReadBridge().url;
+}
+
+std::string BridgeToken() {
+    return ReadBridge().token;
+}
+
+std::string BridgeSourceIdentity() {
+    const BridgeConfig config = ReadBridge();
+    if (!config.runtime.empty()) return "managed:" + Utf8(config.runtime.lexically_normal().wstring());
+    return "external:" + Utf8(config.url);
+}
+
+void SetAppleLocale(bool chinese) {
+    g_chineseLocale.store(chinese, std::memory_order_relaxed);
+    g_localeKnown.store(true, std::memory_order_release);
+}
+
+std::wstring Encode(std::wstring_view value) {
+    static constexpr wchar_t hex[] = L"0123456789ABCDEF";
+    const std::string bytes = Utf8(value);
+    std::wstring out;
+    out.reserve(bytes.size() * 3);
+    for (unsigned char c : bytes) {
+        if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' ||
+            c == '_' || c == '.' || c == '~') {
+            out.push_back(static_cast<wchar_t>(c));
+        } else {
+            out.push_back(L'%');
+            out.push_back(hex[c >> 4]);
+            out.push_back(hex[c & 0x0f]);
+        }
+    }
+    return out;
+}
+
+Object Request(std::wstring_view path, abort_callback& abort, std::wstring_view method, std::string body) {
+    ValidateApiPath(path);
+    const std::wstring verb = Method(method);
+    const BridgeConfig config = ReadBridge();
+    ServiceManager::Get().EnsureStarted(config.url, config.token, config.runtime, abort);
+
+    netease::HttpOptions options;
+    options.method = verb;
+    options.body = std::move(body);
+    options.noProxy = true;
+    options.timeoutMs = 30000;
+    options.maxBodyBytes = 32u * 1024u * 1024u;
+    options.headers = {
+        {L"Accept", L"application/json"},
+        {L"X-API-Token", Wide(config.token)},
+    };
+    if (!g_probeTag.empty()) options.headers.emplace_back(L"X-Glasswave-Probe-Transaction", Wide(g_probeTag));
+    if (!options.body.empty()) options.headers.emplace_back(L"Content-Type", L"application/json");
+
+    const netease::HttpResponse response = netease::SendHttp(config.url + std::wstring(path), options, abort);
+    if (response.status == 0 || !response.error.empty()) Fail("Cannot reach the Apple Music bridge.");
+    if (response.status < 200 || response.status >= 300) throw BridgeHttpError(response.status);
+    if (response.body.empty()) return EmptyObject();
+
+    std::wstring parseError;
+    const auto parsed = json::Parse(response.body, &parseError);
+    if (!parsed) Fail("The Apple Music bridge returned invalid JSON.");
+    if (!json::GetString(*parsed, L"error").empty()) Fail("The Apple Music bridge reported an error.");
+    if (const auto errors = json::GetArray(*parsed, L"errors"); errors && errors->Size() != 0)
+        Fail("The Apple Music bridge returned errors.");
+    return *parsed;
+}
+
+std::optional<LibraryPlaybackMapping> ResolveLibraryPlaybackMapping(std::wstring_view libraryId,
+                                                                    std::wstring_view catalogId,
+                                                                    abort_callback& abort) {
+    if (libraryId.empty() || catalogId.empty()) return std::nullopt;
+    try {
+        const Object response =
+            Apple(L"/v1/me/library/songs/" + Encode(libraryId) + L"?include=catalog", abort);
+        const auto data = json::GetArray(response, L"data");
+        if (!data || data->Size() != 1) return std::nullopt;
+        const auto items = json::Objects(*data);
+        if (items.size() != 1) return std::nullopt;
+
+        const Object& item = items.front();
+        if (json::GetString(item, L"id") != libraryId || json::GetString(item, L"type") != L"library-songs") {
+            return std::nullopt;
+        }
+        const auto attributes = json::GetObject(item, L"attributes");
+        const auto playback = attributes ? json::GetObject(*attributes, L"playParams") : std::nullopt;
+        if (!playback || !json::GetBool(*playback, L"isLibrary") ||
+            json::GetString(*playback, L"id") != libraryId ||
+            json::GetString(*playback, L"kind") != L"song" ||
+            json::GetString(*playback, L"catalogId") != catalogId ||
+            !json::GetBool(*playback, L"reporting")) {
+            return std::nullopt;
+        }
+
+        const std::wstring reportingId = json::GetString(*playback, L"reportingId");
+        if (!ValidCatalogId(reportingId) || reportingId == catalogId ||
+            (reportingId.size() > 2 && reportingId[1] == L'.')) {
+            return std::nullopt;
+        }
+        return LibraryPlaybackMapping{std::wstring(libraryId), std::wstring(catalogId), reportingId};
+    } catch (const exception_aborted&) {
+        throw;
+    } catch (...) {
+        return std::nullopt;
+    }
+}
+
+Object Apple(std::wstring_view path, abort_callback& abort, std::wstring_view method, const Object* body) {
+    ValidateApplePath(path);
+    const bool libraryDelete = Method(method) == L"DELETE" && path.starts_with(L"/v1/me/library/");
+    const std::wstring localizedPath = libraryDelete ? std::wstring(path) : WithLocale(std::wstring(path));
+    Object request;
+    request.Insert(L"method", JsonValue::CreateStringValue(Method(method)));
+    request.Insert(L"path", JsonValue::CreateStringValue(localizedPath));
+    request.Insert(L"body", body && *body ? static_cast<winrt::Windows::Data::Json::IJsonValue>(*body)
+                                          : JsonValue::CreateNullValue());
+    return Request(L"/api/v1/glasswave/apple", abort, L"POST", Utf8(json::Stringify(request)));
+}
+
+std::vector<Object> Collection(std::wstring_view firstPath, abort_callback& abort) {
+    ValidateApplePath(firstPath);
+    std::vector<Object> out;
+    std::set<std::wstring> seen;
+    std::wstring path(firstPath);
+
+    for (size_t page = 0; !path.empty(); ++page) {
+        abort.check();
+        if (page >= kCollectionPageLimit || !seen.emplace(path).second) {
+            Fail("Apple Music pagination did not terminate.");
+        }
+        const Object response = Apple(path, abort);
+        if (const auto data = json::GetArray(response, L"data")) {
+            const auto objects = json::Objects(*data);
+            if (out.size() + objects.size() > kCollectionItemLimit)
+                Fail("Apple Music returned too many items.");
+            out.insert(out.end(), objects.begin(), objects.end());
+        }
+        const std::wstring next = json::GetString(response, L"next");
+        path = next.empty() ? std::wstring() : NormalizeNext(firstPath, next);
+    }
+    return out;
+}
+
+AccountState GetAccount(abort_callback& abort) {
+    const Object response = Request(L"/api/v1/glasswave/account", abort);
+    AccountState account;
+    account.signedIn = json::GetBool(response, L"signedIn");
+    account.accountId = json::GetString(response, L"accountId");
+    account.name = json::GetString(response, L"name");
+    if (!account.signedIn) return account;
+    if (account.accountId.empty()) Fail("The Apple Music account has no stable identifier.");
+
+    account.storefront = json::GetString(response, L"storefront");
+    if (account.storefront.size() != 2 ||
+        !std::all_of(account.storefront.begin(), account.storefront.end(), AsciiLetter)) {
+        Fail("The Apple Music account returned an invalid storefront.");
+    }
+    for (auto& c : account.storefront)
+        if (c >= L'a' && c <= L'z') c = static_cast<wchar_t>(c + L'A' - L'a');
+    return account;
+}
+
+DrmState GetDrmState(abort_callback& abort) {
+    const Object response = Request(L"/api/v1/drm/status", abort);
+    DrmState out;
+    out.available = json::GetBool(response, L"available");
+    if (const auto state = json::GetObject(response, L"state")) {
+        out.manager = json::GetString(*state, L"manager");
+        out.process = json::GetString(*state, L"process");
+        out.authentication = json::GetString(*state, L"authentication");
+        out.fairplay = json::GetString(*state, L"fairplay");
+        out.session = json::GetString(*state, L"session");
+    }
+    return out;
+}
+
+} // namespace glasswave::applemusic

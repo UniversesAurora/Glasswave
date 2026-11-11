@@ -3,10 +3,12 @@
 #include "media/favorites.h"
 #include "media/special_playlists.h"
 #include "ui/i18n.h"
+#include "ui/song_grouping.h"
 #include "ui/text.h"
 #include "ui/win7_menu.h"
 
 #include <cwctype>
+#include <numeric>
 #include <unordered_set>
 
 namespace glasswave::ui {
@@ -76,7 +78,8 @@ SongTableRow TrackRow(stream::Provider& provider, const stream::Track& track) {
     row.album = track.album;
     row.lengthMs = track.durationMs;
     row.popularity = track.popularity;
-    row.albumKey = std::wstring(provider.Key()) + L':' + (track.albumId.empty() ? L"t:" + track.id : track.albumId);
+    row.albumKey =
+        RemoteAlbumGroupKey(provider.Key(), track.albumId, track.album, row.artist, track.id);
     row.artKey = track.albumId.empty() ? provider.ArtKey(stream::ArtKind::Track, track.id)
                                        : provider.ArtKey(stream::ArtKind::Album, track.albumId);
     row.favorite = provider.IsFavorite(track.id);
@@ -85,10 +88,13 @@ SongTableRow TrackRow(stream::Provider& provider, const stream::Track& track) {
     return row;
 }
 
-std::vector<SongTableRow> TrackRows(stream::Provider& provider, const std::vector<stream::Track>& tracks) {
+std::vector<SongTableRow> TrackRows(stream::Provider& provider, const std::vector<stream::Track>& tracks,
+                                    size_t first = 0, size_t count = SIZE_MAX) {
+    first = std::min(first, tracks.size());
+    count = std::min(count, tracks.size() - first);
     std::vector<SongTableRow> rows;
-    rows.reserve(tracks.size());
-    for (const auto& track : tracks) rows.push_back(TrackRow(provider, track));
+    rows.reserve(count);
+    for (size_t i = first; i < first + count; ++i) rows.push_back(TrackRow(provider, tracks[i]));
     return rows;
 }
 
@@ -139,8 +145,8 @@ std::vector<SongTableRow> PlayStatRows(const std::vector<media::PlayRecord>& rec
             row.trackId = record.trackId;
             row.albumId = record.albumId;
             row.artistId = record.artistId;
-            row.albumKey = std::wstring(provider->Key()) + L':' +
-                           (record.albumId.empty() ? L"t:" + record.trackId : record.albumId);
+            row.albumKey =
+                RemoteAlbumGroupKey(provider->Key(), record.albumId, row.album, row.artist, record.trackId);
             row.artKey = record.albumId.empty() ? provider->ArtKey(stream::ArtKind::Track, record.trackId)
                                                 : provider->ArtKey(stream::ArtKind::Album, record.albumId);
             row.favorite = provider->IsFavorite(record.trackId);
@@ -162,6 +168,134 @@ std::vector<SongTableRow> PlayStatRows(const std::vector<media::PlayRecord>& rec
     return rows;
 }
 
+std::wstring StableRowBase(const SongTableRow& row) {
+    if (row.provider) {
+        return L"p:" + std::wstring(row.provider->Key()) + L'\x1f' + row.trackId;
+    }
+    if (row.handle.is_valid()) {
+        return L"l:" + Wide(row.handle->get_path()) + L'\x1f' +
+               std::to_wstring(row.handle->get_subsong_index());
+    }
+    return L"x:" + row.source + L'\x1f' + row.title + L'\x1f' + row.artist + L'\x1f' + row.album + L'\x1f' +
+           std::to_wstring(row.lengthMs);
+}
+
+std::vector<std::wstring> StableRowIdentities(const std::vector<SongTableRow>& rows) {
+    std::map<std::wstring, size_t> occurrences;
+    std::vector<std::wstring> identities;
+    identities.reserve(rows.size());
+    for (const auto& row : rows) {
+        const std::wstring base = StableRowBase(row);
+        const size_t occurrence = occurrences[base]++;
+        identities.push_back(base + L'\x1e' + std::to_wstring(occurrence));
+    }
+    return identities;
+}
+
+void RefreshRemoteAlbumKeys(std::vector<SongTableRow>& rows) {
+    std::vector<RemoteAlbumGroupRow> identities;
+    std::vector<size_t> indices;
+    for (size_t i = 0; i < rows.size(); ++i) {
+        const SongTableRow& row = rows[i];
+        if (!row.provider) continue;
+        identities.push_back({row.provider->Key(), row.albumId, row.album, row.artist, row.trackId});
+        indices.push_back(i);
+    }
+    const auto keys = RemoteAlbumGroupKeys(identities);
+    for (size_t i = 0; i < indices.size(); ++i) rows[indices[i]].albumKey = keys[i];
+}
+
+std::wstring RemoteAlbumNameKey(const SongTableRow& row) {
+    return row.provider ? detail::AlbumNameGroupKey(row.provider->Key(), row.album, row.artist) : std::wstring();
+}
+
+using RemoteAlbumIdIndex = std::unordered_map<std::wstring, std::unordered_set<std::wstring>>;
+
+void AddKnownRemoteAlbums(const std::vector<SongTableRow>& rows, RemoteAlbumIdIndex& byName) {
+    for (const SongTableRow& row : rows) {
+        if (!row.provider || row.albumId.empty() || row.album.empty() || row.artist.empty()) continue;
+        byName[RemoteAlbumNameKey(row)].insert(row.albumId);
+    }
+}
+
+void RebuildKnownRemoteAlbums(const std::vector<SongTableRow>& rows, RemoteAlbumIdIndex& byName) {
+    byName.clear();
+    AddKnownRemoteAlbums(rows, byName);
+}
+
+std::unordered_set<std::wstring> RefreshAppendedRemoteAlbumKeys(std::vector<SongTableRow>& rows,
+                                                               const RemoteAlbumIdIndex& previous) {
+    RefreshRemoteAlbumKeys(rows);
+    RemoteAlbumIdIndex appended;
+    AddKnownRemoteAlbums(rows, appended);
+    std::unordered_set<std::wstring> resolved;
+    for (SongTableRow& row : rows) {
+        if (!row.provider || !row.albumId.empty() || row.album.empty() || row.artist.empty()) continue;
+        const std::wstring name = RemoteAlbumNameKey(row);
+        const auto old = previous.find(name);
+        const auto added = appended.find(name);
+        std::unordered_set<std::wstring> ids;
+        if (old != previous.end()) ids.insert(old->second.begin(), old->second.end());
+        if (added != appended.end()) ids.insert(added->second.begin(), added->second.end());
+        if (ids.size() == 1) {
+            row.albumKey = RemoteAlbumGroupKey(row.provider->Key(), *ids.begin(), row.album, row.artist,
+                                               row.trackId);
+            resolved.insert(name);
+        }
+    }
+    return resolved;
+}
+
+void RebuildResolvedMissingAlbums(const std::vector<SongTableRow>& rows, const RemoteAlbumIdIndex& byName,
+                                  std::unordered_set<std::wstring>& resolved) {
+    resolved.clear();
+    for (const SongTableRow& row : rows) {
+        if (!row.provider || !row.albumId.empty() || row.album.empty() || row.artist.empty()) continue;
+        const std::wstring name = RemoteAlbumNameKey(row);
+        const auto known = byName.find(name);
+        if (known != byName.end() && known->second.size() == 1) resolved.insert(name);
+    }
+}
+
+bool CreatesAmbiguousRemoteAlbum(const std::vector<SongTableRow>& rows,
+                                 const RemoteAlbumIdIndex& previous,
+                                 const std::unordered_set<std::wstring>& resolvedMissing) {
+    for (const SongTableRow& row : rows) {
+        if (!row.provider || row.albumId.empty() || row.album.empty() || row.artist.empty()) continue;
+        const std::wstring name = RemoteAlbumNameKey(row);
+        if (!resolvedMissing.contains(name)) continue;
+        const auto known = previous.find(name);
+        if (known != previous.end() &&
+            (known->second.size() > 1 || *known->second.begin() != row.albumId))
+            return true;
+    }
+    return false;
+}
+
+void AddUnresolvedRemoteAlbums(const std::vector<SongTableRow>& rows,
+                               std::unordered_set<std::wstring>& unresolved) {
+    for (const SongTableRow& row : rows) {
+        if (!row.provider || !row.albumId.empty() || row.album.empty() || row.artist.empty()) continue;
+        const std::wstring fallback =
+            RemoteAlbumGroupKey(row.provider->Key(), {}, row.album, row.artist, row.trackId);
+        if (row.albumKey == fallback) unresolved.insert(RemoteAlbumNameKey(row));
+    }
+}
+
+void RebuildUnresolvedRemoteAlbums(const std::vector<SongTableRow>& rows,
+                                   std::unordered_set<std::wstring>& unresolved) {
+    unresolved.clear();
+    AddUnresolvedRemoteAlbums(rows, unresolved);
+}
+
+bool ResolvesUnresolvedRemoteAlbum(const std::vector<SongTableRow>& rows,
+                                   const std::unordered_set<std::wstring>& unresolved) {
+    return std::any_of(rows.begin(), rows.end(), [&](const SongTableRow& row) {
+        return row.provider && !row.albumId.empty() && !row.album.empty() && !row.artist.empty() &&
+               unresolved.contains(RemoteAlbumNameKey(row));
+    });
+}
+
 }  // namespace
 
 // ---- SongTableSource ------------------------------------------------------------------------
@@ -172,6 +306,10 @@ SongTableSource::SongTableSource(std::vector<SongTableRow> rows, bool showSource
       m_emptyText(std::move(emptyText)),
       m_columnKey(std::move(columnKey)),
       m_showSource(showSource) {
+    RefreshRemoteAlbumKeys(m_all);
+    RebuildUnresolvedRemoteAlbums(m_all, m_unresolvedAlbumNames);
+    RebuildKnownRemoteAlbums(m_all, m_remoteAlbumIdsByName);
+    RebuildResolvedMissingAlbums(m_all, m_remoteAlbumIdsByName, m_resolvedMissingAlbumNames);
     SetViewStyle(media::ViewStyle::Details);
 }
 
@@ -223,6 +361,13 @@ void SongTableSource::SetGrouping(bool enabled) {
     BuildGroups();
 }
 
+bool SongTableSource::NeedsAlbumIdentity() const {
+    if (m_style == media::ViewStyle::Tiles) return true;
+    if (m_style != media::ViewStyle::Details || !m_grouping || m_sortColumn >= m_fields.size())
+        return false;
+    return m_fields[m_sortColumn] == kAlbum;
+}
+
 void SongTableSource::ShowPlayCount() {
     m_showPlayCount = true;
     SetViewStyle(m_style);
@@ -256,7 +401,7 @@ std::pair<std::wstring, std::wstring> SongTableSource::GroupInfo(size_t index) c
         return {std::to_wstring(minutes), std::to_wstring(minutes) + Tr(minutes == 1 ? L" minute" : L" minutes")};
     }
     case kArtist: return {media::Lower(item.artist), ArtistLabel(item)};
-    case kAlbum: return {media::Lower(item.album), AlbumLabel(item)};
+    case kAlbum: return {item.albumKey, AlbumLabel(item)};
     case kSource: return {item.source, item.source};
     case kPlayCount: return {std::to_wstring(item.playCount), std::to_wstring(item.playCount)};
     case kFavorite: return {item.favorite ? L"1" : L"0", Tr(item.favorite ? L"Favorite" : L"Not in Favorites")};
@@ -264,68 +409,286 @@ std::pair<std::wstring, std::wstring> SongTableSource::GroupInfo(size_t index) c
     }
 }
 
+std::wstring SongTableSource::SortKey(size_t index) const {
+    if (index >= m_all.size() || m_sortColumn >= m_fields.size()) return {};
+    const SongTableRow& item = m_all[index];
+    switch (m_fields[m_sortColumn]) {
+    case kNumber: return Padded(static_cast<long long>(index));
+    case kTitle: return item.title;
+    case kLength: return Padded(item.lengthMs);
+    case kArtist: return ArtistLabel(item);
+    case kAlbum: return AlbumLabel(item);
+    case kSource: return item.source;
+    case kPlayCount: return Padded(item.playCount);
+    case kFavorite: return std::wstring(item.favorite ? L"1" : L"0");
+    default: return {};
+    }
+}
+
+bool SongTableSource::SortLess(size_t a, size_t b) const {
+    const bool tiles = m_style == media::ViewStyle::Tiles;
+    if (tiles && m_all[a].albumKey != m_all[b].albumKey) {
+        const auto left = m_albumRank.find(m_all[a].albumKey);
+        const auto right = m_albumRank.find(m_all[b].albumKey);
+        if (left != m_albumRank.end() && right != m_albumRank.end() && left->second != right->second)
+            return left->second < right->second;
+    }
+    if (m_sortColumn < m_fields.size() && m_sortKeys.size() == m_all.size()) {
+        if (const int c = CompareText(m_sortKeys[a], m_sortKeys[b]))
+            return m_sortDescending ? c > 0 : c < 0;
+    }
+    return a < b;
+}
+
+void SongTableSource::UpdateAlbumRanks(size_t first) {
+    if (m_style != media::ViewStyle::Tiles) return;
+    first = std::min(first, m_all.size());
+    for (size_t i = first; i < m_all.size(); ++i) m_albumRank.try_emplace(m_all[i].albumKey, i);
+}
+
 void SongTableSource::SortOrder() {
+    const bool tiles = m_style == media::ViewStyle::Tiles;
+    const bool fieldSort = m_sortColumn < m_fields.size();
+    m_sortKeys.clear();
+    if (fieldSort) {
+        m_sortKeys.resize(m_all.size());
+        for (size_t i = 0; i < m_all.size(); ++i) m_sortKeys[i] = SortKey(i);
+    }
+    m_albumRank.clear();
+    if (tiles) UpdateAlbumRanks(0);
+
     m_order.resize(m_all.size());
     for (size_t i = 0; i < m_order.size(); ++i) m_order[i] = i;
-    const bool tiles = m_style == media::ViewStyle::Tiles;
-    const int field = m_sortColumn < m_fields.size() ? m_fields[m_sortColumn] : -1;
     // Unsorted Details keeps the order the view was built with (a playlist's order, a
     // hot-song chart). Expanded tile always collects an album's songs into one column,
     // ordered by where the album first appears, and a column sort applies inside albums.
-    if (!tiles && field < 0) return;
-    auto key = [&](size_t index) {
-        const SongTableRow& item = m_all[index];
-        switch (field) {
-        case kNumber: return Padded(static_cast<long long>(index));
-        case kTitle: return item.title;
-        case kLength: return Padded(item.lengthMs);
-        case kArtist: return ArtistLabel(item);
-        case kAlbum: return AlbumLabel(item);
-        case kSource: return item.source;
-        case kPlayCount: return Padded(item.playCount);
-        case kFavorite: return std::wstring(item.favorite ? L"1" : L"0");
-        default: return std::wstring();
-        }
-    };
-    std::vector<std::wstring> keys(m_all.size());
-    if (field >= 0)
-        for (size_t i = 0; i < keys.size(); ++i) keys[i] = key(i);
-    std::unordered_map<std::wstring, size_t> albumRank;
-    if (tiles)
-        for (size_t i = 0; i < m_all.size(); ++i) albumRank.emplace(m_all[i].albumKey, i);
-    const bool desc = m_sortDescending;
-    std::stable_sort(m_order.begin(), m_order.end(), [&](size_t a, size_t b) {
-        if (tiles && m_all[a].albumKey != m_all[b].albumKey)
-            return albumRank[m_all[a].albumKey] < albumRank[m_all[b].albumKey];
-        if (field >= 0)
-            if (const int c = CompareText(keys[a], keys[b])) return desc ? c > 0 : c < 0;
-        return a < b;
-    });
+    if (!tiles && !fieldSort) return;
+    std::stable_sort(m_order.begin(), m_order.end(),
+                     [this](size_t a, size_t b) { return SortLess(a, b); });
+}
+
+std::vector<std::wstring> SongTableSource::RowIdentities() const { return StableRowIdentities(m_all); }
+
+std::wstring SongTableSource::FocusIdentity() const {
+    if (m_focus >= m_visible.size()) return {};
+    const auto identities = RowIdentities();
+    return identities[m_visible[m_focus]];
+}
+
+SongTableSource::PresentationState SongTableSource::CapturePresentation() const {
+    PresentationState state;
+    state.focus = FocusIdentity();
+    const auto identities = RowIdentities();
+    for (size_t index = 0; index < m_selected.size() && index < identities.size(); ++index)
+        if (m_selected[index]) state.selected.push_back(identities[index]);
+    return state;
+}
+
+size_t SongTableSource::FindVisibleByIdentity(const std::wstring& identity) const {
+    if (identity.empty()) return SIZE_MAX;
+    const auto identities = RowIdentities();
+    for (size_t row = 0; row < m_visible.size(); ++row)
+        if (identities[m_visible[row]] == identity) return row;
+    return SIZE_MAX;
+}
+
+void SongTableSource::RestorePresentation(const PresentationState& state) {
+    const std::unordered_set<std::wstring> selected(state.selected.begin(), state.selected.end());
+    const auto identities = RowIdentities();
+    m_selected.assign(m_all.size(), 0);
+    for (size_t index = 0; index < identities.size(); ++index)
+        if (selected.count(identities[index])) m_selected[index] = 1;
+    m_focus = FindVisibleByIdentity(state.focus);
 }
 
 void SongTableSource::ApplySort() {
+    const PresentationState presentation = CapturePresentation();
     SortOrder();
-    m_selected.assign(m_all.size(), 0);
-    m_focus = SIZE_MAX;
     RebuildVisible();
+    RestorePresentation(presentation);
 }
 
 void SongTableSource::Append(std::vector<SongTableRow> rows) {
     if (rows.empty()) return;
+    const size_t previousSize = m_all.size();
+    const size_t focusIndex = m_focus < m_visible.size() ? m_visible[m_focus] : SIZE_MAX;
+    const bool resolvesPreviousMissing = ResolvesUnresolvedRemoteAlbum(rows, m_unresolvedAlbumNames);
+    const auto newlyResolvedMissing = RefreshAppendedRemoteAlbumKeys(rows, m_remoteAlbumIdsByName);
+    const bool needsFullAlbumRefresh =
+        resolvesPreviousMissing ||
+        CreatesAmbiguousRemoteAlbum(rows, m_remoteAlbumIdsByName, m_resolvedMissingAlbumNames);
+    if (!needsFullAlbumRefresh) {
+        m_resolvedMissingAlbumNames.insert(newlyResolvedMissing.begin(), newlyResolvedMissing.end());
+        AddKnownRemoteAlbums(rows, m_remoteAlbumIdsByName);
+        AddUnresolvedRemoteAlbums(rows, m_unresolvedAlbumNames);
+    }
     m_all.insert(m_all.end(), std::make_move_iterator(rows.begin()), std::make_move_iterator(rows.end()));
     m_selected.resize(m_all.size(), 0);
-    SortOrder();
+
+    bool reordered = false;
+    if (needsFullAlbumRefresh) {
+        // A missing album id can be resolved by an id that appears on a later page. This is
+        // rare, so pay for a full normalization rather than split a logical album.
+        RefreshRemoteAlbumKeys(m_all);
+        RebuildUnresolvedRemoteAlbums(m_all, m_unresolvedAlbumNames);
+        RebuildKnownRemoteAlbums(m_all, m_remoteAlbumIdsByName);
+        RebuildResolvedMissingAlbums(m_all, m_remoteAlbumIdsByName, m_resolvedMissingAlbumNames);
+        SortOrder();
+        RebuildVisible();
+        reordered = m_style == media::ViewStyle::Tiles || m_sortColumn < m_fields.size();
+    } else {
+        const size_t added = m_all.size() - previousSize;
+        const bool sorted = m_style == media::ViewStyle::Tiles || m_sortColumn < m_fields.size();
+        reordered = sorted;
+        std::vector<size_t> appended(added);
+        std::iota(appended.begin(), appended.end(), previousSize);
+        if (!sorted) {
+            m_order.insert(m_order.end(), appended.begin(), appended.end());
+        } else {
+            if (m_style == media::ViewStyle::Tiles) UpdateAlbumRanks(previousSize);
+            if (m_sortColumn < m_fields.size()) {
+                m_sortKeys.resize(m_all.size());
+                for (size_t i = previousSize; i < m_all.size(); ++i) m_sortKeys[i] = SortKey(i);
+            }
+            std::stable_sort(appended.begin(), appended.end(),
+                             [this](size_t a, size_t b) { return SortLess(a, b); });
+            std::vector<size_t> merged;
+            merged.reserve(m_order.size() + appended.size());
+            std::merge(m_order.begin(), m_order.end(), appended.begin(), appended.end(),
+                       std::back_inserter(merged),
+                       [this](size_t a, size_t b) { return SortLess(a, b); });
+            m_order = std::move(merged);
+        }
+
+        std::vector<size_t> newVisible;
+        newVisible.reserve(appended.size());
+        for (size_t index : appended)
+            if (media::MatchesFilter(m_all[index].search, m_filter)) newVisible.push_back(index);
+        if (!sorted) {
+            m_visible.insert(m_visible.end(), newVisible.begin(), newVisible.end());
+        } else {
+            std::vector<size_t> merged;
+            merged.reserve(m_visible.size() + newVisible.size());
+            std::merge(m_visible.begin(), m_visible.end(), newVisible.begin(), newVisible.end(),
+                       std::back_inserter(merged),
+                       [this](size_t a, size_t b) { return SortLess(a, b); });
+            m_visible = std::move(merged);
+        }
+        BuildGroups();
+    }
+
+    if (focusIndex != SIZE_MAX && reordered) {
+        const auto found = std::find(m_visible.begin(), m_visible.end(), focusIndex);
+        m_focus = found == m_visible.end() ? SIZE_MAX : static_cast<size_t>(found - m_visible.begin());
+    }
+}
+
+bool SongTableSource::UpdateRows(size_t offset, std::vector<SongTableRow> rows) {
+    if (rows.empty()) return true;
+    if (offset > m_all.size() || rows.size() > m_all.size() - offset) return false;
+    for (size_t i = 0; i < rows.size(); ++i) {
+        const SongTableRow& current = m_all[offset + i];
+        if (current.provider != rows[i].provider || current.trackId != rows[i].trackId) return false;
+    }
+
+    const bool fieldSort = m_sortColumn < m_fields.size();
+    if (fieldSort && m_sortKeys.size() != m_all.size()) return false;
+    if (m_order.size() != m_all.size()) return false;
+
+    const PresentationState presentation = CapturePresentation();
+    std::vector<std::wstring> previousSortKeys;
+    if (fieldSort) {
+        previousSortKeys.reserve(rows.size());
+        for (size_t i = 0; i < rows.size(); ++i)
+            previousSortKeys.push_back(m_sortKeys[offset + i]);
+    }
+
+    bool albumInputsChanged = false;
+    bool searchChanged = false;
+    bool displayChanged = false;
+    for (size_t i = 0; i < rows.size(); ++i) {
+        const SongTableRow& previous = m_all[offset + i];
+        const SongTableRow& next = rows[i];
+        albumInputsChanged = albumInputsChanged || previous.albumId != next.albumId ||
+                             previous.album != next.album || previous.artist != next.artist;
+        searchChanged = searchChanged || previous.search != next.search;
+        displayChanged = displayChanged || previous.title != next.title || previous.artist != next.artist ||
+                         previous.album != next.album || previous.albumId != next.albumId ||
+                         previous.artistId != next.artistId || previous.length != next.length ||
+                         previous.lengthMs != next.lengthMs || previous.source != next.source ||
+                         previous.albumKey != next.albumKey || previous.artKey != next.artKey ||
+                         previous.favorite != next.favorite || previous.playCount != next.playCount;
+    }
+    std::move(rows.begin(), rows.end(), m_all.begin() + offset);
+
+    bool sortKeysChanged = false;
+    if (fieldSort) {
+        for (size_t i = 0; i < rows.size(); ++i) {
+            std::wstring key = SortKey(offset + i);
+            if (key != previousSortKeys[i]) {
+                m_sortKeys[offset + i] = std::move(key);
+                sortKeysChanged = true;
+            }
+        }
+    }
+
+    if (albumInputsChanged) {
+        // This is the incremental equivalent of ReplaceRows' normalization. Only rows whose
+        // relationship inputs changed trigger it; ordinary title/length patches do not.
+        RefreshRemoteAlbumKeys(m_all);
+        RebuildUnresolvedRemoteAlbums(m_all, m_unresolvedAlbumNames);
+        RebuildKnownRemoteAlbums(m_all, m_remoteAlbumIdsByName);
+        RebuildResolvedMissingAlbums(m_all, m_remoteAlbumIdsByName, m_resolvedMissingAlbumNames);
+    }
+
+    const bool orderChanged = sortKeysChanged || (m_style == media::ViewStyle::Tiles && albumInputsChanged);
+    if (orderChanged) {
+        if (m_style == media::ViewStyle::Tiles) {
+            m_albumRank.clear();
+            UpdateAlbumRanks(0);
+        }
+        std::stable_sort(m_order.begin(), m_order.end(),
+                         [this](size_t a, size_t b) { return SortLess(a, b); });
+    }
+
+    if (orderChanged || (searchChanged && !m_filter.empty()))
+        RebuildVisible();
+    else if (displayChanged &&
+             (m_style == media::ViewStyle::Tiles || (m_grouping && m_sortColumn < m_fields.size())))
+        BuildGroups();
+    RestorePresentation(presentation);
+    return true;
+}
+
+void SongTableSource::ReplaceRows(std::vector<SongTableRow> rows) {
+    const PresentationState presentation = CapturePresentation();
+    m_all = std::move(rows);
+    RefreshRemoteAlbumKeys(m_all);
+    RebuildUnresolvedRemoteAlbums(m_all, m_unresolvedAlbumNames);
+    RebuildKnownRemoteAlbums(m_all, m_remoteAlbumIdsByName);
+    RebuildResolvedMissingAlbums(m_all, m_remoteAlbumIdsByName, m_resolvedMissingAlbumNames);
+    if (m_style == media::ViewStyle::Tiles || m_sortColumn != SIZE_MAX)
+        SortOrder();
+    else {
+        m_order.resize(m_all.size());
+        for (size_t i = 0; i < m_order.size(); ++i) m_order[i] = i;
+    }
     RebuildVisible();
+    RestorePresentation(presentation);
 }
 
 size_t SongTableSource::RemoveRows(const std::function<bool(const SongTableRow&)>& remove) {
+    const PresentationState presentation = CapturePresentation();
     const size_t before = m_all.size();
     m_all.erase(std::remove_if(m_all.begin(), m_all.end(), remove), m_all.end());
     if (m_all.size() == before) return 0;
-    m_selected.assign(m_all.size(), 0);
-    m_focus = SIZE_MAX;
+    RefreshRemoteAlbumKeys(m_all);
+    RebuildUnresolvedRemoteAlbums(m_all, m_unresolvedAlbumNames);
+    RebuildKnownRemoteAlbums(m_all, m_remoteAlbumIdsByName);
+    RebuildResolvedMissingAlbums(m_all, m_remoteAlbumIdsByName, m_resolvedMissingAlbumNames);
     SortOrder();
     RebuildVisible();
+    RestorePresentation(presentation);
     return before - m_all.size();
 }
 
@@ -340,7 +703,7 @@ void SongTableSource::BuildGroups() {
     m_groups.clear();
     if (m_visible.empty()) return;
     const bool tiles = m_style == media::ViewStyle::Tiles;
-    if (!tiles && (m_sortColumn >= m_fields.size() || !m_grouping)) return;  // one flat list
+    if (!tiles && (m_sortColumn >= m_fields.size() || !m_grouping)) return;
 
     for (size_t r = 0; r < m_visible.size(); ++r) {
         const SongTableRow& item = m_all[m_visible[r]];
@@ -447,8 +810,17 @@ size_t SongTableSource::FindRow(const metadb_handle_ptr& track) const {
     return SIZE_MAX;
 }
 
+std::wstring SongTableSource::RowKey(size_t row) const {
+    return row < m_visible.size() ? StableRowBase(m_all[m_visible[row]]) : std::wstring();
+}
+
 void SongTableSource::Activate(size_t row) {
-    if (row < m_visible.size()) media::PlayItems(VisibleItems(), row);
+    if (row >= m_visible.size()) return;
+    if (m_activate) {
+        m_activate(row, RowIdentity(row));
+        return;
+    }
+    media::PlayItems(VisibleItems(), row);
 }
 
 void SongTableSource::ContextMenu(HWND owner, POINT screen) {
@@ -471,20 +843,45 @@ metadb_handle_list SongTableSource::VisibleItems() const {
 }
 
 void SongTableSource::SetFilter(std::wstring_view filterLower) {
+    const PresentationState presentation = CapturePresentation();
     m_filter.assign(filterLower);
-    m_focus = SIZE_MAX;
     RebuildVisible();
+    RestorePresentation(presentation);
+}
+
+std::wstring SongTableSource::RowIdentity(size_t row) const {
+    if (row >= m_visible.size()) return {};
+    const auto identities = RowIdentities();
+    return identities[m_visible[row]];
+}
+
+size_t SongTableSource::FindRowByIdentity(const std::wstring& identity) const {
+    return FindVisibleByIdentity(identity);
 }
 
 // ---- concrete tables ----------------------------------------------------------------------
 
 RemoteSongSource::RemoteSongSource(stream::Provider& provider, const std::vector<stream::Track>& tracks,
-                                   std::wstring emptyText)
-    : SongTableSource(TrackRows(provider, tracks), false, std::move(emptyText), L"stream-songs"),
+                                   std::wstring emptyText, size_t count)
+    : SongTableSource(TrackRows(provider, tracks, 0, count), false, std::move(emptyText),
+                      L"stream-songs"),
       m_provider(provider) {}
 
-void RemoteSongSource::AppendTracks(const std::vector<stream::Track>& tracks) {
-    Append(TrackRows(m_provider, tracks));
+void RemoteSongSource::AppendTracks(const std::vector<stream::Track>& tracks, size_t begin, size_t end) {
+    begin = std::min(begin, tracks.size());
+    end = std::min(end, tracks.size());
+    if (end <= begin) return;
+    Append(TrackRows(m_provider, tracks, begin, end - begin));
+}
+
+void RemoteSongSource::ReplaceTracks(const std::vector<stream::Track>& tracks, size_t count) {
+    ReplaceRows(TrackRows(m_provider, tracks, 0, count));
+}
+
+bool RemoteSongSource::UpdateTrackRange(const std::vector<stream::Track>& tracks, size_t offset,
+                                        size_t count) {
+    if (offset > tracks.size() || count > tracks.size() - offset) return false;
+    return UpdateRows(offset, TrackRows(m_provider, tracks, offset, count));
 }
 
 size_t RemoteSongSource::RemoveTracks(const std::vector<stream::Id>& ids) {
@@ -495,6 +892,11 @@ size_t RemoteSongSource::RemoveTracks(const std::vector<stream::Id>& ids) {
 
 AllFavoritesSource::AllFavoritesSource(const std::vector<metadb_handle_ptr>& local, const RemoteFavorites& remote)
     : SongTableSource(FavoriteRows(local, remote), true, L"No favorites.", L"all-favorites") {}
+
+void AllFavoritesSource::ReplaceFavorites(const std::vector<metadb_handle_ptr>& local,
+                                          const RemoteFavorites& remote) {
+    ReplaceRows(FavoriteRows(local, remote));
+}
 
 
 PlayStatsSource::PlayStatsSource(const std::vector<media::PlayRecord>& records, std::wstring emptyText)

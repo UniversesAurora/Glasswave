@@ -354,6 +354,14 @@ void LyricsView::SetHasTrack(bool hasTrack) {
 }
 
 void LyricsView::SetResult(const lyrics::Result& result) {
+    // A same-track refresh must not become a new document. Searching and an equal parsed
+    // result leave the line views, scroll, focus and word-fill state in place.
+    if (result.status == lyrics::Status::Searching && m_lyrics) return;
+    if (result.status == lyrics::Status::Found && result.lyrics && m_lyrics &&
+        lyrics::SameLyricsDocument(*m_lyrics, *result.lyrics)) {
+        m_status = lyrics::Status::Found;
+        return;
+    }
     m_status = result.status;
     m_lyrics = result.status == lyrics::Status::Found ? result.lyrics : nullptr;
     m_browsing = false;
@@ -393,10 +401,13 @@ void LyricsView::StartFrames() {
 double LyricsView::Now() const {
     try {
         auto pc = playback_control::get();
-        if (pc->is_playing()) return pc->playback_get_position();
+        metadb_handle_ptr track;
+        if (pc->get_now_playing(track)) return pc->playback_get_position();
     } catch (...) {
     }
-    return 0;
+    // An output-device rebuild can briefly unload the core's current item. Freeze the last
+    // position instead of treating that transient state as a seek to 0:00.
+    return m_lastNow;
 }
 
 float LyricsView::FontSize() const {

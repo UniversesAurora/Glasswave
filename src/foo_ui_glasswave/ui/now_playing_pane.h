@@ -14,8 +14,11 @@
 namespace glasswave::ui {
 
 class NowPlayingPane {
-public:
-    enum class Mode { Lyrics, Queue };
+  public:
+    enum class Mode {
+        Lyrics,
+        Queue
+    };
 
     explicit NowPlayingPane(const winrt::Windows::UI::Composition::ContainerVisual& parent);
     ~NowPlayingPane();
@@ -34,7 +37,7 @@ public:
     void SetPlaying(bool playing, bool paused) { m_lyrics.SetPlaying(playing, paused); }
     QueueView& Queue() { return m_queue; }
 
-    bool Tick();  // per frame; returns whether frames are still needed
+    bool Tick(); // per frame; returns whether frames are still needed
 
     bool HitTest(POINT pt) const;
     void OnMouseMove(POINT pt);
@@ -47,12 +50,18 @@ public:
 
     std::function<void(double seconds)> onSeek;
     std::function<void()> onFrames;
-    std::function<void()> onQueueShown;          // the queue is about to show: refresh its data
+    std::function<void()> onQueueShown; // the queue is about to show: refresh its data
     std::function<void(POINT screen)> onLyricsMenu;
 
-private:
-    enum class Target { None, Bar, Lyrics, Queue };
+  private:
+    enum class Target {
+        None,
+        Bar,
+        Lyrics,
+        Queue
+    };
     Target TargetAt(POINT pt) const;
+    void LayoutGeometry();
     void LayoutParts();
     void PaintHeader();
     void PaintBar();
@@ -61,15 +70,16 @@ private:
     RECT LyricsRect() const;
     RECT QueueRect() const;
     RECT BarRect() const;
-    int ButtonAt(POINT pt) const;  // segment under the point: 0 lyrics, 1 queue, -1 none
-    RECT TrackRect() const;        // the segmented control, client px
+    int ButtonAt(POINT pt) const; // segment under the point: 0 lyrics, 1 queue, -1 none
+    RECT TrackRect() const;       // the segmented control, client px
 
     winrt::Windows::UI::Composition::ContainerVisual m_root{nullptr};
     winrt::Windows::UI::Composition::SpriteVisual m_tint{nullptr}, m_header{nullptr};
     winrt::Windows::UI::Composition::ContainerVisual m_bar{nullptr};
     winrt::Windows::UI::Composition::SpriteVisual m_track{nullptr}, m_thumb{nullptr};
     // Each segment's icon and label twice: white on the track, dark on the thumb.
-    std::array<winrt::Windows::UI::Composition::SpriteVisual, 2> m_segLight{nullptr, nullptr}, m_segDark{nullptr, nullptr};
+    std::array<winrt::Windows::UI::Composition::SpriteVisual, 2> m_segLight{nullptr, nullptr},
+        m_segDark{nullptr, nullptr};
     winrt::com_ptr<ID2D1DeviceContext> m_dc;
     LyricsView m_lyrics;
     QueueView m_queue;
@@ -77,18 +87,18 @@ private:
     float m_scale = 1.0f;
     bool m_visible = false;
     Mode m_mode = Mode::Lyrics;
-    Spring m_t{0};  // 0 lyrics .. 1 queue
+    Spring m_t{0}; // 0 lyrics .. 1 queue
     std::chrono::steady_clock::time_point m_lastFrame{};
 
     std::wstring m_title, m_artist;
     winrt::com_ptr<IWICBitmapSource> m_art;
 
-    Target m_capture = Target::None;  // where the button went down
+    Target m_capture = Target::None; // where the button went down
     Target m_hoverTarget = Target::None;
     int m_buttonDown = -1;
-    bool m_barDragging = false;  // the thumb is being dragged
+    bool m_barDragging = false; // the thumb is being dragged
     LONG m_barDownX = 0;
     float m_barDownT = 0;
 };
 
-}  // namespace glasswave::ui
+} // namespace glasswave::ui

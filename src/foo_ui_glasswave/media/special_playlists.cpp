@@ -1,23 +1,28 @@
 #include "pch.h"
 #include "media/special_playlists.h"
 #include "media/favorites.h"
+#include "media/playback_scheduler.h"
 
 namespace glasswave::media {
 
 namespace {
 
 // {2C4F8E61-7B3A-4D52-9E17-5A0C3B6D8F24}: smart playlists created once
-cfg_var_modern::cfg_int cfg_smartCreated({0x2c4f8e61, 0x7b3a, 0x4d52, {0x9e, 0x17, 0x5a, 0x0c, 0x3b, 0x6d, 0x8f, 0x24}}, 0);
+cfg_var_modern::cfg_int cfg_smartCreated(
+    {0x2c4f8e61, 0x7b3a, 0x4d52, {0x9e, 0x17, 0x5a, 0x0c, 0x3b, 0x6d, 0x8f, 0x24}}, 0);
 
 // Keeps a playlist from being removed or renamed; its content stays editable.
 class ProtectLock : public playlist_lock {
-public:
-    bool query_items_add(t_size, const pfc::list_base_const_t<metadb_handle_ptr>&, const bit_array&) override {
+  public:
+    bool query_items_add(t_size, const pfc::list_base_const_t<metadb_handle_ptr>&,
+                         const bit_array&) override {
         return true;
     }
     bool query_items_reorder(const t_size*, t_size) override { return true; }
     bool query_items_remove(const bit_array&, bool) override { return true; }
-    bool query_item_replace(t_size, const metadb_handle_ptr&, const metadb_handle_ptr&) override { return true; }
+    bool query_item_replace(t_size, const metadb_handle_ptr&, const metadb_handle_ptr&) override {
+        return true;
+    }
     bool query_playlist_rename(const char*, t_size) override { return false; }
     bool query_playlist_remove() override { return false; }
     bool execute_default_action(t_size) override { return false; }
@@ -34,7 +39,7 @@ void Protect(t_size playlist) {
     pm->playlist_lock_install(playlist, fb2k::service_new<ProtectLock>());
 }
 
-}  // namespace
+} // namespace
 
 const std::vector<SmartPreset>& SmartPresets() {
     // Fields from foobar2000's Playback Statistics; queries use its SORT syntax.
@@ -60,7 +65,9 @@ t_size QueuePlaylist(bool create) {
     return create ? pm->find_or_create_playlist(kQueueName) : pm->find_playlist(kQueueName);
 }
 
-bool IsQueue(t_size playlist) { return playlist != SIZE_MAX && playlist == QueuePlaylist(false); }
+bool IsQueue(t_size playlist) {
+    return playlist != SIZE_MAX && playlist == QueuePlaylist(false);
+}
 
 bool IsSmart(t_size playlist) {
     if (playlist == SIZE_MAX) return false;
@@ -126,39 +133,69 @@ void EnsureSpecialPlaylists(bool restore) {
 }
 void PlayQueue(const metadb_handle_list& items, size_t start) {
     if (items.get_count() == 0) return;
-    auto pm = playlist_manager::get();
     const t_size p = QueuePlaylist(true);
     Protect(p);
-    pm->playlist_undo_backup(p);
-    pm->playlist_clear(p);
-    pm->playlist_add_items(p, items, pfc::bit_array_false());
-    pm->set_playing_playlist(p);
-    const t_size at = std::min<t_size>(start, items.get_count() - 1);
-    pm->playlist_set_focus_item(p, at);
-    pm->playlist_execute_default_action(p, at);
+    if (PlaybackScheduler::Get().PlayQueue(items, start)) return;
+    console::print("Glasswave: PlayQueue request rejected; queue left unchanged.");
 }
 
 void PlayNext(const metadb_handle_list& items) {
     if (items.get_count() == 0) return;
-    auto pm = playlist_manager::get();
     const t_size p = QueuePlaylist(true);
-    t_size playlist = SIZE_MAX, index = SIZE_MAX;
-    t_size at = 0;
-    if (pm->get_playing_item_location(&playlist, &index) && playlist == p) at = index + 1;
-    pm->playlist_undo_backup(p);
-    pm->playlist_insert_items(p, at, items, pfc::bit_array_false());
-    if (!playback_control::get()->is_playing()) {
-        pm->set_playing_playlist(p);
-        pm->playlist_execute_default_action(p, at);
-    }
+    Protect(p);
+    if (PlaybackScheduler::Get().PlayNext(items)) return;
+    console::print("Glasswave: PlayNext request rejected; queue left unchanged.");
 }
 
 void AddToQueue(const metadb_handle_list& items) {
     if (items.get_count() == 0) return;
-    auto pm = playlist_manager::get();
     const t_size p = QueuePlaylist(true);
-    pm->playlist_undo_backup(p);
-    pm->playlist_add_items(p, items, pfc::bit_array_false());
+    Protect(p);
+    if (PlaybackScheduler::Get().AddToQueue(items)) return;
+    console::print("Glasswave: AddToQueue request rejected; queue left unchanged.");
 }
 
-}  // namespace glasswave::media
+bool AppendSourceBatch(const metadb_handle_list& items, uint64_t expectedGeneration) {
+    if (items.get_count() == 0) return false;
+    auto pm = playlist_manager::get();
+    Protect(QueuePlaylist(true));
+    return PlaybackScheduler::Get().AppendSourceBatch(items, expectedGeneration);
+}
+
+bool SetQueuePlaybackMode(bool shuffle, int repeat) {
+    return PlaybackScheduler::Get().SetPlaybackMode(shuffle, repeat);
+}
+
+bool QueueShuffleEnabled() {
+    return PlaybackScheduler::Get().QueueShuffleEnabled();
+}
+
+int QueueRepeatMode() {
+    return PlaybackScheduler::Get().QueueRepeatMode();
+}
+
+std::vector<size_t> ScheduledUpcomingIndices() {
+    return PlaybackScheduler::Get().ScheduledUpcomingIndices();
+}
+
+std::vector<ScheduledUpcomingEntry> ScheduledUpcomingSnapshot() {
+    return PlaybackScheduler::Get().ScheduledUpcomingSnapshot();
+}
+
+bool ReorderUpcomingSnapshot(uint64_t expectedRevision, const std::vector<ScheduledUpcomingEntry>& ordered) {
+    return PlaybackScheduler::Get().ReorderUpcomingSnapshot(expectedRevision, ordered);
+}
+
+std::optional<size_t> ScheduledNextIndex() {
+    return PlaybackScheduler::Get().ScheduledNextIndex();
+}
+
+uint64_t QueueScheduleRevision() {
+    return PlaybackScheduler::Get().ScheduleRevision();
+}
+
+uint64_t QueueContentGeneration() {
+    return PlaybackScheduler::Get().ContentGeneration();
+}
+
+} // namespace glasswave::media

@@ -1,0 +1,49 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <OutputType>Library</OutputType>
+    <AssemblyName>glasswave_cavern</AssemblyName>
+    <RootNamespace>Glasswave.Cavern</RootNamespace>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <PublishAot>true</PublishAot>
+    <NativeLib>Shared</NativeLib>
+    <SelfContained>true</SelfContained>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <DebugType>none</DebugType>
+    <DebugSymbols>false</DebugSymbols>
+    <StripSymbols>true</StripSymbols>
+    <!-- The SDK's implicit ILCompiler 8.0.32 is affected by GHSA-p3jp-9v83-76w9.
+         Keep the explicit servicing override rather than accepting that toolchain. -->
+    <SuppressGenerateILCompilerExplicitPackageReferenceWarning>true</SuppressGenerateILCompilerExplicitPackageReferenceWarning>
+    <!-- These two trim warnings cover Cavern's unused object-linking and XML filter
+         loaders. The bounded adapter uses only Enhanced AC-3/JOC and the tested renderer. -->
+    <NoWarn>$(NoWarn);IL2075;IL2057</NoWarn>
+  </PropertyGroup>
+
+  <Target Name="RequireCavernCheckout" BeforeTargets="Restore;Build">
+    <Error Condition="'$(CavernRoot)' == ''"
+           Text="CavernRoot is required. Run scripts/applemusic/atmos/build-renderer.ps1." />
+    <Error Condition="!Exists('$(CavernRoot)\Cavern\Cavern.csproj')"
+           Text="The pinned Cavern checkout is missing at $(CavernRoot)." />
+  </Target>
+
+  <ItemGroup>
+    <ProjectReference Include="$(CavernRoot)\Cavern\Cavern.csproj" />
+    <ProjectReference Include="$(CavernRoot)\Cavern.Format\Cavern.Format.csproj" />
+    <PackageReference Include="Microsoft.DotNet.ILCompiler" Version="8.0.33" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <TrimmerRootAssembly Include="Cavern" />
+    <TrimmerRootAssembly Include="Cavern.Format" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Remove="bin\**\*.cs" />
+    <Compile Remove="obj\**\*.cs" />
+    <Compile Remove="test\**\*.cs" />
+  </ItemGroup>
+</Project>

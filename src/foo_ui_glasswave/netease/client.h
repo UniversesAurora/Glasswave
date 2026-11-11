@@ -6,6 +6,7 @@
 #include "stream/playback_source.h"
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -40,6 +41,12 @@ struct PlaylistDetail {
     std::vector<Song> songs;
 };
 
+struct PlaylistSnapshot {
+    Playlist info;
+    std::vector<int64_t> trackIds;
+    int64_t trackUpdateTime = 0;
+};
+
 // Thin client for the local NeteaseCloudMusicApi Enhanced service. All methods block and
 // are meant for worker threads; none of them touch UI state.
 class Client {
@@ -53,6 +60,10 @@ public:
     bool UserPlaylists(int64_t userId, abort_callback& abort, std::vector<Playlist>& out, int64_t& likedPlaylist,
                        std::wstring& error);
     bool GetPlaylist(int64_t playlistId, abort_callback& abort, PlaylistDetail& out, std::wstring& error);
+    // Playlist metadata and the complete ordered trackIds list, without hydrating every song.
+    // NeteaseCloudMusicApi returns the complete trackIds even when tracks is only a prefix.
+    bool GetPlaylistSnapshot(int64_t playlistId, abort_callback& abort, PlaylistSnapshot& out,
+                             std::wstring& error);
     // The playlist's metadata only (name, cover, description, counts); also bypasses the
     // helper's GET cache so a cover that changed after an edit is seen immediately.
     bool GetPlaylistInfo(int64_t playlistId, abort_callback& abort, Playlist& out, std::wstring& error);
@@ -60,6 +71,9 @@ public:
     bool RecommendPlaylists(abort_callback& abort, std::vector<Playlist>& out, std::wstring& error);
     bool SearchSongs(std::wstring_view query, int limit, int offset, abort_callback& abort, std::vector<Song>& out,
                      std::wstring& error);
+    bool SearchSongsPage(std::wstring_view query, int limit, int offset, abort_callback& abort,
+                         std::vector<Song>& out, bool& more, std::optional<size_t>& total, size_t& received,
+                         std::wstring& error);
     bool SongDetails(const std::vector<int64_t>& ids, abort_callback& abort, std::vector<Song>& out,
                      std::wstring& error);
     stream::SourceStatus GetSongUrl(int64_t id, std::wstring_view level, abort_callback& abort, SongUrl& out,
@@ -71,14 +85,18 @@ public:
     bool GetArtistDescription(int64_t artistId, abort_callback& abort, std::wstring& brief, std::wstring& full,
                               std::wstring& error);
     bool GetArtistAlbumsPage(int64_t artistId, int offset, int limit, abort_callback& abort,
-                             std::vector<Album>& out, bool* followed, bool* more, std::wstring& error);
+                             std::vector<Album>& out, bool* followed, bool* more, std::wstring& error,
+                             size_t* received = nullptr);
     bool GetArtistSongsPage(int64_t artistId, int offset, int limit, std::wstring_view order,
-                            abort_callback& abort, std::vector<Song>& out, bool* more, std::wstring& error);
+                            abort_callback& abort, std::vector<Song>& out, bool* more, std::wstring& error,
+                            size_t* received = nullptr);
     bool GetAlbum(int64_t albumId, abort_callback& abort, Album& info, std::vector<Song>& songs, std::wstring& error);
+    bool GetFollowedArtistsPage(int offset, int limit, abort_callback& abort, std::vector<Artist>& out,
+                                bool& more, size_t& received, std::wstring& error);
     bool GetFollowedArtists(abort_callback& abort, std::vector<Artist>& out, std::wstring& error);
     bool GetCollectedAlbums(abort_callback& abort, std::vector<Album>& out, std::wstring& error);
-    bool GetCollectedAlbumsPage(int offset, int limit, abort_callback& abort, std::vector<Album>& out, bool& more,
-                                std::wstring& error);
+    bool GetCollectedAlbumsPage(int offset, int limit, abort_callback& abort, std::vector<Album>& out,
+                                bool& more, std::wstring& error, size_t* received = nullptr);
     bool SetArtistFollow(int64_t artistId, bool follow, abort_callback& abort, std::wstring& error);
     bool Likelist(int64_t userId, abort_callback& abort, std::vector<int64_t>& out, std::wstring& error);
     bool SetLike(int64_t id, bool like, abort_callback& abort, std::wstring& error);

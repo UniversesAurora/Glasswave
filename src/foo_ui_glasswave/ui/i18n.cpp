@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "ui/i18n.h"
+#include "stream/provider.h"
 #include "win7/win7_resources.h"
 
 #include <cwctype>
@@ -98,10 +99,20 @@ Catalog& Get() {
 
 Language CurrentLanguageSetting() { return static_cast<Language>(std::clamp<int>(static_cast<int>(cfg_language.get()), 0, 2)); }
 void SetLanguageSetting(Language language) {
+    const bool wasChinese = UsingChinese();
     cfg_language = static_cast<int>(language);
     auto& c = Get();
     c.loaded = false;  // reload on next use; keys seen so far stay recorded
     c.table.clear();
+    if (UsingChinese() == wasChinese) return;
+    // This runs from the settings/action path, never from a painter or const provider read.
+    // Default providers re-read their cached snapshot asynchronously after language changes.
+    for (auto* provider : stream::Providers()) {
+        try {
+            provider->OnLanguageChanged();
+        } catch (...) {
+        }
+    }
 }
 bool UsingChinese() { return Get().chinese; }
 
@@ -111,6 +122,18 @@ const std::wstring& Tr(const std::wstring& english) {
     if (!c.chinese) return *it;
     if (auto t = c.table.find(english); t != c.table.end() && !t->second.empty()) return t->second;
     return *it;
+}
+
+const std::wstring& Tr(const std::wstring& english, std::wstring_view context) {
+    auto& c = Get();
+    const auto [key, fresh] = c.seen.insert(std::wstring(context) + L" | " + english);
+    (void)fresh;
+    if (c.chinese) {
+        if (const auto translated = c.table.find(*key);
+            translated != c.table.end() && !translated->second.empty())
+            return translated->second;
+    }
+    return Tr(english);
 }
 
 std::wstring TrMenu(const std::wstring& text) {

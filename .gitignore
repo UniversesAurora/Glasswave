@@ -25,10 +25,22 @@
 *.VC.db
 *.VC.opendb
 
-# Third-party code fetched by scripts/bootstrap.ps1 (only the README and lock file are tracked)
+# Fetched upstream code is excluded; source-only Glasswave adapters are listed explicitly.
 /third_party/*
 !/third_party/README.md
 !/third_party/deps.lock.json
+
+# Glasswave's source-only Cavern adapter; fetched upstream code and build products stay local.
+!/third_party/glasswave-cavern/
+/third_party/glasswave-cavern/*
+!/third_party/glasswave-cavern/*.cs
+!/third_party/glasswave-cavern/*.csproj
+!/third_party/glasswave-cavern/*.json
+!/third_party/glasswave-cavern/NOTICE.md
+!/third_party/glasswave-cavern/test/
+/third_party/glasswave-cavern/test/*
+!/third_party/glasswave-cavern/test/*.cs
+!/third_party/glasswave-cavern/test/*.csproj
 
 # Local dev instance, download cache, screenshots, copyrighted reference images
 /.local/

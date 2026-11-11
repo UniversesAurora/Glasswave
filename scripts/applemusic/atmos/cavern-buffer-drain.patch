@@ -1,0 +1,146 @@
+diff --git a/Cavern.Format/Decoders/FrameBasedDecoder.cs b/Cavern.Format/Decoders/FrameBasedDecoder.cs
+index a16d396..137e52f 100644
+--- a/Cavern.Format/Decoders/FrameBasedDecoder.cs
++++ b/Cavern.Format/Decoders/FrameBasedDecoder.cs
+@@ -14,6 +14,16 @@ namespace Cavern.Format.Decoders {
+         /// </summary>
+         public int LastFetchStart => decoder.LastFetchStart;
+ 
++        /// <summary>
++        /// Whether decoded float samples remain after the compressed input has reached EOF.
++        /// </summary>
++        public bool HasBufferedSamples => decoder.RemainingSamples != 0;
++
++        /// <summary>
++        /// Whether the decoder requested another block after all decoded samples were consumed.
++        /// </summary>
++        public bool DecodedDataEnded => decoder.EndOfInput;
++
+         /// <summary>
+         /// Frame cache object.
+         /// </summary>
+@@ -46,6 +56,10 @@ namespace Cavern.Format.Decoders {
+             }
+ 
+             float[] source = decoder.Read((int)(to - from));
++            if (source == null) {
++                Array.Clear(target, (int)from, (int)(to - from));
++                return;
++            }
+             Array.Copy(source, 0, target, from, source.LongLength);
+         }
+ 
+diff --git a/Cavern.Format/Utilities/BlockBuffer.cs b/Cavern.Format/Utilities/BlockBuffer.cs
+index 565bac0..b9f32b4 100644
+--- a/Cavern.Format/Utilities/BlockBuffer.cs
++++ b/Cavern.Format/Utilities/BlockBuffer.cs
+@@ -11,6 +11,11 @@ namespace Cavern.Format.Utilities {
+         /// </summary>
+         public bool Readable => LastFetch != null;
+ 
++        /// <summary>
++        /// No decoded items remain in the input stream.
++        /// </summary>
++        public bool EndOfInput { get; private set; }
++
+         /// <summary>
+         /// The <see cref="Seeker"/> is set, so it's possible to jump in stream.
+         /// </summary>
+@@ -21,6 +26,11 @@ namespace Cavern.Format.Utilities {
+         /// </summary>
+         public bool FreshFetch => lastFetchPosition == 0;
+ 
++        /// <summary>
++        /// Number of items remaining in the current fetched block.
++        /// </summary>
++        public int RemainingSamples => LastFetch == null ? 0 : LastFetch.Length - lastFetchPosition;
++
+         /// <summary>
+         /// The position of the first sample of the last exported block in the buffer.
+         /// </summary>
+@@ -130,7 +140,11 @@ namespace Cavern.Format.Utilities {
+         /// Flush the current cache and read a new block. This should be called when a stream position changes.
+         /// </summary>
+         public void Clear() {
++            EndOfInput = false;
+             LastFetch = Fetcher();
++            if (LastFetch == null || LastFetch.Length == 0) {
++                EndOfInput = true;
++            }
+             LastFetchStart = 0;
+             lastFetchPosition = 0;
+         }
+@@ -146,6 +160,7 @@ namespace Cavern.Format.Utilities {
+                 result = new T[elements];
+             }
+             if (LastFetch == null || LastFetch.Length == 0) {
++                EndOfInput = true;
+                 return null;
+             }
+             int pointer = 0;
+@@ -160,6 +175,7 @@ namespace Cavern.Format.Utilities {
+                 if (lastFetchPosition == LastFetch.Length) {
+                     LastFetch = Fetcher();
+                     if (LastFetch == null || LastFetch.Length == 0) {
++                        EndOfInput = true;
+                         Array.Clear(result, pointer, result.Length - pointer);
+                         return result;
+                     }
+@@ -180,6 +196,7 @@ namespace Cavern.Format.Utilities {
+                 return LastFetch[lastFetchPosition++];
+             }
+             LastFetch = Fetcher();
++            EndOfInput = LastFetch == null || LastFetch.Length == 0;
+             LastFetchStart = 0;
+             lastFetchPosition = 1;
+             return LastFetch != null ? LastFetch[0] : default;
+diff --git a/Cavern.Format/Decoders/EnhancedAC3Decoder.cs b/Cavern.Format/Decoders/EnhancedAC3Decoder.cs
+--- a/Cavern.Format/Decoders/EnhancedAC3Decoder.cs
++++ b/Cavern.Format/Decoders/EnhancedAC3Decoder.cs
+@@ -24,6 +24,11 @@ namespace Cavern.Format.Decoders {
+         /// </summary>
+         public bool Finished { get; private set; }
+ 
++        /// <summary>
++        /// Number of complete PCM frames produced by this decoder.
++        /// </summary>
++        public long DecodedFrames { get; private set; }
++
+         /// <summary>
+         /// Samples in each decoded frame.
+         /// </summary>
+@@ -96,8 +101,9 @@ namespace Cavern.Format.Decoders {
+             long frameStart = reader.LastFetchStart;
+             do {
+                 if (Finished) {
+-                    outCache.Clear();
+-                    return outCache;
++                    // A zero-filled fixed-size frame would make a streaming consumer
++                    // render silence forever. Signal EOF with an empty fetch instead.
++                    return Array.Empty<float>();
+                 }
+ 
+                 EnhancedAC3Body body = bodies[header.SubstreamID];
+@@ -130,6 +136,7 @@ namespace Cavern.Format.Decoders {
+ 
+             ChannelCount = outputs.Count;
+             SampleRate = header.SampleRate;
++            ++DecodedFrames;
+             return outCache;
+         }
+ 
+diff --git a/Cavern/Virtualizer/VirtualizerFilter.cs b/Cavern/Virtualizer/VirtualizerFilter.cs
+--- a/Cavern/Virtualizer/VirtualizerFilter.cs
++++ b/Cavern/Virtualizer/VirtualizerFilter.cs
+@@ -74,6 +74,11 @@ namespace Cavern.Virtualizer {
+         /// </summary>
+         public VirtualizerFilter() => processor = new Parallelizer(ProcessChannel);
+ 
++        /// <summary>
++        /// Create an independent default HRIR set for one audio context.
++        /// </summary>
++        public static VirtualChannel[] CreateDefaultFilters() => GetDefaultHRIRSet();
++
+         /// <summary>
+         /// Apply a new set of HRIR filters. The reference distance of the sound sources from the subject will be 1 meter.
+         /// </summary>

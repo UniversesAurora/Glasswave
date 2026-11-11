@@ -130,6 +130,30 @@ new application layout values, not measurements of an Apple or Win7 window.
 
 Soft white bands leaning like "/", anchored to the monitor, intensity 50.
 
+## Apple Music account window (new UI, 2026-11-09)
+
+The native account window uses existing Win32 controls and Segoe UI 9 pt. Its client
+area is 460 x 330 DIP with 16 DIP margins. Account, password and verification fields
+are 24 DIP high; labels are 20 DIP high. The password and code fields are 310 DIP
+wide, with a 12 DIP gap before their 106 DIP action buttons. The status region is
+428 x 64 DIP and the Close button is 106 x 28 DIP. These are application layout
+values, not measurements from Win7 or Apple Music.
+
+## Provider group browsing (new UI, 2026-11-09)
+
+Provider-defined genre/composer lists reuse the existing Details list, header and row
+metrics. The Name column fills the remaining width; the right-aligned Songs column has
+an initial width of 100 DIP. This column width is an application default, not a Win7
+measurement. Navigation rows reuse the existing provider row metrics and icons.
+
+## List status band (new UI, 2026-11-10)
+
+The transient loading, cached, partial and error band reuses the measured row height
+(22 DIP), text inset, typography and header background palette. In Details and grouped
+layouts it sits directly below the measured 23 DIP column header; in tile layouts it
+starts at the list top. The band occupies content height and introduces no new color or
+icon.
+
 ## Open items
 
 - Blur strength: DWM host backdrop blur is stronger than Win7's (ADR 0002).

@@ -38,6 +38,9 @@ public:
     // search filter are applied; the selection and the top song are kept where they exist.
     virtual void ShowSource(std::unique_ptr<media::ListSource> source) = 0;
     virtual media::ListSource* Source() const = 0;
+    // Called immediately before a page replaces the currently published rows. The window
+    // records stable RowKey/occurrence anchors here for the following ListChanged call.
+    virtual void BeforeListChange() {}
     virtual void ListChanged() = 0;    // rows changed in place: repaint, keep the top song
     virtual void ChromeChanged() = 0;  // breadcrumb, detail band and navigation lists
     virtual media::ViewStyle SavedStyle(media::ViewStyle fallback) const = 0;
@@ -60,6 +63,9 @@ public:
     // be shown instead of reading the service again.
     virtual std::unique_ptr<media::ListSource> Start(bool reuse) = 0;
     virtual void NearEnd() {}  // the list scrolled close to its last row
+    // The source's local filter, sort, grouping or view style changed. Paged pages use this
+    // to switch between demand loading and a background full-list drain.
+    virtual void OnPresentationChanged() {}
     virtual DetailInfo Detail() const { return {}; }
     virtual void DetailAction() {}
     // Commands for the page as a whole (empty list area, detail band).
@@ -86,6 +92,7 @@ protected:
             if (!alive.expired()) f(std::forward<decltype(args)>(args)...);
         };
     }
+    std::weak_ptr<int> LifetimeToken() const { return m_alive; }
 
     PageHost& m_host;
     View m_view;
