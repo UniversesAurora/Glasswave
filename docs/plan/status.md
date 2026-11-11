@@ -1178,3 +1178,12 @@ Claude to continue. The stash backup remains; do not apply it again. No componen
 rebuild, deployment or test was performed after restoration. Native 503 fixes are
 live; the newly committed component changes are not yet deployed. Resume only
 the work the owner next requests.
+
+The owner subsequently authorized only a delegated, read-only investigation of
+white main-list residual surfaces covering the right sidebar. The worker reports
+to `.local/tests/sidebar-residual-investigation-20261112.md`; no product edits,
+builds, tests or runtime/UI actions are authorized for that investigation. The
+coordinator is not waiting on its result. Startup sidebar blankness specifically
+means streaming navigation is absent until account restoration completes; this
+remains unconfirmed as fixed. List-opening latency is a separate issue. Memory
+root-cause work remains paused; keep the existing watchdog and supervisor running.
