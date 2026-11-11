@@ -265,9 +265,13 @@ LyricsView::LyricsView(const wuc::ContainerVisual& parent) {
     auto& host = gfx::CompositionHost::Get();
     const auto& comp = host.Compositor();
     m_dc = host.CreateDeviceContext();
+    // Keep the clip fixed while m_root rises during the lyrics/queue transition.
+    m_viewport = comp.CreateContainerVisual();
+    m_viewport.Clip(comp.CreateInsetClip());
+    parent.Children().InsertAtTop(m_viewport);
     m_root = comp.CreateContainerVisual();
     m_root.IsVisible(false);
-    parent.Children().InsertAtTop(m_root);
+    m_viewport.Children().InsertAtTop(m_root);
     m_message = comp.CreateSpriteVisual();
     m_root.Children().InsertAtTop(m_message);
 
@@ -305,8 +309,8 @@ LyricsView::LyricsView(const wuc::ContainerVisual& parent) {
 }
 
 LyricsView::~LyricsView() {
-    if (m_root) {
-        if (auto parent = m_root.Parent()) parent.Children().Remove(m_root);
+    if (m_viewport) {
+        if (auto parent = m_viewport.Parent()) parent.Children().Remove(m_viewport);
     }
 }
 
@@ -315,7 +319,11 @@ void LyricsView::SetBounds(const RECT& px, float scale) {
                              px.bottom - px.top != m_bounds.bottom - m_bounds.top || scale != m_scale;
     m_bounds = px;
     m_scale = scale;
-    m_root.Offset(float3{static_cast<float>(px.left), static_cast<float>(px.top), 0});
+    const float w = static_cast<float>(std::max<LONG>(0, px.right - px.left));
+    const float h = static_cast<float>(std::max<LONG>(0, px.bottom - px.top));
+    m_viewport.Offset(float3{static_cast<float>(px.left), static_cast<float>(px.top), 0});
+    m_viewport.Size(float2{w, h});
+    m_root.Size(float2{w, h});
     if (sizeChanged && m_visible) {
         LayoutChrome();
         Relayout();

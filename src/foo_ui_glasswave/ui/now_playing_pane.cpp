@@ -281,12 +281,12 @@ void NowPlayingPane::ApplyTransition() {
     const float queueAlpha = std::clamp((t - 0.15f) / 0.85f, 0.0f, 1.0f);
     m_lyrics.SetVisible(m_visible && t < 0.999f);
     m_queue.SetVisible(m_visible && t > 0.001f);
-    const RECT lr = LyricsRect(), qr = QueueRect();
+    const RECT qr = QueueRect();
+    // The theme roots are children of fixed clipped viewports; these offsets are relative.
     m_lyrics.Root().Opacity(lyricsAlpha);
-    m_lyrics.Root().Offset(float3{static_cast<float>(lr.left), std::round(lr.top - t * kLyricsRise * s), 0});
+    m_lyrics.Root().Offset(float3{0, std::round(-t * kLyricsRise * s), 0});
     m_queue.Root().Opacity(queueAlpha);
-    m_queue.Root().Offset(
-        float3{static_cast<float>(qr.left), std::round(qr.top + (1 - t) * kQueueRise * s), 0});
+    m_queue.Root().Offset(float3{0, std::round((1 - t) * kQueueRise * s), 0});
     const float cardY = qr.top + m_queue.CardTop() * s + (1 - t) * kQueueRise * s;
     const float headerY = static_cast<float>(m_bounds.top) * (1 - t) + cardY * t;
     m_header.Offset(float3{static_cast<float>(m_bounds.left), std::round(headerY), 0});

@@ -82,7 +82,8 @@ private:
     float FontSize() const;
     float ImagePad() const;    // DIP around a line's text in its surface (blur, float, glow)
 
-    winrt::Windows::UI::Composition::ContainerVisual m_root{nullptr};
+    // m_viewport is fixed at the pane's content bounds; m_root is the animated child.
+    winrt::Windows::UI::Composition::ContainerVisual m_viewport{nullptr}, m_root{nullptr};
     winrt::Windows::UI::Composition::SpriteVisual m_message{nullptr};
     winrt::Windows::UI::Composition::LayerVisual m_layer{nullptr};  // the lines, with the edge fade
     winrt::Windows::UI::Composition::CompositionDrawingSurface m_maskSurface{nullptr};

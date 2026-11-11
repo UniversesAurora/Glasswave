@@ -86,7 +86,8 @@ class QueueView {
     float ShownScroll() const; // with the rubber band applied
     void StartFrames();
 
-    winrt::Windows::UI::Composition::ContainerVisual m_root{nullptr};
+    // m_viewport is fixed at the pane's content bounds; m_root is the animated child.
+    winrt::Windows::UI::Composition::ContainerVisual m_viewport{nullptr}, m_root{nullptr};
     winrt::Windows::UI::Composition::LayerVisual m_layer{nullptr};
     winrt::Windows::UI::Composition::CompositionDrawingSurface m_maskSurface{nullptr};
     winrt::Windows::UI::Composition::SpriteVisual m_historyTitle{nullptr}, m_upNextTitle{nullptr},
