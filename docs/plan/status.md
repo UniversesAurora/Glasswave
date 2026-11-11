@@ -1187,3 +1187,8 @@ coordinator is not waiting on its result. Startup sidebar blankness specifically
 means streaming navigation is absent until account restoration completes; this
 remains unconfirmed as fixed. List-opening latency is a separate issue. Memory
 root-cause work remains paused; keep the existing watchdog and supervisor running.
+
+The owner confirmed that horizontal-resize tint/tab misalignment is resolved;
+close that issue. The residual-surface worker must use only the screenshot ending
+`c4cf715f-6556-47ab-bc58-cff0f3c1a306.png`. The other two screenshots show the closed
+resize issue and are excluded from investigation and causal reasoning.
