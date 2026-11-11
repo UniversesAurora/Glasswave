@@ -1,8 +1,9 @@
 #Requires -Version 7
 <#
 .SYNOPSIS
-    Make @2x versions of the WMP 12 bitmaps Glasswave draws, from the user's own wmploc.dll,
-    with waifu2x-ncnn-vulkan (ADR 0007: never shipped, never committed).
+    Make @2x versions of the WMP 12 and Media Center bitmaps Glasswave draws, from the
+    user's own wmploc.dll / ehres.dll, with waifu2x-ncnn-vulkan (ADR 0007: never shipped,
+    never committed).
 
 .DESCRIPTION
     Extracts the wmploc.dll PNG resources the UI uses from <profile>\glasswave\wmploc.dll,
@@ -16,6 +17,10 @@
 
     Nine-grid art (LISTVIEWHEADER) is left alone: its borders are drawn 1:1 anyway.
 
+.PARAMETER Source
+    wmploc (default): the WMP 12 transport and list art. ehres: Media Center's windowed
+    controls, seek bar and volume bar that the player window draws (hd\ehres).
+
 .PARAMETER Waifu2x
     Path to waifu2x-ncnn-vulkan.exe. Default: the newest copy under .local\tools.
 
@@ -25,6 +30,7 @@
 [CmdletBinding()]
 param(
     [string]$ProfileDir = (Join-Path $PSScriptRoot '..\.local\fb2k-dev\profile'),
+    [ValidateSet('wmploc', 'ehres')][string]$Source = 'wmploc',
     [string]$Waifu2x,
     [ValidateRange(-1, 3)][int]$Noise = -1,
     [ValidateSet('models-cunet', 'models-upconv_7_anime_style_art_rgb', 'models-upconv_7_photo')]
@@ -40,8 +46,8 @@ param(
 $ErrorActionPreference = 'Stop'
 
 $art = Join-Path (Resolve-Path $ProfileDir) 'glasswave'
-$dll = Join-Path $art 'wmploc.dll'
-if (-not (Test-Path -LiteralPath $dll)) { throw "wmploc.dll not found in $art (run scripts/run-dev.ps1 first)" }
+$dll = Join-Path $art "$Source.dll"
+if (-not (Test-Path -LiteralPath $dll)) { throw "$Source.dll not found in $art (run scripts/run-dev.ps1 first)" }
 
 if (-not $Waifu2x) {
     $Waifu2x = Get-ChildItem (Join-Path $PSScriptRoot '..\.local\tools') -Recurse -Filter 'waifu2x-ncnn-vulkan.exe' -ErrorAction SilentlyContinue |
@@ -53,8 +59,21 @@ if (-not $Waifu2x -or -not (Test-Path -LiteralPath $Waifu2x)) {
 
 # Resources drawn by wmp/wmp_transport.* and ui/list_view.cpp (type 257 in wmploc.dll).
 $ids = @(4153, 4154, 4155, 4160) + (4162..4169) + (4174..4177) + @(4179, 4180, 2164) +
-       (5244..5247) + (5678..5681) + (5350..5353) + @(5360) + (4723..4725) + @(331)
+       (5244..5247) + (5678..5681) + (5350..5353) + @(5360) + (4723..4725) + @(331) + (4601..4603)
 $names = @($ids | ForEach-Object { "#$_" }) + @('ALBUM_0.PNG', 'ALBUMDROPSHADOW_200X200.PNG')
+$resourceType = 257
+if ($Source -eq 'ehres') {
+    # Resources drawn by ui/player_window.cpp (type 10, RCDATA). Gradients and backgrounds are
+    # left alone: they are soft already.
+    $resourceType = 10
+    $controls = 'STOP', 'PREVIOUS', 'NEXT', 'PLAY', 'PAUSE', 'MUTE', 'MUTEON', 'MINUS', 'PLUS', 'GUIDE',
+                'TELETEXT', 'EXIT', 'MINIMIZE', 'RESTORE', 'GOBACK', 'DOWN'
+    $names = @(foreach ($control in $controls) {
+            foreach ($state in 'DISABLED', 'FOCUS', 'NOFOCUS', 'PRESSED') { "TWOFOOT.CONTROL.$control.$state.PNG" }
+        }) + @('TWOFOOT.CONTROL.DIVIDER.PNG', 'SEEKBAR.PAST.PNG', 'SEEKBAR.FUTURE.PNG',
+               'SEEKBAR.PROGRESS.BACKGROUND.PNG', 'SEEKBAR.POSITION.ACTIVE.PNG', 'SEEKBAR.POSITION.DORMANT.PNG',
+               'OVERLAYS.VOLUME.BAR.ON.PNG', 'OVERLAYS.VOLUME.BAR.OFF.PNG', 'AUDIO.NOCOVER.PNG')
+}
 
 Add-Type -AssemblyName System.Drawing
 $null = [System.Drawing.Bitmap]  # load GDI+ and its helper assemblies
@@ -162,7 +181,7 @@ public static class GlasswaveArt {
 $work = Join-Path ([IO.Path]::GetTempPath()) ("glasswave-upscale-" + [Guid]::NewGuid().ToString('N'))
 $inDir = Join-Path $work 'in'; $outDir = Join-Path $work 'out'
 New-Item -ItemType Directory -Force -Path $inDir, $outDir | Out-Null
-$hdDir = if ($OutputDir) { $OutputDir } else { Join-Path $art 'hd\wmploc' }
+$hdDir = if ($OutputDir) { $OutputDir } else { Join-Path $art "hd\$Source" }
 New-Item -ItemType Directory -Force -Path $hdDir | Out-Null
 
 try {
@@ -170,8 +189,8 @@ try {
     $module = [GlasswaveArt]::Open($dll)
     try {
         foreach ($name in $names) {
-            $png = [GlasswaveArt]::Extract($module, $name, 257)
-            if (-not $png) { Write-Warning "resource $name not found, skipped"; continue }
+            $png = [GlasswaveArt]::Extract($module, $name, $resourceType)
+            if (-not $png) { continue } # not every control has every state
             $file = $name.TrimStart('#')
             $sizes[$file] = [GlasswaveArt]::Split($png, (Join-Path $inDir "$file.c.png"), (Join-Path $inDir "$file.a.png"))
         }
