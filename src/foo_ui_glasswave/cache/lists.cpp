@@ -1571,6 +1571,17 @@ class WorkerPool {
             std::erase_if(m_tasks, [](const Task& task) { return !task.drainOnStop; });
         }
         m_ready.notify_all();
+        {
+            // Persisted list pages are small and bounded. Give already queued publications a
+            // short chance to finish so closing the player does not discard the prefix that was
+            // just visible. Existing epoch/account/guard checks still reject stale writes.
+            std::unique_lock lock(m_mutex);
+            constexpr auto kPersistenceDrain = std::chrono::seconds(2);
+            m_ready.wait_until(lock, std::chrono::steady_clock::now() + kPersistenceDrain,
+                               [this] { return m_tasks.empty() && m_busy.empty(); });
+            m_tasks.clear();
+        }
+        m_ready.notify_all();
         for (auto& thread : m_threads)
             if (thread.joinable()) thread.join();
         m_threads.clear();
@@ -1680,7 +1691,7 @@ class Manager final : public std::enable_shared_from_this<Manager> {
                 } catch (...) {
                 }
                 self->CompletePersisted(std::move(*completion), success);
-            });
+            }, true);
         if (!queued) CompletePersisted(std::move(*completion), false);
     }
 
@@ -1726,7 +1737,7 @@ class Manager final : public std::enable_shared_from_this<Manager> {
                 } catch (...) {
                 }
                 self->CompletePersisted(std::move(*completion), success);
-            });
+            }, true);
         if (!queued) CompletePersisted(std::move(*completion), false);
     }
 
