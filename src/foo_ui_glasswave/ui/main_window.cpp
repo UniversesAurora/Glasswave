@@ -93,6 +93,7 @@ enum WidgetId {
     kDetailBriefToggle,
     kRefresh,
     kLyricsToggle,
+    kMiniToggle,
 };
 bool IsCaptionWidget(int id) {
     return id >= kCapMin && id <= kCapClose;
@@ -708,18 +709,31 @@ class LyricsCommand : public mainmenu_commands {
         0x6a1f3c69, 0x2b7e, 0x4d90, {0x8c, 0x15, 0x3e, 0x9a, 0x7b, 0x2d, 0x4f, 0x61}};
     static constexpr GUID kUpNext{
         0x6a1f3c6a, 0x2b7e, 0x4d90, {0x8c, 0x15, 0x3e, 0x9a, 0x7b, 0x2d, 0x4f, 0x61}};
-    t_uint32 get_command_count() override { return 2; }
-    GUID get_command(t_uint32 index) override { return index == 0 ? kLyrics : kUpNext; }
-    void get_name(t_uint32 index, pfc::string_base& out) override { out = index == 0 ? "Lyrics" : "Up Next"; }
+    static constexpr GUID kMini{
+        0x6a1f3c6b, 0x2b7e, 0x4d90, {0x8c, 0x15, 0x3e, 0x9a, 0x7b, 0x2d, 0x4f, 0x61}};
+    static constexpr GUID kFullScreen{
+        0x6a1f3c6c, 0x2b7e, 0x4d90, {0x8c, 0x15, 0x3e, 0x9a, 0x7b, 0x2d, 0x4f, 0x61}};
+    t_uint32 get_command_count() override { return 4; }
+    GUID get_command(t_uint32 index) override {
+        return index == 0 ? kLyrics : index == 1 ? kUpNext : index == 2 ? kMini : kFullScreen;
+    }
+    void get_name(t_uint32 index, pfc::string_base& out) override {
+        static const char* const names[] = {"Lyrics", "Up Next", "Mini player", "Full screen"};
+        out = names[index < 4 ? index : 0];
+    }
     bool get_description(t_uint32 index, pfc::string_base& out) override {
-        out = index == 0 ? "Shows or hides the Glasswave lyrics pane."
-                         : "Shows the queue and history in the Glasswave pane.";
+        static const char* const texts[] = {"Shows or hides the Glasswave lyrics pane.",
+                                            "Shows the queue and history in the Glasswave pane.",
+                                            "Switches Glasswave to its mini player.",
+                                            "Shows what is playing on the whole screen."};
+        out = texts[index < 4 ? index : 0];
         return true;
     }
     GUID get_parent() override { return mainmenu_groups::view; }
     bool get_display(t_uint32 index, pfc::string_base& text, t_uint32& flags) override {
-        const bool on =
-            g_instance && (index == 0 ? g_instance->LyricsPaneOpen() : g_instance->QueuePaneShown());
+        const bool on = g_instance && (index == 0   ? g_instance->LyricsPaneOpen()
+                                       : index == 1 ? g_instance->QueuePaneShown()
+                                                    : g_instance->PlayerShown(index == 3));
         flags = on ? flag_checked : 0;
         get_name(index, text);
         return g_instance != nullptr;
@@ -728,8 +742,10 @@ class LyricsCommand : public mainmenu_commands {
         if (!g_instance) return;
         if (index == 0)
             g_instance->ToggleLyricsPane();
-        else
+        else if (index == 1)
             g_instance->ToggleQueuePane();
+        else
+            g_instance->ShowPlayer(index == 3);
     }
 };
 mainmenu_commands_factory_t<LyricsCommand> g_lyricsCommand;
@@ -949,7 +965,10 @@ void MainWindow::InitComposition() {
             if (m_page) m_page->OnPresentationChanged();
         }
     };
-    m_pane = std::make_unique<NowPlayingPane>(m_root);
+    m_paneSlot = gfx::CompositionHost::Get().Compositor().CreateContainerVisual();
+    m_paneSlot.RelativeSizeAdjustment(float2{1, 1});
+    m_root.Children().InsertAtTop(m_paneSlot);
+    m_pane = std::make_unique<NowPlayingPane>(m_paneSlot);
     m_pane->onFrames = [this] { StartLyricsFrames(); };
     m_pane->onSeek = [](double seconds) {
         // Like Apple Music: playback continues from the clicked line.
@@ -1294,6 +1313,21 @@ void MainWindow::CreateWidgets() {
         },
         {})
         ->onClick = [this] { ToggleLyrics(); };
+    // Switch to the mini player (WMP 12's "switch to now playing" corner button).
+    add(kMiniToggle,
+        [this](auto* dc, D2D1_SIZE_F s, Layer l) {
+            paint::ButtonPlate(dc, s, l, false);
+            // WMP 12's own "switch to now playing" glyph (wmploc 4601, 25x25).
+            if (m_win7Art && win7::Draw(dc, win7::Module::Wmploc, 4601,
+                                        {std::round((s.width - 25) / 2), std::round((s.height - 25) / 2)}))
+                return;
+            const auto ink = paint::TransportGlyphBrush(dc, s.height / 2 - 7, s.height / 2 + 7, true, l);
+            const float cx = std::round(s.width / 2), cy = std::round(s.height / 2);
+            dc->DrawRectangle({cx - 7.5f, cy - 5.5f, cx + 4.5f, cy + 3.5f}, ink.get(), 1.3f);
+            dc->FillRectangle({cx - 0.5f, cy - 0.5f, cx + 8.0f, cy + 6.5f}, ink.get());
+        },
+        {})
+        ->onClick = [this] { ShowPlayer(false); };
 }
 
 // ---- Layout and painting -------------------------------------------------------------
@@ -1544,8 +1578,10 @@ void MainWindow::UpdateLayout() {
         L.time = {after, tcyMid - PxI(10), after + PxI(110), tcyMid + PxI(10)};
         L.lyricsToggle = {L.client.right - PxI(10) - PxI(28), tcyMid - PxI(12), L.client.right - PxI(10),
                           tcyMid + PxI(12)};
-        L.stream = {std::max<LONG>(L.time.right, L.lyricsToggle.left - PxI(8) - PxI(320)),
-                    L.transport.top + PxI(8), L.lyricsToggle.left - PxI(8), L.transport.bottom - PxI(4)};
+        L.miniToggle = {L.lyricsToggle.left - PxI(4) - PxI(28), L.lyricsToggle.top, L.lyricsToggle.left - PxI(4),
+                        L.lyricsToggle.bottom};
+        L.stream = {std::max<LONG>(L.time.right, L.miniToggle.left - PxI(8) - PxI(320)),
+                    L.transport.top + PxI(8), L.miniToggle.left - PxI(8), L.transport.bottom - PxI(4)};
     }
     const int capsuleLeft = m_win7Art ? ClusterRect(wt::kCapsuleVisible).left : L.capsule.left;
     L.nowPlaying = {L.client.left + PxI(10), L.transport.top + PxI(7),
@@ -1632,7 +1668,7 @@ void MainWindow::UpdateLayout() {
     m_nav->SetBounds(L.navPane, m_scale);
     m_list->SetBounds(L.list, m_scale);
     m_search->SetBounds(L.search, m_scale);
-    if (m_pane) {
+    if (m_pane && !m_paneLent) {
         m_pane->SetBounds(L.lyricsPane, m_scale);
         m_pane->SetVisible(m_lyricsOpen && L.lyricsPane.right > L.lyricsPane.left);
     }
@@ -1708,6 +1744,9 @@ void MainWindow::UpdateLayout() {
             break;
         case kLyricsToggle:
             r = &L.lyricsToggle;
+            break;
+        case kMiniToggle:
+            r = &L.miniToggle;
             break;
         }
         if (r) w->SetBounds(*r, m_scale);
@@ -1914,6 +1953,8 @@ void MainWindow::RepaintNowPlaying() {
         if (!bmp && !win7::DrawStretched(dc, win7::Module::Wmploc, L"ALBUM_0.PNG", coverBox))
             pane::DrawCover(dc, nullptr, coverBox, 4.0f);
         const float x = coverBox.right + 8;
+        m_npArtRect = {m_layout.nowPlaying.left + PxI(coverBox.left), m_layout.nowPlaying.top + PxI(coverBox.top),
+                       m_layout.nowPlaying.left + PxI(coverBox.right), m_layout.nowPlaying.top + PxI(coverBox.bottom)};
         com_ptr<ID2D1SolidColorBrush> dark, grey, link;
         dc->CreateSolidColorBrush(Hex(0x1E1E1E), dark.put());
         dc->CreateSolidColorBrush(Hex(0x5B5B5B), grey.put());
@@ -2146,6 +2187,108 @@ void MainWindow::ToggleLyrics() {
     RepaintNowPlaying();
 }
 
+// ---- Player window ----------------------------------------------------------------------
+
+void MainWindow::ShowPlayer(bool fullScreen) {
+    if (!m_pane) return;
+    if (!m_player) m_player = std::make_unique<PlayerWindow>(*this);
+    m_player->Show(fullScreen ? PlayerWindow::Mode::Full : PlayerWindow::Mode::Mini);
+    if (IsWindowVisible(m_hwnd)) {
+        ShowWindow(m_hwnd, SW_HIDE);
+        m_shadow.Sync();
+    }
+}
+
+NowPlayingPane* MainWindow::LendPane(const wuc::ContainerVisual& parent) {
+    if (!m_pane) return nullptr;
+    m_paneLent = true;
+    m_pane->SetVisible(false);
+    m_pane->Reparent(parent);
+    RefreshPaneQueue();
+    return m_pane.get();
+}
+
+void MainWindow::ReturnPane() {
+    if (!m_paneLent) return;
+    m_paneLent = false;
+    if (!m_pane) return;
+    m_pane->SetVisible(false);
+    m_pane->Reparent(m_paneSlot);
+}
+
+void MainWindow::PlayerClosed() {
+    if (!m_hwnd) return;
+    if (!IsWindowVisible(m_hwnd)) ShowWindow(m_hwnd, SW_SHOW);
+    UpdateLayout();
+    m_shadow.Sync();
+    SetForegroundWindow(m_hwnd);
+}
+
+void MainWindow::SetPlayerVolume(float slider) {
+    m_volume = std::clamp(slider, 0.0f, 1.0f);
+    for (int id : {kVolume, kMute})
+        if (auto* w = WidgetById(id)) w->Invalidate();
+    playback_control::get()->set_volume(DbFromSlider(m_volume));
+}
+
+void MainWindow::PlayerTrackText(std::wstring& title, std::wstring& artist, std::wstring& album) const {
+    title = m_trackTitle;
+    artist = m_trackArtist;
+    album.clear();
+    auto pc = playback_control::get();
+    metadb_handle_ptr now;
+    if (!pc->get_now_playing(now)) return;
+    static titleformat_object::ptr s_album;
+    if (!s_album) titleformat_compiler::get()->compile_safe(s_album, "[%album%]");
+    pfc::string8 text;
+    pc->playback_format_title(nullptr, text, s_album, nullptr, playback_control::display_level_all);
+    album = Wide(text);
+    if (auto* provider = stream::ProviderOf(now)) {
+        if (const auto track = provider->FindTrack(provider->TrackId(now))) {
+            if (!track->album.empty()) album = track->album;
+        }
+    }
+}
+
+void MainWindow::AdoptPlayerWindow(HWND window) {
+    const UINT dpi = GetDpiForWindow(window);
+    for (auto [which, metric] : {std::pair{ICON_SMALL, SM_CXSMICON}, std::pair{ICON_BIG, SM_CXICON}}) {
+        const int size = GetSystemMetricsForDpi(metric, dpi);
+        HICON icon = which == ICON_BIG ? CreateCenteredAppIcon(size) : CreateAppIcon(size);
+        if (HICON old = reinterpret_cast<HICON>(SendMessageW(window, WM_SETICON, which, reinterpret_cast<LPARAM>(icon))))
+            if (old != icon) DestroyIcon(old);
+    }
+    m_playerTaskbar = std::make_unique<Taskbar>(window);
+    m_playerTaskbar->onFavorite = [this] {
+        if (m_taskbar && m_taskbar->onFavorite) m_taskbar->onFavorite();
+    };
+    m_playerTaskbar->SetPlayState(m_playing, m_paused);
+    m_playerTaskbar->SetFavorite(m_npFavorite);
+}
+
+bool MainWindow::PlayerWindowMessage(UINT msg, WPARAM wp, LPARAM lp) {
+    return m_playerTaskbar && m_playerTaskbar->OnMessage(msg, wp, lp);
+}
+
+// One track per album of the library; without a library, the songs of Now Playing.
+std::vector<metadb_handle_ptr> MainWindow::WallAlbums() const {
+    std::vector<metadb_handle_ptr> albums;
+    const auto& tracks = m_library.Tracks();
+    for (const auto& group : m_library.Groups(media::GroupKind::Album))
+        if (!group.tracks.empty() && group.tracks.front() < tracks.size())
+            albums.push_back(tracks[group.tracks.front()].handle);
+    if (albums.empty()) {
+        auto pm = playlist_manager::get();
+        const size_t playlist = pm->get_active_playlist();
+        if (playlist != SIZE_MAX) {
+            metadb_handle_list items;
+            pm->playlist_get_all_items(playlist, items);
+            for (size_t i = 0; i < items.get_count() && albums.size() < 200; ++i) albums.push_back(items[i]);
+        }
+    }
+    return albums;
+}
+
 void MainWindow::ToggleQueuePane() {
     if (!m_pane) return;
     if (!m_lyricsOpen) {
@@ -2199,6 +2342,10 @@ void MainWindow::OnLyrics(const lyrics::Result& result) {
 }
 
 void MainWindow::StartLyricsFrames() {
+    if (m_paneLent) {
+        if (m_player) m_player->StartFrames();
+        return;
+    }
     if (!PlaybackPaintAllowed()) {
         m_playbackPresentationSuspended = true;
         if (m_frameClock) m_frameClock->Stop();
@@ -2225,7 +2372,7 @@ void MainWindow::SchedulePaneQueueRefresh(bool playbackChanged) {
 }
 
 void MainWindow::RefreshPaneQueue(bool playbackChanged) {
-    if (!m_pane || !m_lyricsOpen) return;
+    if (!m_pane || !(m_lyricsOpen || m_paneLent)) return;
     static titleformat_object::ptr s_title, s_artist;
     if (!s_title) {
         titleformat_compiler::get()->compile_safe(s_title, "$if2(%title%,%filename%)");
@@ -2431,6 +2578,7 @@ int MainWindow::NowPlayingPartAt(POINT pt) const {
     if (PtInRect(&m_npArtistRect, pt)) return 2;
     if (PtInRect(&m_npStarRect, pt)) return 4;
     if (const RECT d = DeviceRect(); PtInRect(&d, pt)) return 3;
+    if (PtInRect(&m_npArtRect, pt)) return 5; // like Apple Music: the cover opens the mini player
     return 0;
 }
 
@@ -2445,6 +2593,9 @@ void MainWindow::UpdateNowPlayingHover(POINT pt) {
 
 void MainWindow::OnNowPlayingClick(int part) {
     switch (part) {
+    case 5:
+        ShowPlayer(false);
+        break;
     case 1:
         JumpToPlaying();
         break;
@@ -4684,6 +4835,7 @@ void MainWindow::OnPlaybackStateChanged() {
     for (int id : {kPlay, kStop, kPrev, kNext})
         if (auto* w = WidgetById(id)) w->Invalidate();
     if (m_taskbar) m_taskbar->SetPlayState(playing, paused);
+    if (m_playerTaskbar) m_playerTaskbar->SetPlayState(playing, paused);
     if (m_list) m_list->Refresh(); // playing marker
     if (m_pane) m_pane->SetPlaying(playing, paused);
     if (playing && !paused && m_npLyrics && m_npLyrics->synced) StartLyricsFrames();
@@ -4691,6 +4843,12 @@ void MainWindow::OnPlaybackStateChanged() {
 }
 
 void MainWindow::OnTrackChanged(bool playbackChanged) {
+    struct NotifyPlayer { // after this window's own state is current
+        MainWindow& window;
+        ~NotifyPlayer() {
+            if (window.m_player) window.m_player->OnPlayback();
+        }
+    } notifyPlayer{*this};
     static titleformat_object::ptr s_title, s_artist;
     if (!s_title) {
         titleformat_compiler::get()->compile_safe(s_title, "$if2(%title%,%filename%)");
@@ -4806,6 +4964,7 @@ void MainWindow::OnPlaybackTime() {
         FlushPlaybackPaints();
     }
     RepaintNowPlaying();
+    if (m_player) m_player->OnTime();
 }
 
 void MainWindow::OnVolumeChanged() {
@@ -4822,6 +4981,7 @@ void MainWindow::OnVolumeChanged() {
             if (auto* w = WidgetById(id)) w->Invalidate();
         if (m_volumeTipShown) ShowVolumeTip(VolumeThumbX()); // keep a visible bubble current
     }
+    if (m_player) m_player->OnVolume();
 }
 
 void MainWindow::OnPlaybackOrderChanged() {
@@ -4877,6 +5037,7 @@ void MainWindow::UpdateFavoriteState() {
     metadb_handle_ptr now;
     const bool fav = playback_control::get()->get_now_playing(now) && media::IsFavorite(now);
     if (m_taskbar) m_taskbar->SetFavorite(fav);
+    if (m_playerTaskbar) m_playerTaskbar->SetFavorite(fav);
     if (fav != m_npFavorite) {
         m_npFavorite = fav;
         RepaintNowPlaying();
@@ -5369,6 +5530,8 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
 
     case WM_SHOWWINDOW: {
         const LRESULT result = DefWindowProcW(hwnd, msg, wp, lp);
+        // The library shown from elsewhere (tray, another instance): the player gives way.
+        if (wp && m_player && m_player->Shown()) m_player->Close();
         UpdatePlaybackPresentation();
         return result;
     }
@@ -5824,6 +5987,14 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
                     return 0;
                 }
             }
+            if (wp == VK_F11) {
+                ShowPlayer(true);
+                return 0;
+            }
+            if (ctrl && shift && wp == 'M') { // WMP 12: switch to the mini player
+                ShowPlayer(false);
+                return 0;
+            }
             if (wp == VK_SPACE && !m_search->Focused()) { // WMP's play / pause
                 playback_control::get()->play_or_pause();
                 return 0;
@@ -5911,6 +6082,9 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
         m_nav.reset();
         m_search.reset();
         m_frameClock.reset();
+        m_paneLent = false;
+        m_playerTaskbar.reset();
+        m_player.reset();
         m_pane.reset();
         m_nowPlayingPaint.Clear();
         m_seekPaint.Clear();

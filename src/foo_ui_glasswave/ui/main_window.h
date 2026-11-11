@@ -13,6 +13,7 @@
 #include "ui/i18n.h"
 #include "ui/nav_pane.h"
 #include "ui/page.h"
+#include "ui/player_window.h"
 #include "ui/search_box.h"
 #include "ui/widget.h"
 #include "ui/win7_menu.h"
@@ -26,7 +27,7 @@ namespace glasswave::ui {
 // The Glasswave main window, laid out like WMP 12 library mode: Aero glass caption and
 // frame, a light client area (navigation bar, command bar, navigation pane + list,
 // transport band), all presented through a Windows.UI.Composition visual tree.
-class MainWindow : public PageHost {
+class MainWindow : public PageHost, public PlayerHost {
   public:
     MainWindow();
     ~MainWindow();
@@ -48,6 +49,24 @@ class MainWindow : public PageHost {
     bool QueuePaneShown() const {
         return m_lyricsOpen && m_pane && m_pane->CurrentMode() == NowPlayingPane::Mode::Queue;
     }
+
+    // The player window (View > Mini player / Full screen): the library hides while it shows.
+    void ShowPlayer(bool fullScreen);
+    bool PlayerShown(bool fullScreen) const {
+        return m_player && m_player->Shown() &&
+               (m_player->CurrentMode() == PlayerWindow::Mode::Full) == fullScreen;
+    }
+    // PlayerHost
+    NowPlayingPane* LendPane(const winrt::Windows::UI::Composition::ContainerVisual& parent) override;
+    void ReturnPane() override;
+    void PlayerClosed() override;
+    float PlayerVolume() const override { return m_volume; }
+    void SetPlayerVolume(float slider) override;
+    std::vector<metadb_handle_ptr> WallAlbums() const override;
+    bool OriginalTransportArt() const override { return m_win7Art; }
+    void PlayerTrackText(std::wstring& title, std::wstring& artist, std::wstring& album) const override;
+    void AdoptPlayerWindow(HWND window) override;
+    bool PlayerWindowMessage(UINT msg, WPARAM wp, LPARAM lp) override;
 
     // Forwarded from the core callbacks.
     void OnPlaybackStateChanged();
@@ -97,7 +116,7 @@ class MainWindow : public PageHost {
         RECT seek{}, capsule{}, divider{}, shuffle{}, repeat{}, stop{}, prev{}, next{}, play{}, mute{},
             volume{};
         RECT nowPlaying{}, time{}, stream{};
-        RECT lyricsPane{}, lyricsToggle{}; // lyrics pane on the glass right of the client area
+        RECT lyricsPane{}, lyricsToggle{}, miniToggle{}; // lyrics pane on the glass right of the client area
         POINT cluster{};                   // origin of the WMP 12 transport cluster bitmap
     };
 
@@ -241,6 +260,11 @@ class MainWindow : public PageHost {
     bool TickNowPlayingLyric(); // per frame; returns whether frames are still needed
     // Lyrics pane (right of the client area, on the glass).
     std::unique_ptr<NowPlayingPane> m_pane; // lyrics and queue
+    // Where the pane lives in this window's tree; the player window borrows the pane.
+    winrt::Windows::UI::Composition::ContainerVisual m_paneSlot{nullptr};
+    std::unique_ptr<PlayerWindow> m_player;
+    std::unique_ptr<class Taskbar> m_playerTaskbar; // the player window's thumbnail buttons
+    bool m_paneLent = false;
     std::unique_ptr<gfx::FrameClock> m_frameClock;
     bool m_lyricsOpen = false;
     bool m_lyricsHover = false;         // the mouse is over the pane
@@ -266,13 +290,14 @@ class MainWindow : public PageHost {
     std::unordered_map<size_t, media::ScheduledUpcomingEntry> m_paneUpcoming;
     bool m_queueRefreshPending = false, m_queueFollowPending = false;
     RECT m_npTitleRect{}, m_npArtistRect{}, m_npStarRect{}; // client px, for clicks
+    RECT m_npArtRect{};                                     // the cover: opens the mini player
     bool m_npFavorite = false;                              // the playing song is in Favorites
     D2D1_RECT_F m_deviceText{};                             // DIP inside m_layout.stream
     std::wstring m_deviceName;                              // cached: listing devices is slow
     LONG m_streamWidth = 0;                                 // width the stream block was painted at
     void RefreshDeviceName();
     RECT DeviceRect() const;
-    int m_npHot = 0; // 1 title, 2 artist, 3 device, 4 Favorite star
+    int m_npHot = 0; // 1 title, 2 artist, 3 device, 4 Favorite star, 5 cover
     winrt::Windows::UI::Composition::SpriteVisual m_time{nullptr}, m_streamVisual{nullptr};
     service_ptr m_outputCallback;
     void RepaintStreamInfo();

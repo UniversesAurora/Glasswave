@@ -2,6 +2,21 @@
 
 Updated: 2026-11-11
 
+## Player window (2026-11-12)
+
+- New: the mini player and the full screen (`ui/player_window.*`), Media Center's album
+  wall (`ui/album_wall.*`) and its moving light (`ui/aero_light.*`); design and measurements
+  in [docs/design/player-window.md](../design/player-window.md). The library window lends
+  the player its lyrics / queue pane.
+- Controls are the original ehres.dll / wmploc.dll artwork; `scripts/upscale-art.ps1 -Source
+  ehres` makes their @2x versions (72 written in the dev profile).
+- Release x64 builds with zero warnings. Checked in the dev instance by passive window
+  captures only: mini (cover, lyrics, queue), full screen (with and without lyrics). Not
+  checked: mouse interaction, the entrance and swell in motion, taskbar buttons, other DPIs,
+  a profile without the Win7 files. Owner acceptance is open.
+- Next: the owner's review of look and motion; WMC's idle layout; persisting the mini
+  window's place; measuring the seek bar pieces.
+
 ## Current integration gate (2026-11-11)
 
 - The R6 compositor-wake fix is owner-confirmed. The pane position-only geometry fix and

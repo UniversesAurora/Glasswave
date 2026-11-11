@@ -25,6 +25,8 @@ class NowPlayingPane {
     NowPlayingPane(const NowPlayingPane&) = delete;
     NowPlayingPane& operator=(const NowPlayingPane&) = delete;
 
+    // Moves the pane under another container (the player window borrows it).
+    void Reparent(const winrt::Windows::UI::Composition::ContainerVisual& parent);
     void SetBounds(const RECT& px, float scale);
     void SetVisible(bool visible);
     bool Visible() const { return m_visible; }

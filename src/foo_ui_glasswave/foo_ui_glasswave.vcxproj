@@ -177,7 +177,10 @@
     <ClCompile Include="ui\lyrics_search.cpp" />
     <ClCompile Include="ui\pane_common.cpp" />
     <ClCompile Include="ui\queue_view.cpp" />
+    <ClCompile Include="ui\aero_light.cpp" />
+    <ClCompile Include="ui\album_wall.cpp" />
     <ClCompile Include="ui\now_playing_pane.cpp" />
+    <ClCompile Include="ui\player_window.cpp" />
     <ClCompile Include="gfx\color_matrix_effect.cpp" />
     <ClCompile Include="aero\glass_material.cpp" />
     <ClCompile Include="aero\aero_painter.cpp" />
@@ -249,7 +252,10 @@
     <ClInclude Include="ui\lyrics_search.h" />
     <ClInclude Include="ui\pane_common.h" />
     <ClInclude Include="ui\queue_view.h" />
+    <ClInclude Include="ui\aero_light.h" />
+    <ClInclude Include="ui\album_wall.h" />
     <ClInclude Include="ui\now_playing_pane.h" />
+    <ClInclude Include="ui\player_window.h" />
     <ClInclude Include="ui\spring.h" />
     <ClInclude Include="gfx\color_matrix_effect.h" />
     <ClInclude Include="aero\aero_colorization.h" />

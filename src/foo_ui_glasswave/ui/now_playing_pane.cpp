@@ -106,6 +106,11 @@ NowPlayingPane::~NowPlayingPane() {
     }
 }
 
+void NowPlayingPane::Reparent(const wuc::ContainerVisual& parent) {
+    if (auto old = m_root.Parent()) old.Children().Remove(m_root);
+    parent.Children().InsertAtTop(m_root);
+}
+
 void NowPlayingPane::StartFrames() {
     if (onFrames) onFrames();
 }
