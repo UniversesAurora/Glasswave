@@ -25,6 +25,7 @@ $libdrmOutput = Join-Path $paths.DepsRoot 'libdrm-client'
 $stubOutput = Join-Path $paths.DepsRoot 'android-stubs'
 $mingwBin = 'C:\ProgramData\mingw64\mingw64\bin'
 $llvmBin = 'C:\Program Files\LLVM\bin'
+$llvmNm = Join-Path $llvmBin 'llvm-nm.exe'
 
 function Get-RequiredCommand {
     param([Parameter(Mandatory)][string]$Name)
@@ -211,6 +212,19 @@ function Assert-FairPlayLibrariesPresent {
     }
 }
 
+function Assert-FairPlayAccountDSIDSymbol {
+    $library = Join-Path $paths.RuntimeRoot 'rootfs\system\lib64\libstoreservicescore.so'
+    if (-not (Test-Path -LiteralPath $library -PathType Leaf)) {
+        throw "Apple account library is missing: $library"
+    }
+    $symbol = '_ZN17storeservicescore14RequestContext20preferredAccountDSIDEv'
+    $defined = & $llvmNm -D --defined-only $library
+    if ($LASTEXITCODE -ne 0 -or
+        -not (@($defined) | Where-Object { $_ -match "\s$([regex]::Escape($symbol))\s*$" })) {
+        throw "Apple account library does not export the expected DSID getter: $symbol"
+    }
+}
+
 function Assert-PeStackHeader {
     param([Parameter(Mandatory)][string]$Path)
 
@@ -302,7 +316,7 @@ $objdump = Join-Path $mingwBin 'objdump.exe'
 $clang = Join-Path $llvmBin 'clang.exe'
 $gitBash = Get-GitBashPath
 $editbin = Get-VsEditBinPath
-foreach ($tool in @($go, $gcc, $gxx, $make, $gendef, $dlltool, $objdump, $clang, $gitBash, $editbin)) {
+foreach ($tool in @($go, $gcc, $gxx, $make, $gendef, $dlltool, $objdump, $llvmNm, $clang, $gitBash, $editbin)) {
     if (-not (Test-Path -LiteralPath $tool -PathType Leaf)) {
         throw "Required Windows build tool is missing: $tool"
     }
@@ -397,6 +411,8 @@ if ($PromoteArtifactOnly) {
     Write-Host "Promoted isolated build: $(Join-Path $paths.RuntimeRoot 'engine.exe')"
     return
 }
+
+Assert-FairPlayAccountDSIDSymbol
 
 if ($RefreshStage) {
     Remove-GeneratedStageTree $stageSource

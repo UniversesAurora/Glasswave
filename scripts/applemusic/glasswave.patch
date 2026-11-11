@@ -84,16 +84,25 @@ index 9d379a2..cca2c84 100644
  char *drm_lib_get_account(void);
  
 diff --git a/drm/native/hybris_stubs.c b/drm/native/hybris_stubs.c
-index 576fcf3..86730bd 100644
+index 576fcf3..a32d81c 100644
 --- a/drm/native/hybris_stubs.c
 +++ b/drm/native/hybris_stubs.c
-@@ -502,6 +502,12 @@ void _ZN17storeservicescore14RequestContext24setFairPlayDirectoryPathERKNSt6__nd
+@@ -502,6 +502,21 @@ void _ZN17storeservicescore14RequestContext24setFairPlayDirectoryPathERKNSt6__nd
      fn(obj,path);
  }
  
-+int64_t _ZNK17storeservicescore14RequestContext20preferredAccountDSIDEv(void *obj) {
++int64_t _ZN17storeservicescore14RequestContext20preferredAccountDSIDEv(void *obj) {
 +    static int64_t (SYSV *fn)(void*) = NULL;
-+    if (!fn) fn = sym("_ZNK17storeservicescore14RequestContext20preferredAccountDSIDEv");
++    static int resolution = 0; /* 0=pending, 1=resolved, -1=unavailable */
++    if (!resolution && h_ssc) {
++        void *symbol = android_dlsym(
++            h_ssc, "_ZN17storeservicescore14RequestContext20preferredAccountDSIDEv");
++        memcpy(&fn, &symbol, sizeof(fn));
++        resolution = fn ? 1 : -1;
++        if (!fn)
++            fprintf(stderr, "[hybris] preferredAccountDSID unavailable; account identity fails closed\n");
++    }
++    if (resolution != 1 || !obj) return 0;
 +    return fn(obj);
 +}
 +
@@ -101,19 +110,19 @@ index 576fcf3..86730bd 100644
      static void (__attribute__((sysv_abi)) *fn)(union std_string*) = NULL;
      static int by_value = 0;
 diff --git a/drm/native/import.h b/drm/native/import.h
-index 17c0c1e..bf842cc 100644
+index 17c0c1e..7195a05 100644
 --- a/drm/native/import.h
 +++ b/drm/native/import.h
 @@ -278,6 +278,7 @@ extern union std_string *_ZNK17storeservicescore13PlaybackAsset7flavorEv(void *,
  extern union std_string *_ZNK17storeservicescore13PlaybackAsset11downloadKeyEv(void *, void *);
  
  extern union std_string *_ZNK17storeservicescore14RequestContext20storeFrontIdentifierERKNSt6__ndk110shared_ptrINS_6URLBagEEE(void *, void *, struct shared_ptr *);
-+extern int64_t _ZNK17storeservicescore14RequestContext20preferredAccountDSIDEv(void *);
++extern int64_t _ZN17storeservicescore14RequestContext20preferredAccountDSIDEv(void *);
  
  extern void _ZN21SVFootHillSessionCtrl16resetAllContextsEv(void *);
  extern int __android_log_print(int prio, const char *tag, const char *fmt, ...);
 diff --git a/drm/native/main.c b/drm/native/main.c
-index a1dd4c8..2b7a8fa 100644
+index a1dd4c8..c061792 100644
 --- a/drm/native/main.c
 +++ b/drm/native/main.c
 @@ -1895,6 +1895,11 @@ char* get_account_storefront_id(struct shared_ptr reqCtx) {
@@ -122,7 +131,7 @@ index a1dd4c8..2b7a8fa 100644
  
 +int64_t get_active_account_dsid(void) {
 +    if (!reqCtx.obj) return 0;
-+    return _ZNK17storeservicescore14RequestContext20preferredAccountDSIDEv(reqCtx.obj);
++    return _ZN17storeservicescore14RequestContext20preferredAccountDSIDEv(reqCtx.obj);
 +}
 +
  void write_storefront_id(void) {
@@ -7286,6 +7295,120 @@ index 0000000..f544b84
 +	out.Write(make([]byte, 32))
 +	return out.Bytes()
 +}
+diff --git a/engine/core/drm/adamplay_backend.go b/engine/core/drm/adamplay_backend.go
+index 89bec59..7c46efa 100644
+--- a/engine/core/drm/adamplay_backend.go
++++ b/engine/core/drm/adamplay_backend.go
+@@ -100,6 +100,9 @@ type adamplayBackend struct {
+ }
+ 
+ var errBackendStopped = errors.New("DRM backend is not running")
++var errAccountContextUnavailable = errors.New("Apple account context is unavailable")
++
++const accountContextInitTimeout = 20 * time.Second
+ 
+ // enter registers one call into the C library. gen is the generation the caller's
+ // state (key contexts) belongs to, or 0 for calls that carry none. The returned func
+@@ -124,6 +127,44 @@ func (b *adamplayBackend) leave() {
+ 	b.mu.Unlock()
+ }
+ 
++func (b *adamplayBackend) waitForAccountContext(ctx context.Context) error {
++	waitCtx, cancel := context.WithTimeout(ctx, accountContextInitTimeout)
++	defer cancel()
++
++	b.mu.Lock()
++	running := b.running
++	ready := b.hybrisReady
++	initDone := b.hybrisInitDone
++	b.mu.Unlock()
++	if !running {
++		return errBackendStopped
++	}
++	if ready {
++		return nil
++	}
++	if initDone == nil {
++		return errAccountContextUnavailable
++	}
++
++	select {
++	case <-initDone:
++	case <-waitCtx.Done():
++		return fmt.Errorf("%w: %v", errAccountContextUnavailable, waitCtx.Err())
++	}
++
++	b.mu.Lock()
++	running = b.running
++	ready = b.hybrisReady
++	b.mu.Unlock()
++	if !running {
++		return errBackendStopped
++	}
++	if !ready {
++		return errAccountContextUnavailable
++	}
++	return nil
++}
++
+ func (b *adamplayBackend) currentGen() uint64 {
+ 	b.mu.Lock()
+ 	defer b.mu.Unlock()
+@@ -530,6 +571,9 @@ func (b *adamplayBackend) SetAccountFallback(fn func() AccountInfo) {
+ 
+ // GetAccount returns the account information
+ func (b *adamplayBackend) GetAccount(ctx context.Context) (AccountInfo, error) {
++	if err := b.waitForAccountContext(ctx); err != nil {
++		return AccountInfo{}, err
++	}
+ 	leave, err := b.enter(0)
+ 	if err != nil {
+ 		return AccountInfo{}, err
+diff --git a/engine/core/drm/adamplay_backend_inflight_test.go b/engine/core/drm/adamplay_backend_inflight_test.go
+index 7069926..9df978c 100644
+--- a/engine/core/drm/adamplay_backend_inflight_test.go
++++ b/engine/core/drm/adamplay_backend_inflight_test.go
+@@ -3,10 +3,40 @@
+ package drm
+ 
+ import (
++	"context"
++	"errors"
+ 	"testing"
+ 	"time"
+ )
+ 
++func TestWaitForAccountContextWaitsForSessionReuseInit(t *testing.T) {
++	done := make(chan struct{})
++	b := &adamplayBackend{running: true, hybrisInitDone: done}
++	go func() {
++		time.Sleep(20 * time.Millisecond)
++		b.mu.Lock()
++		b.hybrisReady = true
++		b.mu.Unlock()
++		close(done)
++	}()
++
++	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
++	defer cancel()
++	if err := b.waitForAccountContext(ctx); err != nil {
++		t.Fatal(err)
++	}
++}
++
++func TestWaitForAccountContextFailsClosedAfterInitFailure(t *testing.T) {
++	done := make(chan struct{})
++	close(done)
++	b := &adamplayBackend{running: true, hybrisInitDone: done}
++
++	if err := b.waitForAccountContext(context.Background()); !errors.Is(err, errAccountContextUnavailable) {
++		t.Fatalf("want account context unavailable, got %v", err)
++	}
++}
++
+ // Stop must not tear the C library down under a call that is still inside it, and must
+ // refuse new calls from the moment it starts.
+ func TestQuiesceWaitsForInFlightCalls(t *testing.T) {
 diff --git a/engine/core/drm/provider.go b/engine/core/drm/provider.go
 index 278a8ef..37d9002 100644
 --- a/engine/core/drm/provider.go
