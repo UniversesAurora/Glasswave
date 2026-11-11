@@ -58,6 +58,19 @@ cover moves left and the pane takes the right half.
 
 Each falls back to procedural painting when the user's files lack it.
 
+Notes from the owner's review (2026-11-12):
+
+- WMP's speaker and stop glyphs carry a pale halo made for its light capsule and showed white
+  edges on the dark bar, as did the white-framed corner glyph 4603. The mini window therefore
+  takes stop, speaker and the back orb from Media Center's set too, and its bar is a deep blue
+  (0x051739 -> 0x030C24) rather than black, the ground those plates were drawn for.
+- Seek bar pieces, measured in the bitmaps: the groove is solid in columns 9 - 17 of 27; the
+  past is a 9-column glow tail followed by solid white (columns 9 - 13 of 14), the future its
+  mirror image at alpha 102. Only the solid columns stretch (nine-grid margins 11 / 1).
+- The lent pane is embedded (`NowPlayingPane::SetEmbedded`): no tint rectangle and no switch
+  of its own. Full screen, the wall behind it sinks into blue with no edge: a horizontal
+  gradient that starts left of the pane and reaches 86 % at its text.
+
 ## The wall (measured from the owner's WMC recordings, 3322x1832 at 30 fps)
 
 | Quantity | WMC | Here |
@@ -87,5 +100,4 @@ is visible, as compositor animations only, and pauses when the window is minimiz
 ## Not done yet
 
 - WMC's idle layout and its left menu; browsing the library in full screen.
-- The seek bar pieces are placed by eye; their nine-grid margins are not measured.
 - Mini window position and form are remembered only for the session.

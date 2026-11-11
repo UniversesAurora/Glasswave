@@ -29,6 +29,9 @@ class NowPlayingPane {
     void Reparent(const winrt::Windows::UI::Composition::ContainerVisual& parent);
     void SetBounds(const RECT& px, float scale);
     void SetVisible(bool visible);
+    // Embedded in the player window: no tint of its own and no switch at the bottom (the
+    // host shades the background and has its own lyrics / queue buttons).
+    void SetEmbedded(bool embedded);
     bool Visible() const { return m_visible; }
     void SetMode(Mode mode);
     Mode CurrentMode() const { return m_mode; }
@@ -87,7 +90,7 @@ class NowPlayingPane {
     QueueView m_queue;
     RECT m_bounds{};
     float m_scale = 1.0f;
-    bool m_visible = false;
+    bool m_visible = false, m_embedded = false;
     Mode m_mode = Mode::Lyrics;
     Spring m_t{0}; // 0 lyrics .. 1 queue
     std::chrono::steady_clock::time_point m_lastFrame{};

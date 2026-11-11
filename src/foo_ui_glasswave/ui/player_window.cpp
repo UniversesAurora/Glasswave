@@ -337,7 +337,7 @@ void PlayerWindow::CreateWidgets() {
     // mini window, procedural painting where the user's files have neither.
     add(kStop, m_barLayer,
         [this](auto* dc, D2D1_SIZE_F s, Layer l) {
-            if (Wmc())
+            if (m_ehres)
                 DrawControl(dc, s, L"STOP", l, m_playing);
             else if (m_wmp)
                 wt::ClusterButton(dc, ClusterRegion(m_layout.stop), wt::Button::Stop, l, m_playing);
@@ -402,7 +402,7 @@ void PlayerWindow::CreateWidgets() {
 
     add(kMute, m_barLayer,
         [this](auto* dc, D2D1_SIZE_F s, Layer l) {
-            if (Wmc()) {
+            if (m_ehres) {
                 DrawControl(dc, s, m_muted ? L"MUTEON" : L"MUTE", l);
             } else if (m_wmp) {
                 wt::Mute(dc, l, m_muted, m_volume);
@@ -468,7 +468,7 @@ void PlayerWindow::CreateWidgets() {
     // library" corner button in the mini window.
     add(kLibrary, m_capsLayer,
         [this](auto* dc, D2D1_SIZE_F s, Layer l) {
-            if (Wmc()) {
+            if (m_ehres) {
                 DrawControl(dc, s, L"GOBACK", l);
             } else if (m_wmp && win7::Resources::Get().Has(kWmploc, kSwitchToLibrary)) {
                 if (l == Layer::Hover || l == Layer::Pressed)
@@ -846,7 +846,10 @@ void PlayerWindow::UpdateLayout(bool animate) {
             L.library = {W - PxI(16 + 30), PxI(16), W - PxI(16), PxI(16 + 26)};
         } else {
             L.bar = {C.left, C.bottom - barH, C.right, C.bottom};
-            L.library = {C.right - PxI(8 + 25), C.top + PxI(8), C.right - PxI(8), C.top + PxI(8 + 25)};
+            if (m_ehres)
+                L.library = {C.left + PxI(6), C.top + PxI(6), C.left + PxI(6 + 30), C.top + PxI(6 + 30)};
+            else
+                L.library = {C.right - PxI(8 + 25), C.top + PxI(8), C.right - PxI(8), C.top + PxI(8 + 25)};
         }
         const int rowY = L.bar.top + PxI(4);
         L.timeLeft = {L.bar.left + PxI(8), rowY + PxI(3), L.bar.left + PxI(8 + 46), rowY + PxI(21)};
@@ -859,6 +862,10 @@ void PlayerWindow::UpdateLayout(bool animate) {
             L.prev = ClusterRect(wt::kPrevRect);
             L.next = ClusterRect(wt::kNextRect);
             L.stop = ClusterRect(wt::kStopRect);
+            if (m_ehres) { // Media Center's stop, on the centre of WMP's
+                const int sx = (L.stop.left + L.stop.right) / 2 - PxI(6);
+                L.stop = CenteredRect(sx, cy, PxI(38), PxI(31));
+            }
         } else {
             const int orbPx = PxI(m::kOrbDiameter + 2.0f), segH = PxI(m::kSegmentHeight);
             L.play = CenteredRect(cx, cy, orbPx, orbPx);
@@ -866,8 +873,9 @@ void PlayerWindow::UpdateLayout(bool animate) {
             L.next = {cx, cy - segH / 2, cx + PxI(m::kSegmentReach), cy - segH / 2 + segH};
             L.stop = CenteredRect(cx + PxI(m::kStopX), cy, PxI(m::kIconButtonW), PxI(m::kIconButtonH));
         }
-        const int muteW = PxI(m_wmp ? 25.0f : 28.0f), muteH = PxI(m_wmp ? 25.0f : 26.0f);
-        L.mute = {L.bar.left + PxI(10), cy - muteH / 2, L.bar.left + PxI(10) + muteW, cy - muteH / 2 + muteH};
+        const int muteW = PxI(m_ehres ? 38.0f : m_wmp ? 25.0f : 28.0f), muteH = PxI(m_ehres ? 31.0f : m_wmp ? 25.0f : 26.0f);
+        L.mute = {L.bar.left + PxI(m_ehres ? 4.0f : 10.0f), cy - muteH / 2, L.bar.left + PxI(m_ehres ? 4.0f : 10.0f) + muteW,
+                  cy - muteH / 2 + muteH};
         L.volArrow = {L.mute.right + PxI(1), cy - PxI(8), L.mute.right + PxI(17), cy + PxI(8)};
         if (m_ehres) {
             L.list = {L.bar.right - PxI(8 + 38), cy - PxI(15), L.bar.right - PxI(8), cy - PxI(15) + PxI(31)};
@@ -893,8 +901,8 @@ void PlayerWindow::UpdateLayout(bool animate) {
             L.cover = {(colW - side) / 2, top, (colW - side) / 2 + side, top + side};
             L.info = {PxI(32), L.cover.bottom + PxI(22), colW - PxI(32), L.cover.bottom + PxI(22) + textH};
             L.infoStyle = 0;
-            L.panel = {static_cast<int>(W * 0.50f), PxI(wmc ? kWmcTop + 4 : 64.0f), W - static_cast<int>(W * 0.05f),
-                       L.bar.top - PxI(16)};
+            L.panel = {static_cast<int>(W * 0.52f), PxI(wmc ? kWmcTop + 4 : 64.0f), W - static_cast<int>(W * 0.04f),
+                       L.bar.top - PxI(8)};
             L.pane = L.panel;
         } else {
             // WMC: the cover with the song's lines beside it, centred as a group.
@@ -1050,11 +1058,25 @@ void PlayerWindow::PaintShade() {
         dc->CreateSolidColorBrush(D2D1::ColorF(kNavy, 0.22f), base.put());
         dc->FillRectangle({0, 0, W, H}, base.get());
         if (!Empty(L.panel)) {
-            // Behind the lyrics / queue: the tiles almost gone into the blue.
+            // Behind the lyrics / queue the wall sinks into deep water: no edge anywhere, the
+            // blue only grows from the cover's side towards the text.
             const D2D1_RECT_F p = dip(L.panel);
-            const float feather = m_mode == Mode::Full ? 26.0f : 0.0f;
-            FeatherRect(dc, {p.left + feather, p.top + feather, p.right - feather, p.bottom - feather}, feather,
-                        0x06204F, 0.86f);
+            if (m_mode == Mode::Full) {
+                const float from = p.left - (p.right - p.left) * 0.22f, to = p.left + (p.right - p.left) * 0.10f;
+                const D2D1_GRADIENT_STOP stops[] = {{0, D2D1::ColorF(0x06204F, 0.0f)},
+                                                    {0.45f, D2D1::ColorF(0x06204F, 0.52f)},
+                                                    {1, D2D1::ColorF(0x051A42, 0.86f)}};
+                com_ptr<ID2D1GradientStopCollection> collection;
+                dc->CreateGradientStopCollection(stops, 3, collection.put());
+                com_ptr<ID2D1LinearGradientBrush> deep;
+                dc->CreateLinearGradientBrush(D2D1::LinearGradientBrushProperties({from, 0}, {to, 0}), collection.get(),
+                                              deep.put());
+                dc->FillRectangle({from, 0, W, H}, deep.get());
+            } else {
+                com_ptr<ID2D1SolidColorBrush> deep;
+                dc->CreateSolidColorBrush(D2D1::ColorF(0x051A42, 0.86f), deep.put());
+                dc->FillRectangle(p, deep.get());
+            }
         }
         if (Empty(L.info) || (m_paneShown && m_mode == Mode::Mini)) return;
         const D2D1_RECT_F info = dip(L.info), cover = dip(L.cover);
@@ -1100,9 +1122,9 @@ void PlayerWindow::PaintBars() {
                 return;
             }
             // WMP 12's now-playing controls stand on black; here the wall fades into it.
-            const D2D1_GRADIENT_STOP stops[] = {{0, D2D1::ColorF(0, 0, 0, 0.0f)},
-                                                {0.30f, D2D1::ColorF(0, 0, 0, 0.62f)},
-                                                {1, D2D1::ColorF(0, 0, 0, 0.90f)}};
+            const D2D1_GRADIENT_STOP stops[] = {{0, D2D1::ColorF(0x041230, 0.0f)},
+                                                {0.30f, D2D1::ColorF(0x051739, 0.70f)},
+                                                {1, D2D1::ColorF(0x030C24, 0.94f)}};
             com_ptr<ID2D1GradientStopCollection> collection;
             dc->CreateGradientStopCollection(stops, 3, collection.put());
             com_ptr<ID2D1LinearGradientBrush> fill;
@@ -1217,15 +1239,18 @@ void PlayerWindow::PaintSeek() {
     gfx::CompositionHost::Get().Repaint(m_seek, m_seekBacking, w, h, m_scale, [&](ID2D1DeviceContext* dc) {
         const float pad = 12, x0 = pad, x1 = W - pad, x = x0 + (x1 - x0) * progress, top = (H - 24) / 2;
         if (m_ehres) {
-            win7::DrawNineGrid(dc, kEhres, L"SEEKBAR.PROGRESS.BACKGROUND.PNG", {0, 0, 27, 24}, {13, 0, 13, 0},
-                               {x0 - 9, top, x1 + 9, top + 24});
+            // Measured in the bitmaps: the groove is solid in columns 9 - 17 of 27; the past is
+            // a 9-column glow tail and then solid white (columns 9 - 13 of 14), the future the
+            // mirror image in a fainter white. Only solid columns may stretch.
+            win7::DrawNineGrid(dc, kEhres, L"SEEKBAR.PROGRESS.BACKGROUND.PNG", {0, 0, 27, 24}, {11, 0, 11, 0},
+                               {x0 - 11, top, x1 + 11, top + 24});
             if (m_length > 0) {
-                if (x - x0 >= 2)
-                    win7::DrawNineGrid(dc, kEhres, L"SEEKBAR.PAST.PNG", {0, 0, 14, 24}, {8, 0, 2, 0},
-                                       {x0 - 5, top, x, top + 24});
-                if (x1 - x >= 2)
-                    win7::DrawNineGrid(dc, kEhres, L"SEEKBAR.FUTURE.PNG", {0, 0, 14, 24}, {2, 0, 8, 0},
-                                       {x, top, x1 + 5, top + 24});
+                if (x - x0 >= 1)
+                    win7::DrawNineGrid(dc, kEhres, L"SEEKBAR.PAST.PNG", {0, 0, 14, 24}, {11, 0, 1, 0},
+                                       {x0 - 9, top, x, top + 24});
+                if (x1 - x >= 1)
+                    win7::DrawNineGrid(dc, kEhres, L"SEEKBAR.FUTURE.PNG", {0, 0, 14, 24}, {1, 0, 11, 0},
+                                       {x, top, x1 + 9, top + 24});
                 const float k = active ? 14.0f : 13.0f;
                 win7::DrawStretched(dc, kEhres, active ? L"SEEKBAR.POSITION.ACTIVE.PNG" : L"SEEKBAR.POSITION.DORMANT.PNG",
                                     {x - k, H / 2 - k, x + k, H / 2 + k});

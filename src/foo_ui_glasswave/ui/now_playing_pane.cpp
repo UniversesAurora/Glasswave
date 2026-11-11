@@ -115,8 +115,17 @@ void NowPlayingPane::StartFrames() {
     if (onFrames) onFrames();
 }
 
+void NowPlayingPane::SetEmbedded(bool embedded) {
+    if (embedded == m_embedded) return;
+    m_embedded = embedded;
+    m_tint.IsVisible(!embedded);
+    m_bar.IsVisible(!embedded);
+    const RECT bounds = std::exchange(m_bounds, RECT{});
+    SetBounds(bounds, m_scale); // the lyrics and the queue take the switch's place
+}
+
 RECT NowPlayingPane::BarRect() const {
-    const LONG h = static_cast<LONG>(std::lround(pane::kBottomBar * m_scale));
+    const LONG h = m_embedded ? 0 : static_cast<LONG>(std::lround(pane::kBottomBar * m_scale));
     return {m_bounds.left, std::max(m_bounds.top, m_bounds.bottom - h), m_bounds.right, m_bounds.bottom};
 }
 

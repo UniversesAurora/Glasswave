@@ -2204,6 +2204,7 @@ NowPlayingPane* MainWindow::LendPane(const wuc::ContainerVisual& parent) {
     m_paneLent = true;
     m_pane->SetVisible(false);
     m_pane->Reparent(parent);
+    m_pane->SetEmbedded(true);
     RefreshPaneQueue();
     return m_pane.get();
 }
@@ -2213,6 +2214,7 @@ void MainWindow::ReturnPane() {
     m_paneLent = false;
     if (!m_pane) return;
     m_pane->SetVisible(false);
+    m_pane->SetEmbedded(false);
     m_pane->Reparent(m_paneSlot);
 }
 
