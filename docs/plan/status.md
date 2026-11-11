@@ -1128,5 +1128,53 @@ Pending handoff only, with no work implied by this list:
 - Complete the owner/manual checks for resize, residual surfaces, and auth restoration.
 - Revisit `startup-cache-same` diagnostics only if a later owner explicitly requests it.
 - Keep memory protection active and preserve the current watchdog alert/evidence path.
-- If a later owner explicitly requests owner-state restoration, use only
-  `.local/tests/playback-probe-state-20261111T131819599Z`.
+- The recorded backup is historical evidence. Any resumed probe must capture fresh
+  owner state; it must not restore this snapshot over subsequent owner changes.
+
+## Resumed streaming repairs (2026-11-12)
+
+The owner resumed three bounded tasks: Apple Music 503/playback, startup cache and
+list loading, and sidebar residual surfaces/resize geometry. This supersedes the
+phase pause above for those tasks only. All three were delegated; no exhaustive
+test sweep is authorized. See `paused-ui-work.md` for the other agent's restored
+interface work and retained stash backup.
+
+- Native account repair is committed as `ce9e416`. The prior const-mangled DSID
+  getter did not exist in the bundled ELF and could abort the helper. Use the exact
+  exported non-const getter, resolve absence without aborting, and check the ELF
+  contract during builds. Account requests now await the existing native session
+  initialization signal outside the backend lock, with cancellation and a 20 s cap.
+- Two focused wait tests and the Windows staging build passed. After promotion,
+  the first cold account request waited 8.030 s and returned 200 with a verified
+  account identity. A real ALAC playback session returned 201, audio returned 206,
+  and the open stream remained readable across another account request. Session
+  deletion returned 204 and the helper stayed alive. Evidence is in
+  `.local/tests/apple-cold-account-lazy-init-20261111T164209357Z.json` and
+  `.local/tests/apple-cold-playback-validation-20261111T164252506Z.json`.
+- Only the native runtime was promoted for that check; the installed interface
+  was retained. Current owner state was captured after graceful exit in
+  `.local/tests/playback-probe-state-20261111T164127564Z`. The live profile remains
+  authoritative; this backup is not permission to overwrite subsequent changes.
+- Cache diagnostics now distinguish list completion from actual page/manifest
+  persistence. The checkpoint is committed as `746ae80`. The focused same-account
+  restart check was not run. The runner still shares the owner's cache/profile
+  and needs affected-store protection before fixture use. Product startup-path
+  review has not established a new root cause, and startup latency is not claimed
+  fixed. Release compilation passed with zero warnings/errors before the final
+  narrow Cancel correction; that correction has not been rebuilt.
+- Lyrics/queue animations now have fixed clipped viewports and relative content
+  offsets. This closes an animation-boundary gap; the unrelated white main-list
+  residual surfaces still need owner reproduction before assigning a root cause.
+  This change is committed as `92aa18a`. Combined component compilation passed
+  with zero warnings/errors, but deployment and owner visual acceptance are pending.
+- The repository memory watcher, supervisor and GPU sampler remain running.
+  No new pressure alarm occurred during the native account/playback validation;
+  the earlier allocation fault is not claimed fixed.
+
+At the owner's subsequent stop instruction, all further investigation and tests
+were halted. Claude's six tracked and four new UI files were restored from the
+stash without conflicts after the repair commits. They remain uncommitted for
+Claude to continue. The stash backup remains; do not apply it again. No component
+rebuild, deployment or test was performed after restoration. Native 503 fixes are
+live; the newly committed component changes are not yet deployed. Resume only
+the work the owner next requests.
