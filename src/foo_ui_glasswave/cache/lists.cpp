@@ -1554,13 +1554,14 @@ class WorkerPool {
     WorkerPool(const WorkerPool&) = delete;
     WorkerPool& operator=(const WorkerPool&) = delete;
 
-    void Post(std::string chain, std::function<void()> task, bool drainOnStop = false) {
+    bool Post(std::string chain, std::function<void()> task, bool drainOnStop = false) {
         {
             std::lock_guard lock(m_mutex);
-            if (m_stopping || !task) return;
+            if (m_stopping || !task) return false;
             m_tasks.push_back(Task{std::move(chain), std::move(task), drainOnStop});
         }
         m_ready.notify_one();
+        return true;
     }
     void Stop() {
         {
@@ -1638,53 +1639,95 @@ class Manager final : public std::enable_shared_from_this<Manager> {
     Manager(const Manager&) = delete;
     Manager& operator=(const Manager&) = delete;
 
-    void SavePage(Identity identity, Record record, uint64_t generation) {
+    void SavePage(Identity identity, Record record, uint64_t generation, Persisted persisted = {}) {
         const std::string logicalKey = StateKey(identity);
         uint64_t ticket = 0;
         uint64_t epoch = 0;
         uint64_t guard = 0;
+        bool rejected = false;
         {
             std::lock_guard lock(m_mutex);
-            if (m_stopping) return;
-            auto& state = GenerationState(logicalKey);
-            if (state.hasGeneration && generation < state.generation) return;
-            state.hasGeneration = true;
-            state.generation = generation;
-            ticket = ++m_nextTicket;
-            epoch = PublisherEpoch(identity.provider);
-            guard = GuardRevision(identity.provider);
+            if (m_stopping) {
+                rejected = true;
+            } else {
+                auto& state = GenerationState(logicalKey);
+                if (state.hasGeneration && generation < state.generation) {
+                    rejected = true;
+                } else {
+                    state.hasGeneration = true;
+                    state.generation = generation;
+                    ticket = ++m_nextTicket;
+                    epoch = PublisherEpoch(identity.provider);
+                    guard = GuardRevision(identity.provider);
+                }
+            }
+        }
+        if (rejected) {
+            CompletePersisted(std::move(persisted), false);
+            return;
         }
         const std::string chain = ChainKey(identity, epoch, guard);
         auto self = shared_from_this();
-        m_pool.Post(std::move(chain), [self, identity = std::move(identity), record = std::move(record),
-                                       generation, ticket, epoch, guard]() mutable {
-            self->RunSave(std::move(identity), std::move(record), generation, ticket, epoch, guard);
-        });
+        auto completion = std::make_shared<Persisted>(std::move(persisted));
+        const bool queued =
+            m_pool.Post(std::move(chain), [self, completion, identity = std::move(identity),
+                                          record = std::move(record), generation, ticket, epoch,
+                                          guard]() mutable {
+                bool success = false;
+                try {
+                    success =
+                        self->RunSave(std::move(identity), std::move(record), generation, ticket, epoch, guard);
+                } catch (...) {
+                }
+                self->CompletePersisted(std::move(*completion), success);
+            });
+        if (!queued) CompletePersisted(std::move(*completion), false);
     }
 
-    void UpdatePage(Identity identity, Record record, uint64_t generation) {
+    void UpdatePage(Identity identity, Record record, uint64_t generation, Persisted persisted = {}) {
         const std::string logicalKey = StateKey(identity);
         uint64_t ticket = 0;
         uint64_t epoch = 0;
         uint64_t guard = 0;
+        bool rejected = false;
         {
             std::lock_guard lock(m_mutex);
-            if (m_stopping) return;
-            const auto found = m_states.find(logicalKey);
-            if (found != m_states.end()) {
-                found->second.lastUsed = ++m_stateClock;
-                if (found->second.hasGeneration && found->second.generation != generation) return;
+            if (m_stopping) {
+                rejected = true;
+            } else {
+                const auto found = m_states.find(logicalKey);
+                if (found != m_states.end()) {
+                    found->second.lastUsed = ++m_stateClock;
+                    if (found->second.hasGeneration && found->second.generation != generation)
+                        rejected = true;
+                }
+                if (!rejected) {
+                    ticket = ++m_nextTicket;
+                    epoch = PublisherEpoch(identity.provider);
+                    guard = GuardRevision(identity.provider);
+                }
             }
-            ticket = ++m_nextTicket;
-            epoch = PublisherEpoch(identity.provider);
-            guard = GuardRevision(identity.provider);
+        }
+        if (rejected) {
+            CompletePersisted(std::move(persisted), false);
+            return;
         }
         const std::string chain = ChainKey(identity, epoch, guard);
         auto self = shared_from_this();
-        m_pool.Post(std::move(chain), [self, identity = std::move(identity), record = std::move(record),
-                                       generation, ticket, epoch, guard]() mutable {
-            self->RunUpdate(std::move(identity), std::move(record), generation, ticket, epoch, guard);
-        });
+        auto completion = std::make_shared<Persisted>(std::move(persisted));
+        const bool queued =
+            m_pool.Post(std::move(chain), [self, completion, identity = std::move(identity),
+                                          record = std::move(record), generation, ticket, epoch,
+                                          guard]() mutable {
+                bool success = false;
+                try {
+                    success = self->RunUpdate(std::move(identity), std::move(record), generation, ticket,
+                                              epoch, guard);
+                } catch (...) {
+                }
+                self->CompletePersisted(std::move(*completion), success);
+            });
+        if (!queued) CompletePersisted(std::move(*completion), false);
     }
 
     void Load(Identity identity, Loaded done) {
@@ -1855,39 +1898,19 @@ class Manager final : public std::enable_shared_from_this<Manager> {
         }
 #endif
     }
-    void RunSave(Identity identity, Record record, uint64_t generation, uint64_t ticket, uint64_t epoch,
-                 uint64_t guard) {
-        if (!CurrentEpoch(identity.provider, epoch)) return;
-        if (!EnsureGuardRotation(identity.provider, guard)) return;
-        CapturedScope scope;
-        if (!CaptureScope(identity, scope)) return;
-        if (!CurrentEpoch(identity.provider, epoch) ||
-            AccountRevision(identity.provider) != identity.accountRevision)
-            return;
-        const std::string generationToken = GenerationToken(epoch, generation);
-        const auto stillCurrent = [this, &identity, epoch, &scope] {
-            if (!CurrentEpoch(identity.provider, epoch) ||
-                AccountRevision(identity.provider) != identity.accountRevision)
-                return false;
-            try {
-                return GetStore().Scope(InternalProvider(identity.provider)) == scope.guard;
-            } catch (...) {
-                return false;
-            }
-        };
-        SavePageDocument(GetStore(), identity, scope.account, scope.guard, generation, generationToken,
-                         ticket, record, stillCurrent, &m_publicationGate);
-        RunTestManifestComplete();
+    void CompletePersisted(Persisted persisted, bool success) {
+        if (!persisted) return;
+        Deliver([persisted = std::move(persisted), success]() mutable { persisted(success); });
     }
-    void RunUpdate(Identity identity, Record record, uint64_t generation, uint64_t ticket, uint64_t epoch,
-                   uint64_t guard) {
-        if (!CurrentEpoch(identity.provider, epoch)) return;
-        if (!EnsureGuardRotation(identity.provider, guard)) return;
+    bool RunSave(Identity identity, Record record, uint64_t generation, uint64_t ticket, uint64_t epoch,
+                 uint64_t guard) {
+        if (!CurrentEpoch(identity.provider, epoch)) return false;
+        if (!EnsureGuardRotation(identity.provider, guard)) return false;
         CapturedScope scope;
-        if (!CaptureScope(identity, scope)) return;
+        if (!CaptureScope(identity, scope)) return false;
         if (!CurrentEpoch(identity.provider, epoch) ||
             AccountRevision(identity.provider) != identity.accountRevision)
-            return;
+            return false;
         const std::string generationToken = GenerationToken(epoch, generation);
         const auto stillCurrent = [this, &identity, epoch, &scope] {
             if (!CurrentEpoch(identity.provider, epoch) ||
@@ -1899,9 +1922,45 @@ class Manager final : public std::enable_shared_from_this<Manager> {
                 return false;
             }
         };
-        UpdatePageDocument(GetStore(), identity, scope.account, scope.guard, generation, generationToken,
-                           ticket, record, stillCurrent, &m_publicationGate);
+        bool success = false;
+        try {
+            success =
+                SavePageDocument(GetStore(), identity, scope.account, scope.guard, generation,
+                                 generationToken, ticket, record, stillCurrent, &m_publicationGate);
+        } catch (...) {
+        }
         RunTestManifestComplete();
+        return success;
+    }
+    bool RunUpdate(Identity identity, Record record, uint64_t generation, uint64_t ticket, uint64_t epoch,
+                   uint64_t guard) {
+        if (!CurrentEpoch(identity.provider, epoch)) return false;
+        if (!EnsureGuardRotation(identity.provider, guard)) return false;
+        CapturedScope scope;
+        if (!CaptureScope(identity, scope)) return false;
+        if (!CurrentEpoch(identity.provider, epoch) ||
+            AccountRevision(identity.provider) != identity.accountRevision)
+            return false;
+        const std::string generationToken = GenerationToken(epoch, generation);
+        const auto stillCurrent = [this, &identity, epoch, &scope] {
+            if (!CurrentEpoch(identity.provider, epoch) ||
+                AccountRevision(identity.provider) != identity.accountRevision)
+                return false;
+            try {
+                return GetStore().Scope(InternalProvider(identity.provider)) == scope.guard;
+            } catch (...) {
+                return false;
+            }
+        };
+        bool success = false;
+        try {
+            success =
+                UpdatePageDocument(GetStore(), identity, scope.account, scope.guard, generation,
+                                   generationToken, ticket, record, stillCurrent, &m_publicationGate);
+        } catch (...) {
+        }
+        RunTestManifestComplete();
+        return success;
     }
     void RunLoad(Identity identity, Loaded done, uint64_t epoch, uint64_t guard) {
         std::optional<Record> record;
@@ -1973,14 +2032,26 @@ void Load(Identity identity, Loaded done) {
     if (auto manager = Instance()) manager->Load(std::move(identity), std::move(done));
 }
 
-void SavePage(Identity identity, Record record, uint64_t generation) {
-    if (!ValidIdentity(identity)) return;
-    if (auto manager = Instance()) manager->SavePage(std::move(identity), std::move(record), generation);
+void SavePage(Identity identity, Record record, uint64_t generation, Persisted persisted) {
+    if (!ValidIdentity(identity)) {
+        if (persisted) persisted(false);
+        return;
+    }
+    if (auto manager = Instance())
+        manager->SavePage(std::move(identity), std::move(record), generation, std::move(persisted));
+    else if (persisted)
+        persisted(false);
 }
 
-void UpdatePage(Identity identity, Record record, uint64_t generation) {
-    if (!ValidIdentity(identity)) return;
-    if (auto manager = Instance()) manager->UpdatePage(std::move(identity), std::move(record), generation);
+void UpdatePage(Identity identity, Record record, uint64_t generation, Persisted persisted) {
+    if (!ValidIdentity(identity)) {
+        if (persisted) persisted(false);
+        return;
+    }
+    if (auto manager = Instance())
+        manager->UpdatePage(std::move(identity), std::move(record), generation, std::move(persisted));
+    else if (persisted)
+        persisted(false);
 }
 
 void RetireProvider(std::string provider) {

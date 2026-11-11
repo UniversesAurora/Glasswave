@@ -2101,11 +2101,37 @@ void RunStartupSeed(const std::shared_ptr<State>& state) {
         auto* provider = Provider(state);
         if (!provider) return;
         auto completed = std::make_shared<std::array<bool, 2>>();
-        auto finishIfComplete = [state, completed] {
+        auto persisting = std::make_shared<bool>(false);
+        auto finishIfComplete = [state, completed, persisting] {
             if (!Live(state) || !(*completed)[0] || !(*completed)[1]) return;
-            AddOperation(state, L"startup_seed_list", true);
-            AddOperation(state, L"startup_seed_favorite", true);
-            Finish(state);
+            if (*persisting || state->startupSessions.size() < 2) return;
+            *persisting = true;
+            auto saved = std::make_shared<std::array<bool, 3>>(std::array<bool, 3>{false, false, true});
+            auto finished = std::make_shared<bool>(false);
+            auto finishSaved = [state, saved, finished] {
+                if (!Live(state) || !(*saved)[0] || !(*saved)[1] || *finished) return;
+                *finished = true;
+                if (!(*saved)[2])
+                    return Fail(state, L"startup_seed_list", L"list_cache_persistence_failed");
+                AddOperation(state, L"startup_seed_list", true);
+                AddOperation(state, L"startup_seed_favorite", true);
+                Finish(state);
+            };
+            PostAfter(state, 8000, [state, finished] {
+                if (!Live(state) || *finished) return;
+                *finished = true;
+                Fail(state, L"startup_seed_list", L"list_cache_persistence_timeout");
+            });
+            state->startupSessions[0]->WaitForPersistentSave([saved, finishSaved](bool success) {
+                (*saved)[0] = true;
+                (*saved)[2] = (*saved)[2] && success;
+                finishSaved();
+            });
+            state->startupSessions[1]->WaitForPersistentSave([saved, finishSaved](bool success) {
+                (*saved)[1] = true;
+                (*saved)[2] = (*saved)[2] && success;
+                finishSaved();
+            });
         };
         auto playlist = stream::ListSession::Open(
             *provider, StartupPlaylistQuery(*state),
@@ -2257,6 +2283,22 @@ void RunStartupRestart(const std::shared_ptr<State>& state) {
 
     auto cachedCaptured = std::make_shared<bool>(false);
     const auto query = StartupPlaylistQuery(*state);
+    if (state->scenario == "startup-cache-same") {
+        PostAfter(state, 8000, [state, provider, cachedSidebar, cachedCaptured] {
+            if (!Live(state) || *cachedCaptured) return;
+            auto& startup = state->startup;
+            startup.cachedSidebarBeforeAuth = cachedSidebar;
+            startup.restoringBeforeAuth = provider->SessionRestoring();
+            startup.accountUnverifiedBeforeAuth = !provider->AccountVerified();
+            if (const auto fixture = ReadStartupFixture()) {
+                startup.listRequestsBeforeAuth =
+                    static_cast<size_t>(json::GetInt64(*fixture, L"listRequests", -1));
+                startup.enrichmentRequestsBeforeAuth =
+                    static_cast<size_t>(json::GetInt64(*fixture, L"enrichmentRequests", -1));
+            }
+            Fail(state, L"startup_cached_before_auth", L"cache_prefix_callback_timed_out");
+        });
+    }
     auto session = stream::ListSession::Open(
         *provider, query,
         [state, provider, query, playlist, cachedSidebar, cachedCaptured](const stream::ListState& current) {
@@ -3991,6 +4033,9 @@ class ProviderProbeLifecycle : public initquit {
             m_state->stop = true;
             if (!RestoreDisplayRegion(*m_state) && m_state->error.empty())
                 m_state->error = L"display_region_restore_failed";
+            if (!m_state->done && m_state->error.empty())
+                m_state->error = L"probe_stopped_before_completion";
+            m_state->done = true;
             WriteResult(*m_state);
         }
         m_state.reset();

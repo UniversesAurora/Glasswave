@@ -20,16 +20,19 @@ struct Record {
     size_t metadataReadyRows = 0;
 };
 using Loaded = std::function<void(std::optional<Record>)>;
+// Reports whether the exact background page/manifest publication completed. Called on the
+// main thread when accepted by the cache worker; false includes rejection or write failure.
+using Persisted = std::function<void(bool success)>;
 
 // Background disk work, callbacks on the main thread. Values are untrusted until their
 // schema, bounded sizes, row kind and page chain have been validated.
 void Load(Identity identity, Loaded done);
 // The caller applies ListCachePolicy before calling. A trailing page with more=false
 // completes the snapshot; older generations and noncontiguous page ordinals are rejected.
-void SavePage(Identity identity, Record record, uint64_t generation);
+void SavePage(Identity identity, Record record, uint64_t generation, Persisted persisted = {});
 // Replaces only the cached rows and enrichment marker of an existing page. The source page's
 // identity, row kind/count, ordering, cursor, total and revision are immutable.
-void UpdatePage(Identity identity, Record record, uint64_t generation);
+void UpdatePage(Identity identity, Record record, uint64_t generation, Persisted persisted = {});
 // Cancels in-memory publishers and resets generation ownership while keeping the current
 // account scope, context key and persisted guard readable.
 void RetireProvider(std::string provider);

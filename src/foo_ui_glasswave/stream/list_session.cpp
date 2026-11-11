@@ -149,6 +149,10 @@ struct Lease {
     bool next = false;
 };
 struct Read : std::enable_shared_from_this<Read> {
+    struct PersistWaiter {
+        uint64_t target = 0;
+        ListSession::PersistentSaveDone done;
+    };
     Provider& provider;
     ListQuery query;
     ListCachePolicy policy;
@@ -162,6 +166,7 @@ struct Read : std::enable_shared_from_this<Read> {
     ListCursor cursor;
     uint64_t request = 0, generation = 0, used = 0;
     uint64_t restoreAttempt = 0;
+    uint64_t saveSequence = 0;
     size_t networkPages = 0, shadowTarget = 0, emptyPages = 0;
     int64_t validatedAt = 0;
     bool started = false, initializing = false, cacheLoading = false, inFlight = false, valid = true;
@@ -169,6 +174,9 @@ struct Read : std::enable_shared_from_this<Read> {
     size_t metadataFrontier = 0, activeEnrichments = 0;
     std::map<size_t, size_t> metadataReadyRanges;
     std::deque<std::shared_ptr<EnrichmentWork>> enrichmentQueue;
+    std::set<uint64_t> pendingSaves;
+    std::optional<uint64_t> firstFailedSave;
+    std::vector<PersistWaiter> saveWaiters;
     bool pumpingEnrichment = false;
 
     Read(Provider& source, ListQuery value, ListCachePolicy storage, std::string logicalKey,
@@ -219,6 +227,9 @@ struct Read : std::enable_shared_from_this<Read> {
     void Refresh(bool preserveDemand = false, bool allowRestoreRetry = false);
     void BeginRestoreAttempt(bool forceRetry);
     void RestoreAttemptDone(uint64_t id, std::wstring error);
+    void PersistPage(bool update, cache::lists::Record record);
+    void SaveCompleted(uint64_t id, bool success);
+    void ResolveSaveWaiters();
     void Next(const std::shared_ptr<Lease>& lease);
     void Fetch();
     void Received(uint64_t id, ListPage page, std::wstring error);
@@ -233,6 +244,10 @@ struct Read : std::enable_shared_from_this<Read> {
         ++request;
         inFlight = false;
         state.loading = state.refreshing = false;
+        auto waiters = std::move(saveWaiters);
+        pendingSaves.clear();
+        for (auto& waiter : waiters)
+            if (waiter.done) waiter.done(false);
         for (const auto& weak : leases)
             if (auto lease = weak.lock()) {
                 lease->cancelled = true;
@@ -426,6 +441,42 @@ void Read::RestoreAttemptDone(uint64_t id, std::wstring error) {
     state.error = std::move(error);
     Emit();
 }
+void Read::PersistPage(bool update, cache::lists::Record record) {
+    const uint64_t id = ++saveSequence;
+    pendingSaves.emplace(id);
+    auto persisted = [weak = weak_from_this(), id](bool success) {
+        if (auto self = weak.lock()) self->SaveCompleted(id, success);
+    };
+    if (update)
+        cache::lists::UpdatePage(identity, std::move(record), generation, std::move(persisted));
+    else
+        cache::lists::SavePage(identity, std::move(record), generation, std::move(persisted));
+}
+void Read::SaveCompleted(uint64_t id, bool success) {
+    pendingSaves.erase(id);
+    if (!success && (!firstFailedSave || id < *firstFailedSave)) firstFailedSave = id;
+    ResolveSaveWaiters();
+}
+void Read::ResolveSaveWaiters() {
+    struct Ready {
+        ListSession::PersistentSaveDone done;
+        bool success = false;
+    };
+    std::vector<Ready> ready;
+    for (auto it = saveWaiters.begin(); it != saveWaiters.end();) {
+        const bool stillPending =
+            std::any_of(pendingSaves.begin(), pendingSaves.end(), [&](uint64_t id) { return id <= it->target; });
+        if (stillPending) {
+            ++it;
+            continue;
+        }
+        const bool failed = firstFailedSave && *firstFailedSave <= it->target;
+        if (it->done) ready.push_back({std::move(it->done), !failed});
+        it = saveWaiters.erase(it);
+    }
+    for (auto& item : ready)
+        item.done(item.success);
+}
 void Read::Refresh(bool preserveDemand, bool allowRestoreRetry) {
     if (!valid || stopping || !HasLeases()) return;
     if (!ContextCurrent()) {
@@ -596,7 +647,7 @@ void Read::Received(uint64_t id, ListPage page, std::wstring error) {
         MarkMetadataReady(offset, RowCount(page));
     }
     if (policy == ListCachePolicy::Persistent)
-        cache::lists::SavePage(identity, {page, networkPages, cache::Store::Now()}, generation);
+        PersistPage(false, {page, networkPages, cache::Store::Now()});
     if (shadow) {
         AppendPage(*shadow, std::move(page));
         if (!more || RowCount(*shadow) >= shadowTarget) {
@@ -704,7 +755,7 @@ void Read::Enriched(const std::shared_ptr<EnrichmentWork>& work, ListPage page, 
         MarkMetadataReady(work->offset, RowCount(work->page));
         target.enrichmentPending = metadataFrontier < RowCount(target);
         if (policy == ListCachePolicy::Persistent)
-            cache::lists::UpdatePage(identity, {work->page, work->ordinal, cache::Store::Now()}, generation);
+            PersistPage(true, {work->page, work->ordinal, cache::Store::Now()});
         if (!shadow) {
             state.metadataReadyRows = metadataFrontier;
             state.updatedRows.reset();
@@ -769,6 +820,20 @@ void ListSession::SetMode(ListLoadMode mode) {
 void ListSession::Refresh() {
     if (auto read = m_impl->read) read->Refresh(false, true);
 }
+void ListSession::WaitForPersistentSave(PersistentSaveDone done) {
+    if (!done) return;
+    if (!m_impl || !m_impl->read) {
+        done(false);
+        return;
+    }
+    auto read = m_impl->read;
+    if (!read->valid || stopping || !read->HasLeases() || m_impl->lease->cancelled) {
+        done(false);
+        return;
+    }
+    read->saveWaiters.push_back({read->saveSequence, std::move(done)});
+    read->ResolveSaveWaiters();
+}
 void ListSession::Cancel() {
     if (!m_impl || !m_impl->read) return;
     auto read = std::move(m_impl->read);
@@ -781,6 +846,11 @@ void ListSession::Cancel() {
         ++read->request;
         read->inFlight = false;
         read->state.loading = read->state.refreshing = false;
+    }
+    if (!read->HasLeases() && !read->saveWaiters.empty()) {
+        auto waiters = std::move(read->saveWaiters);
+        for (auto& waiter : waiters)
+            if (waiter.done) waiter.done(false);
     }
     if (!read->HasLeases() && read->policy == ListCachePolicy::None) {
         read->Stop();

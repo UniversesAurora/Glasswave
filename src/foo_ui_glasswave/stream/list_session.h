@@ -45,12 +45,16 @@ struct ListState {
 class ListSession final {
   public:
     using Changed = std::function<void(const ListState&)>;
+    // Completion of every persistent SavePage/UpdatePage queued before this call. Diagnostic
+    // producers use it to prove the exact page and manifest are durable before process restart.
+    using PersistentSaveDone = std::function<void(bool success)>;
     static std::shared_ptr<ListSession> Open(Provider& provider, ListQuery query, Changed changed,
                                              ListLoadMode mode = ListLoadMode::OnDemand);
     ~ListSession();
     void RequestNext();
     void SetMode(ListLoadMode mode);
     void Refresh();
+    void WaitForPersistentSave(PersistentSaveDone done);
     void Cancel();
     ListState State() const;
     // Borrowed until the next session mutation; main-thread consumers can read a large

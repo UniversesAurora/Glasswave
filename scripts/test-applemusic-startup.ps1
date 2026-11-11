@@ -15,7 +15,9 @@ param(
     [ValidateRange(10, 180)]
     [int]$TimeoutSeconds = 60,
 
-    [switch]$SeedOnly
+    [switch]$SeedOnly,
+
+    [switch]$SameOnly
 )
 
 $ErrorActionPreference = 'Stop'
@@ -308,6 +310,10 @@ try {
     }
     $evidence.same = $same
     $evidence.sameMock = $sameState.startup
+    if ($SameOnly) {
+        Write-Host 'Startup seed and same-account restart diagnostic: PASS'
+        return
+    }
     Wait-MembershipComplete $mockA
     Stop-DevInstance
 
@@ -420,7 +426,6 @@ finally {
             $mock.Process.Kill()
             [void]$mock.Process.WaitForExit(3000)
         }
-        Remove-Item -LiteralPath $mock.StateFile, $mock.BridgeFile -Force -ErrorAction SilentlyContinue
     }
     try {
         [IO.File]::WriteAllText(
@@ -434,6 +439,55 @@ finally {
         )
     }
     catch {}
+    if (-not [string]::IsNullOrWhiteSpace($testFailure)) {
+        try {
+            $stamp = [DateTime]::UtcNow.ToString('yyyyMMddTHHmmssfffZ')
+            $failureDir = Join-Path $TestRoot "applemusic-startup-failure-$stamp-$PID"
+            New-Item -ItemType Directory -Force -Path $failureDir | Out-Null
+            $artifacts = [ordered]@{}
+            $candidates = @(
+                [pscustomobject]@{ Name = 'request.json'; Path = $RequestPath },
+                [pscustomobject]@{ Name = 'result.json'; Path = $ResultPath },
+                [pscustomobject]@{ Name = 'bridge.json'; Path = $BridgePath },
+                [pscustomobject]@{ Name = 'evidence.json'; Path = $EvidencePath },
+                [pscustomobject]@{ Name = 'seed-diagnostic.json'; Path = $SeedDiagnosticPath }
+            )
+            for ($index = 0; $index -lt $mocks.Count; ++$index) {
+                $mock = $mocks[$index]
+                $candidates += @(
+                    [pscustomobject]@{ Name = "mock-$index-state.json"; Path = $mock.StateFile },
+                    [pscustomobject]@{ Name = "mock-$index-bridge.json"; Path = $mock.BridgeFile },
+                    [pscustomobject]@{ Name = "mock-$index-error.log"; Path = $mock.ErrorFile }
+                )
+            }
+            foreach ($item in $candidates) {
+                if ([string]::IsNullOrWhiteSpace([string]$item.Path) -or
+                    -not (Test-Path -LiteralPath $item.Path -PathType Leaf)) {
+                    continue
+                }
+                $target = Join-Path $failureDir $item.Name
+                Copy-Item -LiteralPath $item.Path -Destination $target -Force
+                $artifacts[$item.Name] = $target
+            }
+            [IO.File]::WriteAllText(
+                (Join-Path $failureDir 'failure.json'),
+                ([ordered]@{
+                    failed = $true
+                    testFailure = $testFailure
+                    phases = $evidence
+                    artifacts = $artifacts
+                } | ConvertTo-Json -Depth 20),
+                [Text.UTF8Encoding]::new($false)
+            )
+            Write-Host "Startup failure artifacts: $failureDir"
+        }
+        catch {
+            Write-Warning "Could not preserve startup failure artifacts: $($_.Exception.Message)"
+        }
+    }
+    foreach ($mock in $mocks) {
+        Remove-Item -LiteralPath $mock.StateFile, $mock.BridgeFile -Force -ErrorAction SilentlyContinue
+    }
     if ($bridgeReplaced) {
         if ($savedBridge) {
             New-Item -ItemType Directory -Force -Path $ProbeDir | Out-Null
