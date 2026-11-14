@@ -198,6 +198,7 @@
     <ClCompile Include="ui\song_table.cpp" />
     <ClCompile Include="ui\remote_grids.cpp" />
     <ClCompile Include="ui\remote_pages.cpp" />
+    <ClCompile Include="ui\dev_commands.cpp" />
     <ClCompile Include="ui\song_actions.cpp" />
     <ClCompile Include="ui\view.cpp" />
     <ClCompile Include="app\settings.cpp" />
