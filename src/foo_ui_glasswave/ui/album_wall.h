@@ -3,7 +3,7 @@
 #include "gfx/composition_host.h"
 
 // The wall of album covers behind Windows Media Center's now-playing screen: square tiles
-// packed edge to edge, drifting slowly upwards.
+// packed edge to edge, drifting slowly downwards.
 //
 // The grid is laid from the window's corner and its tiles have one size on a monitor, whatever
 // the form of the window: a window that grows keeps the tiles it showed, and the places it

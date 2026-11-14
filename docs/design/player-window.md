@@ -148,7 +148,7 @@ Notes from the owner's review (2026-11-12):
 | Quantity | WMC | Here |
 | --- | --- | --- |
 | Tile side | 297 px = 0.162 of the screen height | 0.162 of the monitor's height in both forms (at least 84 DIP) |
-| Drift | upwards, about 4.4 px/s = one tile in 68 s | the same, one linear animation per tile height, then every tile shows the place below |
+| Drift | about 4.4 px/s = one tile in 68 s; read as upwards from the recordings, downwards per the owner (2026-11-14) | downwards at that pace, one linear animation per tile height, then every tile shows the place above; a row waits above the window |
 | Tile look | the picture edge to edge, no seams; each tile darker along its top (about 20 px of 295) and left (18 px) edge with a darker pixel or two at the edge: the shadow of its upper and left neighbours (change.mp4, PixPin_2026-11-11_23-23-39) | that shade as one shared bitmap per tile (top 7.5 % at 0.52, left 6.5 % at 0.44, seam 0.8 % at 0.30) |
 | Entrance | tiles land one by one at random places over about 2.7 s; the wall itself does not move. Each appears about 6 % larger and faint (the blue through it), is at its size after 9 frames of 30 and solid after about 15 (enter.mp4) | random order over 2.6 s, a little faster at first; each falls straight down: scale 1.08 -> 1 accelerating (bezier 0.55, 0, 0.9, 0.55) in the first 42 % of 720 - 880 ms, dips to 99.4 % and comes up; opacity 18 % at once, solid at 70 %; a soft square shadow under it closes in from (3.5 %, 5 %) of the side and fades as it lands; later tiles lie above earlier ones |
 | Dimming behind text | blue over the tiles, soft edges | WMC's own gradient bitmap, stretched; navy 0x0B2C6B at 22 % over the whole wall |

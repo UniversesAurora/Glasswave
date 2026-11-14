@@ -212,7 +212,8 @@ void AlbumWall::Rebuild(bool fillByFalling) {
         for (size_t c = 0; c < cols; ++c) {
             auto& t = row[c];
             t.holder.Size(float2{side, side});
-            t.holder.Offset(float3{static_cast<float>(c) * side, static_cast<float>(r) * side, 0});
+            // The first row waits above the window for the drift to bring it down.
+            t.holder.Offset(float3{static_cast<float>(c) * side, static_cast<float>(r) * side - side, 0});
             t.holder.CenterPoint(float3{side / 2, side / 2, 0});
             t.drop.Size(float2{side * 1.5f, side * 1.5f});
             t.drop.Offset(float3{-side * 0.25f, -side * 0.25f, 0});
@@ -622,7 +623,8 @@ void AlbumWall::Reveal() {
 // evaluates them, nothing runs here.
 void AlbumWall::AttachSwell(Tile& tile, size_t row, size_t col) {
     const auto& comp = gfx::CompositionHost::Get().Compositor();
-    const std::wstring y = L"(r + drift.Offset.Y / tile)", above = L"(r - 1 + drift.Offset.Y / tile)";
+    // Rows on the screen: row r lies one tile above its place in the grid (see Rebuild).
+    const std::wstring y = L"(r - 1 + drift.Offset.Y / tile)", above = L"(r - 2 + drift.Offset.Y / tile)";
     const std::wstring self = Wave(L"c", y);
     // Standing lower than the tiles above and to the left, a tile lies deeper in their shadow.
     auto shade = comp.CreateExpressionAnimation(L"Clamp(0.72 + clock.amp * 1.1 * ((" + Wave(L"c", above) + L" + " +
@@ -732,7 +734,7 @@ void AlbumWall::StartDrift() {
     auto batch = comp.CreateScopedBatch(wuc::CompositionBatchTypes::Animation);
     auto anim = comp.CreateVector3KeyFrameAnimation();
     anim.InsertKeyFrame(0.0f, float3{0, 0, 0});
-    anim.InsertKeyFrame(1.0f, float3{0, -static_cast<float>(m_tile), 0}, comp.CreateLinearEasingFunction());
+    anim.InsertKeyFrame(1.0f, float3{0, static_cast<float>(m_tile), 0}, comp.CreateLinearEasingFunction());
     anim.Duration(Seconds(kDriftSeconds));
     m_drift.StartAnimation(L"Offset", anim);
     batch.End();
@@ -744,13 +746,13 @@ void AlbumWall::StartDrift() {
 }
 
 void AlbumWall::OnDriftEnd() {
-    // The top row has left the screen: every tile now shows the place below it, the last row
-    // places nobody has seen yet, and the drift starts again from the top.
+    // The bottom row has left the screen: every tile now shows the place above it, the first
+    // row (above the window) places nobody has seen yet, and the drift starts again.
     m_drifting = false;
-    ++m_driftRows;
-    const int gone = m_driftRows - 2;
+    --m_driftRows;
+    const int gone = m_driftRows + static_cast<int>(m_rows.size()) + 1;
     for (auto it = m_cells.begin(); it != m_cells.end();)
-        it = static_cast<int>(it->first >> 32) < gone ? m_cells.erase(it) : std::next(it);
+        it = static_cast<int>(it->first >> 32) > gone ? m_cells.erase(it) : std::next(it);
     m_drift.Offset(float3{0, 0, 0});
     Rebuild(false);
     ReleaseHidden();
