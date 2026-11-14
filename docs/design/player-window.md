@@ -138,6 +138,10 @@ Notes from the owner's review (2026-11-12):
   The thumb's three states are visuals of their own riding the head: the thumb fades in in 160
   ms when the pointer comes onto the bar and out in 280 ms when it leaves, its lit state the
   same under the pointer, the dragged state in 60 ms.
+  While music plays the head follows the playback position on the compositor's frames,
+  repainting only when it reaches the next device pixel; the times change on the second. The
+  playback time callback alone (once a second) made the head jump. The library window's seek
+  bar does the same.
 
 ## The wall (measured from the owner's WMC recordings, 3322x1832 at 30 fps)
 

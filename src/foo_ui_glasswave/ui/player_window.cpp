@@ -1823,7 +1823,7 @@ void PlayerWindow::UpdateMotion() {
     // WM_TIMER is only synthesised when no posted message waits, and the frame clocks of this
     // thread's windows keep posting at the display's rate, so a timer could starve to the
     // once-a-second playback time callback.
-    if (LyricLineLive()) StartFrames();
+    if (LyricLineLive() || SeekLive()) StartFrames();
     if (m_wall) { // paused, the wall slows down rather than stopping (WMC)
         m_wall->SetPaused(m_paused);
         m_wall->SetRunning(visible && m_playing);
@@ -1841,6 +1841,35 @@ void PlayerWindow::StartFrames() {
 bool PlayerWindow::LyricLineLive() const {
     return m_shown && m_hwnd && !IsIconic(m_hwnd) && m_playing && !m_paused && m_lyrics && m_lyrics->synced &&
            !m_paneShown && settings::LyricLineShown();
+}
+
+// The seek bar's head and the times follow the music on the same frames, a device pixel and a
+// second at a time, instead of jumping with the playback time callback once a second.
+bool PlayerWindow::SeekLive() const {
+    return m_shown && m_hwnd && !IsIconic(m_hwnd) && m_playing && !m_paused && m_length > 0 &&
+           !Empty(m_layout.seek);
+}
+
+bool PlayerWindow::TickSeek() {
+    if (!SeekLive()) return false;
+    if (m_seeking) return true;
+    double position = m_position;
+    try {
+        position = playback_control::get()->playback_get_position();
+    } catch (...) {
+        return true;
+    }
+    const float progress = static_cast<float>(std::clamp(position / m_length, 0.0, 1.0));
+    const bool moved = std::lround(SeekHead(progress) * m_scale) != m_seekHead;
+    const bool newSecond = static_cast<long>(position) != static_cast<long>(m_position);
+    if (!moved && !newSecond) return true;
+    m_position = position;
+    if (moved) PaintSeek();
+    if (newSecond) {
+        PaintTimes();
+        PaintInfo(); // its time line
+    }
+    return true;
 }
 
 bool PlayerWindow::TickLyric() {
@@ -2598,7 +2627,8 @@ void PlayerWindow::UpdateLayout(bool animate) {
     }
     m_lyricLine = -2;
     PaintLyric();
-    if (LyricLineLive() && !Empty(L.lyric)) StartFrames(); // its room may only have come now
+    // The sung line's or the seek bar's room may only have come now.
+    if ((LyricLineLive() && !Empty(L.lyric)) || SeekLive()) StartFrames();
     Place(m_barBack, L.bar);
     Place(m_topBack, L.top);
     Place(m_times, RECT{L.bar.left, L.timeLeft.top, L.bar.right, L.timeLeft.bottom});
@@ -3039,6 +3069,7 @@ void PlayerWindow::PaintSeek() {
     const float progress =
         m_seeking ? m_seekPreview : (m_length > 0 ? static_cast<float>(std::clamp(m_position / m_length, 0.0, 1.0)) : 0);
     const int w = r.right - r.left, h = r.bottom - r.top;
+    m_seekHead = std::lround(SeekHead(progress) * m_scale);
     gfx::CompositionHost::Get().Repaint(m_seek, m_seekBacking, w, h, m_scale, [&](ID2D1DeviceContext* dc) {
         const float W = w / m_scale, H = h / m_scale;
         // WMP 12's seek bar drawn afresh at any resolution, its colours taken pixel for pixel from
@@ -3074,7 +3105,7 @@ void PlayerWindow::PaintSeek() {
                                      .get(),
                                  1.0f);
         if (m_length <= 0) return;
-        const float px = std::round((x0 + 2 + (x1 - x0 - 4) * progress) * m_scale) / m_scale; // the head's front
+        const float px = std::round(SeekHead(progress) * m_scale) / m_scale; // the head's front
         if (px > x0 + 2) {
             // The played part: the three rows (crisp, as in the bitmap), the first column a
             // little clear where it meets the groove's end.
@@ -3109,6 +3140,12 @@ void PlayerWindow::PaintSeek() {
     UpdateSeekThumb();
 }
 
+// The front of the played part, in DIP from the seek bar's left (not yet on a device pixel).
+float PlayerWindow::SeekHead(float progress) const {
+    const float W = (m_layout.seek.right - m_layout.seek.left) / m_scale, x0 = kSeekInset, x1 = W - kSeekInset;
+    return x0 + 2 + (x1 - x0 - 4) * progress;
+}
+
 // The seek thumb rides the head in its own visuals, so it can fade: in while the pointer is
 // on the bar and out when it leaves, its lit state in and out under the pointer, the dragged
 // state at once.
@@ -3125,7 +3162,7 @@ void PlayerWindow::UpdateSeekThumb() {
     const float W = (r.right - r.left) / m_scale, x0 = kSeekInset, x1 = W - kSeekInset;
     const float progress =
         m_seeking ? m_seekPreview : static_cast<float>(std::clamp(m_position / m_length, 0.0, 1.0));
-    const float px = std::round((x0 + 2 + (x1 - x0 - 4) * progress) * m_scale) / m_scale;
+    const float px = std::round(SeekHead(progress) * m_scale) / m_scale;
     const float cx = std::clamp(px, x0 + kSeekThumbW / 2, x1 - kSeekThumbW / 2);
     const float top = std::round(((r.bottom - r.top) / m_scale - kSeekThumbH) / 2 * m_scale) / m_scale;
     m_seekThumb.Place(r.left + PxI(cx - kSeekThumbW / 2), r.top + PxI(top), w, h);
@@ -3481,6 +3518,7 @@ void PlayerWindow::OnTime() {
     PaintTimes();
     PaintInfo(); // its time line
     PaintLyric();
+    if (SeekLive()) StartFrames(); // after a seek or a song change
 }
 
 void PlayerWindow::OnVolume() {
@@ -3656,6 +3694,7 @@ LRESULT PlayerWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
             m_frameClock->Ack();
             bool more = m_shown && !IsIconic(hwnd) && m_pane && m_pane->Tick();
             more |= TickLyric();
+            more |= TickSeek();
             if (!more) m_frameClock->Stop();
         }
         return 0;

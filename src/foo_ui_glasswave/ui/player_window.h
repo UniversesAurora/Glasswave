@@ -133,6 +133,9 @@ class PlayerWindow {
     void PaintLyric();
     bool LyricLineLive() const; // the sung line follows the words (playing, shown, synced)
     bool TickLyric();           // a frame: repaints the sung line when it moved; false when idle
+    bool SeekLive() const;      // the seek bar's head follows the music (playing, shown)
+    bool TickSeek();            // a frame: moves the head a device pixel, the times a second
+    float SeekHead(float progress) const; // the played part's front, DIP from the bar's left
     void PaintMenuShade();
     void PaintSideHighlights();
     void PlaceWall();
@@ -257,6 +260,7 @@ class PlayerWindow {
     bool m_playing = false, m_paused = false, m_muted = false, m_shuffle = false;
     int m_repeat = 0;
     double m_position = 0, m_length = 0;
+    long m_seekHead = -1; // PaintSeek: the head's device pixel
     bool m_seeking = false;
     float m_seekPreview = 0, m_volume = 1;
     bool m_favorite = false;

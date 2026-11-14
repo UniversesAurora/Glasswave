@@ -311,6 +311,8 @@ class MainWindow : public PageHost, public PlayerHost {
     void ResetLyrics();
     void OnLyrics(const lyrics::Result& result);
     void StartLyricsFrames();
+    void StartSeekFrames(); // while playing: the seek bar's head on the compositor's frames
+    bool TickSeek();        // per frame; returns whether frames are still needed
     void ShowLyricsMenu(POINT screen);
     void AddLyricsDocumentActions(std::vector<MenuAction>& actions, HWND owner, const metadb_handle_ptr& now);
     void SetLyricLineShown(bool shown);
@@ -483,6 +485,7 @@ class MainWindow : public PageHost, public PlayerHost {
     std::wstring m_trackTitle, m_trackArtist;
     bool m_playing = false, m_paused = false;
     double m_position = 0, m_length = 0;
+    long m_seekHead = -1; // TickSeek: the head's device pixel last painted
     bool m_seeking = false;
     float m_seekPreview = 0;
     float m_volume = 1.0f; // slider position, 0..1

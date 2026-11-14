@@ -2221,6 +2221,7 @@ void MainWindow::UpdatePlaybackPresentation() {
     bool more = m_pane && m_pane->Tick();
     more |= TickNowPlayingLyric();
     if (more) StartLyricsFrames();
+    StartSeekFrames();
 }
 
 void MainWindow::RepaintNowPlaying() {
@@ -5508,6 +5509,7 @@ void MainWindow::OnPlaybackStateChanged() {
     if (m_list) m_list->Refresh(); // playing marker
     if (m_pane) m_pane->SetPlaying(playing, paused);
     if (playing && !paused && m_npLyrics && m_npLyrics->synced) StartLyricsFrames();
+    StartSeekFrames();
     OnTrackChanged(); // paused resume still has codec/bitrate information
 }
 
@@ -5633,7 +5635,32 @@ void MainWindow::OnPlaybackTime() {
         FlushPlaybackPaints();
     }
     RepaintNowPlaying();
+    StartSeekFrames(); // after a seek, a restore or a song change
     if (m_player) m_player->OnTime();
+}
+
+// The seek bar's head follows the music on the compositor's frames, a device pixel at a time,
+// instead of jumping with the playback time callback, which comes once a second.
+void MainWindow::StartSeekFrames() {
+    if (!m_playing || m_paused || !PlaybackPaintAllowed()) return;
+    if (!m_frameClock) m_frameClock = std::make_unique<gfx::FrameClock>(m_hwnd, kFrameMessage);
+    m_frameClock->Start();
+}
+
+bool MainWindow::TickSeek() {
+    if (!m_playing || m_paused || m_seeking || m_length <= 0) return false;
+    auto* seek = WidgetById(kSeek);
+    if (!seek) return false;
+    const RECT& r = seek->Bounds();
+    if (r.right <= r.left) return false;
+    const double position = playback_control::get()->playback_get_position();
+    const long head = std::lround((r.right - r.left) * std::clamp(position / m_length, 0.0, 1.0));
+    if (head != m_seekHead) {
+        m_seekHead = head;
+        m_position = position;
+        seek->Invalidate();
+    }
+    return true;
 }
 
 void MainWindow::OnVolumeChanged() {
@@ -6119,8 +6146,10 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
                 m_frameClock->Stop();
                 return 0;
             }
-            bool more = m_pane && m_pane->Tick();
+            // A pane lent to the player runs on the player's frames.
+            bool more = !m_paneLent && m_pane && m_pane->Tick();
             more |= TickNowPlayingLyric();
+            more |= TickSeek();
             if (!more) m_frameClock->Stop();
         }
         return 0;
