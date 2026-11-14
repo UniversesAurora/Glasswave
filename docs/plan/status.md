@@ -43,8 +43,16 @@ items below not yet checked by the owner:
   stable count); foobar2000: 359 MB private, 615 MB shared commit, GPU about 700 MB and flat.
   So the commit is charged outside both processes' address spaces yet released when engine.exe
   exits (fits the 2026-11-09 report: 255 GB commit, 39 GB process commit). Not yet known: who
-  owns it. Next: a live capture at the spike (sum of every process's commit, pools, system-wide
-  Section objects, the engine's stream requests) while Apple Music plays.
+  owns it.
+- The memory watchdog now records that evidence (running elevated since 14:17,
+  `.local/tests/memory-watch-forensics-20261114-141743`): every sample adds the sum of all
+  processes' commit and the unattributed rest (normal now: about 46 GB and 28 GB); a rise of
+  4 GB within 10 s writes an `incidents/*-rise` folder without stopping anything; an incident
+  writes, before and after the stop, a census of every Section object (size, SEC_COMMIT or
+  reserve, holders), kernel pools by tag, and the tails of the engine, Glasswave and playback
+  logs. Next spike: compare `sections.txt` / `pool-tags.txt` with `sections-after.txt` and the
+  unattributed column. (14:06 the old watchdog stopped the player because a 2 GB test
+  allocation of mine pushed commit to 85.0 %; not a fault of the player.)
 
 ## Backend review: caches, lists, requests, provider model (2026-11-13)
 

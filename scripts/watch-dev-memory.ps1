@@ -12,7 +12,20 @@ param(
     [string]$DumpPath,
     [switch]$Supervisor,
     [switch]$SelfTest,
-    [uint32]$SupervisorPid = 0
+    # Writes one set of incident forensics (sections, pool tags, log tails) and exits.
+    [switch]$ForensicsTest,
+    # Run the supervisor without asking for elevation (forensics then see less).
+    [switch]$NoElevate,
+    # A trial watcher (tests): leaves the live watchdog's pointer file alone.
+    [switch]$Trial,
+    [uint32]$SupervisorPid = 0,
+    # A rise of this much commit within RiseWindowSeconds captures forensics without stopping
+    # anything, so the growth itself is recorded before the stop threshold is reached.
+    [double]$RiseBytes = 4GB,
+    [int]$RiseWindowSeconds = 10,
+    # The stop threshold and the repository processes it stops (tests point both elsewhere).
+    [double]$CommitPercentLimit = 85,
+    [string]$TargetPattern = 'foobar|engine|audio.service|glasswave|cavern|renderer|hybris|ffmpeg'
 )
 $ErrorActionPreference = 'Stop'
 $root = [IO.Path]::GetFullPath((Split-Path -Parent $PSScriptRoot))
@@ -59,6 +72,7 @@ function Write-WatchPointer(
     [string]$startedUtc,
     [string]$status
 ) {
+    if ($Trial) { return }
     $pointerPath = Join-Path $localRoot 'tests/memory-watch-live.json'
     $temporaryPath = $pointerPath + '.tmp.' + $PID
     try {
@@ -91,6 +105,21 @@ function Get-FallbackValue($getter, $fallback) {
         Write-Diagnostic 'process_record_property' $_.Exception.Message
         $fallback
     }
+}
+$elevated = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).
+    IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+# The forensics need administrator rights: unelevated, Windows hides kernel object addresses
+# and refuses the handles of services, so sections could not be told apart or sized. The
+# supervisor asks for elevation once (UAC) and its watcher inherits it.
+if ($Supervisor -and -not $DumpProcessId -and -not $elevated -and -not $NoElevate) {
+    $arguments = @('-NoProfile', '-File', ('"' + $PSCommandPath + '"'))
+    foreach ($name in $PSBoundParameters.Keys) {
+        $value = $PSBoundParameters[$name]
+        if ($value -is [switch]) { if ($value) { $arguments += '-' + $name } }
+        else { $arguments += '-' + $name; $arguments += ('"' + $value + '"') }
+    }
+    Start-Process -FilePath (Get-Command pwsh.exe).Source -Verb RunAs -WindowStyle Hidden -ArgumentList $arguments
+    exit
 }
 if ($Supervisor -and -not $DumpProcessId) {
     $childIndex = 0
@@ -126,6 +155,8 @@ if ($Supervisor -and -not $DumpProcessId) {
                     '-NoProfile', '-File', ('"' + $PSCommandPath + '"'),
                     '-EvidenceDirectory', ('"' + $EvidenceDirectory + '"'),
                     '-IntervalSeconds', $IntervalSeconds, '-MaxHours', $MaxHours,
+                    '-RiseBytes', $RiseBytes, '-RiseWindowSeconds', $RiseWindowSeconds,
+                    '-CommitPercentLimit', $CommitPercentLimit, '-TargetPattern', ('"' + $TargetPattern + '"'),
                     '-SupervisorPid', $PID)
             $claimed = $true
             Write-WatchPointer $child.Id $PID ([DateTime]::UtcNow.ToString('o')) 'starting'
@@ -210,14 +241,247 @@ if ($DumpProcessId) {
     if (-not [GlasswaveMemoryWatch]::Dump($DumpProcessId, $DumpPath)) { exit 2 }
     exit
 }
+# Evidence for commit that no process's counters show (2026-11-14: spikes of 14-19 GB released
+# when engine.exe exits, while neither it nor foobar2000 held them in its address space):
+# every Section object in the system with its size, kind and holders, and the kernel pools by
+# tag. Buffers are allocated up front so a capture at 99 % commit needs little more.
+Add-Type -TypeDefinition @'
+using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.Runtime.InteropServices;
+using System.Text;
+public static class GlasswaveMemoryForensics {
+    [StructLayout(LayoutKind.Sequential)]
+    struct SectionBasic { public IntPtr BaseAddress; public uint AllocationAttributes; public long MaximumSize; }
+    [DllImport("ntdll.dll")] static extern int NtQuerySystemInformation(int cls, IntPtr buffer, int length, out int returned);
+    [DllImport("ntdll.dll")] static extern int NtQuerySection(IntPtr section, int cls, out SectionBasic info, IntPtr length, out IntPtr returned);
+    [DllImport("kernel32.dll", SetLastError=true)] static extern IntPtr OpenProcess(uint access, bool inherit, uint pid);
+    [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr handle);
+    [DllImport("kernel32.dll")] static extern IntPtr GetCurrentProcess();
+    [DllImport("kernel32.dll", SetLastError=true)]
+    static extern bool DuplicateHandle(IntPtr sourceProcess, IntPtr source, IntPtr targetProcess, out IntPtr target,
+        uint access, bool inherit, uint options);
+    [DllImport("kernel32.dll", SetLastError=true, CharSet=CharSet.Unicode)]
+    static extern IntPtr CreateFileMappingW(IntPtr file, IntPtr attributes, uint protect, uint high, uint low, string name);
+
+    const uint SecFile = 0x800000, SecImage = 0x1000000, SecReserve = 0x4000000;
+    static IntPtr s_buffer = IntPtr.Zero;
+    static int s_size;
+    static int s_sectionType = -1;
+    static IntPtr s_probe = IntPtr.Zero;
+
+    struct Entry { public long Object; public uint Pid; public long Handle; public ushort Type; }
+
+    [DllImport("ntdll.dll")] static extern int RtlAdjustPrivilege(int privilege, bool enable, bool thread, out bool previous);
+    static bool s_debug;
+
+    public static void Prepare() {
+        Grow(96 << 20);
+        if (s_probe == IntPtr.Zero) s_probe = CreateFileMappingW(new IntPtr(-1), IntPtr.Zero, 4, 0, 4096, null);
+        // SeDebugPrivilege (20): handles of every process, services included, can be duplicated.
+        // Granted only when the watcher runs elevated.
+        bool previous;
+        if (!s_debug) s_debug = RtlAdjustPrivilege(20, true, false, out previous) == 0;
+    }
+    static void Grow(int size) {
+        if (size <= s_size) return;
+        if (s_buffer != IntPtr.Zero) Marshal.FreeHGlobal(s_buffer);
+        s_buffer = Marshal.AllocHGlobal(size);
+        s_size = size;
+    }
+    static void Query(int cls) {
+        for (int attempt = 0; attempt < 8; attempt++) {
+            int returned;
+            int status = NtQuerySystemInformation(cls, s_buffer, s_size, out returned);
+            if (status == 0) return;
+            if ((uint)status != 0xC0000004) throw new Exception("NtQuerySystemInformation(" + cls + ") 0x" + status.ToString("X8"));
+            Grow(Math.Max(returned + (4 << 20), s_size * 2));
+        }
+        throw new Exception("NtQuerySystemInformation(" + cls + ") kept growing");
+    }
+    static List<Entry> Handles() {
+        Query(64); // SystemExtendedHandleInformation: count, reserved, then 40-byte entries
+        long count = Marshal.ReadInt64(s_buffer);
+        var list = new List<Entry>((int)Math.Min(count, 4000000));
+        for (long i = 0; i < count; i++) {
+            IntPtr e = IntPtr.Add(s_buffer, (int)(16 + i * 40));
+            list.Add(new Entry { Object = Marshal.ReadInt64(e), Pid = (uint)Marshal.ReadInt64(e, 8),
+                                 Handle = Marshal.ReadInt64(e, 16), Type = (ushort)Marshal.ReadInt16(e, 30) });
+        }
+        return list;
+    }
+    static string Name(uint pid, Dictionary<uint, string> names) {
+        string name;
+        if (names.TryGetValue(pid, out name)) return name;
+        try { name = pid == 4 ? "System" : Process.GetProcessById((int)pid).ProcessName; } catch { name = "?"; }
+        names[pid] = name;
+        return name;
+    }
+
+    // Every Section object: size and kind (pagefile-backed unless SEC_FILE or SEC_IMAGE) and the
+    // processes holding handles to it; a section held by several processes is counted once.
+    public static string Sections(int top) {
+        Prepare();
+        var watch = Stopwatch.StartNew();
+        var all = Handles();
+        uint self = (uint)Process.GetCurrentProcess().Id;
+        if (s_sectionType < 0)
+            foreach (var e in all)
+                if (e.Pid == self && e.Handle == s_probe.ToInt64()) { s_sectionType = e.Type; break; }
+        if (s_sectionType < 0) return "section type unknown (probe handle not found)\n";
+        // Unelevated, Windows hides kernel object addresses (all 0): every handle then counts as
+        // a section of its own, and a section shared by several processes counts several times.
+        var byObject = new Dictionary<long, List<Entry>>();
+        long hidden = 0;
+        foreach (var e in all) {
+            if (e.Type != s_sectionType) continue;
+            long key = e.Object != 0 ? e.Object : --hidden;
+            List<Entry> holders;
+            if (!byObject.TryGetValue(key, out holders)) byObject[key] = holders = new List<Entry>();
+            holders.Add(e);
+        }
+        var processes = new Dictionary<uint, IntPtr>();
+        var names = new Dictionary<uint, string>();
+        var rows = new List<Tuple<long, uint, List<Entry>>>(); // size, attributes, holders
+        int unknown = 0;
+        foreach (var pair in byObject) {
+            long size = -1; uint attributes = 0;
+            foreach (var holder in pair.Value) {
+                IntPtr process;
+                if (!processes.TryGetValue(holder.Pid, out process)) processes[holder.Pid] = process = OpenProcess(0x40, false, holder.Pid);
+                if (process == IntPtr.Zero) continue;
+                IntPtr local;
+                if (!DuplicateHandle(process, new IntPtr(holder.Handle), GetCurrentProcess(), out local, 0x1, false, 0)) continue;
+                SectionBasic info; IntPtr returned;
+                if (NtQuerySection(local, 0, out info, new IntPtr(Marshal.SizeOf(typeof(SectionBasic))), out returned) == 0) {
+                    size = info.MaximumSize; attributes = info.AllocationAttributes;
+                }
+                CloseHandle(local);
+                if (size >= 0) break;
+            }
+            if (size < 0) unknown++;
+            rows.Add(Tuple.Create(size, attributes, pair.Value));
+        }
+        foreach (var process in processes.Values) if (process != IntPtr.Zero) CloseHandle(process);
+        rows.Sort((a, b) => b.Item1.CompareTo(a.Item1));
+        // A pagefile-backed SEC_COMMIT section charges its whole size to system commit when it
+        // is created; a SEC_RESERVE one (the .NET GC's 2 TB regions) only what is committed in it.
+        long pagefile = 0, reserve = 0, file = 0, image = 0; int pagefileCount = 0;
+        var perProcess = new Dictionary<uint, long>();
+        foreach (var row in rows) {
+            if (row.Item1 < 0) continue;
+            bool isFile = (row.Item2 & SecFile) != 0, isImage = (row.Item2 & SecImage) != 0;
+            if (isImage) image += row.Item1; else if (isFile) file += row.Item1;
+            else if ((row.Item2 & SecReserve) != 0) reserve += row.Item1;
+            else {
+                pagefile += row.Item1; pagefileCount++;
+                var seen = new HashSet<uint>();
+                foreach (var holder in row.Item3)
+                    if (seen.Add(holder.Pid)) { long sum; perProcess.TryGetValue(holder.Pid, out sum); perProcess[holder.Pid] = sum + row.Item1; }
+            }
+        }
+        int sectionHandles = 0;
+        foreach (var row in rows) sectionHandles += row.Item3.Count;
+        var text = new StringBuilder();
+        text.AppendFormat("handles {0}, section handles {1}, sections {2} (size unknown {3}), {4} ms, debug privilege {5}\n",
+            all.Count, sectionHandles, rows.Count, unknown, watch.ElapsedMilliseconds, s_debug);
+        text.AppendFormat("pagefile-backed, committed (SEC_COMMIT): {0:N0} MB in {1} sections; reserved (SEC_RESERVE): {2:N0} MB; file: {3:N0} MB; image: {4:N0} MB\n",
+            pagefile / 1048576.0, pagefileCount, reserve / 1048576.0, file / 1048576.0, image / 1048576.0);
+        text.Append("largest committed pagefile-backed sections (MB, attributes, holders):\n");
+        int shown = 0;
+        foreach (var row in rows) {
+            if (row.Item1 < 0 || (row.Item2 & (SecFile | SecImage | SecReserve)) != 0) continue;
+            if (shown++ >= top) break;
+            var holders = new Dictionary<uint, int>();
+            foreach (var holder in row.Item3) { int n; holders.TryGetValue(holder.Pid, out n); holders[holder.Pid] = n + 1; }
+            var list = new List<string>();
+            foreach (var h in holders) list.Add(Name(h.Key, names) + ":" + h.Key + (h.Value > 1 ? "x" + h.Value : ""));
+            text.AppendFormat("  {0,10:N1}  0x{1:X8}  {2}\n", row.Item1 / 1048576.0, row.Item2, string.Join(", ", list));
+        }
+        text.Append("committed pagefile-backed sections held, by process (MB):\n");
+        var order = new List<KeyValuePair<uint, long>>(perProcess);
+        order.Sort((a, b) => b.Value.CompareTo(a.Value));
+        for (int i = 0; i < Math.Min(top, order.Count); i++)
+            text.AppendFormat("  {0,10:N1}  {1}:{2}\n", order[i].Value / 1048576.0, Name(order[i].Key, names), order[i].Key);
+        return text.ToString();
+    }
+
+    // Kernel pool use by tag (SystemPoolTagInformation), largest first.
+    public static string PoolTags(int top) {
+        Prepare();
+        Query(22);
+        int count = Marshal.ReadInt32(s_buffer);
+        var rows = new List<Tuple<long, long, string>>();
+        for (int i = 0; i < count; i++) {
+            IntPtr e = IntPtr.Add(s_buffer, 8 + i * 40);
+            var tag = new byte[4]; Marshal.Copy(e, tag, 0, 4);
+            long paged = Marshal.ReadInt64(e, 16), nonpaged = Marshal.ReadInt64(e, 32);
+            rows.Add(Tuple.Create(paged, nonpaged, Encoding.ASCII.GetString(tag)));
+        }
+        rows.Sort((a, b) => (b.Item1 + b.Item2).CompareTo(a.Item1 + a.Item2));
+        var text = new StringBuilder("tag   paged MB   nonpaged MB\n");
+        for (int i = 0; i < Math.Min(top, rows.Count); i++)
+            text.AppendFormat("{0}  {1,9:N1}  {2,12:N1}\n", rows[i].Item3, rows[i].Item1 / 1048576.0, rows[i].Item2 / 1048576.0);
+        return text.ToString();
+    }
+}
+'@
+function Write-Forensics([string]$directory, [string]$suffix) {
+    $parts = [ordered]@{
+        ('sections' + $suffix + '.txt') = { [GlasswaveMemoryForensics]::Sections(30) }
+        ('pool-tags' + $suffix + '.txt') = { [GlasswaveMemoryForensics]::PoolTags(30) }
+    }
+    foreach ($name in $parts.Keys) {
+        try {
+            Set-Content -LiteralPath (Join-Path $directory $name) -Value (& $parts[$name])
+        } catch {
+            Write-Diagnostic ('forensics_' + $name) $_.Exception.Message
+        }
+    }
+}
+# The last lines of the logs that say what playback and the Apple Music engine were doing.
+function Write-LogTails([string]$directory) {
+    $logs = [ordered]@{
+        'engine-log-tail.txt' = Join-Path $localRoot 'applemusic/windows/runtime/logs/component-service.log'
+        'glasswave-log-tail.txt' = Join-Path $localRoot 'fb2k-dev/profile/glasswave/netease/glasswave-netease.log'
+        'playback-log-tail.txt' = Join-Path $localRoot 'fb2k-dev/profile/glasswave/applemusic/playback.log'
+    }
+    foreach ($name in $logs.Keys) {
+        try {
+            if (Test-Path -LiteralPath $logs[$name]) {
+                Get-Content -LiteralPath $logs[$name] -Tail 400 | Set-Content -LiteralPath (Join-Path $directory $name)
+            }
+        } catch {
+            Write-Diagnostic ('log_tail_' + $name) $_.Exception.Message
+        }
+    }
+}
+# Every process's commit (its pagefile usage), largest first, from one process snapshot.
+function Process-Commit-Records($processes, [int]$top) {
+    @($processes | ForEach-Object {
+        try { [pscustomobject]@{ pid = $_.Id; name = $_.ProcessName; commitBytes = $_.PagedMemorySize64 } } catch {}
+    } | Sort-Object commitBytes -Descending | Select-Object -First $top)
+}
+try { [GlasswaveMemoryForensics]::Prepare() } catch { Write-Diagnostic 'forensics_prepare' $_.Exception.Message }
+if ($ForensicsTest) {
+    $directory = Join-Path $EvidenceDirectory ('forensics-test-' + [DateTime]::UtcNow.ToString('yyyyMMddTHHmmssZ'))
+    New-Item -ItemType Directory -Path $directory -Force | Out-Null
+    $watch = [Diagnostics.Stopwatch]::StartNew()
+    Write-Forensics $directory ''
+    Write-LogTails $directory
+    'forensics written to {0} in {1} ms' -f $directory, $watch.ElapsedMilliseconds
+    exit
+}
 function Get-TargetsFromProcesses($processes) {
     @($processes | Where-Object {
         if ($null -eq $_) { return $false }
+        # The name first: reading Path enumerates the process's modules, which elevated
+        # succeeds for every process and took the loop from 1 to 4 seconds.
         try {
-            $_.Id -ne $PID -and $_.Path -and
+            $_.ProcessName -match $TargetPattern -and $_.Id -ne $PID -and $_.Path -and
             $_.Path.StartsWith($localRoot + [IO.Path]::DirectorySeparatorChar,
-                [StringComparison]::OrdinalIgnoreCase) -and
-            $_.ProcessName -match 'foobar|engine|audio.service|glasswave|cavern|renderer|hybris|ffmpeg'
+                [StringComparison]::OrdinalIgnoreCase)
         } catch { $false }
     })
 }
@@ -339,11 +603,11 @@ function Add-RotatedCsvRows {
         Write-Diagnostic $Category $_.Exception.Message
     }
 }
-function New-IncidentDirectory([string]$evidenceDirectory, [string]$utc) {
+function New-IncidentDirectory([string]$evidenceDirectory, [string]$utc, [string]$suffix = '') {
     $incidentRoot = Join-Path $evidenceDirectory 'incidents'
     New-Item -ItemType Directory -Path $incidentRoot -Force | Out-Null
     $stamp = [DateTimeOffset]::Parse($utc, [Globalization.CultureInfo]::InvariantCulture).
-        UtcDateTime.ToString('yyyyMMddTHHmmssfffZ')
+        UtcDateTime.ToString('yyyyMMddTHHmmssfffZ') + $suffix
     $incidentDirectory = Join-Path $incidentRoot $stamp
     if (Test-Path -LiteralPath $incidentDirectory) {
         $incidentDirectory += '-' + [DateTime]::UtcNow.Ticks
@@ -396,17 +660,22 @@ $csv = Join-Path $EvidenceDirectory 'samples.csv'
 $targetCsv = Join-Path $EvidenceDirectory 'target-samples.csv'
 Write-JsonOutput (Join-Path $EvidenceDirectory 'watcher.json') ([ordered]@{
     watcherPid=$PID; startedUtc=$started.ToString('o'); evidence=$EvidenceDirectory;
-    outputSchema=1; dumpMask='0x1824';
-    intervalSeconds=$IntervalSeconds; durationHours=$MaxHours; commitLimitPercent=85; minimumAvailableBytes=$minimumAvailable;
+    outputSchema=2; dumpMask='0x1824'; elevated=$elevated;
+    riseBytes=$RiseBytes; riseWindowSeconds=$RiseWindowSeconds;
+    intervalSeconds=$IntervalSeconds; durationHours=$MaxHours; commitLimitPercent=$CommitPercentLimit;
+    targetPattern=$TargetPattern; minimumAvailableBytes=$minimumAvailable;
     processPrivateLimitBytes=8GB; processSharedCommitLimitBytes=8GB;
     kernelPoolGrowthLimitBytes=1GB
 }) 'watcher_json'
 $consecutiveIterationFailures = 0
+$recent = [Collections.Generic.Queue[object]]::new()
+$lastRiseCapture = [DateTime]::MinValue
 while ($MaxHours -le 0 -or ([DateTime]::UtcNow - $started).TotalHours -lt $MaxHours) {
     try {
         if (Test-Path -LiteralPath (Join-Path $EvidenceDirectory 'stop')) { break }
         $info = [GlasswaveMemoryWatch]::Read()
-        $targets = @(Get-Targets)
+        $allProcesses = @(Get-Process -ErrorAction SilentlyContinue)
+        $targets = @(Get-TargetsFromProcesses $allProcesses)
         $records = @($targets | ForEach-Object {
             $record = Process-Record $_
             if ($null -ne $record -and $null -ne $record.pid) { $record }
@@ -417,7 +686,7 @@ while ($MaxHours -le 0 -or ([DateTime]::UtcNow - $started).TotalHours -lt $MaxHo
         $kernelPaged = $info.KernelPaged.ToUInt64() * $pageBytes
         $kernelNonpaged = $info.KernelNonpaged.ToUInt64() * $pageBytes
         $reason = @()
-        if ($commitPercent -ge 85) { $reason += 'system_commit_pressure' }
+        if ($commitPercent -ge $CommitPercentLimit) { $reason += 'system_commit_pressure' }
         if ($availableBytes -le $minimumAvailable) { $reason += 'physical_memory_pressure' }
         if (@($records | Where-Object { $null -ne $_.privateBytes -and $_.privateBytes -ge 8GB }).Count) {
             $reason += 'audio_process_private_limit'
@@ -441,12 +710,39 @@ while ($MaxHours -le 0 -or ([DateTime]::UtcNow - $started).TotalHours -lt $MaxHo
             if ($null -ne $privateMeasure.Sum) { $targetPrivateSum = $privateMeasure.Sum }
             if ($null -ne $workingMeasure.Sum) { $targetWorkingSum = $workingMeasure.Sum }
         }
+        # Commit that no process's own counters hold (sections without views, kernel, drivers).
+        $processCommit = 0
+        try { $processCommit = ($allProcesses | Measure-Object PagedMemorySize64 -Sum).Sum } catch {}
         $row | Add-Member -NotePropertyMembers ([ordered]@{
             targetPrivateBytes=$targetPrivateSum;
             targetWorkingBytes=$targetWorkingSum;
             targetPids=($records.pid -join ':'); targetCount=$records.Count
+            processCommitBytes=$processCommit
+            unattributedCommitBytes=($commitBytes - $processCommit)
         })
         Add-RotatedCsvRows -Path $csv -Rows @($row) -Category 'samples_csv'
+        # A fast rise is recorded while it happens, without stopping anything (once a minute).
+        $recent.Enqueue([pscustomobject]@{ t = [DateTime]::UtcNow; commit = $commitBytes })
+        while ($recent.Count -and ([DateTime]::UtcNow - $recent.Peek().t).TotalSeconds -gt $RiseWindowSeconds) {
+            [void]$recent.Dequeue()
+        }
+        $windowLow = ($recent | Measure-Object commit -Minimum).Minimum
+        if ($commitBytes - $windowLow -ge $RiseBytes -and
+            ([DateTime]::UtcNow - $lastRiseCapture).TotalSeconds -ge 60) {
+            $lastRiseCapture = [DateTime]::UtcNow
+            try {
+                $riseDirectory = New-IncidentDirectory $EvidenceDirectory $row.utc '-rise'
+                Write-JsonOutput (Join-Path $riseDirectory 'rise.json') ([ordered]@{
+                    utc=$row.utc; windowSeconds=$RiseWindowSeconds; windowLowCommitBytes=$windowLow
+                    riseBytes=($commitBytes - $windowLow); sample=$row; targets=$records
+                    processCommit=(Process-Commit-Records $allProcesses 30)
+                }) 'rise_json'
+                Write-Forensics $riseDirectory ''
+                Write-LogTails $riseDirectory
+            } catch {
+                Write-Diagnostic 'rise_capture' $_.Exception.Message
+            }
+        }
         $targetRows = @($records | ForEach-Object {
             $targetRow = Target-Sample-Record $rowUtc $_
             if ($null -ne $targetRow) { $targetRow }
@@ -479,7 +775,11 @@ while ($MaxHours -le 0 -or ([DateTime]::UtcNow - $started).TotalHours -lt $MaxHo
             Write-JsonOutput (Join-Path $incidentDirectory 'alert.json') ([ordered]@{
                 utc=$row.utc; reasons=$reason; sample=$row; targets=$records;
                 largestProcesses=$largestProcesses
+                processCommit=(Process-Commit-Records $allProcesses 30)
             }) 'alert_json'
+            # Where the commit is while it is still there, before anything is stopped.
+            Write-Forensics $incidentDirectory ''
+            Write-LogTails $incidentDirectory
             $stopIndex = 0
             foreach ($target in $targets) {
                 $stopIndex++
@@ -550,6 +850,8 @@ while ($MaxHours -le 0 -or ([DateTime]::UtcNow - $started).TotalHours -lt $MaxHo
                     Write-Diagnostic 'stop_process_snapshot' $_.Exception.Message
                 }
             }
+            # The same census once they are stopped: what vanished is what they held or caused.
+            Write-Forensics $incidentDirectory '-after'
             $after = $null
             try {
                 $after = [GlasswaveMemoryWatch]::Read()
