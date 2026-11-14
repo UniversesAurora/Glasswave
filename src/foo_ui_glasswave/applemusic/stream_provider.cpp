@@ -862,6 +862,26 @@ std::optional<stream::Playlist> ParsePlaylist(const Object& item) {
     playlist.trackCount = json::GetInt(*attributes, L"trackCount", stream::kUnknownCount);
     playlist.own = json::GetBool(*attributes, L"canEdit");
     playlist.saved = !playlist.own;
+    if (const auto notes = json::GetObject(*attributes, L"description")) {
+        playlist.tagline = json::GetString(*notes, L"short");
+        if (playlist.tagline == playlist.description) playlist.tagline.clear();
+    }
+    // "editorial", "personal-mix", "replay", "user-shared", "external" (2026-11-14).
+    const std::wstring type = json::GetString(*attributes, L"playlistType");
+    playlist.type = json::GetBool(*attributes, L"isChart") ? L"Chart"
+                    : type == L"editorial"                 ? L"Editorial playlist"
+                    : type == L"personal-mix"              ? L"Personal mix"
+                    : type == L"replay"                    ? L"Replay"
+                    : type == L"user-shared"               ? L"Shared playlist"
+                                                           : L"";
+    playlist.updated = json::GetString(*attributes, L"lastModifiedDate").substr(0, 10);
+    // A library playlist's dateAdded is its creation only for the owner's own playlists.
+    if (playlist.own) playlist.created = json::GetString(*attributes, L"dateAdded").substr(0, 10);
+    for (const auto& trait : StringArray(*attributes, L"audioTraits")) {
+        if (trait == L"lossless") playlist.traits.push_back(L"Lossless");
+        else if (trait == L"hi-res-lossless") playlist.traits.push_back(L"Hi-Res Lossless");
+        else if (trait == L"atmos") playlist.traits.push_back(L"Dolby Atmos");
+    }
     return playlist;
 }
 
@@ -894,6 +914,9 @@ std::optional<stream::Album> ParseAlbum(const Object& item) {
         else if (trait == L"hi-res-lossless") album.traits.push_back(L"Hi-Res Lossless");
         else if (trait == L"atmos") album.traits.push_back(L"Dolby Atmos");
     }
+    if (json::GetBool(*attributes, L"isMasteredForItunes")) album.traits.push_back(L"Apple Digital Master");
+    if (json::GetString(*attributes, L"contentRating") == L"explicit") album.traits.push_back(L"Explicit");
+    album.upc = json::GetString(*attributes, L"upc");
     return album;
 }
 
@@ -1452,6 +1475,11 @@ stream::Playlist MergePlaylistRecord(const stream::Playlist& primary, const stre
     merged.creator = PreferText(merged.creator, fallback.creator);
     merged.description = PreferText(merged.description, fallback.description);
     merged.trackCount = PreferCount(merged.trackCount, fallback.trackCount);
+    merged.tagline = PreferText(merged.tagline, fallback.tagline);
+    merged.type = PreferText(merged.type, fallback.type);
+    merged.created = PreferText(merged.created, fallback.created);
+    merged.updated = PreferText(merged.updated, fallback.updated);
+    if (merged.traits.empty()) merged.traits = fallback.traits;
     if (mergeFlags) {
         merged.own = merged.own || fallback.own;
         merged.saved = merged.saved || fallback.saved;
@@ -1472,6 +1500,7 @@ stream::Album MergeAlbumRecord(const stream::Album& primary, const stream::Album
     merged.label = PreferText(merged.label, fallback.label);
     merged.copyright = PreferText(merged.copyright, fallback.copyright);
     merged.type = PreferText(merged.type, fallback.type);
+    merged.upc = PreferText(merged.upc, fallback.upc);
     if (merged.genres.empty()) merged.genres = fallback.genres;
     if (merged.aliases.empty()) merged.aliases = fallback.aliases;
     if (merged.traits.empty()) merged.traits = fallback.traits;

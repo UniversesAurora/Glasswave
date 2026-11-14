@@ -40,6 +40,11 @@ struct Playlist {
     std::wstring creatorName;
     std::wstring description;
     bool subscribed = false;
+    int64_t createTime = 0, updateTime = 0; // epoch milliseconds
+    std::vector<std::wstring> tags;
+    std::wstring updateFrequency; // "每日更新"
+    std::wstring englishTitle;
+    bool chart = false; // ToplistType set: one of the service's charts
 };
 
 // A NetEase Cloud Music artist page.
@@ -52,12 +57,11 @@ struct Artist {
     int songCount = 0;
     bool followed = false;
     bool followKnown = false;  // the API reported the follow state
-    // The profile (artist detail, artist wiki and follower count); empty / negative: unknown.
+    // The profile (artist detail and artist wiki); empty / negative: unknown.
     bool profile = false;
     std::vector<std::wstring> aliases; // alias and transNames
-    std::vector<std::wstring> roles;   // identify.imageDesc, split at '、'
+    std::vector<std::wstring> roles;   // identify.imageDesc, split at '、', badges left out
     int videoCount = -1;               // mvSize
-    long long fans = -1;               // fansCnt
     int area = -1;                     // 7 Chinese, 96 Western, 8 Japanese, 16 Korean, 0 other
     int type = 0;                      // 1 male, 2 female, 3 group
 };
@@ -74,6 +78,7 @@ struct Album {
     std::wstring company;
     std::wstring type;    // "专辑", "EP/Single", "Single", ... as the service writes it
     std::wstring subType; // "录音室版", "现场版", ...
+    std::wstring tags;    // the service's genre tags, as one string
     std::vector<std::wstring> aliases; // alias and transNames
 };
 

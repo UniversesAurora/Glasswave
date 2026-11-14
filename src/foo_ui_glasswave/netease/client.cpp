@@ -89,6 +89,7 @@ Album ParseAlbum(const json::Object& object) {
     album.company = json::GetString(object, L"company");
     album.type = json::GetString(object, L"type");
     album.subType = json::GetString(object, L"subType");
+    album.tags = json::GetString(object, L"tags");
     for (const wchar_t* key : {L"alias", L"transNames"})
         if (const auto names = json::GetArray(object, key))
             for (uint32_t i = 0; i < names->Size(); ++i)
@@ -222,6 +223,16 @@ Playlist ParsePlaylist(const json::Object& object) {
         playlist.creatorId = json::GetInt64(*creator, L"userId");
         playlist.creatorName = json::GetString(*creator, L"nickname");
     }
+    playlist.createTime = json::GetInt64(object, L"createTime");
+    playlist.updateTime = json::GetInt64(object, L"trackUpdateTime", json::GetInt64(object, L"updateTime"));
+    if (const auto tags = json::GetArray(object, L"tags"))
+        for (uint32_t i = 0; i < tags->Size(); ++i)
+            if (const auto value = tags->GetAt(i);
+                value && value.ValueType() == winrt::Windows::Data::Json::JsonValueType::String)
+                playlist.tags.emplace_back(value.GetString().c_str());
+    playlist.updateFrequency = json::GetString(object, L"updateFrequency");
+    playlist.englishTitle = json::GetString(object, L"englishTitle");
+    playlist.chart = !json::GetString(object, L"ToplistType").empty();
     if (playlist.name.empty()) playlist.name = L"Unknown";
     return playlist;
 }
@@ -821,7 +832,9 @@ bool Client::GetArtistDetail(int64_t artistId, abort_callback& abort, Artist& ou
                 if (const auto value = names->GetAt(i);
                     value && value.ValueType() == winrt::Windows::Data::Json::JsonValueType::String)
                     addAlias(value.GetString().c_str());
-    // "网易音乐人、歌手、作词、作曲": what the artist does, as the client's profile shows it.
+    // "网易音乐人、歌手、作词、作曲": what the artist does, as the client's profile shows it,
+    // without the platform's own badges (the owner wants the music, not the service's social
+    // side).
     if (auto data = json::GetObject(body, L"data"))
         if (auto identify = json::GetObject(*data, L"identify")) {
             const std::wstring roles = json::GetString(*identify, L"imageDesc");
@@ -829,7 +842,8 @@ bool Client::GetArtistDetail(int64_t artistId, abort_callback& abort, Artist& ou
             while (start < roles.size()) {
                 size_t end = roles.find(L'、', start);
                 if (end == std::wstring::npos) end = roles.size();
-                if (end > start) out.roles.push_back(roles.substr(start, end - start));
+                const std::wstring role = roles.substr(start, end - start);
+                if (!role.empty() && role.find(L"网易") == std::wstring::npos) out.roles.push_back(role);
                 start = end + 1;
             }
         }
@@ -849,9 +863,6 @@ void Client::GetArtistExtras(int64_t artistId, abort_callback& abort, Artist& ou
             out.area = json::GetInt(*data, L"area", -1);
             out.type = json::GetInt(*data, L"type", 0);
         }
-    }
-    if (Request(L"/artist/follow/count", {{L"id", id}}, false, abort, body, code, error) && code == 200) {
-        if (const auto data = json::GetObject(body, L"data")) out.fans = json::GetInt64(*data, L"fansCnt", -1);
     }
 }
 

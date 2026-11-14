@@ -41,6 +41,15 @@ struct Playlist {
     std::wstring creator;
     std::wstring description;
     int trackCount = kUnknownCount;
+    // Details, where the service has them; an empty field is not shown.
+    std::wstring tagline;  // one line about the playlist
+    std::wstring type;     // untranslated UI key: Editorial playlist, Chart, Personal mix, ...
+    std::wstring created;  // "YYYY-MM-DD"
+    std::wstring updated;  // "YYYY-MM-DD"
+    std::wstring updates;  // how often it changes, as the service writes it ("每日更新")
+    std::vector<std::wstring> tags;    // genre and mood tags
+    std::vector<std::wstring> aliases; // other titles
+    std::vector<std::wstring> traits;  // untranslated UI keys, as stream::Album::traits
     bool own = false;   // created by the signed-in user (editable, cannot be saved)
     bool saved = false; // in the user's library ("collected")
     bool operator==(const Playlist&) const = default;
@@ -59,9 +68,12 @@ struct Album {
     std::wstring label;     // record label or company
     std::wstring copyright;
     std::wstring type;      // untranslated UI key: Album, EP, Single, Compilation, Live album
+    std::wstring edition;   // the service's own word for the recording ("录音室版"), shown as written
+    std::wstring upc;
     std::vector<std::wstring> genres;
     std::vector<std::wstring> aliases;
-    std::vector<std::wstring> traits; // untranslated UI keys: Lossless, Hi-Res Lossless, Dolby Atmos
+    // Untranslated UI keys: Lossless, Hi-Res Lossless, Dolby Atmos, Apple Digital Master, Explicit.
+    std::vector<std::wstring> traits;
     bool operator==(const Album&) const = default;
 };
 
@@ -94,7 +106,6 @@ struct Artist {
     std::vector<std::wstring> aliases; // other names (translations, romanisations)
     std::vector<std::wstring> roles;   // what the artist does: singer, lyricist, producer...
     int videoCount = kUnknownCount;
-    long long followerCount = -1; // -1: unknown
     bool operator==(const Artist&) const = default;
 };
 
@@ -112,7 +123,6 @@ inline void CopyArtistProfile(const Artist& from, Artist& to) {
     to.aliases = from.aliases;
     to.roles = from.roles;
     to.videoCount = from.videoCount;
-    to.followerCount = from.followerCount;
 }
 
 enum class ArtistSectionRowKind {

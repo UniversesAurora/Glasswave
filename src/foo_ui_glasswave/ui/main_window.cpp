@@ -65,6 +65,7 @@ constexpr UINT_PTR kVolumeTipTimer = 2;
 constexpr UINT_PTR kScrollAnimTimer = 3;
 constexpr UINT_PTR kScrollRepeatTimer = 4;
 constexpr UINT_PTR kPaneRevealTimer = 5;
+constexpr UINT_PTR kDetailTipTimer = 6;
 constexpr int kPaneRevealMs = 300;
 constexpr UINT kFrameMessage = WM_APP + 0x32; // FrameClock: the lyrics pane draws a frame
 constexpr float kLyricsPaneWidth = 440.0f;    // DIP (new UI, no Win7 measurement)
@@ -4282,7 +4283,8 @@ float MainWindow::DetailTaglineHeight(float textW) const {
 // (owner, 2026-11-14: right-aligned labels made the rows look crooked); long values end in an
 // ellipsis. A column takes the width its text needs; when they do not all fit, the narrow
 // ones keep theirs and the wide ones share the rest equally.
-void MainWindow::DrawDetailFacts(ID2D1DeviceContext* dc, float x, float y, float textW) const {
+void MainWindow::DrawDetailFacts(ID2D1DeviceContext* dc, float x, float y, float textW) {
+    m_detailCut.clear();
     const size_t columns = DetailFactColumns(textW);
     if (columns == 0) return;
     const size_t n = m_detail.facts.size();
@@ -4332,8 +4334,16 @@ void MainWindow::DrawDetailFacts(ID2D1DeviceContext* dc, float x, float y, float
             const float top = y + (i - c * rows) * kDetailFactRowH;
             auto name = MakeText(m_detail.facts[i].label + L":", 12.0f, DWRITE_FONT_WEIGHT_NORMAL, nameW, kDetailFactRowH);
             dc->DrawTextLayout({cx, top}, name.get(), label.get());
+            const float vx = cx + nameW + kDetailFactGap;
             auto text = MakeText(m_detail.facts[i].value, 12.0f, DWRITE_FONT_WEIGHT_NORMAL, valueW, kDetailFactRowH);
-            dc->DrawTextLayout({cx + nameW + kDetailFactGap, top}, text.get(), value.get());
+            dc->DrawTextLayout({vx, top}, text.get(), value.get());
+            if (width(m_detail.facts[i].value) > valueW + 0.5f) {
+                // Cut short: the tooltip shows it whole (UpdateDetailTip).
+                const RECT& band = m_layout.detailHeader;
+                m_detailCut.push_back({{band.left + PxI(vx), band.top + PxI(top), band.left + PxI(vx + valueW),
+                                        band.top + PxI(top + kDetailFactRowH)},
+                                       m_detail.facts[i].value});
+            }
         }
         cx += columnW[c] + kDetailFactColumnGap;
     }
@@ -5983,6 +5993,14 @@ float MainWindow::VolumeThumbX() const {
 }
 
 void MainWindow::ShowVolumeTip(float thumbX) {
+    const std::wstring text = std::to_wstring(static_cast<int>(std::lround(m_volume * 100))) + L"%";
+    ShowTip(text, thumbX, static_cast<float>(m_layout.volume.top - PxI(2)), true);
+}
+
+// Windows 7's tooltip: the volume while it is dragged or hovered, and text cut short (a detail
+// value) after the pointer rests on it. One bubble for the window; long text wraps.
+// `above`: centred over (anchorX, anchorY), else its left edge at anchorX below anchorY.
+void MainWindow::ShowTip(const std::wstring& text, float anchorX, float anchorY, bool above) {
     // Win7 tooltip: white to #E4E5F0, #767676 border, small radius, soft shadow, grey text.
     auto& host = gfx::CompositionHost::Get();
     if (!m_volumeTip) {
@@ -5990,13 +6008,13 @@ void MainWindow::ShowVolumeTip(float thumbX) {
         m_volumeTip.Opacity(0.0f);
         m_windowRoot.Children().InsertAtTop(m_volumeTip); // above the clipped content and frame
     }
-    const std::wstring text = std::to_wstring(static_cast<int>(std::lround(m_volume * 100))) + L"%";
-    auto measure = MakeText(text, 12.0f, DWRITE_FONT_WEIGHT_NORMAL, 200, 20);
+    constexpr float kMaxTextW = 420;
+    auto measure = MakeWrappedText(text, 12.0f, DWRITE_FONT_WEIGHT_NORMAL, kMaxTextW, 2000);
     DWRITE_TEXT_METRICS tm{};
     measure->GetMetrics(&tm);
-    const float shadow = 3, w = std::ceil(tm.widthIncludingTrailingWhitespace) + 14, h = 21;
-    auto layout = MakeText(text, 12.0f, DWRITE_FONT_WEIGHT_NORMAL, w, h, DWRITE_TEXT_ALIGNMENT_CENTER);
-    layout->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+    const float textW = std::ceil(tm.widthIncludingTrailingWhitespace), textH = std::ceil(tm.height);
+    const float shadow = 3, w = textW + 14, h = std::max(21.0f, textH + 5);
+    auto layout = MakeWrappedText(text, 12.0f, DWRITE_FONT_WEIGHT_NORMAL, textW + 1, textH + 1);
     const int pw = PxI(w + shadow), ph = PxI(h + shadow);
     host.Repaint(m_volumeTip, pw, ph, m_scale, [&](ID2D1DeviceContext* dc) {
         const float px = 1.0f / m_scale;
@@ -6020,12 +6038,14 @@ void MainWindow::ShowVolumeTip(float thumbX) {
             dc->FillRoundedRectangle(box, fill.get());
             dc->DrawRoundedRectangle(box, border.get(), px);
         }
-        dc->DrawTextLayout({0, 0}, layout.get(), ink.get());
+        dc->DrawTextLayout({7, std::round((h - textH) / 2)}, layout.get(), ink.get());
     });
     RECT client{};
     GetClientRect(m_hwnd, &client);
-    const float left = std::clamp(thumbX - Px(w) / 2, 0.0f, static_cast<float>(client.right - pw));
-    const float top = static_cast<float>(m_layout.volume.top - ph - PxI(2));
+    const float left = std::clamp(above ? anchorX - Px(w) / 2 : anchorX, 0.0f,
+                                  static_cast<float>(std::max<LONG>(0, client.right - pw)));
+    const float top = std::clamp(above ? anchorY - ph : anchorY, 0.0f,
+                                 static_cast<float>(std::max<LONG>(0, client.bottom - ph)));
     m_volumeTip.Offset({std::round(left), std::round(top), 0});
     m_volumeTip.Size({static_cast<float>(pw), static_cast<float>(ph)});
     if (!m_volumeTipShown) {
@@ -6043,9 +6063,30 @@ void MainWindow::ShowVolumeTip(float thumbX) {
 
 void MainWindow::HideVolumeTip() {
     KillTimer(m_hwnd, kVolumeTipTimer);
+    HideTip();
+}
+
+void MainWindow::HideTip() {
     if (!m_volumeTipShown) return;
     m_volumeTipShown = false;
     gfx::CompositionHost::Get().AnimateOpacity(m_volumeTip, 0.0f, 300);
+}
+
+// A detail value cut short shows in full in the tooltip once the pointer rests on it for the
+// system's tooltip delay (the double-click time, as Windows' own tooltips).
+void MainWindow::UpdateDetailTip(POINT pt) {
+    size_t over = SIZE_MAX;
+    if (m_detail.visible)
+        for (size_t i = 0; i < m_detailCut.size(); ++i)
+            if (PtInRect(&m_detailCut[i].rect, pt)) over = i;
+    if (over == m_detailTipItem) return;
+    m_detailTipItem = over;
+    KillTimer(m_hwnd, kDetailTipTimer);
+    if (!m_volumeHover) HideTip();
+    if (over != SIZE_MAX) {
+        m_detailTipAt = pt;
+        SetTimer(m_hwnd, kDetailTipTimer, GetDoubleClickTime(), nullptr);
+    }
 }
 
 float MainWindow::SeekFractionAt(int x) const {
@@ -6292,6 +6333,14 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
             if (m_volumeHover) ShowVolumeTip(VolumeThumbX());
             return 0;
         }
+        if (wp == kDetailTipTimer) {
+            KillTimer(hwnd, kDetailTipTimer);
+            // Below the pointer, clear of the cursor, as Windows places its tooltips.
+            if (m_detailTipItem < m_detailCut.size())
+                ShowTip(m_detailCut[m_detailTipItem].text, static_cast<float>(m_detailTipAt.x),
+                        static_cast<float>(m_detailTipAt.y + PxI(20)), false);
+            return 0;
+        }
         if (wp == kScrollAnimTimer) {
             bool active = m_list && m_list->AnimateScrollBar();
             active |= AnimateDetailScrollBar();
@@ -6529,6 +6578,7 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
             UpdateCrumbHover(pt);
             UpdateNowPlayingHover(pt);
             UpdateDetailBriefHover(pt);
+            UpdateDetailTip(pt);
             const bool overVolume = PtInRect(&m_layout.volume, pt) != FALSE;
             if (overVolume) {
                 if (!m_volumeHover) {
@@ -6564,6 +6614,7 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
             UpdateNowPlayingHover({-1, -1});
             m_volumeHover = false;
             HideVolumeTip();
+            UpdateDetailTip({-1, -1});
         }
         return 0;
     case WM_LBUTTONDOWN:

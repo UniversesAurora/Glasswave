@@ -65,6 +65,12 @@ void MergeRestored(Playlist& target, const Playlist& source) {
     Fill(target.creatorName, source.creatorName);
     Fill(target.description, source.description);
     target.subscribed = target.subscribed || source.subscribed;
+    if (!target.createTime) target.createTime = source.createTime;
+    if (!target.updateTime) target.updateTime = source.updateTime;
+    if (target.tags.empty()) target.tags = source.tags;
+    Fill(target.updateFrequency, source.updateFrequency);
+    Fill(target.englishTitle, source.englishTitle);
+    target.chart = target.chart || source.chart;
 }
 
 void MergeRestored(Artist& target, const Artist& source) {

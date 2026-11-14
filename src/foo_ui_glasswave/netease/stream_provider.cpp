@@ -161,6 +161,13 @@ stream::Playlist ToPlaylist(const Playlist& playlist) {
     out.creator = playlist.creatorName;
     out.description = playlist.description;
     out.trackCount = playlist.trackCount;
+    out.created = Date(playlist.createTime);
+    out.updated = Date(playlist.updateTime);
+    out.updates = playlist.updateFrequency;
+    out.tags = playlist.tags;
+    if (!playlist.englishTitle.empty() && playlist.englishTitle != playlist.name)
+        out.aliases.push_back(playlist.englishTitle);
+    if (playlist.chart) out.type = L"Chart";
     out.own = Ncm().FindPlaylistScope(playlist.id) == Session::PlaylistScope::Created || IsOwn(playlist);
     out.saved = !out.own && (playlist.subscribed ||
                              Ncm().FindPlaylistScope(playlist.id) == Session::PlaylistScope::Collected);
@@ -202,7 +209,18 @@ stream::Album ToAlbum(const Album& album) {
     out.released = Date(album.publishTime);
     out.label = album.company;
     out.type = AlbumType(album);
+    out.edition = album.subType;
     out.aliases = album.aliases;
+    // Tags are one string of genre words ("华语 流行"), separated by spaces or commas.
+    std::wstring tag;
+    for (const wchar_t c : album.tags + L" ") {
+        if (c == L' ' || c == L',' || c == L'，' || c == L'、' || c == L'/') {
+            if (!tag.empty()) out.genres.push_back(std::move(tag));
+            tag.clear();
+        } else {
+            tag += c;
+        }
+    }
     return out;
 }
 
@@ -252,7 +270,6 @@ stream::Artist ToArtist(const Artist& artist) {
     out.aliases = artist.aliases;
     out.roles = artist.roles;
     out.videoCount = artist.videoCount < 0 ? stream::kUnknownCount : artist.videoCount;
-    out.followerCount = artist.fans;
     // The wiki's codes, as the service's artist lists name them. Untranslated UI keys.
     switch (artist.area) {
     case 7: out.area = L"Chinese"; break;

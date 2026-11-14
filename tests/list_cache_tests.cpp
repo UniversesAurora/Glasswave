@@ -189,9 +189,9 @@ void TestSerializerRoundTrip() {
                   "A current-format page without the enrichment marker was accepted");
 
     auto oldSchema = body;
-    const auto schemaAt = oldSchema.find("glasswave-list-page/3");
+    const auto schemaAt = oldSchema.find("glasswave-list-page/4");
     Check(schemaAt != std::string::npos, "Serializer output did not contain the current page schema");
-    oldSchema.replace(schemaAt, std::string("glasswave-list-page/3").size(), "glasswave-list-page/2");
+    oldSchema.replace(schemaAt, std::string("glasswave-list-page/4").size(), "glasswave-list-page/3");
     ExpectFailure([&] { (void)glasswave::cache::lists::detail::ParsePageForTest(oldSchema, 1); },
                   "A page using a legacy schema was accepted");
 }

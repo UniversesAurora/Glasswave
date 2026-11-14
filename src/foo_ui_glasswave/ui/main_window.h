@@ -229,7 +229,7 @@ class MainWindow : public PageHost, public PlayerHost {
     size_t DetailFactColumns(float textW) const;
     float DetailFactsHeight(float textW) const;   // DIP, 0 without facts
     float DetailTaglineHeight(float textW) const; // DIP, 0 without a tagline
-    void DrawDetailFacts(ID2D1DeviceContext* dc, float x, float y, float textW) const;
+    void DrawDetailFacts(ID2D1DeviceContext* dc, float x, float y, float textW);
     void LogDetail();
     void OnDetailAction();
     // The description's own scroll area (long artist/album/playlist introductions).
@@ -363,6 +363,16 @@ class MainWindow : public PageHost, public PlayerHost {
     float VolumeThumbX() const;       // centre of the volume thumb in client pixels
     void ShowVolumeTip(float thumbX); // Win7 tooltip bubble with the volume while dragging
     void HideVolumeTip();
+    void ShowTip(const std::wstring& text, float anchorX, float anchorY, bool above); // client px
+    void HideTip();
+    void UpdateDetailTip(POINT pt); // a cut-short detail value under the pointer
+    struct CutText {
+        RECT rect{}; // client px
+        std::wstring text;
+    };
+    std::vector<CutText> m_detailCut; // detail values drawn with an ellipsis (DrawDetailFacts)
+    size_t m_detailTipItem = SIZE_MAX;
+    POINT m_detailTipAt{};
     winrt::Windows::UI::Composition::SpriteVisual m_volumeTip{nullptr};
     bool m_volumeTipShown = false;
     bool m_volumeHover = false;

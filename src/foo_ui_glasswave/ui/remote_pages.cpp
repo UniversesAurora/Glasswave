@@ -105,7 +105,24 @@ std::vector<DetailInfo::Fact> ArtistFacts(const stream::Artist& artist) {
     add(L"Also known as", ListText(artist.aliases));
     add(L"Roles", ListText(artist.roles));
     add(L"Music videos", artist.videoCount > 0 ? NumberText(artist.videoCount) : std::wstring());
-    add(L"Followers", artist.followerCount >= 0 ? NumberText(artist.followerCount) : std::wstring());
+    return facts;
+}
+
+// A playlist's details as details-pane facts.
+std::vector<DetailInfo::Fact> PlaylistFacts(const stream::Playlist& playlist) {
+    std::vector<DetailInfo::Fact> facts;
+    const auto add = [&facts](const wchar_t* label, std::wstring value) {
+        if (!value.empty()) facts.push_back({Tr(label), std::move(value)});
+    };
+    std::vector<std::wstring> traits;
+    for (const auto& trait : playlist.traits) traits.push_back(Tr(trait));
+    add(L"Type", playlist.type.empty() ? std::wstring() : Tr(playlist.type));
+    add(L"Tags", ListText(playlist.tags));
+    add(L"Created", playlist.created.empty() ? std::wstring() : DateText(playlist.created));
+    add(L"Updated", playlist.updated.empty() ? std::wstring() : DateText(playlist.updated));
+    add(L"Updates", playlist.updates);
+    add(L"Audio", ListText(traits));
+    add(L"Also known as", ListText(playlist.aliases));
     return facts;
 }
 
@@ -118,12 +135,14 @@ std::vector<DetailInfo::Fact> AlbumFacts(const stream::Album& album) {
     std::vector<std::wstring> traits;
     for (const auto& trait : album.traits) traits.push_back(Tr(trait));
     add(L"Type", album.type.empty() ? std::wstring() : Tr(album.type));
+    add(L"Edition", album.edition);
     add(L"Released", album.released.empty() ? std::wstring() : DateText(album.released));
     add(L"Genre", ListText(album.genres));
     add(L"Label", album.label);
     add(L"Audio", ListText(traits));
     add(L"Also known as", ListText(album.aliases));
     add(L"Copyright", album.copyright);
+    add(L"UPC", album.upc);
     return facts;
 }
 
@@ -1064,6 +1083,8 @@ class PlaylistPage final : public TrackPagedPage {
         if (d.title.empty()) d.title = ProviderPlaylistText(m_provider, L"Playlist");
         if (m_info) {
             d.subtitle = Joined({m_info->creator, Count(m_info->trackCount, L"songs")});
+            d.tagline = m_info->tagline;
+            d.facts = PlaylistFacts(*m_info);
             d.brief = m_info->description;
         }
         d.artKey = m_provider.ArtKey(stream::ArtKind::Playlist, m_view.remoteId);
@@ -1200,6 +1221,17 @@ class AlbumPage final : public TrackPagedPage {
                                  m_info->year ? std::to_wstring(m_info->year) : L"",
                                  Count(m_info->trackCount, L"songs")});
             d.facts = AlbumFacts(*m_info);
+            // The album's length, as the official clients show it: once every song is read.
+            if (m_state.complete) {
+                long long ms = 0;
+                for (const auto& track : CurrentRows<stream::Track>()) ms += std::max(0, track.durationMs);
+                const long long minutes = (ms + 30'000) / 60'000;
+                if (minutes > 0) {
+                    std::wstring length = minutes >= 60 ? std::to_wstring(minutes / 60) + L" " + Tr(L"hr") + L" " : L"";
+                    if (minutes % 60 || minutes < 60) length += std::to_wstring(minutes % 60) + L" " + Tr(L"min");
+                    d.facts.insert(d.facts.begin() + std::min<size_t>(2, d.facts.size()), {Tr(L"Length"), length});
+                }
+            }
             d.brief = m_info->description;
         }
         d.artKey = m_provider.ArtKey(stream::ArtKind::Album, m_view.remoteId);

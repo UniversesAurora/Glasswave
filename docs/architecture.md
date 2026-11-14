@@ -73,17 +73,21 @@ foobar2000.exe (core: decoding, playlists, library, DSP, output, components)
   the album is known, else its own. The provider's art extractor stores the image under the
   same identity, so the playing track, the queue, list rows, the album page and the grids
   share one download and one decode per size.
-- **Profiles and details.** `stream::Artist` and `stream::Album` carry every detail a page
-  can show (artist: biography, tagline, born/formed, origin, area, kind, genres, aliases,
-  roles, video and follower counts; album: release date, label, copyright, type, genres,
-  aliases, audio traits). A source fills what it knows and leaves the rest empty; type, area
-  and trait values are untranslated UI keys. `Artist::profile` marks the artist's own record
-  (a list row only has a summary), so caches and merges never let a row replace a profile
-  (`stream::CopyArtistProfile`). Pages turn the fields into `DetailInfo::Fact`s, which the
-  details band lays out like Windows 7's details pane; a field the source lacks is not
-  shown. Apple Music's profile attributes (`artistBio`, `bornOrFormed`, `origin`, `isGroup`,
-  `audioTraits`) exist only on the web API surface; NetEase adds its artist wiki
-  (`/ugc/artist/get`: area, type) and follower count to the artist detail.
+- **Profiles and details.** `stream::Artist`, `stream::Album` and `stream::Playlist` carry
+  every detail of the music itself a page can show (artist: biography, tagline,
+  born/formed, origin, area, kind, genres, aliases, roles, video count; album: release date,
+  label, copyright, type, edition, UPC, genres, aliases, audio traits; playlist: tagline,
+  type, created, updated, update frequency, tags, aliases). Social figures (followers, plays,
+  saves, comments, shares) and the services' badges are left out on purpose (owner,
+  2026-11-14). A source fills what it knows and leaves the rest empty; type, area and trait
+  values are untranslated UI keys. `Artist::profile` marks the artist's own record (a list
+  row only has a summary), so caches and merges never let a row replace a profile
+  (`stream::CopyArtistProfile`); the list cache stores every field (page schema 4). Pages
+  turn the fields into `DetailInfo::Fact`s, which the details band lays out like Windows
+  7's details pane, a value cut short showing whole in a tooltip; a field the source lacks
+  is not shown. Apple Music's profile attributes (`artistBio`, `bornOrFormed`, `origin`,
+  `isGroup`, `audioTraits`) exist only on the web API surface; NetEase adds its artist wiki
+  (`/ugc/artist/get`: area, type) to the artist detail.
 - **Checking pages with real data.** `foobar2000.exe /glasswave:open:<source>:<artist|album|playlist>:<id>`
   opens that page in the running window (`ui/dev_commands.cpp`), and the details band of the
   page on screen is written to the log when it changes ("page: ..."), so a page can be

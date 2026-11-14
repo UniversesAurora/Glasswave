@@ -41,7 +41,8 @@ using winrt::Windows::Data::Json::JsonObject;
 using winrt::Windows::Data::Json::JsonValue;
 using winrt::Windows::Data::Json::JsonValueType;
 
-constexpr std::string_view kPageSchema = "glasswave-list-page/3";
+// 4: playlists, albums and artists carry their details (stream::Playlist / Album / Artist).
+constexpr std::string_view kPageSchema = "glasswave-list-page/4";
 constexpr std::string_view kManifestSchema = "glasswave-list-manifest/3";
 constexpr std::string_view kPageContentType = "application/vnd.glasswave.list-page+json";
 constexpr std::string_view kManifestContentType = "application/vnd.glasswave.list-manifest+json";
@@ -446,6 +447,25 @@ void SetBool(JsonObject& object, const wchar_t* key, bool value) {
 void SetDecimal(JsonObject& object, const wchar_t* key, uint64_t value) {
     SetDecodedString(object, key, std::to_string(value));
 }
+void SetStrings(JsonObject& object, const wchar_t* key, const std::vector<std::wstring>& values) {
+    if (values.size() > kMaxArtists) Invalid("A list cache row has too many names.");
+    JsonArray array;
+    for (const auto& value : values) array.Append(JsonValue::CreateStringValue(winrt::hstring(value)));
+    object.SetNamedValue(key, array);
+}
+std::vector<std::wstring> StringsField(const JsonObject& object, const wchar_t* key) {
+    const JsonArray array = ArrayField(object, key);
+    if (array.Size() > kMaxArtists) Invalid("A cached row has too many names.");
+    std::vector<std::wstring> out;
+    out.reserve(array.Size());
+    for (uint32_t i = 0; i < array.Size(); ++i) {
+        const IJsonValue value = array.GetAt(i);
+        RequireType(value, JsonValueType::String);
+        out.emplace_back(value.GetString().c_str());
+        if (StringBytes(out.back()) > kMaxStringBytes) Invalid("A list cache string is too large.");
+    }
+    return out;
+}
 
 const char* RowKindName(const stream::ListRows& rows) {
     switch (rows.index()) {
@@ -512,6 +532,14 @@ JsonObject PlaylistJson(const stream::Playlist& playlist) {
     SetNumber(object, L"trackCount", playlist.trackCount);
     SetBool(object, L"own", playlist.own);
     SetBool(object, L"saved", playlist.saved);
+    SetString(object, L"tagline", playlist.tagline);
+    SetString(object, L"type", playlist.type);
+    SetString(object, L"created", playlist.created);
+    SetString(object, L"updated", playlist.updated);
+    SetString(object, L"updates", playlist.updates);
+    SetStrings(object, L"tags", playlist.tags);
+    SetStrings(object, L"aliases", playlist.aliases);
+    SetStrings(object, L"traits", playlist.traits);
     return object;
 }
 JsonObject AlbumJson(const stream::Album& album) {
@@ -524,6 +552,15 @@ JsonObject AlbumJson(const stream::Album& album) {
     SetString(object, L"description", album.description);
     SetNumber(object, L"trackCount", album.trackCount);
     SetNumber(object, L"year", album.year);
+    SetString(object, L"released", album.released);
+    SetString(object, L"label", album.label);
+    SetString(object, L"copyright", album.copyright);
+    SetString(object, L"type", album.type);
+    SetString(object, L"edition", album.edition);
+    SetString(object, L"upc", album.upc);
+    SetStrings(object, L"genres", album.genres);
+    SetStrings(object, L"aliases", album.aliases);
+    SetStrings(object, L"traits", album.traits);
     return object;
 }
 JsonObject ArtistRowJson(const stream::Artist& artist) {
@@ -537,6 +574,16 @@ JsonObject ArtistRowJson(const stream::Artist& artist) {
     SetNumber(object, L"trackCount", artist.trackCount);
     SetBool(object, L"followKnown", artist.followKnown);
     SetBool(object, L"followed", artist.followed);
+    SetBool(object, L"profile", artist.profile);
+    SetString(object, L"tagline", artist.tagline);
+    SetString(object, L"born", artist.born);
+    SetString(object, L"origin", artist.origin);
+    SetString(object, L"area", artist.area);
+    SetNumber(object, L"kind", static_cast<int>(artist.kind));
+    SetStrings(object, L"genres", artist.genres);
+    SetStrings(object, L"aliases", artist.aliases);
+    SetStrings(object, L"roles", artist.roles);
+    SetNumber(object, L"videoCount", artist.videoCount);
     return object;
 }
 JsonObject GroupJson(const stream::BrowseGroup& group) {
@@ -624,7 +671,7 @@ stream::Track ParseTrack(const JsonObject& object) {
 }
 stream::Playlist ParsePlaylist(const JsonObject& object) {
     CheckKeys(object, L"id", L"name", L"coverUrl", L"creator", L"description", L"trackCount", L"own",
-              L"saved");
+              L"saved", L"tagline", L"type", L"created", L"updated", L"updates", L"tags", L"aliases", L"traits");
     stream::Playlist playlist;
     playlist.id = StringField(object, L"id");
     playlist.name = StringField(object, L"name");
@@ -635,11 +682,20 @@ stream::Playlist ParsePlaylist(const JsonObject& object) {
         IntField(object, L"trackCount", std::numeric_limits<int>::min(), std::numeric_limits<int>::max());
     playlist.own = BoolField(object, L"own");
     playlist.saved = BoolField(object, L"saved");
+    playlist.tagline = StringField(object, L"tagline");
+    playlist.type = StringField(object, L"type");
+    playlist.created = StringField(object, L"created");
+    playlist.updated = StringField(object, L"updated");
+    playlist.updates = StringField(object, L"updates");
+    playlist.tags = StringsField(object, L"tags");
+    playlist.aliases = StringsField(object, L"aliases");
+    playlist.traits = StringsField(object, L"traits");
     if (playlist.id.empty()) Invalid("A cached playlist has no stable identity.");
     return playlist;
 }
 stream::Album ParseAlbum(const JsonObject& object) {
-    CheckKeys(object, L"id", L"name", L"coverUrl", L"artists", L"description", L"trackCount", L"year");
+    CheckKeys(object, L"id", L"name", L"coverUrl", L"artists", L"description", L"trackCount", L"year", L"released",
+              L"label", L"copyright", L"type", L"edition", L"upc", L"genres", L"aliases", L"traits");
     stream::Album album;
     album.id = StringField(object, L"id");
     album.name = StringField(object, L"name");
@@ -649,12 +705,22 @@ stream::Album ParseAlbum(const JsonObject& object) {
     album.trackCount =
         IntField(object, L"trackCount", std::numeric_limits<int>::min(), std::numeric_limits<int>::max());
     album.year = IntField(object, L"year", std::numeric_limits<int>::min(), std::numeric_limits<int>::max());
+    album.released = StringField(object, L"released");
+    album.label = StringField(object, L"label");
+    album.copyright = StringField(object, L"copyright");
+    album.type = StringField(object, L"type");
+    album.edition = StringField(object, L"edition");
+    album.upc = StringField(object, L"upc");
+    album.genres = StringsField(object, L"genres");
+    album.aliases = StringsField(object, L"aliases");
+    album.traits = StringsField(object, L"traits");
     if (album.id.empty()) Invalid("A cached album has no stable identity.");
     return album;
 }
 stream::Artist ParseArtistRow(const JsonObject& object) {
     CheckKeys(object, L"id", L"name", L"avatarUrl", L"bio", L"albumCount", L"trackCount", L"followKnown",
-              L"followed");
+              L"followed", L"profile", L"tagline", L"born", L"origin", L"area", L"kind", L"genres", L"aliases",
+              L"roles", L"videoCount");
     stream::Artist artist;
     artist.id = StringField(object, L"id");
     artist.name = StringField(object, L"name");
@@ -666,7 +732,18 @@ stream::Artist ParseArtistRow(const JsonObject& object) {
         IntField(object, L"trackCount", std::numeric_limits<int>::min(), std::numeric_limits<int>::max());
     artist.followKnown = BoolField(object, L"followKnown");
     artist.followed = BoolField(object, L"followed");
-    if (artist.id.empty()) Invalid("A cached artist row has no stable identity.");
+    artist.profile = BoolField(object, L"profile");
+    artist.tagline = StringField(object, L"tagline");
+    artist.born = StringField(object, L"born");
+    artist.origin = StringField(object, L"origin");
+    artist.area = StringField(object, L"area");
+    const int kind = IntField(object, L"kind", 0, static_cast<int>(stream::ArtistKind::Group));
+    artist.kind = static_cast<stream::ArtistKind>(kind);
+    artist.genres = StringsField(object, L"genres");
+    artist.aliases = StringsField(object, L"aliases");
+    artist.roles = StringsField(object, L"roles");
+    artist.videoCount =
+        IntField(object, L"videoCount", std::numeric_limits<int>::min(), std::numeric_limits<int>::max());    if (artist.id.empty()) Invalid("A cached artist row has no stable identity.");
     return artist;
 }
 stream::BrowseGroup ParseGroup(const JsonObject& object) {
