@@ -2,6 +2,8 @@
 
 #include "lyrics/lyrics.h"
 #include <atomic>
+#include <functional>
+#include <memory>
 #include <cstdint>
 #include <string_view>
 
@@ -39,6 +41,10 @@ struct Candidate {
     std::wstring cacheScope;
     std::uint64_t accountRevision = 0;
     std::wstring sourceKey; // stable registry key, distinct from display name
+    // A candidate read from a file (a same-name .lrc, a file the owner loaded): its path and
+    // the code page it was read in (0: detected), so it can be read again in another.
+    std::wstring file;
+    unsigned codePage = 0;
 };
 
 class Searcher {
@@ -107,6 +113,19 @@ inline bool SameLyricsDocument(const Lyrics& a, const Lyrics& b) {
     return true;
 }
 
+// The same lines, words and references, whatever their times (an offset changed).
+inline bool SameLyricsText(const Lyrics& a, const Lyrics& b) {
+    if (a.synced != b.synced || a.karaoke != b.karaoke || a.lines.size() != b.lines.size()) return false;
+    for (size_t i = 0; i < a.lines.size(); ++i) {
+        const auto& x = a.lines[i];
+        const auto& y = b.lines[i];
+        if (x.text != y.text || x.translation != y.translation || x.romanization != y.romanization ||
+            x.words.size() != y.words.size())
+            return false;
+    }
+    return true;
+}
+
 class Service {
   public:
     static Service& Get();
@@ -128,17 +147,35 @@ class Service {
                         std::function<void(std::vector<Candidate>, bool finished)> done);
     void CancelSearch();
     Result Select(const metadb_handle_ptr& track, const Candidate& candidate);
-    Result LoadFile(const metadb_handle_ptr& track, const std::wstring& path);
+    Result LoadFile(const metadb_handle_ptr& track, const std::wstring& path, unsigned codePage = 0);
+    // The shown lyrics' file read again in another code page (0: detected) and selected.
+    // NotFound when they did not come from a readable file.
+    Result Reencode(const metadb_handle_ptr& track, const Lyrics& shown, unsigned codePage);
     // Explicitly removes the owner's per-track selection.
     void UseAutomatic(const metadb_handle_ptr& track);
     void ClearCache();
 
+    // Every candidate the searches for `track` have turned up so far in this session (the
+    // automatic lookup's and the search dialog's), for Select lyrics. Main thread.
+    std::vector<Candidate> Candidates(const metadb_handle_ptr& track) const;
+
+    // The owner's timing correction for one lyric of a track (as found, before any offset), in
+    // ms, kept across sessions: positive shows it earlier, as LRC's [offset:]. Each lyric of a
+    // song keeps its own. Main thread.
+    int Offset(const metadb_handle_ptr& track, const Lyrics& lyrics) const;
+    void SetOffset(const metadb_handle_ptr& track, const Lyrics& lyrics, int offsetMs);
+
     // Folder of cached results: <profile>\glasswave\lyrics.
     static std::wstring CacheFolder();
+    // Folder of lyrics saved to the profile: <profile>\lyrics.
+    static std::wstring ProfileLyricsFolder();
 
   private:
     Service() = default;
     void Start(const metadb_handle_ptr& track, bool useCache, std::function<void(const Result&)> done);
+    void Remember(const Query& query, const std::vector<Candidate>& candidates);
+    std::wstring m_candidatesFor; // the track the candidates are for (path and subsong)
+    std::vector<Candidate> m_candidates;
     void Run(std::shared_ptr<abort_callback_impl> abort, std::function<void()> work);
 
     struct Worker {
@@ -150,6 +187,10 @@ class Service {
 
     std::shared_ptr<abort_callback_impl> m_abort;
     unsigned m_generation = 0;
+    // The automatic search in flight: its track and where its answer goes. Asking for the
+    // same track again redirects the answer instead of starting another search.
+    std::wstring m_activeIdentity;
+    std::shared_ptr<std::function<void(const Result&)>> m_activeDone;
     std::shared_ptr<abort_callback_impl> m_searchAbort;
     unsigned m_searchGeneration = 0;
 };

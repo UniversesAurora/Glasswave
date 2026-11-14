@@ -264,45 +264,240 @@ Lyrics ParseLrc(std::wstring_view text) {
         if (l.end < l.start) l.end = l.start;
     }
 
-    if (offset != 0) {
-        // A positive offset shows the lyrics earlier.
-        auto shift = [offset](int& t) { t = std::max(0, t - offset); };
-        for (auto& l : out.lines) {
-            shift(l.start);
-            shift(l.end);
-            for (auto& w : l.words) {
-                shift(w.start);
-                shift(w.end);
+    ApplyOffset(out, offset);
+    return out;
+}
+
+void ApplyOffset(Lyrics& lyrics, int offsetMs) {
+    if (offsetMs == 0) return;
+    // A positive offset shows the lyrics earlier.
+    auto shift = [offsetMs](int& t) { t = std::max(0, t - offsetMs); };
+    for (auto& l : lyrics.lines) {
+        shift(l.start);
+        shift(l.end);
+        for (auto& w : l.words) {
+            shift(w.start);
+            shift(w.end);
+        }
+    }
+}
+
+namespace {
+
+std::wstring Utf16(std::string_view bytes, bool bigEndian) {
+    std::wstring text;
+    text.reserve(bytes.size() / 2);
+    for (size_t i = 0; i + 1 < bytes.size(); i += 2) {
+        const auto a = static_cast<unsigned char>(bytes[i]), b = static_cast<unsigned char>(bytes[i + 1]);
+        text.push_back(static_cast<wchar_t>(bigEndian ? (a << 8) | b : (b << 8) | a));
+    }
+    return text;
+}
+
+std::wstring MultiByte(std::string_view bytes, UINT cp, DWORD flags) {
+    std::wstring text;
+    if (bytes.empty()) return text;
+    const int n = static_cast<int>(std::min<size_t>(bytes.size(), INT_MAX));
+    const int len = MultiByteToWideChar(cp, flags, bytes.data(), n, nullptr, 0);
+    if (len <= 0) return text;
+    text.resize(static_cast<size_t>(len));
+    MultiByteToWideChar(cp, flags, bytes.data(), n, text.data(), len);
+    return text;
+}
+
+}  // namespace
+
+std::wstring DecodeText(std::string_view bytes, unsigned codePage) {
+    const auto byteAt = [&](size_t i) { return static_cast<unsigned char>(bytes[i]); };
+    const bool le = bytes.size() >= 2 && byteAt(0) == 0xFF && byteAt(1) == 0xFE;
+    const bool be = bytes.size() >= 2 && byteAt(0) == 0xFE && byteAt(1) == 0xFF;
+    const bool utf8 = bytes.size() >= 3 && bytes.substr(0, 3) == "\xEF\xBB\xBF";
+    if (codePage == 1200 || codePage == 1201) return Utf16(bytes.substr(le || be ? 2 : 0), codePage == 1201);
+    if (codePage != 0) return MultiByte(bytes.substr(utf8 ? 3 : 0), codePage, 0);
+    if (le || be) return Utf16(bytes.substr(2), be);
+    if (utf8) bytes.remove_prefix(3);
+    if (bytes.empty()) return {};
+    if (auto text = MultiByte(bytes, CP_UTF8, MB_ERR_INVALID_CHARS); !text.empty()) return text;
+    return MultiByte(bytes, CP_ACP, 0);
+}
+
+std::wstring AddOffsetTag(std::wstring_view document, int addMs) {
+    if (addMs == 0) return std::wstring(document);
+    // Find an [offset:] line, and the end of the leading tag lines for a new one.
+    int existing = 0;
+    size_t tagStart = std::wstring_view::npos, tagEnd = 0, insertAt = 0;
+    size_t pos = 0;
+    bool inHeader = true;
+    while (pos < document.size()) {
+        size_t end = document.find(L'\n', pos);
+        const size_t next = end == std::wstring_view::npos ? document.size() : end + 1;
+        const std::wstring_view line = Trim(document.substr(pos, (end == std::wstring_view::npos ? document.size() : end) - pos));
+        if (line.size() > 8 && line.front() == L'[' && line.back() == L']') {
+            std::wstring key(line.substr(1, std::min<size_t>(7, line.size() - 2)));
+            std::transform(key.begin(), key.end(), key.begin(), ::towlower);
+            if (key == L"offset:" && tagStart == std::wstring_view::npos) {
+                existing = _wtoi(std::wstring(line.substr(8, line.size() - 9)).c_str());
+                tagStart = pos;
+                tagEnd = next;
             }
+        }
+        if (inHeader) {
+            const bool tag = line.size() > 2 && line.front() == L'[' && ParseTime(line.substr(1, line.find(L']') - 1)) < 0 &&
+                             line.find(L':') != std::wstring_view::npos;
+            if (tag || line.empty())
+                insertAt = next;
+            else
+                inHeader = false;
+        }
+        pos = next;
+    }
+    const std::wstring tag = L"[offset:" + std::to_wstring(existing + addMs) + L"]";
+    std::wstring out(document);
+    if (tagStart != std::wstring_view::npos) {
+        const bool newline = tagEnd > tagStart && out[tagEnd - 1] == L'\n';
+        const bool crlf = newline && tagEnd - tagStart >= 2 && out[tagEnd - 2] == L'\r';
+        out.replace(tagStart, tagEnd - tagStart, tag + (crlf ? L"\r\n" : newline ? L"\n" : L""));
+    } else {
+        const bool crlf = document.find(L"\r\n") != std::wstring_view::npos;
+        out.insert(insertAt, tag + (crlf ? L"\r\n" : L"\n"));
+    }
+    return out;
+}
+
+namespace {
+
+std::wstring Stamp(int ms, wchar_t open, wchar_t close) {
+    ms = std::max(0, ms);
+    wchar_t buffer[32];
+    swprintf_s(buffer, L"%c%02d:%02d.%02d%c", open, ms / 60000, ms / 1000 % 60, ms / 10 % 100, close);
+    return buffer;
+}
+
+}  // namespace
+
+std::wstring WriteLrc(const Lyrics& lyrics, const WriteOptions& options) {
+    std::wstring out;
+    const auto add = [&out](const std::wstring& line) {
+        out += line;
+        out += L"\r\n";
+    };
+    if (options.metadata) {
+        if (!lyrics.title.empty()) add(L"[ti:" + lyrics.title + L"]");
+        if (!lyrics.artist.empty()) add(L"[ar:" + lyrics.artist + L"]");
+        if (!lyrics.album.empty()) add(L"[al:" + lyrics.album + L"]");
+    }
+    const bool timed = options.timestamps && lyrics.synced;
+    const bool words = timed && !options.standard;
+    // The text a line is written with (and merged by): its words with their times, or plain.
+    const auto body = [&](const Line& l) {
+        if (!words || l.words.empty()) return l.text;
+        std::wstring s;
+        for (const auto& w : l.words) s += Stamp(w.start, L'<', L'>') + w.text;
+        return s + Stamp(l.end, L'<', L'>');
+    };
+    std::vector<bool> written(lyrics.lines.size());
+    for (size_t i = 0; i < lyrics.lines.size(); ++i) {
+        if (written[i]) continue;
+        const Line& l = lyrics.lines[i];
+        std::wstring stamps = timed ? Stamp(l.start, L'[', L']') : std::wstring();
+        // Merged: later lines with the same text (and references, when they are written)
+        // join this one; word-timed lines keep their own times and are never merged.
+        if (timed && options.mergeSame && (!words || l.words.empty())) {
+            for (size_t j = i + 1; j < lyrics.lines.size(); ++j) {
+                const Line& m = lyrics.lines[j];
+                if (written[j] || m.text != l.text || (words && !m.words.empty())) continue;
+                if (options.references && (m.translation != l.translation || m.romanization != l.romanization)) continue;
+                stamps += Stamp(m.start, L'[', L']');
+                written[j] = true;
+            }
+        }
+        add(stamps + body(l));
+        if (options.references) {
+            for (const auto* reference : {&l.translation, &l.romanization})
+                if (!reference->empty()) add(stamps + *reference);
         }
     }
     return out;
 }
 
-std::wstring DecodeText(std::string_view bytes) {
-    std::wstring text;
-    if (bytes.size() >= 2 && static_cast<unsigned char>(bytes[0]) == 0xFF && static_cast<unsigned char>(bytes[1]) == 0xFE) {
-        text.assign(reinterpret_cast<const wchar_t*>(bytes.data() + 2), (bytes.size() - 2) / 2);
-        return text;
+namespace {
+
+// Ideographs, kana, hangul and their punctuation are sung (and filled) one by one.
+bool SingleUnit(wchar_t c) {
+    return (c >= 0x2E80 && c <= 0x9FFF) || (c >= 0xAC00 && c <= 0xD7AF) || (c >= 0xF900 && c <= 0xFAFF) ||
+           (c >= 0xFF00 && c <= 0xFFEF);
+}
+
+// The translation cut into words (with their trailing spaces) and single CJK characters, each
+// with a weight for its share of the time: a character 1, a word a little more per letter.
+std::vector<std::pair<std::wstring, float>> Units(const std::wstring& text) {
+    std::vector<std::pair<std::wstring, float>> units;
+    size_t i = 0;
+    while (i < text.size()) {
+        std::wstring unit;
+        int letters = 0;
+        if (SingleUnit(text[i])) {
+            unit = text[i++];
+            letters = 1;
+        } else {
+            while (i < text.size() && !SingleUnit(text[i]) && !iswspace(text[i])) {
+                unit += text[i++];
+                ++letters;
+            }
+        }
+        while (i < text.size() && iswspace(text[i])) unit += text[i++];
+        if (unit.empty()) continue;
+        if (letters == 0 && !units.empty()) { // leading spaces join the unit before
+            units.back().first += unit;
+            continue;
+        }
+        units.push_back({std::move(unit), letters <= 1 ? 1.0f : 1.0f + (letters - 1) * 0.3f});
     }
-    if (bytes.size() >= 2 && static_cast<unsigned char>(bytes[0]) == 0xFE && static_cast<unsigned char>(bytes[1]) == 0xFF) {
-        for (size_t i = 2; i + 1 < bytes.size(); i += 2)
-            text.push_back(static_cast<wchar_t>((static_cast<unsigned char>(bytes[i]) << 8) | static_cast<unsigned char>(bytes[i + 1])));
-        return text;
+    return units;
+}
+
+// Times the translation's units over the original's sung time: a share of the units' weight is
+// the same share of the time the original's words take, gaps between words left out.
+std::vector<Word> SpreadWords(const std::wstring& text, const std::vector<Word>& original) {
+    std::vector<Word> words;
+    const auto units = Units(text);
+    float total = 0;
+    for (const auto& u : units) total += u.second;
+    long long voiced = 0;
+    for (const auto& w : original) voiced += std::max(0, w.end - w.start);
+    if (units.empty() || total <= 0 || voiced <= 0) return words;
+    const auto at = [&](double share) { // the time at a share of the voiced time
+        double left = share * static_cast<double>(voiced);
+        for (const auto& w : original) {
+            const int d = std::max(0, w.end - w.start);
+            if (left <= d) return w.start + static_cast<int>(std::lround(left));
+            left -= d;
+        }
+        return original.back().end;
+    };
+    float done = 0;
+    for (const auto& [unit, weight] : units) {
+        Word w;
+        w.text = unit;
+        w.start = at(done / total);
+        done += weight;
+        w.end = std::max(w.start, at(done / total));
+        words.push_back(std::move(w));
     }
-    if (bytes.size() >= 3 && bytes.substr(0, 3) == "\xEF\xBB\xBF") bytes.remove_prefix(3);
-    if (bytes.empty()) return text;
-    const int n = static_cast<int>(std::min<size_t>(bytes.size(), INT_MAX));
-    UINT cp = CP_UTF8;
-    int len = MultiByteToWideChar(cp, MB_ERR_INVALID_CHARS, bytes.data(), n, nullptr, 0);
-    if (len <= 0) {
-        cp = CP_ACP;
-        len = MultiByteToWideChar(cp, 0, bytes.data(), n, nullptr, 0);
+    return words;
+}
+
+}  // namespace
+
+Lyrics SwapTranslation(const Lyrics& lyrics) {
+    Lyrics swapped = lyrics;
+    for (auto& line : swapped.lines) {
+        if (line.translation.empty()) continue;
+        std::vector<Word> words = line.words.empty() ? std::vector<Word>() : SpreadWords(line.translation, line.words);
+        std::swap(line.text, line.translation);
+        line.words = std::move(words);
     }
-    if (len <= 0) return text;
-    text.resize(static_cast<size_t>(len));
-    MultiByteToWideChar(cp, cp == CP_UTF8 ? MB_ERR_INVALID_CHARS : 0, bytes.data(), n, text.data(), len);
-    return text;
+    return swapped;
 }
 
 }  // namespace glasswave::lyrics
