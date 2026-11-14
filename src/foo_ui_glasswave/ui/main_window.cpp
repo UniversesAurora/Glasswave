@@ -4156,10 +4156,9 @@ void MainWindow::PaintDetailHeader() {
             if (SUCCEEDED(dc->CreateBitmapFromWicBitmap(art.get(), nullptr, bitmap.put())))
                 dc->DrawBitmap(bitmap.get(), D2D1::RectF(ax, ay, ax + side, ay + side), 1.0f,
                                D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
-        } else {
+        } else if (!win7::DrawStretched(dc, win7::Module::Wmploc, L"ALBUM_0.PNG", {ax, ay, ax + side, ay + side})) {
+            // WMP's own "no album art" picture, as the tiles show it; a plain plate without it.
             wp::RowPlate(dc, {ax, ay, ax + side, ay + side}, wp::RowState::Normal, false);
-            wp::NavGlyph(dc, {ax + side / 2, ay + side / 2},
-                         m_detail.artIsArtist ? wp::NavIcon::Artist : wp::NavIcon::Album);
         }
         com_ptr<ID2D1SolidColorBrush> edge;
         dc->CreateSolidColorBrush(Hex(0x9AA7B8), edge.put());
@@ -4220,13 +4219,13 @@ void MainWindow::PaintDetailHeader() {
         }
     });
     Place(m_detailHeader, rect); // Repaint resets the visual to its surface origin
-    LogDetail();
+    LogDetail(art != nullptr);
 }
 
 // The band's text, written to the log when it changes, so what a page shows from a service can
 // be read back without looking at the screen (see ui/dev_commands.cpp).
-void MainWindow::LogDetail() {
-    std::wstring text = L"page: " + m_detail.title;
+void MainWindow::LogDetail(bool art) {
+    std::wstring text = L"page: " + m_detail.title + (art ? L" [art]" : L" [no art]");
     if (!m_detail.subtitle.empty()) text += L" | " + m_detail.subtitle;
     for (const auto& fact : m_detail.facts) text += L" | " + fact.label + L": " + fact.value;
     if (!m_detail.tagline.empty()) text += L" | tagline: " + m_detail.tagline;
@@ -4323,12 +4322,16 @@ void MainWindow::DrawDetailFacts(ID2D1DeviceContext* dc, float x, float y, float
             break;
         }
     }
+    // A label is never cut (owner, 2026-11-14: "唱片公..." said nothing); its value keeps at
+    // least a few characters.
+    for (size_t c = 0; c < columns; ++c)
+        columnW[c] = std::max(columnW[c], std::min(need[c], labelW[c] + kDetailFactGap + 60));
     com_ptr<ID2D1SolidColorBrush> label, value;
     dc->CreateSolidColorBrush(Hex(0x6B7B8E), label.put());
     dc->CreateSolidColorBrush(Hex(0x1E395B), value.put());
     float cx = x;
     for (size_t c = 0; c < columns; ++c) {
-        const float nameW = std::min(labelW[c], columnW[c] * 0.45f);
+        const float nameW = labelW[c];
         const float valueW = std::max(1.0f, columnW[c] - nameW - kDetailFactGap);
         for (size_t i = c * rows; i < std::min(n, (c + 1) * rows); ++i) {
             const float top = y + (i - c * rows) * kDetailFactRowH;

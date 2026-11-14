@@ -230,7 +230,7 @@ class MainWindow : public PageHost, public PlayerHost {
     float DetailFactsHeight(float textW) const;   // DIP, 0 without facts
     float DetailTaglineHeight(float textW) const; // DIP, 0 without a tagline
     void DrawDetailFacts(ID2D1DeviceContext* dc, float x, float y, float textW);
-    void LogDetail();
+    void LogDetail(bool art); // `art`: the band shows the subject's picture
     void OnDetailAction();
     // The description's own scroll area (long artist/album/playlist introductions).
     bool DetailBriefThumb(float* top, float* height) const; // DIP within the bar
