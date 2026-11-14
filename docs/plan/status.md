@@ -21,6 +21,18 @@ items below not yet checked by the owner:
 - The pointer stayed hidden over the mini window after leaving the full screen with its
   controls away (Escape or a double click); the mini window now never hides it.
 - Open: whether per-song "Add to Library" is wanted for Apple Music (album-level today).
+- Later the same day: the blurry player cover after a restart (ArtCache reported a stand-in as
+  Ready), the album wall drifts downwards, and artist, album and playlist pages show every
+  detail of the music the services have (details pane under the stats line, tooltips for cut
+  values; docs/architecture.md, "Profiles and details"). `foobar2000.exe
+  /glasswave:open:<source>:<artist|album|playlist>:<id>` opens a page with real data and the
+  log records what its band shows.
+- Next: the artist page as a grouped overview (owner's choice, 2026-11-14): one Windows 7
+  group header per artist view the source declares (Apple Music's views come with localized
+  titles: top songs, latest release, albums, singles and EPs, live, compilations, appears on,
+  playlists, music videos, similar artists), a row of tiles under each and "Show all (N)";
+  NetEase has top songs and albums.
+- Not yet pages: curators, record labels, music videos, radio / podcasts, song details.
 
 ## Backend review: caches, lists, requests, provider model (2026-11-13)
 
