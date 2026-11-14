@@ -32,7 +32,19 @@ items below not yet checked by the owner:
   titles: top songs, latest release, albums, singles and EPs, live, compilations, appears on,
   playlists, music videos, similar artists), a row of tiles under each and "Show all (N)";
   NetEase has top songs and albums.
-- Not yet pages: curators, record labels, music videos, radio / podcasts, song details.
+- Song page done (details band, credits, similar songs); not planned: curators, record labels,
+  music videos, radio / podcasts (owner).
+- Memory incident, 2026-11-14 13:45 (owner: the player vanished while playing full screen):
+  the repository memory watchdog stopped engine.exe and foobar2000 after system commit jumped
+  from about 79 to 98.9 GB (decimal) within two seconds (`.local/tests/memory-watch-pointer-*/
+  incidents/20261114T054529355Z`). Six incidents today share the pattern: commit flat, then a
+  sudden 14-19 GB rise; stopping engine.exe releases 13-16 GB, foobar2000 1-4 GB. engine.exe at
+  the moment (its dump): 596 MB private, 5 MB mapped, no Section handles, 2207 semaphores (a
+  stable count); foobar2000: 359 MB private, 615 MB shared commit, GPU about 700 MB and flat.
+  So the commit is charged outside both processes' address spaces yet released when engine.exe
+  exits (fits the 2026-11-09 report: 255 GB commit, 39 GB process commit). Not yet known: who
+  owns it. Next: a live capture at the spike (sum of every process's commit, pools, system-wide
+  Section objects, the engine's stream requests) while Apple Music plays.
 
 ## Backend review: caches, lists, requests, provider model (2026-11-13)
 
