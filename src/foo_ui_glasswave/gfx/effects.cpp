@@ -95,4 +95,51 @@ wge::IGraphicsEffect MakeAlphaMaskEffect(const wge::IGraphicsEffectSource& sourc
     return e.as<wge::IGraphicsEffect>();
 }
 
+winrt::Windows::UI::Composition::CompositionBrush MakeFrostBrush(const winrt::Windows::UI::Composition::Compositor& comp,
+                                                                 float blurPx) {
+    namespace wuc = winrt::Windows::UI::Composition;
+    try {
+        auto factory = comp.CreateEffectFactory(
+            MakeGaussianBlurEffect(L"Blur", blurPx, wuc::CompositionEffectSourceParameter(L"backdrop")));
+        auto brush = factory.CreateBrush();
+        brush.SetSourceParameter(L"backdrop", comp.CreateBackdropBrush());
+        return brush;
+    } catch (...) {
+        return nullptr;
+    }
+}
+
+winrt::Windows::UI::Composition::CompositionBrush MakeGlassBrush(const winrt::Windows::UI::Composition::Compositor& comp,
+                                                                 float blurPx, float saturation, D2D1_COLOR_F tint,
+                                                                 const winrt::Windows::UI::Composition::CompositionBrush& mask) {
+    namespace wuc = winrt::Windows::UI::Composition;
+    try {
+        const auto blur = MakeGaussianBlurEffect(L"Blur", blurPx, wuc::CompositionEffectSourceParameter(L"backdrop"));
+        auto saturate = winrt::make_self<Effect>();
+        saturate->clsid = CLSID_D2D1Saturation;
+        saturate->properties = {PropertyValue::CreateSingle(saturation)};
+        saturate->sources = {blur.as<wge::IGraphicsEffectSource>()};
+        auto flood = winrt::make_self<Effect>();
+        flood->clsid = CLSID_D2D1Flood;
+        flood->properties = {PropertyValue::CreateSingleArray({tint.r, tint.g, tint.b, 1.0f})};
+        // (1 - a) x the saturated backdrop + a x the tint, opaque.
+        auto mix = winrt::make_self<Effect>();
+        mix->clsid = CLSID_D2D1ArithmeticComposite;
+        mix->properties = {PropertyValue::CreateSingleArray({0.0f, 1.0f - tint.a, tint.a, 0.0f}),
+                           PropertyValue::CreateBoolean(true)};
+        mix->sources = {saturate.as<wge::IGraphicsEffectSource>(), flood.as<wge::IGraphicsEffectSource>()};
+        wge::IGraphicsEffect graph = mix.as<wge::IGraphicsEffect>();
+        if (mask)
+            graph = MakeAlphaMaskEffect(graph.as<wge::IGraphicsEffectSource>(),
+                                        wuc::CompositionEffectSourceParameter(L"mask"));
+        auto factory = comp.CreateEffectFactory(graph);
+        auto brush = factory.CreateBrush();
+        brush.SetSourceParameter(L"backdrop", comp.CreateBackdropBrush());
+        if (mask) brush.SetSourceParameter(L"mask", mask);
+        return brush;
+    } catch (...) {
+        return MakeFrostBrush(comp, blurPx);
+    }
+}
+
 }  // namespace glasswave::gfx

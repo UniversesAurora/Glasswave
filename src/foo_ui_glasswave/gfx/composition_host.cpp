@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "gfx/composition_host.h"
+#include "netease/log.h"
 
 namespace glasswave::gfx {
 
@@ -106,19 +107,103 @@ wuc::CompositionDrawingSurface CompositionHost::CreateSurface(int widthPx, int h
         DirectXPixelFormat::B8G8R8A8UIntNormalized, DirectXAlphaMode::Premultiplied);
 }
 
-void CompositionHost::Draw(const wuc::CompositionDrawingSurface& surface, float scale,
-                           const std::function<void(ID2D1DeviceContext*)>& paint) {
+void CompositionHost::ReportFailure(const char* step, HRESULT hr, int widthPx, int heightPx) {
+    if (++m_failures > 40) return;
+    console::printf("Glasswave: surface %s failed, hr 0x%08X, %dx%d px%s", step, static_cast<unsigned>(hr), widthPx,
+                    heightPx, m_failures == 40 ? " (further failures not reported)" : "");
+    // Also in the log file: ghosts on screen are rare and the console is gone by the time
+    // someone looks into one.
+    wchar_t line[160];
+    swprintf_s(line, L"surface: %hs failed, hr 0x%08X, %dx%d px", step, static_cast<unsigned>(hr), widthPx, heightPx);
+    netease::Log(line);
+}
+
+// After a failed draw: the surface on its own cleared to transparent, so that it never shows
+// what its pooled allocation held before.
+bool CompositionHost::ClearAfterFailure(const wuc::CompositionDrawingSurface& surface) {
     auto interop = surface.as<abi_comp::ICompositionDrawingSurfaceInterop>();
     const SurfacePixels pixels = SurfacePixelsFor(surface);
     const RECT updateRect = pixels.UpdateRect();
     winrt::com_ptr<ID2D1DeviceContext> dc;
     POINT offset{};
-    HRESULT hr = interop->BeginDraw(&updateRect, __uuidof(ID2D1DeviceContext), dc.put_void(), &offset);
-    if (FAILED(hr)) {
-        // Skip this paint on device loss and similar failures; the next state change repaints.
-        // TODO(M1): handle RenderingDeviceReplaced and rebuild every surface.
+    if (FAILED(interop->BeginDraw(&updateRect, __uuidof(ID2D1DeviceContext), dc.put_void(), &offset))) return false;
+    dc->SetTransform(D2D1::Matrix3x2F::Identity());
+    dc->SetDpi(96.0f, 96.0f);
+    dc->PushAxisAlignedClip(SurfaceDrawClip(offset, pixels.width, pixels.height, 1.0f), D2D1_ANTIALIAS_MODE_ALIASED);
+    dc->Clear(D2D1::ColorF(0, 0, 0, 0));
+    dc->PopAxisAlignedClip();
+    return SUCCEEDED(interop->EndDraw());
+}
+
+// The ghosts in the lyrics (pieces of the library's list header, a playlist card, a cover over
+// the pane's header) were other surfaces' old pixels in surfaces that were shown without ever
+// being drawn: BeginDraw had failed (one surface at a time per device; a draw begun while
+// another is open fails) and most callers attach a fresh surface whatever Draw returns. Such a
+// surface is cleared as soon as the UI thread is free.
+void CompositionHost::QueueUnclean(const wuc::CompositionDrawingSurface& surface) {
+    for (const auto& s : m_unclean)
+        if (s == surface) return;
+    m_unclean.push_back(surface);
+    if (m_drainQueued) return;
+    if (auto queue = winrt::Windows::System::DispatcherQueue::GetForCurrentThread()) {
+        m_drainQueued = queue.TryEnqueue(winrt::Windows::System::DispatcherQueuePriority::High, [] {
+            if (g_host) g_host->DrainUnclean();
+        });
+    }
+}
+
+void CompositionHost::Drew(const wuc::CompositionDrawingSurface& surface) {
+    if (m_unclean.empty()) return;
+    m_unclean.erase(std::remove(m_unclean.begin(), m_unclean.end(), surface), m_unclean.end());
+}
+
+void CompositionHost::DrainUnclean() {
+    m_drainQueued = false;
+    if (m_drawDepth > 0) { // still inside a draw: later
+        if (!m_unclean.empty()) QueueUnclean(m_unclean.back());
         return;
     }
+    auto pending = std::exchange(m_unclean, {});
+    std::vector<wuc::CompositionDrawingSurface> failed;
+    for (const auto& surface : pending)
+        if (!ClearAfterFailure(surface)) failed.push_back(surface);
+    if (failed.empty()) {
+        m_uncleanRetries = 0;
+        return;
+    }
+    // A surface that could not be cleared would keep another surface's pixels on screen for
+    // good (a cover in the pane's header, moving with a lyric line): try again, for a while.
+    ReportFailure("clear of an undrawn surface", E_FAIL, 0, 0);
+    if (++m_uncleanRetries > 120) return;
+    for (const auto& surface : failed)
+        QueueUnclean(surface);
+}
+
+bool CompositionHost::OnUiThread(int widthPx, int heightPx) {
+    if (GetCurrentThreadId() == m_uiThread) return true;
+    ReportFailure("draw off the UI thread", E_ILLEGAL_METHOD_CALL, widthPx, heightPx);
+    return false;
+}
+
+bool CompositionHost::Draw(const wuc::CompositionDrawingSurface& surface, float scale,
+                           const std::function<void(ID2D1DeviceContext*)>& paint) {
+    auto interop = surface.as<abi_comp::ICompositionDrawingSurfaceInterop>();
+    const SurfacePixels pixels = SurfacePixelsFor(surface);
+    if (!OnUiThread(pixels.width, pixels.height)) return false;
+    if (m_drawDepth > 0) ReportFailure("draw nested in another draw", E_ILLEGAL_METHOD_CALL, pixels.width, pixels.height);
+    const RECT updateRect = pixels.UpdateRect();
+    winrt::com_ptr<ID2D1DeviceContext> dc;
+    POINT offset{};
+    HRESULT hr = interop->BeginDraw(&updateRect, __uuidof(ID2D1DeviceContext), dc.put_void(), &offset);
+    if (FAILED(hr)) {
+        // Device loss, a draw still open...: nothing can be drawn now. The surface is cleared
+        // as soon as possible; the next state change repaints it.
+        ReportFailure("BeginDraw", hr, pixels.width, pixels.height);
+        QueueUnclean(surface);
+        return false;
+    }
+    ++m_drawDepth;
+    auto depth = detail::ScopeExit([&] { --m_drawDepth; });
     auto endSurface = detail::ScopeExit([&] { interop->EndDraw(); });
     const float dpi = 96.0f * scale;
     dc->SetDpi(dpi, dpi);
@@ -132,8 +217,17 @@ void CompositionHost::Draw(const wuc::CompositionDrawingSurface& surface, float 
     paint(dc.get());
     dc->PopAxisAlignedClip();
     popClip.Dismiss();
-    interop->EndDraw();
     endSurface.Dismiss();
+    // D2D reports here what went wrong in the paint (an unbalanced push / pop, a lost
+    // target...), and then none of it - not even the clear - reached the surface.
+    hr = interop->EndDraw();
+    if (FAILED(hr)) {
+        ReportFailure("draw", hr, pixels.width, pixels.height);
+        if (!ClearAfterFailure(surface)) QueueUnclean(surface);
+        return false;
+    }
+    Drew(surface);
+    return true;
 }
 
 winrt::com_ptr<ID2D1DeviceContext> CompositionHost::CreateDeviceContext() {
@@ -142,21 +236,40 @@ winrt::com_ptr<ID2D1DeviceContext> CompositionHost::CreateDeviceContext() {
     return dc;
 }
 
-void CompositionHost::Draw(const wuc::CompositionDrawingSurface& surface, float scale, ID2D1DeviceContext* dc,
+bool CompositionHost::Draw(const wuc::CompositionDrawingSurface& surface, float scale, ID2D1DeviceContext* dc,
                            const std::function<void(ID2D1DeviceContext*)>& paint) {
     auto interop = surface.as<abi_comp::ICompositionDrawingSurfaceInterop>();
     const SurfacePixels pixels = SurfacePixelsFor(surface);
+    if (!OnUiThread(pixels.width, pixels.height)) return false;
+    if (m_drawDepth > 0) ReportFailure("draw nested in another draw", E_ILLEGAL_METHOD_CALL, pixels.width, pixels.height);
     const RECT updateRect = pixels.UpdateRect();
     winrt::com_ptr<IDXGISurface> dxgi;
     POINT offset{};
-    if (FAILED(interop->BeginDraw(&updateRect, __uuidof(IDXGISurface), dxgi.put_void(), &offset))) return;
-    auto endSurface = detail::ScopeExit([&] { interop->EndDraw(); });
+    HRESULT hr = interop->BeginDraw(&updateRect, __uuidof(IDXGISurface), dxgi.put_void(), &offset);
+    if (FAILED(hr)) {
+        ReportFailure("BeginDraw (own context)", hr, pixels.width, pixels.height);
+        QueueUnclean(surface);
+        return false;
+    }
+    ++m_drawDepth;
+    auto depth = detail::ScopeExit([&] { --m_drawDepth; });
+    bool cleared = false; // the surface was ended and cleared after a failure
+    auto endSurface = detail::ScopeExit([&] {
+        if (!cleared) interop->EndDraw();
+    });
     const float dpi = 96.0f * scale;
     const D2D1_BITMAP_PROPERTIES1 props = D2D1::BitmapProperties1(
         D2D1_BITMAP_OPTIONS_TARGET | D2D1_BITMAP_OPTIONS_CANNOT_DRAW,
         D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED), dpi, dpi);
     winrt::com_ptr<ID2D1Bitmap1> target;
-    if (FAILED(dc->CreateBitmapFromDxgiSurface(dxgi.get(), &props, target.put()))) return;
+    hr = dc->CreateBitmapFromDxgiSurface(dxgi.get(), &props, target.put());
+    if (FAILED(hr)) {
+        ReportFailure("target (own context)", hr, pixels.width, pixels.height);
+        interop->EndDraw();
+        cleared = true;
+        if (!ClearAfterFailure(surface)) QueueUnclean(surface);
+        return false;
+    }
     dc->SetTarget(target.get());
     auto unbindTarget = detail::ScopeExit([&] { dc->SetTarget(nullptr); });
     dc->SetDpi(dpi, dpi);
@@ -172,12 +285,19 @@ void CompositionHost::Draw(const wuc::CompositionDrawingSurface& surface, float 
     paint(dc);
     dc->PopAxisAlignedClip();
     popClip.Dismiss();
-    dc->EndDraw();
+    hr = dc->EndDraw(); // what went wrong in the paint; then none of it reached the surface
     endDraw.Dismiss();
     dc->SetTarget(nullptr);
     unbindTarget.Dismiss();
-    interop->EndDraw();
     endSurface.Dismiss();
+    const HRESULT ended = interop->EndDraw();
+    if (FAILED(hr) || FAILED(ended)) {
+        ReportFailure("draw (own context)", FAILED(hr) ? hr : ended, pixels.width, pixels.height);
+        if (!ClearAfterFailure(surface)) QueueUnclean(surface);
+        return false;
+    }
+    Drew(surface);
+    return true;
 }
 
 wuc::SpriteVisual CompositionHost::CreatePaintedVisual(int widthPx, int heightPx, float scale,
@@ -190,7 +310,10 @@ wuc::SpriteVisual CompositionHost::CreatePaintedVisual(int widthPx, int heightPx
 void CompositionHost::Repaint(const wuc::SpriteVisual& visual, int widthPx, int heightPx, float scale,
                               const std::function<void(ID2D1DeviceContext*)>& paint) {
     auto surface = CreateSurface(widthPx, heightPx);
-    Draw(surface, scale, paint);
+    if (!Draw(surface, scale, paint)) {
+        visual.Brush(nullptr); // better nothing than a fresh surface's leftovers
+        return;
+    }
     auto brush = m_compositor.CreateSurfaceBrush(surface);
     brush.Stretch(wuc::CompositionStretch::None);
     brush.HorizontalAlignmentRatio(0.0f);
@@ -205,7 +328,8 @@ void CompositionHost::Repaint(const wuc::SpriteVisual& visual, RetainedSurface& 
     widthPx = std::max(widthPx, 1);
     heightPx = std::max(heightPx, 1);
     try {
-        switch (retained.Prepare(widthPx, heightPx)) {
+        const auto update = retained.Prepare(widthPx, heightPx);
+        switch (update) {
         case SurfaceReusePolicy::Update::Create:
             retained.m_surface = CreateSurface(widthPx, heightPx);
             break;
@@ -224,7 +348,13 @@ void CompositionHost::Repaint(const wuc::SpriteVisual& visual, RetainedSurface& 
             retained.m_brush.HorizontalAlignmentRatio(0.0f);
             retained.m_brush.VerticalAlignmentRatio(0.0f);
         }
-        Draw(retained.m_surface, scale, paint);
+        if (!Draw(retained.m_surface, scale, paint) && update != SurfaceReusePolicy::Update::Reuse) {
+            // A new or resized surface that could not be drawn holds another visual's old
+            // pixels: drop it, and start afresh on the next paint.
+            visual.Brush(nullptr);
+            retained.Clear();
+            return;
+        }
     } catch (...) {
         // Draw() already balances its begin/end pairs. Drop both owners so a failed retained
         // slot cannot mask a later draw behind stale backing.

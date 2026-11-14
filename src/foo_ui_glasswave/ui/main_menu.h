@@ -8,6 +8,7 @@ struct MenuAction {
     std::vector<MenuAction> children;  // non-empty: a submenu
     bool checked = false;              // radio-style check mark
     bool checkbox = false;             // checked draws a check mark instead of a bullet
+    bool disabled = false;             // greyed: shown, not chosen
 };
 
 // Pop up a menu at screen point pt: optional custom actions first, then the complete

@@ -9,6 +9,7 @@
 #include "stream/list_session.h"
 #include "ui/art_cache.h"
 #include "ui/i18n.h"
+#include "ui/main_window.h"
 
 #include <commctrl.h>
 
@@ -90,7 +91,9 @@ std::vector<Section> BuildSections() {
               ArtCache::Get().Invalidate(L"");
           }),
           Button(L"Clear list cache", [](HWND) {
-              for (auto* provider : stream::Providers()) stream::InvalidateListCache(provider->Key());
+              for (auto* provider : stream::Providers())
+                  stream::InvalidateListCache(provider->Key(), true,
+                                              stream::ListCacheInvalidation::PurgePersistent);
               try { cache::GetStore().Clear(cache::Kind::Data); } catch (...) {}
           })}});
     sections.push_back(
@@ -106,7 +109,32 @@ std::vector<Section> BuildSections() {
               media::PlayStats::Get().ForgetAllRecent();
               media::PlayStats::Get().ClearAllCounts();
           })}});
-    sections.push_back({L"Lyrics", lyrics::scripts::SettingFields()});
+    {
+        // How the lyrics look, then where they come from.
+        std::vector<Field> fields{Number(L"Lyrics text size", L"%", settings::kLyricSize, settings::LyricSizePercent,
+                                         settings::SetLyricSizePercent),
+                                  Number(L"Translation text size", L"%", settings::kTranslationSize,
+                                         settings::TranslationSizePercent, settings::SetTranslationSizePercent)};
+        Field fonts;
+        fonts.kind = Field::Kind::Text;
+        fonts.label = L"Lyrics fonts, in order (comma-separated)";
+        fonts.getText = [] { return settings::LyricFonts(); };
+        fonts.setText = [](const std::wstring& text) { settings::SetLyricFonts(text); };
+        fields.push_back(std::move(fonts));
+        Field swap;
+        swap.kind = Field::Kind::Choice;
+        swap.label = L"Original and translation";
+        swap.choices = {L"Original as the lyric, translation under it", L"Translation as the lyric, original under it"};
+        swap.get = [] { return settings::SwapTranslation() ? 1 : 0; };
+        swap.set = [](int value) {
+            if ((value == 1) == settings::SwapTranslation()) return;
+            settings::SetSwapTranslation(value == 1);
+            if (auto* window = MainWindow::Instance()) window->ReapplyLyrics();
+        };
+        fields.push_back(std::move(swap));
+        for (auto& field : lyrics::scripts::SettingFields()) fields.push_back(std::move(field));
+        sections.push_back({L"Lyrics", std::move(fields)});
+    }
     for (auto* provider : stream::Providers())
         if (auto fields = provider->SettingFields(); !fields.empty()) sections.push_back({provider->Name(), std::move(fields)});
     return sections;

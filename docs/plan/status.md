@@ -1,6 +1,157 @@
 # Status
 
-Updated: 2026-11-11
+Updated: 2026-11-13
+
+## Backend review: caches, lists, requests, provider model (2026-11-13)
+
+Built (Release x64, zero warnings) and started in the dev instance; nothing below has been
+exercised by a probe or by the owner yet. Design notes are in `docs/architecture.md`.
+
+- Lists no longer reload after a restart: a write (`NotifyListChanged`) revalidates lists in
+  place instead of purging every persisted list of the provider; the UI no longer purges
+  them on a language or display change; `InvalidateListCache` has no default mode. The
+  "Loading..." row shows only for a list without rows; reading the disk snapshot is not a
+  load. Freshness window 60 s -> 5 min; a fresh complete snapshot needs no request; an
+  unchanged NetEase playlist ends its re-read on the first page.
+- Images: one download per picture (a track's cover is its album's), no per-process and no
+  5-minute revalidation (7-day window, explicit `Invalidate`), no SHA-256 on read or write,
+  no second decode after download, 304 updates validators instead of copying the payload.
+  `ui::ArtCache` is indexed per picture; failed pictures retry with a backoff. Refresh
+  revalidates only the refreshed source's art. The unused `netease::CoverCache` is deleted.
+- Store: `synchronous=NORMAL`, no write per lookup, in-memory byte totals, cached digest
+  provider. HTTP: one shared WinHTTP session per proxy mode (connection reuse).
+- Audio: a cached song opens from the cache without asking the service first (NetEase song
+  URL, Apple Music playback session).
+- Provider model: `stream::Capability` set replaces the `Features` flags; `Provider::Text`
+  / `Wording` / `TextContext` replace `PlaylistText`, `LibraryActionText`,
+  `LibraryStateText` and `ArtistPreferenceActionText`.
+- Second pass, found with new diagnostics in the dev instance (`list cache:` / `list:` lines
+  in `glasswave-netease.log`):
+  - An Apple Music playlist was never persisted: a track credited an artist without an id
+    and the list cache rejected the whole page ("artist has no stable identity"). A credit
+    now needs a name or an id. Verified: miss on the first start, hit on the second.
+  - Every catalog request carrying `platform=web` has been answered with HTTP 400
+    ("Platform web is not supported") since 2026-11-11, so regional display names and
+    catalog song enrichment failed and were repeated for every list page (over a thousand
+    logged failures). `applemusic::Apple` retries a refused catalog request once without
+    the parameter and then leaves it out for the run; a 400 is also recorded as a definite
+    absence. Verified: no such failure logged after the fix. This is an observation of the
+    service through the local bridge; the owner may want to confirm it against the official
+    client.
+  - A re-read replaces the rows on screen only when it reaches as far and its related
+    records have arrived, and is written to disk only then, so album tiles no longer empty
+    out during a refresh and closing mid-refresh cannot shorten the persisted list.
+  - A cache read no longer overtakes queued writes of the same list (caught by
+    `test-list-cache.ps1`).
+- Also done: the queue checkpoint stores a count and 64-bit digest instead of the hex of
+  every path (checkpoint version 3); `bridge.json` is parsed once per change; album-track and
+  all-favorites pages borrow the session state instead of copying it; the log file stays
+  open; the per-cover log lines are gone.
+- Tests run after these changes, all passing: `test-cache-store` (745 checks),
+  `test-list-cache` (99), `test-image-cache`, `test-list-session` (30 cases),
+  `test-playback-scheduler` (18 cases). Not run: the Apple Music provider/startup probes,
+  audio cache and prefetch tests.
+- Third pass, driven by a request log (`apple GET ... -> status (ms)` lines are now written
+  for every Apple Music request). Requests at start with one playlist open: about 80 before,
+  17 on a repeated start after.
+  - The album count of every library artist was requested again after every library
+    refresh (one or two requests per artist). Counts are now kept for a week in the cache
+    store and only unknown ones are asked for.
+  - Every library refresh dropped the favorite songs and downloaded the whole Favorite
+    Songs playlist again (all pages, related records, regional names) to draw the stars;
+    every star click did the same to confirm the write. The ids are now kept across
+    refreshes and runs (re-read after six hours) and a successful write updates them in
+    place.
+  - The account notification restarted list reads that were already in flight, sending the
+    open list's first page twice. `stream::ResumeLists` starts only the reads that waited.
+  - An automatic re-read of a complete list stops at its first page when the total and the
+    first page's rows are the ones on screen (any source; a source revision is still exact,
+    a refresh the owner asks for reads everything).
+  - Lyrics: a track with cached lyrics, an owner selection or a recent "nothing found" is
+    answered at once without a search and without the "searching" state; before, every
+    play queried every source again even on a cache hit, and "nothing found" was never
+    written. Asking for the same track while its search runs joins that search.
+- Tests after the third pass, all passing: `test-list-session` (30), `test-list-cache` (99),
+  `test-lyrics*` (19 + 8 + HTTP), `test-applemusic-provider` against its mock (favorite and
+  playlist writes, regional names, list paging). The mock now answers the lyrics route and
+  the test no longer requires artist album requests on every run. Not run: audio cache,
+  prefetch and Apple startup tests.
+- Fourth pass (the items left open above, and what the request log showed next):
+  - A list cached only in part resumes: an unchanged first page keeps the rows and further
+    pages continue from the persisted cursor into the loaded snapshot
+    (`cache::lists::Record::base`) instead of re-reading from page one.
+  - Rows that will be read anyway are asked for up to 1000 per page; NetEase playlist and
+    favorites pages fetch their song details in parallel batches of 200 (offset-paged NetEase
+    lists stay at 100, Apple Music follows its own `next` links at 100).
+  - HTTP helpers moved to `net/` (`glasswave::net`).
+  - Apple Music: opening a catalog album or catalog playlist failed with 400 ("Limit may not
+    be supplied on this request", confirmed through the bridge); the resource request no longer
+    carries `limit`. An artist whose albums span two pages failed its count because the
+    service's `next` link writes the storefront in lower case; paths now compare without case.
+    An artist the catalog does not know (404) is remembered for the week instead of being
+    asked at every start.
+  - Album wall: the covers are the playing playlist's albums, each once, dealt like shuffled
+    cards with Media Center's coloured no-cover tiles making up small decks; the same picture
+    is kept off neighbouring places. Covers are painted only while shown. Details in
+    `docs/design/player-window.md`.
+  - Tests: `test-list-cache` (106, with a new continuation case), `test-list-session` (30),
+    `test-lyrics` (HTTP), `test-applemusic-provider` against its mock (which now refuses
+    `limit` on catalog resource requests, as the service does). Built with zero warnings.
+- Fifth pass (owner report: covers and artist photos late after a restart, genre/composer
+  lists not cached), measured with temporary per-cover timing in the dev instance:
+  - Cached covers read in 0-1 ms and decode in 4-8 ms (a 540 KB 1200 px JPEG included); the
+    size of the pictures is not the delay. At start the Apple bridge needs 5-7 s, and every
+    uncached cover waited for it while holding one of the three cover workers, so covers
+    already on disk queued behind them and then appeared all at once. `ui::ArtCache` now
+    has a local lane that answers only from disk (`cache::CacheOnlyScope`) and a network
+    lane for misses. Measured after: 60 of 64 startup covers at once, 4 misses on the
+    network lane.
+  - Two library albums without artwork were asked for at every start (absence was kept
+    5 minutes and ignored after a restart); now a day, across restarts.
+  - Apple genres and composers (and a genre's songs) downloaded the whole library song list
+    on every open and were not kept on disk. Their lists are persisted now, and the derived
+    views share one copy of the library songs read within the library window (5 min).
+  - Album wall: coverless albums leave the deck; loaded covers are dealt first; the next two
+    screens of cards load ahead.
+  - Tests: `test-image-cache` (absence case updated), `test-applemusic-provider` (mock).
+  - Not changed: Apple track lists whose details were still loading when the program closed
+    come back undescribed, and the album-tile view waits for their details again (seen in
+    the log mostly after the forced restarts of testing).
+- Sixth pass (2026-11-14, owner reports):
+  - Ghost over the pane after leaving the mini player: captured live (Windows.Graphics.Capture,
+    the window untouched). No stray window; the pane's header held a magnified slice of the
+    cover, and its header and switch were painted for the player's width (790 px) while the
+    pane had the main window's (881 px). The pane decided to repaint by comparing new bounds
+    with its last bounds, and a header whose draw failed kept its old surface. Now it repaints
+    whenever what was painted differs from its bounds (retrying for a while after a failed
+    draw), an undrawn header shows nothing, surfaces whose clear failed are cleared again
+    later instead of being given up, and surface failures go to the log file. Where the cover
+    pixels came from is not proven; the next occurrence will leave `surface:` lines.
+  - Covers named by song in one run and by album in another (regional names skip restoring
+    songs to the catalog) missed the disk cache and were fetched again: the catalog now keeps
+    every song's album (also from restored lists), the UI and the extractor ask the same, and
+    a cover lookup also tries the song's name in the cache.
+  - "Apple Music <id>" titles: songs from restored lists are installed into the catalog (when
+    unknown), and any song still unknown is read in batches and published to the metadata of
+    every view (asked again after 2 minutes when a read fails).
+  - Up Next: repeat-one keeps the list; repeat-all ends with "Repeats N songs"; motion as
+    measured from the owner's iOS recording (see docs/design/lyrics-view.md).
+  - Album wall: the entrance keeps the full screen's pace in the mini window.
+  - Composer section: WMP's composer icon (wmploc 29515, as the local Composer category).
+  - NetEase covers: 1200 px for views drawing larger than 500 px, 500 px elsewhere; the
+    largest smaller picture already decoded stands in while the large one loads.
+  - Tests: `test-playback-schedule` (123716), `test-queue` (144927), `test-applemusic-provider`.
+  - Open, owner to confirm: Apple Music's Songs section. The service lists 222 library songs
+    in 43 albums (72 in albums with no catalog match, 16 single-song albums); nothing in the
+    data marks the 26 songs the app shows, so the section is unchanged.
+- Owner checks for the fourth pass: open a catalog album and a catalog playlist in Apple
+  Music; a long NetEase playlist (loads in fewer, larger steps); scroll a long list, restart,
+  scroll further (continues without reloading the top); the album wall with a short and a long
+  playing playlist.
+- Owner checks: reopen lists after a restart (no "Loading..." for lists opened before);
+  favorite a song, restart, reopen lists; covers of one album in list / queue / now playing;
+  replay a cached NetEase and Apple Music song (starts without a wait, also offline);
+  playlist wording per source; menus per source capability.
 
 ## Player window (2026-11-12)
 
@@ -1207,3 +1358,45 @@ The owner confirmed that horizontal-resize tint/tab misalignment is resolved;
 close that issue. The residual-surface worker must use only the screenshot ending
 `c4cf715f-6556-47ab-bc58-cff0f3c1a306.png`. The other two screenshots show the closed
 resize issue and are excluded from investigation and causal reasoning.
+
+The owner then manually confirmed streaming navigation now appears at startup;
+close the left-sidebar blankness issue. The remaining cache symptom is precise:
+after fully loading an Apple Music playlist, quitting and restarting restores
+that same page, but tracks remain hidden behind loading until the network read
+finishes. The cache worker is investigating only this last-page restoration path
+read-only, without tests or runtime actions. Existing bootstrap/list-cache code
+does not establish acceptance of this remaining symptom. Keep memory monitoring
+active without resuming memory root-cause investigation.
+
+Player window, 2026-11-12 (uncommitted, awaiting the owner's visual acceptance): back to
+Media Center after the owner rejected the drawn "crystal" seek bar and volume. The seek
+bar is the library window's; the volume is WMC's own overlay (`ui/wmc_volume.*`) full
+screen and, in narrow mini windows, behind the speaker's arrow; wide mini windows get WMC's
+bar as a slider with a level bubble. Speaker and arrow light as one button; the favourite
+is a heart in WMC's control style; menu presses darken the type and bring white back from
+the left (misc.mp4); the full-screen sung line is the last of the song's lines; the
+full-screen pane lies on a WMC glass card and the mini pane on an edgeless gradient; the
+mini frame has DWM's side highlights. The album wall is laid on the monitor: tiles fall
+straight in at random places, a growing window fills by falling tiles, and the swell shows
+only in the tiles' shadows (docs/design/player-window.md). Stills checked; hover, drag,
+menu presses and all motion still need the owner's eyes. Open: the random ghosting in the
+lyrics view. scripts/upscale-art.ps1 now defaults to waifu2x tile 64 (128 garbled the
+outline on the RTX 5070 Ti); hd\wmploc was made before the straight-colour split and may
+be worth regenerating.
+
+2026-11-13 (uncommitted, built, not yet checked by the owner): favorites are optimistic for
+every star and heart (`stream::Provider`, docs/architecture.md); the player keeps the previous
+song or shows the one being opened while playback switches (provider inputs announce the
+opening); Swap original and translation replaces "translations above" (texts change places,
+translations get spread word timing); a sung line blurs while it rises; the full-screen
+song lines scale with the cover when the chrome comes and goes; the card's rim takes a pale
+navy; the sidebar light is mirrored, its switch, capsules and hover plates lie on iOS-like
+glass and the header no longer dips while switching sides; a queue drag survives list
+refreshes, and under shuffle a drop reorders only the playing order (it used to rewrite the
+playlist and turn most of the future into history, emptying the list). The runtime test
+`test-playback-scheduler.ps1` was not run (it needs the dev instance closed).
+
+2026-11-13, later (uncommitted, built, not yet checked by the owner): the lyrics menu gained
+ESLyric's tools (docs/design/lyrics-view.md, "The lyrics menu"): save / save to, select,
+copy and Copy..., encoding, lyric info, adjust offset (per song, retimed in place) and reload.
+Lyrics now carry their document, file and code page; manual selections remember the file.

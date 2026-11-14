@@ -38,6 +38,7 @@ class MainWindow : public PageHost, public PlayerHost {
     void Destroy();
     HWND Hwnd() const { return m_hwnd; }
     static MainWindow* Instance(); // the window while it exists (main menu commands)
+    void ReapplyLyrics() { OnLyrics(m_lyricsResult); } // after Swap original and translation changed
     void OnCoreQueueChanged() { SchedulePaneQueueRefresh(); }
     void SelectPlaybackMode(bool shuffle, int repeat);
 
@@ -64,11 +65,26 @@ class MainWindow : public PageHost, public PlayerHost {
     void SetPlayerVolume(float slider) override;
     std::vector<metadb_handle_ptr> WallAlbums() const override;
     bool OriginalTransportArt() const override { return m_win7Art; }
-    void PlayerTrackText(std::wstring& title, std::wstring& artist, std::wstring& album) const override;
+    metadb_handle_ptr PlayerTrack() const override;
+    void PlayerTrackText(const metadb_handle_ptr& track, std::wstring& title, std::wstring& artist,
+                         std::wstring& album) const override;
+    void PlayerMode(bool& shuffle, int& repeat) const override {
+        shuffle = m_shuffle;
+        repeat = static_cast<int>(m_repeat);
+    }
+    void SetPlayerMode(bool shuffle, int repeat) override { SelectPlaybackMode(shuffle, repeat); }
+    std::shared_ptr<const lyrics::Lyrics> PlayerLyrics() const override { return m_npLyrics; }
+    bool PlayerFavorite() const override { return m_npFavorite; }
+    void TogglePlayerFavorite() override;
+    void ShowPlayerLyricsMenu(POINT screen) override { ShowLyricsMenu(screen); }
     void AdoptPlayerWindow(HWND window) override;
     bool PlayerWindowMessage(UINT msg, WPARAM wp, LPARAM lp) override;
 
     // Forwarded from the core callbacks.
+    // Playback switches songs from the stop / start command until the new song is decoding;
+    // `opened` is the song playing, if one is.
+    void OnSwitching(bool switching, const metadb_handle_ptr& opened = {});
+    void OnTrackOpening(const std::string& path); // a provider input began opening a song
     void OnPlaybackStateChanged();
     void OnTrackChanged(bool playbackChanged = false);
     void OnPlaybackTime();
@@ -115,8 +131,15 @@ class MainWindow : public PageHost, public PlayerHost {
         RECT detailBriefBar{};  // its Win7 scrollbar, client px; empty when not scrollable
         RECT seek{}, capsule{}, divider{}, shuffle{}, repeat{}, stop{}, prev{}, next{}, play{}, mute{},
             volume{};
+        RECT volArrow{}, volFlyout{}; // a narrow window's folded volume: the arrow and its flyout
+        RECT cmdMore{};               // the command bar's » for buttons that no longer fit
+        // How far the transport has given way to a narrow window: 0 everything, 1 without
+        // shuffle / repeat, 2 the volume folded behind the speaker's arrow, 3 without stop.
+        int transportLevel = 0;
+        bool timeLeft = false; // the time stands left of the capsule
+        float capsuleLeft = 0, capsuleRight = 0; // its ends, cluster DIP
         RECT nowPlaying{}, time{}, stream{};
-        RECT lyricsPane{}, lyricsToggle{}, miniToggle{}; // lyrics pane on the glass right of the client area
+        RECT lyricsPane{}, lyricsToggle{}; // lyrics pane on the glass right of the client area
         POINT cluster{};                   // origin of the WMP 12 transport cluster bitmap
     };
 
@@ -265,10 +288,19 @@ class MainWindow : public PageHost, public PlayerHost {
     std::unique_ptr<PlayerWindow> m_player;
     std::unique_ptr<class Taskbar> m_playerTaskbar; // the player window's thumbnail buttons
     bool m_paneLent = false;
+    // The pane slides open and shut: the window grows by `m_paneReveal` px of the pane's width
+    // (-1: not animating, the whole pane shows).
+    int m_paneReveal = -1, m_paneRevealFrom = 0, m_paneRevealTo = 0, m_paneRevealBase = 0;
+    ULONGLONG m_paneRevealStart = 0;
+    void StepPaneReveal();
     std::unique_ptr<gfx::FrameClock> m_frameClock;
     bool m_lyricsOpen = false;
     bool m_lyricsHover = false;         // the mouse is over the pane
     metadb_handle_ptr m_lyricsTrack;    // track the lyrics were requested for
+    lyrics::Result m_lyricsResult;      // as found; m_npLyrics may have its lines swapped
+    bool m_switching = false;           // between songs: see OnSwitching
+    metadb_handle_ptr m_shownTrack;     // the last song that played (kept while switching)
+    metadb_handle_ptr m_openingTrack;   // the song being opened while switching
     std::wstring m_lyricsTrackIdentity; // stable track identity, independent of callback timing
     std::wstring m_lyricsSettingsSignature;
     std::uint64_t m_lyricsRequestGeneration = 0;
@@ -280,6 +312,8 @@ class MainWindow : public PageHost, public PlayerHost {
     void OnLyrics(const lyrics::Result& result);
     void StartLyricsFrames();
     void ShowLyricsMenu(POINT screen);
+    void AddLyricsDocumentActions(std::vector<MenuAction>& actions, HWND owner, const metadb_handle_ptr& now);
+    void SetLyricLineShown(bool shown);
     void RefreshPaneQueue(bool playbackChanged = false);
     void SchedulePaneQueueRefresh(bool playbackChanged = false);
     void ConnectPaneQueue();
@@ -367,7 +401,24 @@ class MainWindow : public PageHost, public PlayerHost {
     winrt::Windows::UI::Composition::SpriteVisual m_contentTop{nullptr};
     winrt::Windows::UI::Composition::SpriteVisual m_transportBand{nullptr};
     winrt::Windows::UI::Composition::SpriteVisual m_capsule{nullptr};
+    float m_capsulePaintedLeft = 0, m_capsulePaintedRight = 0, m_capsulePaintedScale = 0;
+    void PaintCapsule();
     winrt::Windows::UI::Composition::SpriteVisual m_cluster{nullptr}; // WMP 12 transport cluster bitmap
+    // The folded volume's flyout (WMP 12's, as in the mini player), over a frosted copy of
+    // what lies behind; the volume slider widget moves into it while it is open.
+    winrt::Windows::UI::Composition::SpriteVisual m_volFlyout{nullptr}, m_volFlyoutGlass{nullptr};
+    bool m_volFlyoutOpen = false;
+    float m_volFlyoutScale = 0;
+    void SetVolumeFlyout(bool open);
+    winrt::Windows::UI::Composition::SpriteVisual m_splitPlate{nullptr}; // folded speaker + arrow plate
+    bool m_splitPlateShown = false, m_speakerFolded = false;
+    void UpdateSplitPlate();
+    std::vector<int> m_cmdHidden; // command bar buttons behind the » (in their order)
+    float NowPlayingWidth() const; // DIP the song's text may use in the transport band
+    float m_npPaintedWidth = -1;   // ... when it was last painted
+    double m_timeMeasuredFor = -1; // the song length the time box was measured for
+    float m_timeTextW = 110;       // DIP: the widest the time's text gets for that song
+    LONG m_timePaintedW = 0;       // px width the time was painted at
     bool m_win7Art = false; // original WMP 12 artwork available (ADR 0007)
     bool m_aeroArt = false; // Win7 DWM atlas from aero.msstyles available
     winrt::Windows::UI::Composition::SpriteVisual m_divider{nullptr};

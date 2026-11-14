@@ -2,6 +2,7 @@
 
 #include "ui/lyrics_view.h"
 
+#include "app/settings.h"
 #include "gfx/composition_host.h"
 #include "gfx/effects.h"
 
@@ -24,7 +25,6 @@ constexpr float kSideMargin = pane::kSideMargin;
 constexpr float kTextInset = 0.45f;      // em: text inset inside the hover plate
 constexpr float kLinePadding = 0.4f;     // em: above and below each line block
 constexpr float kSubGap = 0.3f;          // em: main line to translation
-constexpr float kSubSize = 0.55f;        // em: translation size
 constexpr float kLinesAbove = 1.5f;      // lines left visible above the focused one
 constexpr float kFadeWidth = 0.5f;       // em: soft edge of the word fill
 constexpr float kFloat = 0.05f;          // em: how far a sung word rises
@@ -126,6 +126,37 @@ private:
 };
 
 com_ptr<IDWriteTextFormat> MakeFormat(float size, DWRITE_FONT_WEIGHT weight) { return pane::Format(size, weight); }
+
+// The lines' own format: the families the user listed (settings::LyricFontList), each
+// character taken from the first of them that has it and then from Windows' own fallback;
+// without a list, the interface font.
+com_ptr<IDWriteTextFormat> MakeLyricFormat(float size, DWRITE_FONT_WEIGHT weight) {
+    const std::vector<std::wstring> families = settings::LyricFontList();
+    if (families.empty()) return pane::Format(size, weight);
+    auto* f = gfx::CompositionHost::Get().DWrite();
+    wchar_t locale[LOCALE_NAME_MAX_LENGTH] = L"";
+    GetUserDefaultLocaleName(locale, LOCALE_NAME_MAX_LENGTH);
+    com_ptr<IDWriteTextFormat> format;
+    if (FAILED(f->CreateTextFormat(families.front().c_str(), nullptr, weight, DWRITE_FONT_STYLE_NORMAL,
+                                   DWRITE_FONT_STRETCH_NORMAL, size, locale, format.put())))
+        return pane::Format(size, weight);
+    format->SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP);
+    com_ptr<IDWriteFactory2> factory2;
+    com_ptr<IDWriteTextFormat1> format1;
+    com_ptr<IDWriteFontFallbackBuilder> builder;
+    if (FAILED(f->QueryInterface(IID_PPV_ARGS(factory2.put()))) ||
+        FAILED(format->QueryInterface(IID_PPV_ARGS(format1.put()))) ||
+        FAILED(factory2->CreateFontFallbackBuilder(builder.put())))
+        return format;
+    std::vector<const wchar_t*> names;
+    for (const auto& name : families) names.push_back(name.c_str());
+    const DWRITE_UNICODE_RANGE all{0, 0x10FFFF};
+    builder->AddMapping(&all, 1, names.data(), static_cast<UINT32>(names.size()), nullptr, nullptr, nullptr, 1.0f);
+    com_ptr<IDWriteFontFallback> system, fallback;
+    if (SUCCEEDED(factory2->GetSystemFontFallback(system.put()))) builder->AddMappings(system.get());
+    if (SUCCEEDED(builder->CreateFontFallback(fallback.put()))) format1->SetFontFallback(fallback.get());
+    return format;
+}
 using pane::White;
 
 }  // namespace
@@ -172,6 +203,7 @@ struct LyricsView::LineView {
     };
     std::vector<WordView> words;
     float mainH = 0, subH = 0, height = 0;
+    float mainY = 0, subY = 0; // the line's and its translation's tops in the text block
     Spring y{0}, scale{100}, press{100};
     float blur = 0, blurTarget = 0;
     float glow = 0;  // 0 inactive .. 1 active (bright layer)
@@ -279,6 +311,7 @@ LyricsView::LyricsView(const wuc::ContainerVisual& parent) {
     // out under the header and at the bottom (Apple Music's edge fade), on the GPU.
     m_layer = comp.CreateLayerVisual();
     m_root.Children().InsertAtTop(m_layer);
+    m_plateGlass.Create(m_root, m_layer);
     try {
         auto mask = gfx::MakeAlphaMaskEffect(wuc::CompositionEffectSourceParameter(L"source"),
                                              wuc::CompositionEffectSourceParameter(L"mask"));
@@ -325,8 +358,8 @@ void LyricsView::SetBounds(const RECT& px, float scale) {
     m_viewport.Size(float2{w, h});
     m_root.Size(float2{w, h});
     if (sizeChanged && m_visible) {
+        Relayout(); // first: the fades (LayoutChrome) follow the line height
         LayoutChrome();
-        Relayout();
         UpdateTargets(false, true, false);
         Render();
     }
@@ -337,8 +370,8 @@ void LyricsView::SetVisible(bool visible) {
     m_visible = visible;
     m_root.IsVisible(visible);
     if (visible) {
-        LayoutChrome();
         Relayout();
+        LayoutChrome();
         m_lastNow = Now();
         m_focus = -2;  // recomputed by Tick
         m_lastFrame = Clock::now();
@@ -368,6 +401,27 @@ void LyricsView::SetResult(const lyrics::Result& result) {
     if (result.status == lyrics::Status::Found && result.lyrics && m_lyrics &&
         lyrics::SameLyricsDocument(*m_lyrics, *result.lyrics)) {
         m_status = lyrics::Status::Found;
+        return;
+    }
+    // The same lines at other times (the owner adjusting the offset): keep the views and
+    // retime them, so the lines move to the new focus instead of flying in again.
+    if (result.status == lyrics::Status::Found && result.lyrics && m_lyrics && m_status == lyrics::Status::Found &&
+        m_lines.size() == result.lyrics->lines.size() && lyrics::SameLyricsText(*m_lyrics, *result.lyrics)) {
+        m_lyrics = result.lyrics;
+        for (size_t i = 0; i < m_lines.size(); ++i) {
+            auto& v = *m_lines[i];
+            v.line = &m_lyrics->lines[i];
+            if (v.line->words.empty()) {
+                v.words[0].start = v.line->start;
+                v.words[0].end = v.line->end;
+            } else {
+                for (size_t w = 0; w < v.words.size() && w < v.line->words.size(); ++w) {
+                    v.words[w].start = v.line->words[w].start;
+                    v.words[w].end = v.line->words[w].end;
+                }
+            }
+        }
+        if (m_visible) StartFrames();
         return;
     }
     m_status = result.status;
@@ -418,17 +472,47 @@ double LyricsView::Now() const {
     return m_lastNow;
 }
 
+// The view's own size for its width, times the user's percentage.
 float LyricsView::FontSize() const {
     const float w = (m_bounds.right - m_bounds.left) / m_scale;
-    return std::clamp(std::round(w * 0.075f), 20.0f, 42.0f);
+    const float automatic = std::clamp(std::round(w * 0.075f), 20.0f, 42.0f);
+    return std::round(automatic * settings::LyricSizePercent() / 100.0f);
+}
+
+void LyricsView::Restyle() {
+    if (!m_visible) return; // SetVisible lays everything out afresh
+    Relayout();
+    LayoutChrome();
+    UpdateTargets(false, true, false);
+    Render();
+    StartFrames();
 }
 
 float LyricsView::ContentTop() const { return 0; }
 
+// The room above the focused line. Normally a fixed reference block (1.5 lines) keeps the
+// focus at the same height across songs, regardless of wrapping or translations. In a low view
+// the room goes in turn: first below the line, until it is as much as above; then above it,
+// until none is left; then below again - the line itself always stays whole.
+float LyricsView::TopSpace(float lineH) const {
+    const float H = (m_bounds.bottom - m_bounds.top) / m_scale - ContentTop();
+    const float above = kLinesAbove * m_referenceLineHeight;
+    if (H >= 2 * above + lineH) return above;
+    if (H >= above + lineH) return H - lineH - above;
+    return 0;
+}
+
 float LyricsView::AnchorY() const {
-    // A fixed reference block keeps the focus at the same height across songs, regardless
-    // of wrapping or whether their lines have translations.
-    return ContentTop() + kLinesAbove * m_referenceLineHeight;
+    const float lineH = m_focus >= 0 && static_cast<size_t>(m_focus) < m_lines.size()
+                            ? m_lines[static_cast<size_t>(m_focus)]->height
+                            : m_referenceLineHeight;
+    return ContentTop() + TopSpace(lineH);
+}
+
+float LyricsView::MinHeight() const {
+    float tallest = m_referenceLineHeight;
+    for (const auto& l : m_lines) tallest = std::max(tallest, l->height);
+    return ContentTop() + tallest;
 }
 
 // ---- Layout -----------------------------------------------------------------------------
@@ -442,7 +526,9 @@ void LyricsView::Relayout() {
     const float F = FontSize();
     m_layoutWidth = std::max(40.0f, W - 2 * kSideMargin - 2 * kTextInset * F);
     lyrics::Line reference;
-    reference.text = reference.translation = L"Ag";
+    // Measured in the lines' own fonts (and their fallback): a Latin pair and a CJK character,
+    // so that a tall fallback font sets the reference too.
+    reference.text = reference.translation = L"Ag\x56FD";
     LineView referenceView;
     referenceView.line = &reference;
     BuildLine(referenceView, m_layoutWidth);
@@ -463,11 +549,15 @@ void LyricsView::BuildLine(LineView& v, float width) {
     const float F = FontSize();
     const lyrics::Line& line = *v.line;
     static thread_local float cachedSize = 0;
+    static thread_local int cachedStyle = -1;
     static thread_local com_ptr<IDWriteTextFormat> mainFormat, subFormat;
-    if (cachedSize != F) {
-        mainFormat = MakeFormat(F, DWRITE_FONT_WEIGHT_BOLD);
-        subFormat = MakeFormat(F * kSubSize, DWRITE_FONT_WEIGHT_SEMI_BOLD);
+    if (cachedSize != F || cachedStyle != settings::LyricStyleGeneration()) {
+        // The translation's size is the user's percentage of the same automatic size.
+        const float subSize = F * settings::TranslationSizePercent() / std::max(1, settings::LyricSizePercent());
+        mainFormat = MakeLyricFormat(F, DWRITE_FONT_WEIGHT_BOLD);
+        subFormat = MakeLyricFormat(subSize, DWRITE_FONT_WEIGHT_SEMI_BOLD);
         cachedSize = F;
+        cachedStyle = settings::LyricStyleGeneration();
     }
     const std::wstring& text = line.text;
     winrt::check_hresult(f->CreateTextLayout(text.c_str(), static_cast<UINT32>(text.size()), mainFormat.get(), width,
@@ -523,6 +613,9 @@ void LyricsView::BuildLine(LineView& v, float width) {
         v.subH = sm.height;
     }
     v.height = 2 * kLinePadding * F + v.mainH + (v.sub ? kSubGap * F + v.subH : 0);
+    // The smaller line (the translation, or the original when they are swapped) under the lyric.
+    v.mainY = 0;
+    v.subY = v.mainH + kSubGap * F;
 }
 
 // Where every line goes for the current focus, with Apple Music's staggered start: lines
@@ -688,6 +781,19 @@ bool LyricsView::Tick() {
         UpdateTargets(false, true, false);
     }
 
+    // Lines move under a resting pointer (the song advancing, the wheel, inertia): the
+    // highlight goes to the line now under it instead of travelling with the old one.
+    if (m_hoverInside && m_drag == Drag::None) {
+        const int hover = (m_lyrics && m_lyrics->synced) ? LineAt(m_pointer) : -1;
+        if (hover != m_hover) {
+            if (m_pressed >= 0 && m_pressed != hover) {
+                m_lines[static_cast<size_t>(m_pressed)]->press.SetTarget(100);
+                m_pressed = -1;
+            }
+            m_hover = hover;
+        }
+    }
+
     for (size_t i = 0; i < m_lines.size(); ++i) {
         auto& l = *m_lines[i];
         l.y.Step(dt);
@@ -720,11 +826,16 @@ void LyricsView::LayoutChrome() {
         const int mh = static_cast<int>(h - top);
         m_maskSurface.Resize(winrt::Windows::Graphics::SizeInt32{4, mh});
         const float H = mh / m_scale;
+        // The fades keep to the room above and below the focused line, so that in a low view
+        // they never dim the line itself.
+        const float above = TopSpace(m_referenceLineHeight);
+        const float below = std::max(0.0f, H - above - m_referenceLineHeight);
+        const float topFade = std::min(kTopFade, above), bottomFade = std::min(kBottomFade, below);
         host.Draw(m_maskSurface, m_scale, [&](ID2D1DeviceContext* dc) {
-            const D2D1_GRADIENT_STOP s[] = {{0.0f, D2D1::ColorF(1, 1, 1, 0)},
-                                            {std::min(0.45f, kTopFade / std::max(1.0f, H)), D2D1::ColorF(1, 1, 1, 1)},
-                                            {std::max(0.55f, 1.0f - kBottomFade / std::max(1.0f, H)), D2D1::ColorF(1, 1, 1, 1)},
-                                            {1.0f, D2D1::ColorF(1, 1, 1, 0)}};
+            const D2D1_GRADIENT_STOP s[] = {{0.0f, D2D1::ColorF(1, 1, 1, topFade > 0.5f ? 0.0f : 1.0f)},
+                                            {std::min(0.45f, topFade / std::max(1.0f, H)), D2D1::ColorF(1, 1, 1, 1)},
+                                            {std::max(0.55f, 1.0f - bottomFade / std::max(1.0f, H)), D2D1::ColorF(1, 1, 1, 1)},
+                                            {1.0f, D2D1::ColorF(1, 1, 1, bottomFade > 0.5f ? 0.0f : 1.0f)}};
             com_ptr<ID2D1GradientStopCollection> stops;
             dc->CreateGradientStopCollection(s, 4, stops.put());
             com_ptr<ID2D1LinearGradientBrush> b;
@@ -750,7 +861,7 @@ void LyricsView::PaintMessage() {
     m_message.Size(float2{static_cast<float>(w), static_cast<float>(h)});
     m_message.Brush(nullptr);
     auto surface = host.CreateSurface(w, h);
-    host.Draw(surface, m_scale, [&](ID2D1DeviceContext* dc) {
+    const bool drawn = host.Draw(surface, m_scale, [&](ID2D1DeviceContext* dc) {
         const float W = w / m_scale, H = h / m_scale;
         auto format = MakeFormat(17, DWRITE_FONT_WEIGHT_SEMI_BOLD);
         format->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
@@ -764,6 +875,7 @@ void LyricsView::PaintMessage() {
         const float top = ContentTop() + (H - ContentTop() - tm.height) / 2 - 20;
         dc->DrawTextLayout({20, top}, layout.get(), White(dc, 0.55f).get());
     });
+    if (!drawn) return; // a surface that was not drawn holds other surfaces' pixels
     auto brush = host.Compositor().CreateSurfaceBrush(surface);
     brush.Stretch(wuc::CompositionStretch::None);
     brush.HorizontalAlignmentRatio(0);
@@ -840,7 +952,7 @@ void LyricsView::DrawLineImage(LineView& l, double now, bool live) {
     }
     if (live) PrepareGlow(l);
     m_dc->SetDpi(96.0f * m_scale, 96.0f * m_scale);
-    host.Draw(l.surface, m_scale, m_dc.get(), [&](ID2D1DeviceContext* dc) {
+    const bool drawn = host.Draw(l.surface, m_scale, m_dc.get(), [&](ID2D1DeviceContext* dc) {
         D2D1_MATRIX_3X2_F base;
         dc->GetTransform(&base);
         dc->SetTransform(D2D1::Matrix3x2F::Translation(pad, pad) * base);
@@ -848,19 +960,22 @@ void LyricsView::DrawLineImage(LineView& l, double now, bool live) {
             DrawLiveText(dc, l, now);
         } else {
             // Main text at 0.75 and the translation at 1: the visual's opacity scales both.
-            dc->DrawTextLayout({0, 0}, l.main.get(), White(dc, 0.75f).get());
-            if (l.sub) dc->DrawTextLayout({0, l.mainH + kSubGap * F}, l.sub.get(), White(dc, 0.75f * kSub / kDim).get());
+            dc->DrawTextLayout({0, l.mainY}, l.main.get(), White(dc, 0.75f).get());
+            if (l.sub) dc->DrawTextLayout({0, l.subY}, l.sub.get(), White(dc, 0.75f * kSub / kDim).get());
         }
     });
-    l.image = live ? 1 : 0;
+    // Not drawn (the host clears the surface): try again next frame rather than keep nothing.
+    l.image = drawn ? (live ? 1 : 0) : -1;
     l.imageGlow = l.glow;
+    if (!drawn) StartFrames();
 }
 
 // Glyph runs with per-word fill, float and emphasis; the transform maps the text origin.
 void LyricsView::DrawLiveText(ID2D1DeviceContext* dc, LineView& l, double now) {
     const float F = FontSize();
-    D2D1_MATRIX_3X2_F lineM;
-    dc->GetTransform(&lineM);
+    D2D1_MATRIX_3X2_F blockM;
+    dc->GetTransform(&blockM);
+    const D2D1_MATRIX_3X2_F lineM = D2D1::Matrix3x2F::Translation(0, l.mainY) * blockM;
     const int ms = static_cast<int>(now * 1000);
     const bool karaoke = !l.line->words.empty();
     const float fade = kFadeWidth * F;
@@ -934,10 +1049,10 @@ void LyricsView::DrawLiveText(ID2D1DeviceContext* dc, LineView& l, double now) {
             dc->DrawGlyphRun(r.origin, &run, brush.get());
         }
     }
-    dc->SetTransform(lineM);
+    dc->SetTransform(blockM);
     if (l.sub) {
         // Translations stay at the same level whether the line is active or not.
-        dc->DrawTextLayout({0, l.mainH + kSubGap * F}, l.sub.get(),
+        dc->DrawTextLayout({0, l.subY}, l.sub.get(),
                            White(dc, Mix(kSub * dim / kDim, kSub * 0.85f, l.glow)).get());
     }
 }
@@ -999,8 +1114,10 @@ void LyricsView::RenderLine(LineView& l, double now, float areaH) {
     l.plateBrush.Color(winrt::Windows::UI::ColorHelper::FromArgb(plateA, 255, 255, 255));
     l.text.Opacity(live ? 1.0f : (synced ? m_dim : kUnsynced) / 0.75f);
 
-    // Blur on the GPU: an effect brush while it shows, the plain surface otherwise.
-    const float blur = live ? 0.0f : l.blur * s;
+    // Blur on the GPU: an effect brush while it shows, the plain surface otherwise. A line that
+    // has just been sung blurs while it rises and shrinks, not after its glow has faded
+    // (owner, 2026-11-13): only the line being sung stays sharp.
+    const float blur = l.active ? 0.0f : l.blur * s;
     if (blur > 0.15f) {
         if (!l.blurBrush) {
             l.blurBrush = m_blurFactory.CreateBrush();
@@ -1069,10 +1186,29 @@ void LyricsView::Render() {
     const float areaH = (m_bounds.bottom - m_bounds.top) / m_scale - ContentTop();
     const bool found = m_status == lyrics::Status::Found;
     m_layer.IsVisible(found);
-    if (!found) return;
+    if (!found) {
+        m_plateGlass.Hide();
+        return;
+    }
     const double now = Now();
     for (auto& l : m_lines) RenderLine(*l, now, areaH);
     RenderInterlude(now);
+    // The glass under the plate showing most, transformed as its line (root scaled round the
+    // plate's left middle), in the root's space: the layer sits ContentTop() down.
+    const LineView* best = nullptr;
+    for (const auto& l : m_lines)
+        if (l->root && l->root.IsVisible() && l->hover > (best ? best->hover : 0.01f)) best = l.get();
+    if (!best) {
+        m_plateGlass.Hide();
+        return;
+    }
+    const float s = m_scale, top = ContentTop();
+    const float W = (m_bounds.right - m_bounds.left) / s;
+    const float pw = (W - 2 * kSideMargin) * s, ph = best->height * s;
+    const float k = best->scale.Position() / 100.0f * best->press.Position() / 100.0f;
+    const float y = std::round(top * s) + std::round((best->y.Position() - top) * s);
+    m_plateGlass.Show(float3{kSideMargin * s, y, 0}, float2{pw, ph}, kPlateRadius * FontSize() * s, k,
+                      float2{0, ph / 2}, best->hover, s);
 }
 
 // ---- Input ------------------------------------------------------------------------------
@@ -1092,6 +1228,7 @@ int LyricsView::LineAt(POINT pt) const {
 
 void LyricsView::OnMouseMove(POINT pt) {
     m_hoverInside = true;
+    m_pointer = pt;
     if (m_drag == Drag::Pending) {
         if (std::abs(pt.y - m_dragStart.y) > 4 * m_scale || std::abs(pt.x - m_dragStart.x) > 4 * m_scale) {
             m_drag = Drag::Scroll;

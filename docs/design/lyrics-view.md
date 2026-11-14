@@ -32,12 +32,15 @@ glass. Code: `ui/lyrics_view.{h,cpp}` (rendering, motion, input), `ui/spring.h`,
 | Join to the client area | none: one client edge runs around both | owner, 2026-11-09 |
 | Pane tint over the glass | black 30 % | new UI, legibility of white text |
 | Header | 84 high: cover 52 (radius 6), title 16 semibold 95 %, artist 14 regular 60 % | AM iOS header |
-| F | round(pane width x 0.075), 20..42 (33 at 440) | AM iOS: 30 pt on a 390 pt screen |
-| Font | Segoe UI Variable Display (else Segoe UI), bold; translation semibold 0.55 F | AM: SF Pro bold |
+| F | round(pane width x 0.075), 20..42 (33 at 440), times the user's lyrics size (50 - 200 %, default 100) | AM iOS: 30 pt on a 390 pt screen; owner, 2026-11-12 |
+| Font | Segoe UI Variable Display (else Segoe UI), bold; translation semibold at the user's translation size (25 - 150 % of the same automatic size, default 55) | AM: SF Pro bold |
+| Font list | optional, preferences: family names separated by commas; each character comes from the first listed family that has it, then from Windows' fallback (DirectWrite font fallback). All heights are the laid-out metrics of the fonts actually used | owner, 2026-11-12 |
 | Hover plate | from 12 to width - 12, radius 0.35 F; text inset 0.45 F | AM iOS capture |
 | Line block | padding 0.4 F above and below; translation 0.3 F below the line | AMLL |
-| Focused line | 1.5 fixed reference blocks below the header. Each reference block has one unwrapped original line and one unwrapped translation line, using the current fonts and padding. The anchor is independent of the song's wrapping and translations | owner, 2026-11-09 |
-| Edge fades | lyrics fade out over 36 below the header and 72 at the bottom | AM |
+| Swap original and translation | a check item of the lyrics' context menu and a choice in the preferences: only the texts change places, everywhere a lyric shows (pane, transport band, player). The translation takes the lyric's size and, for a word-timed line, word timing of its own: its CJK characters or words (weight 1 + 0.3 per further letter) spread over the time the original's words are sung, the gaps between them kept, so it fills word by word | owner, 2026-11-13 |
+| Focused line | 1.5 fixed reference blocks below the header. Each reference block has one unwrapped original line and one unwrapped translation line ("Ag" and a CJK character, so fallback fonts count), using the current fonts and padding. The anchor is independent of the song's wrapping and translations | owner, 2026-11-09 |
+| Low view | the room goes in turn: below the focused line until it equals the room above; then above it, until none is left; then below again. The focused line (wrapped, with its translation) always stays whole: a window keeps the lyrics at least as high as their tallest line | owner, 2026-11-12 |
+| Edge fades | lyrics fade out over 36 below the header and 72 at the bottom, each at most the room left above / below the focused line | AM; owner, 2026-11-12 |
 
 ## Colour (white with alpha)
 
@@ -64,7 +67,8 @@ glass. Code: `ui/lyrics_view.{h,cpp}` (rendering, motion, input), `ui/spring.h`,
 - **Blur**: 0 for the active line. Sung lines above: (distance + 1) x 0.8 DIP (AMLL).
   Upcoming lines below grow slower so the next few stay readable: 0.3 + 0.5 x (distance - 1)
   DIP (owner, 2026-11-09; AMLL: (1 + distance) x 0.8). At most 5. Eased over 0.4 s. A hovered
-  line is sharp.
+  line is sharp. A line that has just been sung starts blurring as it rises and shrinks, while
+  its glow still fades (owner, 2026-11-13; it used to stay sharp until the glow was gone).
 - **Word fill** (word-timed lines): a soft edge 0.5 F wide sweeps across each word over its
   duration, bright to the left, dim to the right; a wrapped word fills across its runs (AMLL
   `wordFadeWidth`).
@@ -89,7 +93,29 @@ glass. Code: `ui/lyrics_view.{h,cpp}` (rendering, motion, input), `ui/spring.h`,
   lines are sharp and brighter.
 - **Return**: after 0.5 s without input the view realigns at the next line change, or after
   3 s once the mouse has left the pane; seeking realigns at once (AMLL resume delay 0.5 s).
-- **Right-click**: Search for lyrics again, Hide lyrics. View > Lyrics toggles the pane.
+- **Right-click**: the lyrics menu (below). View > Lyrics toggles the pane.
+
+### The lyrics menu (pane, transport band, player; owner 2026-11-13, after ESLyric)
+
+| Item | What it does |
+| --- | --- |
+| Save lyrics | next to a local track (its same-name .lrc; a cue song as "Artist - Title.lrc"), else to `<profile>\lyrics\Artist - Title.lrc`; UTF-8 with a byte order mark |
+| Save lyrics to | Tag (SYNCEDLYRICS if the file has it, else LYRICS; local files), Profile folder, Track's folder, Browse... |
+| Select lyrics | the candidates this session's searches for the song found (the automatic lookup's and the search dialog's), the shown one checked; Search lyrics... at the end |
+| Copy lyrics | Copy lyrics (with the remembered options) and Copy... (metadata, timestamps, merge identical lines, reference lines, standard lyrics: word times left out; the last two only with timestamps, standard only for word-timed lyrics). Times are the shown ones, offset applied |
+| Lyrics encoding | lyrics read from a file (a same-name .lrc, a loaded file) read again in Auto detect or one of ESLyric's ten code pages; the result becomes the song's selection and remembers file and code page |
+| Lyric info | source, file, encoding and offset over the document as found, read-only, with Copy |
+| Adjust offset | +100 ms (earlier), -100 ms (later), +1 s (earlier), -1 s (later), Custom offset... (a signed number), Reset; kept per lyric of a song (owner, 2026-11-14: each source's or version's lyric is timed differently), named by the lyric's parsed lines and times, in the lyrics cache folder and applied before anything shows; saving writes it into [offset:]. Lines are retimed in place, not flown in again |
+| Reload lyrics | the song's lyrics read again (selection, cache, same-name file), without a new search |
+| Hide translation / Hide original | a check item among the display items: hides the small line under each lyric, the translation, or the original when the two are swapped; remembered |
+
+The hover plate belongs to the line under the pointer: when lines move under a resting
+pointer (the song advancing, the wheel, inertia) the plate passes to the line now under it.
+The queue does the same, and finds its row again after a refresh (play counts written,
+the schedule changing) instead of dropping the highlight.
+
+Searching (Search lyrics..., Search lyric source, Load lyrics from file..., Search for lyrics
+again, Use automatic lyrics) and the display items follow.
 
 ## Rendering and frame pacing
 
@@ -118,7 +144,7 @@ line-timed one is blue. Without synced lyrics the single left row is centred.
 The pane holds the header, the lyrics or the queue, and a 64 DIP bottom bar with a segmented
 control (owner, 2026-11-09: an iOS tab switch instead of Apple Music's round buttons): a
 track as wide and tall as the queue's capsules (20 DIP margins, 34 high, white 14 %) holds
-"Lyrics" and "Up Next" (icon and 14 DIP semibold label); a white 78 % thumb inset 3 DIP sits
+"Lyrics" and "Up Next" (icon and 14 DIP semibold label); a white 66 % thumb inset 3 DIP sits
 under the selected half, whose icon and label turn dark. The thumb slides on the switching
 spring, and can be dragged: the content follows it and settles on the nearer side. View >
 Lyrics opens the pane, View > Up Next its queue side.
@@ -128,13 +154,36 @@ the owner's two iOS photos. Cubic transitions join the flat edges to circular si
 matching tangent and curvature. The profile is specified in `visual-spec.md`. These
 surfaces are painted at layout/DPI changes and slide as compositor visuals.
 
+In the library window's sidebar Media Center's moving light (`AeroLight`, the veil kind, at
+85 %, mirrored left to right) lies over the pane's tint and under its content, as behind the
+mini player and the full screen (owner, 2026-11-13); lent to the player the pane shows none of
+its own.
+
+iOS's material lies under the pane's light controls, on and off alike (owner, 2026-11-13): the
+switch's track and thumb, the shuffle / repeat capsules and the hover plates of lyric lines and
+queue rows. What lies behind is blurred (9 DIP), its colours deepened (saturation 1.8) and
+mixed with 6 % white; the control's own white is painted over it as before (the light thumb
+and the capsules' on state 66 % instead of 78 %). Capsules take their exact outline through an
+alpha mask; plates are rounded rectangles that follow the plate showing most (its offset,
+scale and opacity). The glass lies outside the lines' layer, whose content cannot see behind
+the pane.
+
+Ghost pictures in the pane (pieces of the library's list header, a playlist card, a cover over
+the header; owner reports 2026-11-12/13) were surfaces shown without ever being drawn: a new
+surface comes from a shared atlas and holds other surfaces' old pixels until it is drawn, and
+when its BeginDraw failed most callers attached it anyway. `CompositionHost` now clears such a
+surface as soon as the UI thread is free (unless it was drawn since), reports the failure on the
+console, and reports draws begun off the UI thread or inside another draw; the pane's header,
+message, queue rows and lyric lines no longer keep an undrawn surface and draw again.
+
 The pane exposes the window's original Aero material and screen-anchored light streaks
 under its 30% black tint. The common client edge is hollow, and the opaque library base
 is a separate visual confined to the library rectangle.
 
 Switching (spring k 260, c 30): the lyrics fade out over the first two thirds and rise
-24 DIP; the queue fades in from 15 % on and rises 48 DIP into place; the header stays and,
-in the queue, follows the song card.
+24 DIP; the queue fades in from 15 % on and rises 48 DIP into place; the header stays still
+(it no longer rides the queue's rise, owner 2026-11-13) and, in the queue, follows the song
+card as the list scrolls.
 
 Queue, from Apple Music's "Playing Next" on a 390 pt screen scaled to the pane:
 
@@ -146,15 +195,17 @@ Queue, from Apple Music's "Playing Next" on a 390 pt screen scaled to the pane:
 | Section titles | 20 bold; subtitle 14 at 55 % |
 | Capsules | 34 high, two halves; off: white 14 % with a white glyph, on: white 78 % with a dark glyph; shuffle/repeat glyphs are 16 DIP bold (700), owner 2026-11-09 |
 | Hover / pressed plate | white 8 % / 4 %, radius 10 |
-| Rows | ordinary reordering uses springs (k 300, c 30). Track changes use mass 0.9, k 220, c 26, following AMLL's cover swap. Departing rows move with the list and fade over about 0.22 s, following AMLL's song-information exit. Growing history preserves the card's screen position and existing spring velocities |
-| Reorder | drag by the handle: the row lifts (103 %, plate 14 %), the others make room, the queue playlist is reordered on release |
+| Rows | measured frame by frame from the owner's iOS 26 recording (`.local/refs/ios/ios-menu.mp4`, 60 fps): every move (a tapped row, Next, Previous, shuffle on or off) is one critically damped spring of about 20.5 rad/s (mass 1, k 420, c 41; 15 / 41 / 62 / 77 / 92 / 98.5 % of the way at 33 / 67 / 100 / 134 / 200 / 300 ms). The list travels the whole distance (a song tapped two rows down: the rows under it rise two rows). Rows that leave (the tapped one and those above it, the next song on Next, rows a reorder pushes out of the list) fade where they are, linearly, in 125 ms; rows that come back (Previous, shuffle) fade in at their place as fast; rows rising from below arrive solid with the list. Under shuffle the rows still listed cross to their new places. Growing history preserves the card's screen position and existing spring velocities |
+| Footer | repeat-all: the repeat glyph and "Repeats N songs" (N: the songs of one round), 16 semibold at 55 %, centred, 64 high, under the last row and moving with it |
+| Repeat-one | the list stays as without repeat (Next and Previous still go through it); only the song repeats |
+| Reorder | drag by the handle: the row lifts (103 %, plate 14 %), the others make room, the queue playlist is reordered on release. A list refresh during the drag (a playlist still loading, the next song starting) keeps the row in the hand when the row is still listed. Under shuffle a drop reorders only the playing order, not the playlist (writing it into the playlist turned every song physically before the current one into history, and the list emptied); a list that became shorter than its scroll springs back to its end |
 | Scroll | wheel 80 DIP per notch on a spring; drag 1:1 with inertia (0.95 per 60 Hz frame); past the ends iOS's rubber band (0.55) and a spring back |
 | Edge fade | 16 DIP at the top, 40 at the bottom |
 | Actions | click: play (history: right after the current song); right-click a queued song: Remove from Now Playing |
 
-The sidebar reads the real Now Playing playlist. It starts after the current song, which
-appears in the card. Repeat-all appends the beginning of the playlist up to the current
-song, excluding that song. Without repeat-all only the remaining tail is shown. Finishing
+The sidebar reads the real Now Playing playlist (`PlaybackScheduler::DisplayUpcomingSnapshot`).
+It starts after the current song, which appears in the card, and lists the rest of the round;
+the next round of repeat-all is the footer, not rows. Finishing
 playback keeps the last cursor in the open window, so an exhausted tail stays empty.
 
 Shuffle remains foobar2000's native playback order. The sidebar follows the playlist's
@@ -164,8 +215,8 @@ the view to the song card on the same spring. Programmatic return scrolling stay
 when the list shrinks, while mouse scrolling keeps its rubber band. Wrapped drag reordering
 maps the visible slots back to the underlying playlist and keeps the playing slot fixed.
 
-Animation references are the locally supplied AMLL project's
-`packages/react-full/src/components/Cover/index.tsx` and
-`packages/react-full/src/components/MusicInfo/index.tsx`. The native implementation uses
-their numeric tuning and transition behaviour. No AMLL source or artwork is included.
+AMLL has no queue or history list of its own (its prebuilt player only offers a playlist
+button for the host to answer), so the queue's behaviour and motion follow Apple Music's
+Playing Next on iOS, measured from the owner's recording (owner, 2026-11-14; AMLL's springs
+were used before).
 

@@ -2,6 +2,7 @@
 
 #include "lyrics/lyrics_service.h"
 #include "ui/lyrics_view.h"
+#include "ui/pane_common.h"
 #include "ui/queue_view.h"
 #include "ui/spring.h"
 
@@ -12,6 +13,8 @@
 // rise; the header stays and, in the queue, scrolls along as the queue's song card.
 
 namespace glasswave::ui {
+
+class AeroLight;
 
 class NowPlayingPane {
   public:
@@ -30,8 +33,14 @@ class NowPlayingPane {
     void SetBounds(const RECT& px, float scale);
     void SetVisible(bool visible);
     // Embedded in the player window: no tint of its own and no switch at the bottom (the
-    // host shades the background and has its own lyrics / queue buttons).
-    void SetEmbedded(bool embedded);
+    // host shades the background and has its own lyrics / queue buttons). Bare also drops
+    // the song header and the queue's card and capsules, where the host shows them itself.
+    void SetEmbedded(bool embedded, bool bare = false);
+    // DIP: the least height that keeps the side showing usable (the lyrics: the tallest line
+    // whole under the header).
+    float MinHeight() const;
+    // The lyrics' size, fonts or translation side changed (settings::LyricStyleGeneration).
+    void RestyleLyrics();
     bool Visible() const { return m_visible; }
     void SetMode(Mode mode);
     Mode CurrentMode() const { return m_mode; }
@@ -68,7 +77,7 @@ class NowPlayingPane {
     Target TargetAt(POINT pt) const;
     void LayoutGeometry();
     void LayoutParts();
-    void PaintHeader();
+    bool PaintHeader();
     void PaintBar();
     void ApplyTransition();
     void StartFrames();
@@ -80,8 +89,13 @@ class NowPlayingPane {
 
     winrt::Windows::UI::Composition::ContainerVisual m_root{nullptr};
     winrt::Windows::UI::Composition::SpriteVisual m_tint{nullptr}, m_header{nullptr};
+    // In the library window's sidebar: Media Center's moving light over the tint, as behind the
+    // mini player and the full screen (owner, 2026-11-13). Lent to the player, the pane has none.
+    std::unique_ptr<AeroLight> m_light;
+    void UpdateLight();
     winrt::Windows::UI::Composition::ContainerVisual m_bar{nullptr};
     winrt::Windows::UI::Composition::SpriteVisual m_track{nullptr}, m_thumb{nullptr};
+    pane::CapsuleGlass m_trackGlass, m_thumbGlass; // the material under the switch and its thumb
     // Each segment's icon and label twice: white on the track, dark on the thumb.
     std::array<winrt::Windows::UI::Composition::SpriteVisual, 2> m_segLight{nullptr, nullptr},
         m_segDark{nullptr, nullptr};
@@ -90,7 +104,17 @@ class NowPlayingPane {
     QueueView m_queue;
     RECT m_bounds{};
     float m_scale = 1.0f;
-    bool m_visible = false, m_embedded = false;
+    // The size and scale the header and the switch were last painted at. A paint that failed
+    // or was skipped (the pane moved between windows, a draw could not begin) leaves them
+    // behind m_bounds; they are painted again at the next chance instead of staying stale.
+    SIZE m_painted{};
+    float m_paintedScale = 0;
+    int m_paintRetries = 0;
+    bool PartsStale() const {
+        return m_painted.cx != m_bounds.right - m_bounds.left || m_painted.cy != m_bounds.bottom - m_bounds.top ||
+               m_paintedScale != m_scale;
+    }
+    bool m_visible = false, m_embedded = false, m_bare = false;
     Mode m_mode = Mode::Lyrics;
     Spring m_t{0}; // 0 lyrics .. 1 queue
     std::chrono::steady_clock::time_point m_lastFrame{};

@@ -63,6 +63,22 @@ void Mute(ID2D1DeviceContext* dc, Layer layer, bool muted, float volume);
 void Volume(ID2D1DeviceContext* dc, Layer layer, float value);
 void ClusterBackground(ID2D1DeviceContext* dc);
 void Capsule(ID2D1DeviceContext* dc);
+// The capsule with its ends moved in for a narrow window (WMP 12 shortens it the same way):
+// its left end at cluster x `left` (normally kCapsuleVisible.left), its right end at `right`,
+// drawn as two parts of the bitmap that meet under the cluster. Same surface as Capsule().
+void CapsuleSpan(ID2D1DeviceContext* dc, float left, float right);
+
+// A vertical gradient with one stop per row: at each row's centre (smooth), or rows kept as
+// crisp bands.
+winrt::com_ptr<ID2D1LinearGradientBrush> RowBands(ID2D1DeviceContext* dc, float y0, float y1,
+                                                  std::initializer_list<D2D1_COLOR_F> rows, bool smooth);
+// WMP 12's split volume button (wmploc 4626 - 4630; 39x25 units of `k` DIP: the speaker's 25,
+// the arrow's 14): one half of plate `id` at x, and the arrow in vectors.
+void SplitPlate(ID2D1DeviceContext* dc, int id, bool arrowHalf, float x, float k);
+void SplitArrow(ID2D1DeviceContext* dc, float k);
+// WMP 12's volume flyout frame (glass rims, a frosted inside) filling `size`; returns the
+// inside, where its slider goes. Lay it over a blurred copy of what is behind.
+D2D1_RECT_F FlyoutFrame(ID2D1DeviceContext* dc, D2D1_SIZE_F size);
 void NavOrb(ID2D1DeviceContext* dc, D2D1_SIZE_F size, Layer layer, bool back, bool enabled);
 void NavGroove(ID2D1DeviceContext* dc, D2D1_SIZE_F size);
 

@@ -93,6 +93,59 @@ never clipped.
   upper `#e5f2f9` -> `#d4e3f5`, lower `#b1c2d3` -> `#d2e2ef`, outline `#a3afbb` -> `#6f7d8b`.
 - Glyphs blue when enabled (`#3c88da` -> `#154ea2`, R5), grey when disabled (`#aab4bf`).
 
+### Narrow library window (owner's WMP 12 pressed to its narrowest, 2026-11-13)
+
+WMP 12 goes down to about 500 DIP, but there its time runs into the capsule. The owner asked
+for the order of giving way without the overlap (2026-11-13).
+
+Nothing in the band overlaps. Left to right it holds:
+
+1. the song's text (at least 110 DIP; its title, artist, star and lyric laid out within the width it has)
+2. the time, when it stands left of the capsule
+3. the capsule
+4. the time, when it stands right of the capsule
+5. the stream block
+6. the lyrics toggle
+
+The gaps between them are 12 DIP. The capsule stays centred while some step allows it. Otherwise it moves off centre by as little as needed before a further step is taken.
+
+The narrowest arrangement needs a 516 DIP client. The window's minimum is therefore 540 DIP, plus the lyrics pane when it is open. As the window narrows it gives way in this order:
+
+| Step | What changes |
+| --- | --- |
+| 1 | Shuffle and repeat leave the capsule; its left end moves to 8 DIP before stop |
+| 2 | The volume slider folds behind a 14 DIP arrow beside the speaker (WMP's split button art 4627 / 4628 when lit). The arrow opens WMP's flyout over the button, with its right edge on the arrow's: the 5 DIP glass frame of the mini player round the 80 x 23 slider, over a frosted copy of the band. A click elsewhere or deactivating the window closes it. The capsule ends 9 DIP after the arrow |
+| 3 | Stop leaves; the capsule starts 8 DIP before previous |
+
+**The shortened capsule.** The capsule bitmap (wmploc 2164) has two divider lines baked in,
+at columns 162 - 164 and 398 - 400. A shortened half therefore cannot be the bitmap shifted
+inwards: the lines would land inside the previous and next segments. It is drawn instead as:
+
+- its end (columns 77 - 92 on the left, 463 - 480 on the right), moved in;
+- one plain column, stretched from the end to the orb.
+
+**The folded speaker.** It is the mini player's split button:
+
+- each half lights by itself (4628), and is pressed in 4627;
+- both halves sit over the shared plain plate 4630, which fades in (160 ms) while either half is under the pointer or held, or while the flyout is open, and fades out in 260 ms;
+- the arrow is SplitArrow's white vector.
+
+The slider maps the pointer from its own rect, so it stays under the pointer inside the flyout.
+
+**The time box.** It is as wide as the time's text can get for the song ("4:56 / 4:56"; Segoe UI's digits are tabular), not a fixed 110 DIP. The stream block starts 12 DIP after it.
+
+**A cut lyric line.** Its karaoke fill is measured on the whole line, not on the cut one. Once the sung part reaches the cut, the visible line, ellipsis included, stays blue.
+
+- The capsule bitmap is cut at the orb's centre, and its two ends move in independently.
+- The time stands right of the capsule while 110 DIP + 20 fit there, else right-aligned left of it.
+- The stream format block hides below 60 DIP.
+
+The command bar and the navigation pane also give way:
+
+- The search box goes from 230 DIP down to 140 (32 % of the client width).
+- Create playlist, Add folder and Add files then go, last first, behind a » after the buttons that stay. Its menu runs their main actions. Organize always stays.
+- The navigation pane narrows from 190 DIP to 150 (30 % of the client width).
+
 ## Now-playing queue icons (owner, 2026-11-09)
 
 - Shuffle, repeat-all and repeat-one in the sidebar capsules use 16 DIP Segoe Fluent Icons

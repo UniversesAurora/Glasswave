@@ -30,6 +30,7 @@ constexpr float kCoverRadius = 5;  // DIP
 constexpr float kContentX = 20;    // DIP: covers and section titles
 constexpr float kSectionH = 48;    // DIP: "History" with Clear
 constexpr float kUpNextH = 58;     // DIP: "Continue Playing" with its subtitle
+constexpr float kFooterH = 64;     // DIP: "Repeats N songs" below the last row (repeat all)
 constexpr float kCapsuleH = 34;    // DIP
 constexpr float kCapsuleGap = 10;  // DIP
 constexpr float kHandleW = 18;     // DIP: the reorder handle's three lines
@@ -37,11 +38,15 @@ constexpr float kPlateRadius = 10; // DIP
 constexpr float kHoverAlpha = 0.08f, kPressAlpha = 0.04f;
 constexpr float kTopFade = 16, kBottomFade = 40; // DIP
 constexpr float kRubber = 0.55f;                 // iOS rubber band constant
-constexpr SpringParams kRowSpring{1, 300, 30};
+// Measured frame by frame from the owner's recording of Apple Music's Up Next on iOS 26
+// (.local/refs/ios/ios-menu.mp4, 60 fps): rows move on a critically damped spring of about
+// 20.5 rad/s (0.15 / 0.41 / 0.62 / 0.77 / 0.92 / 0.985 of the way at 33 / 67 / 100 / 134 /
+// 200 / 300 ms, the same for a tapped row, Next and the shuffle reorder), and a row that
+// leaves fades where it is, about linearly, in 125 ms; one that arrives fades in as fast.
+constexpr SpringParams kRowSpring{1, 420, 41};
 constexpr SpringParams kScrollSpring{1, 220, 30};
-// AMLL Cover's swap spring and MusicInfo's outgoing opacity duration.
-constexpr SpringParams kAdvanceSpring{0.9f, 220, 26};
-constexpr float kExitSeconds = 0.22f;
+constexpr SpringParams kAdvanceSpring = kRowSpring;
+constexpr float kFadeSeconds = 0.125f;
 
 float Clamp01(float v) {
     return std::clamp(v, 0.0f, 1.0f);
@@ -99,10 +104,13 @@ QueueView::QueueView(const wuc::ContainerVisual& parent) {
     } catch (...) {
         m_maskSurface = nullptr;
     }
-    for (auto* v : {&m_historyTitle, &m_upNextTitle, &m_empty, &m_shuffle, &m_repeat}) {
+    for (auto* v : {&m_historyTitle, &m_upNextTitle, &m_empty, &m_shuffle, &m_repeat, &m_repeatFooter}) {
         *v = comp.CreateSpriteVisual();
         m_layer.Children().InsertAtTop(*v);
     }
+    m_plateGlass.Create(m_root, m_layer);
+    m_shuffleGlass.Create(m_root, m_layer);
+    m_repeatGlass.Create(m_root, m_layer);
     m_scroll.SetParams(kScrollSpring);
     m_artToken = ArtCache::Get().Subscribe([this] {
         m_coversDirty = true;
@@ -172,6 +180,8 @@ void QueueView::SetVisible(bool visible) {
         DrawChrome();
         Render();
     } else {
+        m_pointerInside = false;
+        m_hover = {};
         for (auto& r : m_rows)
             ReleaseRow(*r);
         for (auto& r : m_retiringRows)
@@ -183,6 +193,11 @@ void QueueView::SetVisible(bool visible) {
 // ---- Data ------------------------------------------------------------------------------
 
 void QueueView::SetRows(std::vector<Row> rows, bool history, bool playbackChanged) {
+    // A row being dragged stays in the hand when the list changes under it (a playlist still
+    // loading, play counts, the next song starting): it is found again below.
+    const RowView* dragged =
+        m_reorder >= 0 && static_cast<size_t>(m_reorder) < m_rows.size() ? m_rows[static_cast<size_t>(m_reorder)].get()
+                                                                          : nullptr;
     // Rows keep their visuals and spring position when the same song is still listed, so a
     // song that starts slides out and the others move up instead of the list jumping.
     std::vector<std::unique_ptr<RowView>> old;
@@ -192,6 +207,7 @@ void QueueView::SetRows(std::vector<Row> rows, bool history, bool playbackChange
     // Reuse rows along one continuous movement. Wrapped rows leave and re-enter at the
     // opposite end, while native shuffle can move the whole list up or down.
     std::ptrdiff_t shift = 0;
+    bool aligned = false; // some song is listed before and after
     if (playbackChanged && !history) {
         std::vector<size_t> before, after;
         std::map<size_t, metadb_handle_ptr> incoming;
@@ -203,21 +219,28 @@ void QueueView::SetRows(std::vector<Row> rows, bool history, bool playbackChange
             const auto found = incoming.find(r->data.playlistIndex);
             const bool same = found != incoming.end() && found->second == r->data.handle;
             before.push_back(same ? r->data.playlistIndex : SIZE_MAX);
+            aligned |= same;
         }
         shift = media::QueueRowShift(before, after);
     }
-    // A long jump cross-fades over one row. Traversing every skipped row would leave a
-    // large empty area before the new first song reaches the section heading.
-    const float movement = std::clamp(static_cast<float>(shift), -1.0f, 1.0f) * kRowH;
-    const bool replace = playbackChanged && (shift < -1 || shift > 1);
+    // As on iOS the list travels the whole way (a song tapped three rows down: the rows under
+    // it rise three rows) on the row spring; the rows it leaves behind fade where they are. A
+    // list with no song in common is replaced by a cross-fade in place.
+    const float movement = static_cast<float>(shift) * kRowH;
+    const bool replace = playbackChanged && !aligned;
     const auto rowKey = [history](const Row& data) {
         return std::to_string(reinterpret_cast<uintptr_t>(data.handle.get_ptr())) + ':' +
                std::to_string(history ? 0 : data.playlistIndex);
     };
     std::unordered_map<std::string, std::deque<size_t>> reusable;
+    // A song whose slot changed (a drop under shuffle reorders only the playing order, so the
+    // rows keep their playlist indices while a drop rewrote them here) is still the same row.
+    std::unordered_map<const void*, std::deque<size_t>> sameSong;
     if (!replace && !playbackChanged)
-        for (size_t i = 0; i < old.size(); ++i)
+        for (size_t i = 0; i < old.size(); ++i) {
             reusable[rowKey(old[i]->data)].push_back(i);
+            sameSong[old[i]->data.handle.get_ptr()].push_back(i);
+        }
     std::vector<std::unique_ptr<RowView>> fresh;
     for (auto& data : rows) {
         std::unique_ptr<RowView> view;
@@ -229,7 +252,18 @@ void QueueView::SetRows(std::vector<Row> rows, bool history, bool playbackChange
             }
         } else if (!replace) {
             auto found = reusable.find(rowKey(data));
+            while (found != reusable.end() && !found->second.empty() && !old[found->second.front()])
+                found->second.pop_front();
             if (found != reusable.end() && !found->second.empty()) {
+                view = std::move(old[found->second.front()]);
+                found->second.pop_front();
+            }
+        }
+        if (!view && !replace && !playbackChanged) {
+            auto found = sameSong.find(data.handle.get_ptr());
+            while (found != sameSong.end() && !found->second.empty() && !old[found->second.front()])
+                found->second.pop_front();
+            if (found != sameSong.end() && !found->second.empty()) {
                 view = std::move(old[found->second.front()]);
                 found->second.pop_front();
             }
@@ -237,8 +271,12 @@ void QueueView::SetRows(std::vector<Row> rows, bool history, bool playbackChange
         if (!view) {
             view = std::make_unique<RowView>();
             view->history = history;
-            view->opacity = m_visible ? 0.0f : 1.0f;
-            view->enterOffset = playbackChanged && m_visible ? m_scroll.Position() - m_cardTop - movement : 0;
+            // Rising with the list (Next, a tapped row): a new row comes up from below with the
+            // others, solid. Otherwise (Previous brings a song back on top, shuffle, a new list)
+            // it fades in at its place.
+            const bool rises = playbackChanged && !replace && shift < 0 && m_visible;
+            view->opacity = m_visible && !rises ? 0.0f : 1.0f;
+            view->enterOffset = rises ? m_scroll.Position() - m_cardTop - movement : 0;
         }
         view->y.SetParams(playbackChanged ? kAdvanceSpring : kRowSpring);
         if (view->data.title != data.title || view->data.artist != data.artist) view->drawn = false;
@@ -248,9 +286,7 @@ void QueueView::SetRows(std::vector<Row> rows, bool history, bool playbackChange
     for (auto& o : old) {
         if (!o) continue;
         if (m_visible && !history && o->root && o->root.IsVisible()) {
-            o->y.SetParams(kAdvanceSpring);
-            const float offset = shift == 0 ? -kRowH : movement;
-            o->y.SetTarget(o->y.Position() + offset);
+            o->y.Snap(o->y.Position()); // fades where it is (iOS), it does not slide away
             m_retiringRows.push_back(std::move(o));
         } else {
             ReleaseRow(*o);
@@ -271,12 +307,22 @@ void QueueView::SetRows(std::vector<Row> rows, bool history, bool playbackChange
     }
     m_reorder = -1;
     m_hover = m_press = {};
+    if (dragged) {
+        for (size_t i = m_historyCount; i < m_rows.size(); ++i)
+            if (m_rows[i].get() == dragged) m_reorder = static_cast<int>(i);
+        const int count = static_cast<int>(m_rows.size() - m_historyCount);
+        if (m_reorder >= 0) m_reorderTo = std::clamp(m_reorderTo, 0, std::max(0, count - 1));
+    }
 }
 
 void QueueView::SetUpNext(std::vector<Row> rows, bool playbackChanged) {
     SetRows(std::move(rows), false, playbackChanged);
     Layout();
-    if (playbackChanged) ScrollToCard(true);
+    if (playbackChanged)
+        ScrollToCard(true);
+    else
+        KeepScrollInRange();
+    RefreshHover();
     DrawChrome();
     if (m_visible) StartFrames();
 }
@@ -284,6 +330,8 @@ void QueueView::SetUpNext(std::vector<Row> rows, bool playbackChanged) {
 void QueueView::SetHistory(std::vector<Row> rows) {
     SetRows(std::move(rows), true);
     Layout();
+    KeepScrollInRange();
+    RefreshHover();
     DrawChrome();
     if (m_visible) StartFrames();
 }
@@ -293,6 +341,15 @@ void QueueView::SetShuffleRepeat(bool shuffle, int repeat) {
     m_shuffleOn = shuffle;
     m_repeatMode = repeat;
     DrawChrome();
+}
+
+void QueueView::SetRepeatCycle(size_t songs) {
+    if (songs == m_repeatCycle) return;
+    m_repeatCycle = songs;
+    DrawChrome();
+    Layout();
+    KeepScrollInRange();
+    Render();
 }
 
 void QueueView::ScrollToCard(bool animate) {
@@ -309,6 +366,18 @@ void QueueView::ScrollToCard(bool animate) {
     if (m_visible) StartFrames();
 }
 
+// A list that became shorter than where it was scrolled to springs back to its end; left
+// there, the rubber band would show the content scrolled away and the list empty.
+void QueueView::KeepScrollInRange() {
+    if (m_dragging || m_followingPlayback) return;
+    const float max = MaxScroll();
+    if (m_scroll.Target() <= max && m_scroll.Position() <= max) return;
+    m_velocity = 0;
+    m_scroll.SetParams(kScrollSpring);
+    m_scroll.SetTarget(std::min(m_scroll.Target(), max));
+    if (m_visible) StartFrames();
+}
+
 float QueueView::MaxScroll() const {
     const float viewH = (m_bounds.bottom - m_bounds.top) / m_scale;
     return std::max(m_cardTop, m_contentH - viewH);
@@ -321,6 +390,14 @@ float QueueView::ShownScroll() const {
     if (s < 0) return -Rubber(-s, viewH);
     if (s > max) return max + Rubber(s - max, viewH);
     return s;
+}
+
+void QueueView::SetBare(bool bare) {
+    if (bare == m_bare) return;
+    m_bare = bare;
+    Layout();
+    ScrollToCard();
+    if (onFrames) onFrames();
 }
 
 float QueueView::CardTop() const {
@@ -360,9 +437,13 @@ void QueueView::Layout() {
         for (auto& r : m_retiringRows)
             r->y.Shift(delta);
     }
-    y += pane::kHeaderHeight;
-    m_capsulesTop = y + 4;
-    y = m_capsulesTop + kCapsuleH + 20;
+    if (m_bare) {
+        m_capsulesTop = y;
+    } else {
+        y += pane::kHeaderHeight;
+        m_capsulesTop = y + 4;
+        y = m_capsulesTop + kCapsuleH + 20;
+    }
     m_upNextTop = y;
     y += kUpNextH;
     const float first = y;
@@ -391,7 +472,10 @@ void QueueView::Layout() {
             r.y.SetTarget(target);
         }
     }
-    m_contentH = first + std::max<size_t>(count, 1) * kRowH + 32;
+    // Repeat-all: Apple Music's line after the last row, which takes the empty row's place.
+    m_footerTop = first + count * kRowH;
+    const float rowsH = m_repeatCycle > 0 ? count * kRowH + kFooterH : std::max<size_t>(count, 1) * kRowH;
+    m_contentH = first + rowsH + 32;
 }
 
 void QueueView::ReleaseRow(RowView& r) {
@@ -427,7 +511,7 @@ void QueueView::DrawRow(RowView& r) {
             ? ArtCache::Get().Find(r.data.handle, static_cast<int>(std::ceil(kRowCover * m_scale)), &art)
             : ArtCache::State::Missing;
     m_dc->SetDpi(96.0f * m_scale, 96.0f * m_scale);
-    host.Draw(r.surface, m_scale, m_dc.get(), [&](ID2D1DeviceContext* dc) {
+    const bool drawn = host.Draw(r.surface, m_scale, m_dc.get(), [&](ID2D1DeviceContext* dc) {
         com_ptr<ID2D1Bitmap> bitmap;
         if (art) dc->CreateBitmapFromWicBitmap(art.get(), nullptr, bitmap.put());
         const float cy = kRowH / 2;
@@ -448,8 +532,8 @@ void QueueView::DrawRow(RowView& r) {
                 dc->DrawLine({x0, cy + k * 5.0f}, {x0 + kHandleW, cy + k * 5.0f}, ink.get(), 1.4f);
         }
     });
-    r.drawn = true;
-    r.coverDrawn = state != ArtCache::State::Pending;
+    r.drawn = drawn; // not drawn: the host clears it, and the row is drawn again
+    r.coverDrawn = drawn && state != ArtCache::State::Pending;
 }
 
 void QueueView::DrawChrome() {
@@ -481,12 +565,41 @@ void QueueView::DrawChrome() {
         pane::DrawTextLine(dc, Tr(L"Nothing up next"), 15, DWRITE_FONT_WEIGHT_NORMAL, {kContentX, 18},
                            W - 2 * kContentX, pane::White(dc, 0.45f).get());
     });
-    // Capsules: translucent when off, light with a dark glyph when on (Apple Music).
+    if (m_repeatCycle > 0) {
+        // The repeat glyph and "Repeats N songs", centred together in grey (Apple Music).
+        paint(m_repeatFooter, W, kFooterH, [&](ID2D1DeviceContext* dc) {
+            const std::wstring text = Tr(L"Repeats") + L" " + std::to_wstring(m_repeatCycle) +
+                                      Tr(m_repeatCycle == 1 ? L" song" : L" songs");
+            auto* f = gfx::CompositionHost::Get().DWrite();
+            auto format = pane::Format(16, DWRITE_FONT_WEIGHT_SEMI_BOLD);
+            format->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+            com_ptr<IDWriteTextLayout> layout;
+            if (FAILED(f->CreateTextLayout(text.c_str(), static_cast<UINT32>(text.size()), format.get(), W, kFooterH,
+                                           layout.put())))
+                return;
+            DWRITE_TEXT_METRICS tm{};
+            layout->GetMetrics(&tm);
+            constexpr float iconW = 20, gap = 8;
+            const float x0 = std::round((W - iconW - gap - tm.width) / 2);
+            auto ink = pane::White(dc, 0.55f);
+            pane::DrawIcon(dc, pane::icon::kRepeatAll, 16, {x0 + iconW / 2, kFooterH / 2}, ink.get(),
+                           DWRITE_FONT_WEIGHT_BOLD);
+            dc->DrawTextLayout({x0 + iconW + gap, std::round((kFooterH - tm.height) / 2)}, layout.get(), ink.get());
+        });
+    }
+    // Capsules: translucent when off, light with a dark glyph when on (Apple Music), both on
+    // glass; the light one a little clearer than Apple's 78 % since it lies on glass.
     const float capW = (W - 2 * kContentX - kCapsuleGap) / 2;
+    {
+        const int w = std::max(1, static_cast<int>(std::ceil(capW * m_scale))),
+                  h = std::max(1, static_cast<int>(std::ceil(kCapsuleH * m_scale)));
+        m_shuffleGlass.Paint(w, h, m_scale);
+        m_repeatGlass.Paint(w, h, m_scale);
+    }
     auto capsule = [&](const wuc::SpriteVisual& visual, bool on,
                        const std::function<void(ID2D1DeviceContext*, ID2D1Brush*)>& glyph) {
         paint(visual, capW, kCapsuleH, [&](ID2D1DeviceContext* dc) {
-            pane::DrawCapsule(dc, {0, 0, capW, kCapsuleH}, pane::White(dc, on ? 0.78f : 0.14f).get());
+            pane::DrawCapsule(dc, {0, 0, capW, kCapsuleH}, pane::White(dc, on ? 0.66f : 0.14f).get());
             com_ptr<ID2D1SolidColorBrush> ink;
             dc->CreateSolidColorBrush(
                 on ? D2D1::ColorF(0.18f, 0.16f, 0.18f, 0.9f) : D2D1::ColorF(1, 1, 1, 0.9f), ink.put());
@@ -556,10 +669,20 @@ void QueueView::Render() {
     place(m_historyTitle, 0, m_historyTop, m_historyCount > 0);
     const float W = (m_bounds.right - m_bounds.left) / m_scale;
     const float capW = (W - 2 * kContentX - kCapsuleGap) / 2;
-    place(m_shuffle, kContentX, m_capsulesTop, true);
-    place(m_repeat, kContentX + capW + kCapsuleGap, m_capsulesTop, true);
+    place(m_shuffle, kContentX, m_capsulesTop, !m_bare);
+    place(m_repeat, kContentX + capW + kCapsuleGap, m_capsulesTop, !m_bare);
+    for (auto [glass, x] : {std::pair{&m_shuffleGlass, kContentX}, std::pair{&m_repeatGlass, kContentX + capW + kCapsuleGap}}) {
+        const auto& v = glass->Visual();
+        v.IsVisible(!m_bare);
+        if (!m_bare) v.Offset(float3{std::round(x * s), std::round((m_capsulesTop - scroll) * s), 0});
+    }
     place(m_upNextTitle, 0, m_upNextTop, true);
-    place(m_empty, 0, m_upNextTop + kUpNextH, m_rows.size() == m_historyCount);
+    place(m_empty, 0, m_upNextTop + kUpNextH, m_rows.size() == m_historyCount && m_repeatCycle == 0);
+    // Under the last row as it moves now, so the line rides along with the rows' springs.
+    float footerY = m_footerTop;
+    for (size_t i = m_historyCount; i < m_rows.size(); ++i)
+        footerY = std::max(footerY, m_rows[i]->y.Position() + kRowH);
+    place(m_repeatFooter, 0, footerY, m_repeatCycle > 0);
     for (auto& r : m_retiringRows)
         RenderRow(*r);
     for (auto& r : m_rows)
@@ -570,6 +693,30 @@ void QueueView::Render() {
         if (r.root) {
             m_layer.Children().Remove(r.root);
             m_layer.Children().InsertAtTop(r.root);
+        }
+    }
+    // The glass under the plate showing most: the lifted row's, else the hovered one's.
+    {
+        const RowView* best = nullptr;
+        float shownPlate = 0;
+        for (const auto& r : m_rows) {
+            if (!r->root) continue;
+            const bool lifted = m_reorder >= 0 && m_rows[static_cast<size_t>(m_reorder)].get() == r.get();
+            const float a = (lifted ? 1.0f : r->hover) * r->opacity;
+            if (a > shownPlate) {
+                shownPlate = a;
+                best = r.get();
+            }
+        }
+        const float viewH = (m_bounds.bottom - m_bounds.top) / s;
+        const float shown = best ? best->y.Position() - scroll : 0;
+        if (!best || shown + kRowH < 0 || shown > viewH) {
+            m_plateGlass.Hide();
+        } else {
+            const bool lifted = m_reorder >= 0 && m_rows[static_cast<size_t>(m_reorder)].get() == best;
+            const float pw = (W - 2 * pane::kSideMargin) * s, ph = kRowH * s;
+            m_plateGlass.Show(float3{pane::kSideMargin * s, std::round(shown * s), 0}, float2{pw, ph}, kPlateRadius * s,
+                              lifted ? 1.03f : 1.0f, float2{W * s / 2 - pane::kSideMargin * s, ph / 2}, shownPlate, s);
         }
     }
     m_coversDirty = false;
@@ -608,16 +755,17 @@ bool QueueView::Tick(float dt) {
     }
     m_scroll.Step(dt);
     if (!m_scroll.Moving()) m_followingPlayback = false;
+    RefreshHover();
     for (size_t i = 0; i < m_rows.size(); ++i) {
         auto& r = *m_rows[i];
         r.y.Step(dt);
-        r.opacity = Approach(r.opacity, 1.0f, dt, kExitSeconds);
+        r.opacity = std::min(1.0f, r.opacity + dt / kFadeSeconds);
         const bool hovered = m_hover.row == static_cast<int>(i) && m_reorder < 0 && !m_dragging;
         r.hover = Approach(r.hover, hovered ? 1.0f : 0.0f, dt, 0.25f);
     }
     for (auto& r : m_retiringRows) {
         r->y.Step(dt);
-        r->opacity = Approach(r->opacity, 0.0f, dt, kExitSeconds);
+        r->opacity = std::max(0.0f, r->opacity - dt / kFadeSeconds);
     }
     std::erase_if(m_retiringRows, [this](auto& r) {
         if (r->opacity > 0) return false;
@@ -643,7 +791,7 @@ QueueView::Hit QueueView::HitAt(POINT pt) const {
         hit.part = Part::Clear;
         return hit;
     }
-    if (y >= m_capsulesTop && y < m_capsulesTop + kCapsuleH) {
+    if (!m_bare && y >= m_capsulesTop && y < m_capsulesTop + kCapsuleH) {
         const float capW = (W - 2 * kContentX - kCapsuleGap) / 2;
         if (x >= kContentX && x < kContentX + capW)
             hit.part = Part::Shuffle;
@@ -670,7 +818,7 @@ void QueueView::OnMouseMove(POINT pt) {
         const size_t count = m_rows.size() - m_historyCount;
         const float first = m_upNextTop + kUpNextH;
         m_reorderTo = std::clamp(static_cast<int>(std::lround((m_reorderY - first) / kRowH)), 0,
-                                 static_cast<int>(count) - 1);
+                                 std::max(0, static_cast<int>(count) - 1));
         Layout();
         StartFrames();
         return;
@@ -688,15 +836,29 @@ void QueueView::OnMouseMove(POINT pt) {
         StartFrames();
         return;
     }
+    m_pointer = pt;
+    m_pointerInside = true;
     const Hit hit = HitAt(pt);
     if (hit.row != m_hover.row) StartFrames();
     m_hover = hit;
 }
 
 void QueueView::OnMouseLeave() {
+    m_pointerInside = false;
     if (m_dragging || m_reorder >= 0) return;
     if (m_hover.row >= 0) StartFrames();
     m_hover = {};
+}
+
+// The row under a resting pointer, after the list moved or was refreshed under it (a refresh
+// replaces the rows and used to drop the highlight while the pointer stayed on it).
+void QueueView::RefreshHover() {
+    if (!m_pointerInside || m_dragging || m_pending || m_reorder >= 0) return;
+    const Hit hit = HitAt(m_pointer);
+    if (hit.row != m_hover.row || hit.part != m_hover.part) {
+        m_hover = hit;
+        if (m_visible) StartFrames();
+    }
 }
 
 void QueueView::OnLButtonDown(POINT pt) {
@@ -724,8 +886,9 @@ void QueueView::OnLButtonUp(POINT pt) {
     m_pending = false;
     if (m_reorder >= 0) {
         const int from = m_reorder - static_cast<int>(m_historyCount), to = m_reorderTo;
+        const int count = static_cast<int>(m_rows.size() - m_historyCount);
         m_reorder = -1;
-        if (to != from && to >= 0) {
+        if (to != from && to >= 0 && from >= 0 && from < count && to < count) {
             std::vector<size_t> slots;
             for (size_t u = m_historyCount; u < m_rows.size(); ++u)
                 slots.push_back(m_rows[u]->data.playlistIndex);
@@ -743,6 +906,7 @@ void QueueView::OnLButtonUp(POINT pt) {
             if (onReorder) onReorder(slots, items);
         }
         Layout();
+        KeepScrollInRange();
         StartFrames();
         return;
     }

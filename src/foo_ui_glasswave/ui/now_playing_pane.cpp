@@ -3,6 +3,7 @@
 #include "ui/now_playing_pane.h"
 
 #include "gfx/composition_host.h"
+#include "ui/aero_light.h"
 #include "ui/i18n.h"
 #include "ui/pane_common.h"
 
@@ -21,7 +22,8 @@ namespace {
 // Segmented control: as wide and tall as the queue's capsules, a light thumb inside the track.
 constexpr float kTrackX = 20, kTrackH = 34; // DIP
 constexpr float kThumbInset = 3;            // DIP
-constexpr float kTrackAlpha = 0.14f, kThumbAlpha = 0.78f;
+// The thumb a little clearer since it lies on glass (owner, 2026-11-13: from 78 %).
+constexpr float kTrackAlpha = 0.14f, kThumbAlpha = 0.66f;
 constexpr SpringParams kSwitchSpring{1, 260, 30};
 constexpr float kLyricsRise = 24, kQueueRise = 48; // DIP the two sides move while switching
 
@@ -78,6 +80,10 @@ NowPlayingPane::NowPlayingPane(const wuc::ContainerVisual& parent)
     m_tint.Brush(comp.CreateColorBrush(winrt::Windows::UI::ColorHelper::FromArgb(
         static_cast<uint8_t>(std::lround(pane::kPaneTint * 255)), 0, 0, 0)));
     m_root.Children().InsertAtBottom(m_tint);
+    m_light = std::make_unique<AeroLight>(m_root, AeroLight::Kind::Veil, false);
+    m_root.Children().Remove(m_light->Root());
+    m_root.Children().InsertAbove(m_light->Root(), m_tint);
+    m_light->Root().Opacity(0.85f);
     m_header = comp.CreateSpriteVisual();
     m_root.Children().InsertAtTop(m_header);
     m_bar = comp.CreateContainerVisual();
@@ -86,6 +92,8 @@ NowPlayingPane::NowPlayingPane(const wuc::ContainerVisual& parent)
         *visual = comp.CreateSpriteVisual();
         m_bar.Children().InsertAtTop(*visual);
     }
+    m_trackGlass.Create(m_bar, m_track);
+    m_thumbGlass.Create(m_bar, m_thumb);
     for (size_t i = 0; i < 2; ++i) {
         m_segLight[i] = comp.CreateSpriteVisual();
         m_segDark[i] = comp.CreateSpriteVisual();
@@ -115,13 +123,28 @@ void NowPlayingPane::StartFrames() {
     if (onFrames) onFrames();
 }
 
-void NowPlayingPane::SetEmbedded(bool embedded) {
-    if (embedded == m_embedded) return;
+void NowPlayingPane::SetEmbedded(bool embedded, bool bare) {
+    bare = bare && embedded;
+    if (embedded == m_embedded && bare == m_bare) return;
     m_embedded = embedded;
+    m_bare = bare;
     m_tint.IsVisible(!embedded);
     m_bar.IsVisible(!embedded);
+    UpdateLight();
+    m_header.IsVisible(!bare);
+    m_queue.SetBare(bare);
+    m_painted = {}; // the header and the switch change with the host: paint them anew
     const RECT bounds = std::exchange(m_bounds, RECT{});
     SetBounds(bounds, m_scale); // the lyrics and the queue take the switch's place
+}
+
+void NowPlayingPane::RestyleLyrics() { m_lyrics.Restyle(); }
+
+float NowPlayingPane::MinHeight() const {
+    const float header = m_bare ? 0.0f : pane::kHeaderHeight;
+    const float bar = m_embedded ? 0.0f : pane::kBottomBar;
+    const float body = m_mode == Mode::Lyrics ? m_lyrics.MinHeight() : 120.0f;
+    return header + bar + body;
 }
 
 RECT NowPlayingPane::BarRect() const {
@@ -130,7 +153,7 @@ RECT NowPlayingPane::BarRect() const {
 }
 
 RECT NowPlayingPane::LyricsRect() const {
-    const LONG header = static_cast<LONG>(std::lround(pane::kHeaderHeight * m_scale));
+    const LONG header = m_bare ? 0 : static_cast<LONG>(std::lround(pane::kHeaderHeight * m_scale));
     const RECT bar = BarRect();
     return {m_bounds.left, std::min(bar.top, m_bounds.top + header), m_bounds.right, bar.top};
 }
@@ -140,14 +163,14 @@ RECT NowPlayingPane::QueueRect() const {
 }
 
 void NowPlayingPane::SetBounds(const RECT& px, float scale) {
-    const bool sizeChanged = px.right - px.left != m_bounds.right - m_bounds.left ||
-                             px.bottom - px.top != m_bounds.bottom - m_bounds.top || scale != m_scale;
     const bool positionChanged = px.left != m_bounds.left || px.top != m_bounds.top;
     m_bounds = px;
     m_scale = scale;
     m_lyrics.SetBounds(LyricsRect(), scale);
     m_queue.SetBounds(QueueRect(), scale);
-    if (sizeChanged)
+    // Against what was really painted, not against the last bounds: a pane returned from the
+    // player kept the player's header and switch when only the position looked new.
+    if (PartsStale())
         LayoutParts();
     else if (positionChanged)
         LayoutGeometry();
@@ -159,6 +182,12 @@ void NowPlayingPane::LayoutGeometry() {
     const float h = static_cast<float>(std::max<LONG>(0, m_bounds.bottom - m_bounds.top));
     m_tint.Offset(float3{static_cast<float>(m_bounds.left), static_cast<float>(m_bounds.top), 0});
     m_tint.Size(float2{w, h});
+    m_light->Root().Offset(float3{static_cast<float>(m_bounds.left), static_cast<float>(m_bounds.top), 0});
+    m_light->SetSize({static_cast<LONG>(w), static_cast<LONG>(h)});
+    // Mirrored left to right (owner, 2026-11-13): the shafts lean the other way here.
+    m_light->Root().CenterPoint(float3{w / 2, 0, 0});
+    m_light->Root().Scale(float3{-1, 1, 1});
+    UpdateLight();
     const RECT bar = BarRect();
     m_bar.Offset(float3{static_cast<float>(bar.left), static_cast<float>(bar.top), 0});
     m_bar.Size(float2{w, static_cast<float>(bar.bottom - bar.top)});
@@ -168,6 +197,7 @@ void NowPlayingPane::LayoutGeometry() {
     m_track.Offset(
         float3{static_cast<float>(track.left - bar.left), static_cast<float>(track.top - bar.top), 0});
     m_track.Size(float2{tw, th});
+    m_trackGlass.Visual().Offset(m_track.Offset());
     const float inset = kThumbInset * m_scale, segW = tw / 2;
     m_thumb.Size(float2{segW - 2 * inset, th - 2 * inset});
     for (size_t i = 0; i < 2; ++i)
@@ -178,27 +208,45 @@ void NowPlayingPane::LayoutGeometry() {
 
 void NowPlayingPane::LayoutParts() {
     LayoutGeometry();
-    PaintHeader();
+    const bool header = PaintHeader();
     PaintBar();
+    if (header) {
+        m_painted = {m_bounds.right - m_bounds.left, m_bounds.bottom - m_bounds.top};
+        m_paintedScale = m_scale;
+        m_paintRetries = 0;
+    } else {
+        m_painted = {};
+        m_paintedScale = 0;
+        // Tick paints again; a device that keeps failing is not polled forever (the next
+        // layout or track change tries again).
+        if (++m_paintRetries <= 30) StartFrames();
+    }
 }
 
-void NowPlayingPane::PaintHeader() {
+bool NowPlayingPane::PaintHeader() {
     auto& host = gfx::CompositionHost::Get();
     const int w = std::max<int>(1, m_bounds.right - m_bounds.left);
     const int h = static_cast<int>(std::lround(pane::kHeaderHeight * m_scale));
     m_header.Size(float2{static_cast<float>(w), static_cast<float>(h)});
     auto surface = host.CreateSurface(w, h);
     m_dc->SetDpi(96.0f * m_scale, 96.0f * m_scale);
-    host.Draw(surface, m_scale, m_dc.get(), [&](ID2D1DeviceContext* dc) {
+    const bool drawn = host.Draw(surface, m_scale, m_dc.get(), [&](ID2D1DeviceContext* dc) {
         com_ptr<ID2D1Bitmap> cover;
         if (m_art) dc->CreateBitmapFromWicBitmap(m_art.get(), nullptr, cover.put());
         pane::DrawHeader(dc, w / m_scale, cover.get(), m_title, m_artist);
     });
+    if (!drawn) {
+        // Never show a surface that was not drawn (it holds other surfaces' pixels), nor keep
+        // one painted for another size: an empty header until the next frame paints it.
+        m_header.Brush(nullptr);
+        return false;
+    }
     auto brush = host.Compositor().CreateSurfaceBrush(surface);
     brush.Stretch(wuc::CompositionStretch::None);
     brush.HorizontalAlignmentRatio(0);
     brush.VerticalAlignmentRatio(0);
     m_header.Brush(brush);
+    return true;
 }
 
 void NowPlayingPane::PaintBar() {
@@ -216,6 +264,8 @@ void NowPlayingPane::PaintBar() {
     host.Repaint(m_thumb, thumbW, thumbH, m_scale, [&](ID2D1DeviceContext* dc) {
         pane::DrawCapsule(dc, {0, 0, thumbW / m_scale, thumbH / m_scale}, pane::White(dc, kThumbAlpha).get());
     });
+    m_trackGlass.Paint(trackW, h, m_scale);
+    m_thumbGlass.Paint(thumbW, thumbH, m_scale);
     for (size_t i = 0; i < 2; ++i) {
         const std::wstring label = Tr(i == 0 ? L"Lyrics" : L"Up Next");
         for (const bool dark : {false, true}) {
@@ -261,7 +311,15 @@ void NowPlayingPane::SetVisible(bool visible) {
         }
     }
     ApplyTransition();
+    UpdateLight();
     if (visible) StartFrames();
+}
+
+// The light moves while the sidebar shows; lent to the player (embedded) it is hidden and still.
+void NowPlayingPane::UpdateLight() {
+    const bool on = m_visible && !m_embedded;
+    m_light->Root().IsVisible(on);
+    m_light->SetRunning(on);
 }
 
 void NowPlayingPane::SetMode(Mode mode) {
@@ -270,6 +328,9 @@ void NowPlayingPane::SetMode(Mode mode) {
         m_queue.ScrollToCard();
     }
     m_mode = mode;
+    // A hidden pane changes sides at once: opening on the queue must not cross-fade from
+    // lyrics that were never laid out.
+    if (!m_visible) m_t.Snap(mode == Mode::Queue ? 1.0f : 0.0f);
     m_t.SetTarget(mode == Mode::Queue ? 1.0f : 0.0f);
     m_lastFrame = Clock::now();
     ApplyTransition();
@@ -284,7 +345,10 @@ void NowPlayingPane::SetTrack(const std::wstring& title, const std::wstring& art
     m_artist = artist;
     m_art = art;
     m_lyrics.SetHasTrack(!title.empty());
-    if (m_visible) PaintHeader();
+    if (m_visible && !PaintHeader()) {
+        m_painted = {};
+        StartFrames();
+    }
 }
 
 // Lyrics fade out and rise a little while the queue fades in and rises into place; the header
@@ -301,7 +365,9 @@ void NowPlayingPane::ApplyTransition() {
     m_lyrics.Root().Offset(float3{0, std::round(-t * kLyricsRise * s), 0});
     m_queue.Root().Opacity(queueAlpha);
     m_queue.Root().Offset(float3{0, std::round((1 - t) * kQueueRise * s), 0});
-    const float cardY = qr.top + m_queue.CardTop() * s + (1 - t) * kQueueRise * s;
+    // The header does not ride the queue's rise: switching sides it stays where it is (owner,
+    // 2026-11-13); in the queue it follows the song card as the list scrolls.
+    const float cardY = qr.top + m_queue.CardTop() * s;
     const float headerY = static_cast<float>(m_bounds.top) * (1 - t) + cardY * t;
     m_header.Offset(float3{static_cast<float>(m_bounds.left), std::round(headerY), 0});
     // The thumb slides with the switch; each segment's dark glyph shows where the thumb is.
@@ -309,6 +375,7 @@ void NowPlayingPane::ApplyTransition() {
     const float segW = (track.right - track.left) / 2.0f, inset = kThumbInset * s;
     m_thumb.Offset(float3{std::round(track.left - bar.left + inset + t * segW),
                           std::round(track.top - bar.top + inset), 0});
+    m_thumbGlass.Visual().Offset(m_thumb.Offset());
     m_segDark[0].Opacity(1 - t);
     m_segLight[0].Opacity(t);
     m_segDark[1].Opacity(t);
@@ -321,6 +388,7 @@ bool NowPlayingPane::Tick() {
     const float dt = std::clamp(std::chrono::duration<float>(now - m_lastFrame).count(), 0.0f, 0.1f);
     m_lastFrame = now;
     m_t.Step(dt);
+    if (PartsStale()) LayoutParts(); // a paint that failed earlier (asks for frames itself)
     bool more = m_t.Moving();
     const float t = m_t.Position();
     if (t < 0.999f) more |= m_lyrics.Tick();

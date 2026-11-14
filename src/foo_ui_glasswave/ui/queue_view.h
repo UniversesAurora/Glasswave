@@ -1,5 +1,6 @@
 #pragma once
 
+#include "ui/pane_common.h"
 #include "ui/spring.h"
 
 // The queue side of the now-playing pane, after Apple Music's "Playing Next" sheet: one
@@ -35,6 +36,10 @@ class QueueView {
     void SetUpNext(std::vector<Row> rows, bool playbackChanged = false);
     void SetHistory(std::vector<Row> rows);
     void SetShuffleRepeat(bool shuffle, int repeat); // repeat: 0 off, 1 all, 2 one
+    // Repeat-all: how many songs the next round replays, shown under the last row (0: none).
+    void SetRepeatCycle(size_t songs);
+    // Bare: no place for the song card and no shuffle / repeat capsules (the host shows both).
+    void SetBare(bool bare);
     void ScrollToCard(bool animate = false);         // the current song's card at the top
     float CardTop() const;                           // DIP from the view's top, as shown now
 
@@ -83,6 +88,10 @@ class QueueView {
     void SetRows(std::vector<Row> rows, bool history, bool playbackChanged = false);
     Hit HitAt(POINT pt) const;
     float MaxScroll() const;
+    void KeepScrollInRange();
+    void RefreshHover();
+    POINT m_pointer{};          // the last pointer position over the queue
+    bool m_pointerInside = false;
     float ShownScroll() const; // with the rubber band applied
     void StartFrames();
 
@@ -92,7 +101,13 @@ class QueueView {
     winrt::Windows::UI::Composition::CompositionDrawingSurface m_maskSurface{nullptr};
     winrt::Windows::UI::Composition::SpriteVisual m_historyTitle{nullptr}, m_upNextTitle{nullptr},
         m_empty{nullptr};
-    winrt::Windows::UI::Composition::SpriteVisual m_shuffle{nullptr}, m_repeat{nullptr};
+    winrt::Windows::UI::Composition::SpriteVisual m_shuffle{nullptr}, m_repeat{nullptr}, m_repeatFooter{nullptr};
+    size_t m_repeatCycle = 0;
+    float m_footerTop = 0;
+    // The material under the capsules and the hovered row's plate. Outside m_layer: a layer's
+    // content cannot see what lies behind the pane.
+    pane::CapsuleGlass m_shuffleGlass, m_repeatGlass;
+    pane::PlateGlass m_plateGlass;
     winrt::com_ptr<ID2D1DeviceContext> m_dc;
     RECT m_bounds{};
     float m_scale = 1.0f;
@@ -108,6 +123,7 @@ class QueueView {
 
     // Content positions (DIP from the content top).
     float m_historyTop = 0, m_cardTop = 0, m_capsulesTop = 0, m_upNextTop = 0, m_contentH = 0;
+    bool m_bare = false;
 
     // Scrolling: the content offset (DIP); beyond the ends it is shown rubber-banded.
     Spring m_scroll{0};

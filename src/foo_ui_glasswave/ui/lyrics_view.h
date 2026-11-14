@@ -1,6 +1,7 @@
 #pragma once
 
 #include "lyrics/lyrics_service.h"
+#include "ui/pane_common.h"
 #include "ui/spring.h"
 
 // The lyrics in the now-playing pane: Apple Music's lyrics view (iOS 17+/macOS 14+) on the window's glass.
@@ -28,6 +29,11 @@ public:
     LyricsView& operator=(const LyricsView&) = delete;
 
     void SetBounds(const RECT& px, float scale);
+    // DIP: the least height that still shows the tallest line whole (translation and wrapped
+    // lines included); a window keeps its lyrics at least this high.
+    float MinHeight() const;
+    // Lays the lines out again after the lyrics' size, fonts or translation side changed.
+    void Restyle();
     void SetVisible(bool visible);
     bool Visible() const { return m_visible; }
 
@@ -79,6 +85,7 @@ private:
     void StartFrames();
     float ContentTop() const;  // DIP: top of the lyrics (0: the view starts below the pane header)
     float AnchorY() const;     // DIP: where the focused line's top sits
+    float TopSpace(float lineH) const; // DIP above a focused line this high (AnchorY's rule)
     float FontSize() const;
     float ImagePad() const;    // DIP around a line's text in its surface (blur, float, glow)
 
@@ -86,6 +93,7 @@ private:
     winrt::Windows::UI::Composition::ContainerVisual m_viewport{nullptr}, m_root{nullptr};
     winrt::Windows::UI::Composition::SpriteVisual m_message{nullptr};
     winrt::Windows::UI::Composition::LayerVisual m_layer{nullptr};  // the lines, with the edge fade
+    pane::PlateGlass m_plateGlass; // under the hovered line's plate, outside the layer to see behind
     winrt::Windows::UI::Composition::CompositionDrawingSurface m_maskSurface{nullptr};
     winrt::Windows::UI::Composition::CompositionEffectFactory m_blurFactory{nullptr};
     winrt::Windows::UI::Composition::ContainerVisual m_dots{nullptr};
@@ -125,6 +133,7 @@ private:
     float m_velocity = 0;      // DIP / s, drag inertia
     std::vector<std::pair<std::chrono::steady_clock::time_point, float>> m_dragTrail;
     bool m_hoverInside = false;
+    POINT m_pointer{}; // the last pointer position inside: the hovered line is the one under it
 };
 
 }  // namespace glasswave::ui

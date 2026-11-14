@@ -137,15 +137,18 @@ public:
     wuc::CompositionDrawingSurface CreateSurface(int widthPx, int heightPx);
 
     // Paint a surface with D2D. The callback works in DIP (DPI is set from `scale`);
-    // the surface is cleared to transparent first.
-    void Draw(const wuc::CompositionDrawingSurface& surface, float scale,
+    // the surface is cleared to transparent first. False when the draw failed: the surface is
+    // then cleared on its own (or left alone if even that fails) and the failure is reported on
+    // the console. A new or resized surface holds whatever its pooled allocation held before -
+    // other visuals' old pixels - so a draw that fails must never leave it as it is.
+    bool Draw(const wuc::CompositionDrawingSurface& surface, float scale,
               const std::function<void(ID2D1DeviceContext*)>& paint);
 
     // A device context of our own on the composition D2D device. Effects and command lists
     // created with it stay usable across frames, which per-frame animated views need.
     winrt::com_ptr<ID2D1DeviceContext> CreateDeviceContext();
     // Like Draw, painting through `dc` (from CreateDeviceContext).
-    void Draw(const wuc::CompositionDrawingSurface& surface, float scale, ID2D1DeviceContext* dc,
+    bool Draw(const wuc::CompositionDrawingSurface& surface, float scale, ID2D1DeviceContext* dc,
               const std::function<void(ID2D1DeviceContext*)>& paint);
 
     // Convenience: a SpriteVisual whose brush is a freshly painted surface of the same size.
@@ -167,6 +170,21 @@ public:
 private:
     CompositionHost();
     void CreateDevices();
+    bool ClearAfterFailure(const wuc::CompositionDrawingSurface& surface);
+    void ReportFailure(const char* step, HRESULT hr, int widthPx, int heightPx);
+    // A surface whose BeginDraw failed cannot be cleared there and then: it waits here and is
+    // cleared as soon as the UI thread is free, unless a later draw of it succeeded first.
+    void QueueUnclean(const wuc::CompositionDrawingSurface& surface);
+    void Drew(const wuc::CompositionDrawingSurface& surface);
+    void DrainUnclean();
+    bool OnUiThread(int widthPx, int heightPx);
+
+    int m_drawDepth = 0; // a draw begun inside another one's paint callback is a bug
+    int m_failures = 0;  // reported so far (the console gets the first few)
+    DWORD m_uiThread = GetCurrentThreadId();
+    std::vector<wuc::CompositionDrawingSurface> m_unclean;
+    bool m_drainQueued = false;
+    int m_uncleanRetries = 0;
 
     winrt::Windows::System::DispatcherQueueController m_queueController{nullptr};
     wuc::Compositor m_compositor{nullptr};

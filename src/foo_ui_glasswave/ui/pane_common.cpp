@@ -4,6 +4,7 @@
 #include "win7/win7_resources.h"
 
 #include "gfx/composition_host.h"
+#include "gfx/effects.h"
 
 namespace glasswave::ui::pane {
 
@@ -165,6 +166,78 @@ void DrawHeader(ID2D1DeviceContext* dc, float width, ID2D1Bitmap* cover, const s
     const float mid = kHeaderHeight / 2;
     DrawTextLine(dc, title, 16, DWRITE_FONT_WEIGHT_SEMI_BOLD, {textX, mid - 22}, textW, White(dc, 0.95f).get());
     DrawTextLine(dc, artist, 14, DWRITE_FONT_WEIGHT_NORMAL, {textX, mid + 1}, textW, White(dc, 0.6f).get());
+}
+
+namespace {
+namespace wuc = winrt::Windows::UI::Composition;
+using winrt::Windows::Foundation::Numerics::float2;
+using winrt::Windows::Foundation::Numerics::float3;
+
+wuc::CompositionBrush Glass(float scale, const wuc::CompositionBrush& mask) {
+    return gfx::MakeGlassBrush(gfx::CompositionHost::Get().Compositor(), kGlassBlur * scale, kGlassSaturation,
+                               D2D1::ColorF(1, 1, 1, kGlassWhite), mask);
+}
+}  // namespace
+
+void CapsuleGlass::Create(const wuc::ContainerVisual& parent, const wuc::Visual& below) {
+    m_visual = gfx::CompositionHost::Get().Compositor().CreateSpriteVisual();
+    parent.Children().InsertBelow(m_visual, below);
+}
+
+void CapsuleGlass::Paint(int w, int h, float scale) {
+    if (!m_visual || w <= 0 || h <= 0) return;
+    auto& host = gfx::CompositionHost::Get();
+    auto surface = host.CreateSurface(w, h);
+    const bool drawn = host.Draw(surface, scale, [&](ID2D1DeviceContext* dc) {
+        DrawCapsule(dc, {0, 0, w / scale, h / scale}, White(dc, 1.0f).get());
+    });
+    m_visual.Size(float2{static_cast<float>(w), static_cast<float>(h)});
+    if (!drawn) { // an undrawn mask would show other surfaces' shapes: no glass rather than that
+        m_visual.Brush(nullptr);
+        m_scale = 0;
+        return;
+    }
+    auto maskBrush = host.Compositor().CreateSurfaceBrush(surface);
+    maskBrush.Stretch(wuc::CompositionStretch::Fill);
+    m_mask = surface;
+    m_scale = scale;
+    m_visual.Brush(Glass(scale, maskBrush));
+}
+
+void PlateGlass::Create(const wuc::ContainerVisual& parent, const wuc::Visual& below) {
+    auto& comp = gfx::CompositionHost::Get().Compositor();
+    m_visual = comp.CreateSpriteVisual();
+    m_shape = comp.CreateRoundedRectangleGeometry();
+    m_visual.Clip(comp.CreateGeometricClip(m_shape));
+    m_visual.IsVisible(false);
+    if (below)
+        parent.Children().InsertBelow(m_visual, below);
+    else
+        parent.Children().InsertAtBottom(m_visual);
+}
+
+void PlateGlass::Show(float3 offset, float2 size, float radius, float k, float2 centre, float opacity, float scale) {
+    if (!m_visual) return;
+    if (opacity < 0.01f || size.x <= 0 || size.y <= 0) {
+        Hide();
+        return;
+    }
+    if (m_scale != scale) {
+        m_scale = scale;
+        m_visual.Brush(Glass(scale, nullptr));
+    }
+    m_visual.IsVisible(true);
+    m_visual.Offset(offset);
+    m_visual.Size(size);
+    m_shape.Size(size);
+    m_shape.CornerRadius(float2{radius, radius});
+    m_visual.CenterPoint(float3{centre.x, centre.y, 0});
+    m_visual.Scale(float3{k, k, 1});
+    m_visual.Opacity(opacity);
+}
+
+void PlateGlass::Hide() {
+    if (m_visual) m_visual.IsVisible(false);
 }
 
 }  // namespace glasswave::ui::pane
