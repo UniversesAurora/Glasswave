@@ -14,8 +14,15 @@ namespace glasswave::ui {
 // The detail band above artist, album and playlist pages.
 struct DetailInfo {
     enum class Action { None, Follow, Save };
+    // One property of the page's subject, as Windows 7's details pane lists them: a label and
+    // its value, both ready to show. Pages list only what the source knows.
+    struct Fact {
+        std::wstring label, value;
+    };
     bool visible = false;
     std::wstring title, subtitle, brief;
+    std::wstring tagline;     // one line about the subject, above the brief
+    std::vector<Fact> facts;  // in order of importance; the band lays them in columns
     std::wstring artKey;
     metadb_handle_ptr artItem;
     bool artIsArtist = false;

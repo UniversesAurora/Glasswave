@@ -876,8 +876,47 @@ std::optional<stream::Album> ParseAlbum(const Object& item) {
     album.artists = ArtistRefs(item, json::GetString(*attributes, L"artistName"));
     album.description = TextAttribute(*attributes, L"editorialNotes");
     album.trackCount = json::GetInt(*attributes, L"trackCount", stream::kUnknownCount);
-    album.year = Year(json::GetString(*attributes, L"releaseDate"));
+    album.released = json::GetString(*attributes, L"releaseDate");
+    album.year = Year(album.released);
+    album.label = json::GetString(*attributes, L"recordLabel");
+    album.copyright = json::GetString(*attributes, L"copyright");
+    // "Music" is the root every genre list ends in; it says nothing.
+    for (auto& genre : StringArray(*attributes, L"genreNames"))
+        if (genre != L"Music" && genre != L"音乐") album.genres.push_back(std::move(genre));
+    // The catalog names an EP or a single by the suffix of its name.
+    const std::wstring_view name = album.name;
+    album.type = json::GetBool(*attributes, L"isCompilation") ? L"Compilation"
+                 : json::GetBool(*attributes, L"isSingle") || name.ends_with(L" - Single") ? L"Single"
+                 : name.ends_with(L" - EP")                                                ? L"EP"
+                                                                                           : L"";
+    for (const auto& trait : StringArray(*attributes, L"audioTraits")) {
+        if (trait == L"lossless") album.traits.push_back(L"Lossless");
+        else if (trait == L"hi-res-lossless") album.traits.push_back(L"Hi-Res Lossless");
+        else if (trait == L"atmos") album.traits.push_back(L"Dolby Atmos");
+    }
     return album;
+}
+
+// The profile in an artist's attributes (a catalog record read with kArtistProfileExtend has
+// them all; a list row has a summary at most). Fields already found are kept, except that a
+// longer biography replaces a shorter one.
+void ReadArtistProfile(const Object& attributes, stream::Artist& artist) {
+    // artistBio is the whole article the official client shows; plainEditorialNotes and
+    // editorialNotes hold a paragraph and a one-line tagline (2026-11-14, through the bridge).
+    std::wstring bio = json::GetString(attributes, L"artistBio");
+    if (bio.empty()) bio = TextAttribute(attributes, L"plainEditorialNotes");
+    if (bio.empty()) bio = TextAttribute(attributes, L"editorialNotes");
+    if (bio.size() > artist.bio.size()) artist.bio = std::move(bio);
+    if (artist.tagline.empty()) {
+        for (const wchar_t* notes : {L"plainEditorialNotes", L"editorialNotes"})
+            if (const auto value = json::GetObject(attributes, notes); value && artist.tagline.empty())
+                artist.tagline = json::GetString(*value, L"short");
+    }
+    if (artist.born.empty()) artist.born = json::GetString(attributes, L"bornOrFormed");
+    if (artist.origin.empty()) artist.origin = json::GetString(attributes, L"origin");
+    if (artist.kind == stream::ArtistKind::Unknown && attributes.HasKey(L"isGroup"))
+        artist.kind = json::GetBool(attributes, L"isGroup") ? stream::ArtistKind::Group : stream::ArtistKind::Person;
+    if (artist.genres.empty()) artist.genres = StringArray(attributes, L"genreNames");
 }
 
 std::optional<stream::Artist> ParseArtist(const Object& item) {
@@ -892,13 +931,11 @@ std::optional<stream::Artist> ParseArtist(const Object& item) {
     }
     artist.name = json::GetString(*attributes, L"name", L"Unknown");
     artist.avatarUrl = Artwork(item);
-    artist.bio = TextAttribute(*attributes, L"editorialNotes");
+    ReadArtistProfile(*attributes, artist);
     for (const auto& catalog : EmbeddedRelationship(item, L"catalog")) {
         if (artist.avatarUrl.empty()) artist.avatarUrl = Artwork(catalog);
-        if (artist.bio.empty())
-            if (const auto catalogAttributes = json::GetObject(catalog, L"attributes"))
-                artist.bio = TextAttribute(*catalogAttributes, L"editorialNotes");
         if (const auto catalogAttributes = json::GetObject(catalog, L"attributes")) {
+            ReadArtistProfile(*catalogAttributes, artist);
             if (artist.albumCount == stream::kUnknownCount)
                 artist.albumCount = json::GetInt(*catalogAttributes, L"albumCount", stream::kUnknownCount);
             if (artist.trackCount == stream::kUnknownCount)
@@ -1431,6 +1468,13 @@ stream::Album MergeAlbumRecord(const stream::Album& primary, const stream::Album
     merged.artists = MergeArtistRefs(std::move(merged.artists), fallback.artists);
     merged.trackCount = PreferCount(merged.trackCount, fallback.trackCount);
     if (merged.year == 0) merged.year = fallback.year;
+    merged.released = PreferText(merged.released, fallback.released);
+    merged.label = PreferText(merged.label, fallback.label);
+    merged.copyright = PreferText(merged.copyright, fallback.copyright);
+    merged.type = PreferText(merged.type, fallback.type);
+    if (merged.genres.empty()) merged.genres = fallback.genres;
+    if (merged.aliases.empty()) merged.aliases = fallback.aliases;
+    if (merged.traits.empty()) merged.traits = fallback.traits;
     return merged;
 }
 
@@ -1440,9 +1484,13 @@ stream::Artist MergeArtistRecord(const stream::Artist& primary, const stream::Ar
     if (merged.id.empty()) merged.id = fallback.id;
     merged.name = PreferText(merged.name, fallback.name);
     merged.avatarUrl = PreferText(merged.avatarUrl, fallback.avatarUrl);
-    merged.bio = PreferText(merged.bio, fallback.bio);
     merged.albumCount = PreferCount(merged.albumCount, fallback.albumCount);
     merged.trackCount = PreferCount(merged.trackCount, fallback.trackCount);
+    if (fallback.profile && !primary.profile) {
+        stream::CopyArtistProfile(fallback, merged); // a list row over the artist's own record
+    } else {
+        merged.bio = PreferText(merged.bio, fallback.bio);
+    }
     if (mergeFollowState || !merged.followKnown) {
         if (fallback.followKnown) {
             merged.followKnown = true;
@@ -1776,10 +1824,13 @@ std::wstring PlaylistPath(const std::wstring& id, const std::wstring& storefront
     return path;
 }
 
+// The album with its tracks. Audio traits (lossless, Atmos) come only from the web API
+// surface, which the bridge picks for requests extending inFavorites (checked 2026-11-14).
 std::wstring AlbumPath(const std::wstring& id, const std::wstring& storefront, bool library) {
     return library ? L"/v1/me/library/albums/" + Encode(id) +
                          L"?include=tracks,catalog,artists&include[library-songs]=catalog,artists,albums"
-                   : L"/v1/catalog/" + storefront + L"/albums/" + Encode(id) + L"?include=tracks";
+                   : L"/v1/catalog/" + storefront + L"/albums/" + Encode(id) +
+                         L"?include=tracks&extend=inFavorites,audioTraits";
 }
 
 std::wstring PlaylistTracksPath(const std::wstring& id, const std::wstring& storefront, bool library) {
@@ -1792,12 +1843,17 @@ std::wstring AlbumTracksPath(const std::wstring& id, const std::wstring& storefr
                    : L"/v1/catalog/" + storefront + L"/albums/" + Encode(id) + L"/tracks";
 }
 
-std::wstring ArtistPath(const std::wstring& id, const std::wstring& storefront, bool library) {
-    return library
-               ? L"/v1/me/library/artists?ids=" + Encode(id) +
-                     L"&include=catalog&extend[library-artists]=inFavorites&extend=inFavorites&platform=web"
-               : L"/v1/catalog/" + storefront + L"/artists/" + Encode(id) +
-                     L"?extend=inFavorites&platform=web";
+// The artist's own record; with `profile` also its whole profile (ReadArtistProfile), which
+// only the web API surface has (the bridge picks it for requests extending inFavorites).
+std::wstring ArtistPath(const std::wstring& id, const std::wstring& storefront, bool library,
+                        bool profile = false) {
+    const std::wstring extend = profile ? L"inFavorites,artistBio,bornOrFormed,origin,isGroup,plainEditorialNotes"
+                                        : L"inFavorites";
+    return library ? L"/v1/me/library/artists?ids=" + Encode(id) +
+                         L"&include=catalog&extend[library-artists]=inFavorites&extend=" + extend +
+                         L"&platform=web"
+                   : L"/v1/catalog/" + storefront + L"/artists/" + Encode(id) + L"?extend=" + extend +
+                         L"&platform=web";
 }
 
 struct PlaylistData {
@@ -1889,7 +1945,7 @@ std::optional<ArtistData> LoadArtist(const std::wstring& id, const std::wstring&
         catalogId = Catalog::Get().FindArtistCatalogId(id);
         if (!catalogId.empty()) {
             try {
-                item = FirstData(Apple(ArtistPath(catalogId, storefront, false), abort));
+                item = FirstData(Apple(ArtistPath(catalogId, storefront, false, true), abort));
                 if (item && !VerifiedArtistCatalogId(*item, catalogId)) item.reset();
             } catch (const exception_aborted&) {
                 throw;
@@ -1899,7 +1955,7 @@ std::optional<ArtistData> LoadArtist(const std::wstring& id, const std::wstring&
         }
     }
     if (!item) {
-        item = FirstData(Apple(ArtistPath(id, storefront, library), abort));
+        item = FirstData(Apple(ArtistPath(id, storefront, library, true), abort));
         if (library) catalogId = item ? CatalogIdFrom(*item).value_or(std::wstring()) : stream::Id();
     } else {
         // Present-catalog data under the stable library identity used by the caller.
@@ -1907,6 +1963,7 @@ std::optional<ArtistData> LoadArtist(const std::wstring& id, const std::wstring&
     if (!item) return std::nullopt;
     auto info = ParseArtist(*item);
     if (!info) return std::nullopt;
+    info->profile = true;
     if (library) info->id = id;
     if (!library) catalogId = id;
     return ArtistData{std::move(*info), catalogId};
@@ -3241,7 +3298,10 @@ void StreamProvider::ResolveArtistDisplayNames(std::vector<stream::Artist>& arti
             ids.push_back(pending[i].catalogId);
         try {
             const Object response = Apple(L"/v1/catalog/" + target->storefront + L"/artists?ids=" +
-                                              Encode(JoinedIds(ids)) + L"&platform=web&l=" + target->locale,
+                                              Encode(JoinedIds(ids)) +
+                                              // The regional biography is the whole article too.
+                                              L"&extend=inFavorites,artistBio,plainEditorialNotes"
+                                              L"&platform=web&l=" + target->locale,
                                           abort);
             std::unordered_map<stream::Id, stream::Artist> localized;
             if (const auto data = json::GetArray(response, L"data"))
@@ -4806,7 +4866,8 @@ void StreamProvider::FetchArtist(const stream::Id& artist, ArtistDone done) {
         std::lock_guard lock(m_mutex);
         preferenceEpoch = m_artistPreferenceEpoch;
     }
-    if (cached && cached->albumCount != stream::kUnknownCount && cached->followKnown &&
+    // A list row's summary is not the profile the artist page shows.
+    if (cached && cached->profile && cached->albumCount != stream::kUnknownCount && cached->followKnown &&
         (region == AppleMusicDisplayRegion::Account ||
          DisplayMetadata::Get().IsArtistComplete(region, sourceStorefront, artist))) {
         if (done) {
@@ -4889,7 +4950,7 @@ void StreamProvider::FetchArtistBio(const stream::Id& artist, TextDone done) {
     const auto region = GetAppleMusicDisplayRegion();
     const std::wstring sourceStorefront = DisplayMetadata::Get().SourceStorefront();
     if (const auto cached = Catalog::Get().FindArtist(artist);
-        cached && (region == AppleMusicDisplayRegion::Account ||
+        cached && cached->profile && (region == AppleMusicDisplayRegion::Account ||
                    DisplayMetadata::Get().IsArtistComplete(region, sourceStorefront, artist))) {
         if (done) done(cached->bio, {});
         return;

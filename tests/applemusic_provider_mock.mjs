@@ -1599,6 +1599,10 @@ function reply(res, status, body) {
     res.end(payload);
 }
 
+// What the provider asks of an artist page's own record (the whole profile) and of an album.
+const kArtistProfileExtend = 'inFavorites,artistBio,bornOrFormed,origin,isGroup,plainEditorialNotes';
+const kAlbumExtend = 'inFavorites,audioTraits';
+
 function expectRegionalParams(params, expected, message) {
     const actualKeys = [...params.keys()].sort();
     const expectedKeys = Object.keys(expected).sort();
@@ -1887,6 +1891,7 @@ async function dispatchApple(method, rawPath, body) {
             regional.sourceRegionalAlbumRequests++;
             expectRegionalParams(params, {
                 include: 'tracks',
+                extend: kAlbumExtend,
                 l: 'zh-Hans-CN',
             }, 'regional source catalog album request did not match');
             return [200, { data: [regionalDetailSourceAlbum()] }];
@@ -1894,8 +1899,8 @@ async function dispatchApple(method, rawPath, body) {
         if (path === `/v1/catalog/US/albums/${mutationAlbumCatalog}`) {
             isolation.mutationCatalogAlbumReads++;
             const actualKeys = [...params.keys()].sort().join('|');
-            if (actualKeys !== 'include|l' || params.get('include') !== 'tracks' ||
-                params.get('l') !== 'zh-Hans-CN') {
+            if (actualKeys !== 'extend|include|l' || params.get('include') !== 'tracks' ||
+                params.get('extend') !== kAlbumExtend || params.get('l') !== 'zh-Hans-CN') {
                 mockError(`mutation catalog album request did not match: ${params.toString()}`);
             }
             saveState();
@@ -1904,7 +1909,7 @@ async function dispatchApple(method, rawPath, body) {
         if (path === `/v1/catalog/US/artists/${regionalDetailArtistCatalog()}`) {
             regional.sourceRegionalArtistRequests++;
             expectRegionalParams(params, {
-                extend: 'inFavorites',
+                extend: kArtistProfileExtend,
                 platform: 'web',
                 l: 'zh-Hans-CN',
             }, 'regional source catalog artist request did not match');
@@ -1913,7 +1918,7 @@ async function dispatchApple(method, rawPath, body) {
         if (path === `/v1/catalog/US/artists/${regionalRetryArtistCatalog()}`) {
             regional.sourceRetryArtistRequests++;
             expectRegionalParams(params, {
-                extend: 'inFavorites',
+                extend: kArtistProfileExtend,
                 platform: 'web',
                 l: 'zh-Hans-CN',
             }, 'regional retry catalog artist request did not match');
@@ -1981,7 +1986,7 @@ async function dispatchApple(method, rawPath, body) {
         if (path === `/v1/catalog/US/artists/${regionalMissingArtistCatalog()}`) {
             regional.sourceCatalogArtistRequests++;
             expectRegionalParams(params, {
-                extend: 'inFavorites',
+                extend: kArtistProfileExtend,
                 platform: 'web',
                 l: 'zh-Hans-CN',
             }, 'regional source catalog artist request did not match');
@@ -2109,6 +2114,7 @@ async function dispatchApple(method, rawPath, body) {
             }
             expectRegionalParams(params, {
                 ids: ids.join(','),
+                extend: 'inFavorites,artistBio,plainEditorialNotes',
                 platform: 'web',
                 l: japan ? 'ja-JP' : 'zh-Hans-CN',
             }, `regional ${region} artist request did not match`);

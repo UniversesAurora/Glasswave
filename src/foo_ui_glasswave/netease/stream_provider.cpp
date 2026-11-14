@@ -67,9 +67,32 @@ std::vector<int64_t> Nums(const std::vector<Id>& ids) {
 
 int Year(int64_t publishTimeMs) {
     if (publishTimeMs <= 0) return 0;
-    const time_t seconds = static_cast<time_t>(publishTimeMs / 1000);
-    std::tm local{};
-    return localtime_s(&local, &seconds) == 0 ? local.tm_year + 1900 : 0;
+    const time_t seconds = static_cast<time_t>(publishTimeMs / 1000 + 8 * 3600); // see Date
+    std::tm day{};
+    return gmtime_s(&day, &seconds) == 0 ? day.tm_year + 1900 : 0;
+}
+
+// "YYYY-MM-DD" of a publish time. The service stores release days as midnight in China
+// (UTC+8), so the day is read there, not in the local time zone.
+std::wstring Date(int64_t publishTimeMs) {
+    if (publishTimeMs <= 0) return {};
+    const time_t seconds = static_cast<time_t>(publishTimeMs / 1000 + 8 * 3600);
+    std::tm day{};
+    if (gmtime_s(&day, &seconds) != 0) return {};
+    wchar_t text[16]{};
+    swprintf_s(text, L"%04d-%02d-%02d", day.tm_year + 1900, day.tm_mon + 1, day.tm_mday);
+    return text;
+}
+
+// The service's album type as a UI key ("专辑" -> Album); an unknown one is shown as written.
+std::wstring AlbumType(const Album& album) {
+    if (album.subType.find(L"现场") != std::wstring::npos) return L"Live album";
+    if (album.type == L"专辑") return L"Album";
+    if (album.type == L"EP/Single") return L"EP or single";
+    if (album.type == L"EP") return L"EP";
+    if (album.type == L"Single") return L"Single";
+    if (album.type == L"精选集" || album.type == L"合辑") return L"Compilation";
+    return album.type;
 }
 
 std::vector<stream::ArtistRef> Refs(const std::vector<ArtistRef>& refs) {
@@ -176,6 +199,10 @@ stream::Album ToAlbum(const Album& album) {
     out.description = album.description;
     out.trackCount = album.trackCount;
     out.year = Year(album.publishTime);
+    out.released = Date(album.publishTime);
+    out.label = album.company;
+    out.type = AlbumType(album);
+    out.aliases = album.aliases;
     return out;
 }
 
@@ -221,6 +248,23 @@ stream::Artist ToArtist(const Artist& artist) {
     out.trackCount = artist.songCount;
     out.followKnown = artist.followKnown;
     out.followed = artist.followed;
+    out.profile = artist.profile;
+    out.aliases = artist.aliases;
+    out.roles = artist.roles;
+    out.videoCount = artist.videoCount < 0 ? stream::kUnknownCount : artist.videoCount;
+    out.followerCount = artist.fans;
+    // The wiki's codes, as the service's artist lists name them. Untranslated UI keys.
+    switch (artist.area) {
+    case 7: out.area = L"Chinese"; break;
+    case 96: out.area = L"Western"; break;
+    case 8: out.area = L"Japanese"; break;
+    case 16: out.area = L"Korean"; break;
+    default: break;
+    }
+    out.kind = artist.type == 1   ? stream::ArtistKind::Male
+               : artist.type == 2 ? stream::ArtistKind::Female
+               : artist.type == 3 ? stream::ArtistKind::Group
+                                  : stream::ArtistKind::Unknown;
     // The followed-artists list is authoritative even when a profile lags behind a follow.
     for (const auto& saved : Ncm().FollowedArtists())
         if (saved.id == artist.id) {

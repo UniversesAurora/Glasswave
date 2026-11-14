@@ -865,6 +865,7 @@ void Session::FetchArtistDetail(int64_t artistId, ArtistDetailCallback done) {
             });
             return;
         }
+        m_client.GetArtistExtras(artistId, abort, artist);
         Catalog::Get().Put(artist);
         PostMain([done = std::move(done), artist] {
             if (done) done(artist, {});

@@ -54,7 +54,24 @@ struct Album {
     std::wstring description;
     int trackCount = kUnknownCount;
     int year = 0; // 0 = unknown
+    // Details, where the service has them; an empty field is not shown.
+    std::wstring released;  // release date, "YYYY-MM-DD" or as the service writes it
+    std::wstring label;     // record label or company
+    std::wstring copyright;
+    std::wstring type;      // untranslated UI key: Album, EP, Single, Compilation, Live album
+    std::vector<std::wstring> genres;
+    std::vector<std::wstring> aliases;
+    std::vector<std::wstring> traits; // untranslated UI keys: Lossless, Hi-Res Lossless, Dolby Atmos
     bool operator==(const Album&) const = default;
+};
+
+// What kind of act an artist is, where the service says.
+enum class ArtistKind {
+    Unknown,
+    Person, // a solo artist (the service does not say more)
+    Male,
+    Female,
+    Group,
 };
 
 struct Artist {
@@ -66,8 +83,37 @@ struct Artist {
     int trackCount = kUnknownCount;
     bool followKnown = false; // the provider reported the follow state
     bool followed = false;
+    // The profile, where the service has it; an empty or unknown field is not shown.
+    bool profile = false;      // read from the artist's own record (a list row has a summary)
+    std::wstring tagline;      // one line about the artist
+    std::wstring born;         // birth or formation date (or year), as the service writes it
+    std::wstring origin;       // where the artist comes from: a place
+    std::wstring area;         // the service's market or language area: an untranslated UI key
+    ArtistKind kind = ArtistKind::Unknown;
+    std::vector<std::wstring> genres;
+    std::vector<std::wstring> aliases; // other names (translations, romanisations)
+    std::vector<std::wstring> roles;   // what the artist does: singer, lyricist, producer...
+    int videoCount = kUnknownCount;
+    long long followerCount = -1; // -1: unknown
     bool operator==(const Artist&) const = default;
 };
+
+// Gives `to` the profile of `from` (bio included), for a list row standing in for a record
+// that had been read in full.
+inline void CopyArtistProfile(const Artist& from, Artist& to) {
+    to.profile = from.profile;
+    to.bio = from.bio;
+    to.tagline = from.tagline;
+    to.born = from.born;
+    to.origin = from.origin;
+    to.area = from.area;
+    to.kind = from.kind;
+    to.genres = from.genres;
+    to.aliases = from.aliases;
+    to.roles = from.roles;
+    to.videoCount = from.videoCount;
+    to.followerCount = from.followerCount;
+}
 
 enum class ArtistSectionRowKind {
     Tracks,

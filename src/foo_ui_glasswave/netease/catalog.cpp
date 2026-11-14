@@ -85,6 +85,9 @@ void MergeRestored(Album& target, const Album& source) {
     if (target.artistRefs.empty()) target.artistRefs = source.artistRefs;
     Fill(target.description, source.description);
     Fill(target.company, source.company);
+    Fill(target.type, source.type);
+    Fill(target.subType, source.subType);
+    if (target.aliases.empty()) target.aliases = source.aliases;
     if (target.trackCount == 0) target.trackCount = source.trackCount;
     if (target.publishTime == 0) target.publishTime = source.publishTime;
 }

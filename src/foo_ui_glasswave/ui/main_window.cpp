@@ -9,6 +9,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include "ui/main_window.h"
+#include "netease/log.h"
 #include "aero/aero_atlas.h"
 #include "aero/aero_metrics.h"
 #include "aero/aero_painter.h"
@@ -111,6 +112,10 @@ constexpr float kSplitArrow = 16, kViewOptionsSplit = 26;
 // Detail band above a provider's artist, album and playlist pages: a fixed band above the list (new UI, no
 // Win7 measurement).
 constexpr float kDetailHeaderHeight = 104, kDetailArt = 80, kDetailActionWidth = 88, kDetailActionHeight = 26;
+// The subject's facts as Windows 7's details pane lists properties: "Label: value" rows of the
+// band's 12 DIP type, in up to three columns of at least this width, filled downwards.
+constexpr float kDetailFactRowH = 18, kDetailFactColumnMinW = 220, kDetailFactGap = 6, kDetailFactColumnGap = 18;
+constexpr float kDetailTextTop = 62; // below the name and the stats line
 constexpr float kDetailBriefMaxHeight = 260.0f, kDetailScrollWidth = 17.0f;
 
 // {0C9E7B42-1F3A-4D5E-8B6C-7A2F9E1D4C83}
@@ -1614,6 +1619,15 @@ void MainWindow::UpdateLayout() {
             L.detailAction = {right - PxI(kDetailActionWidth), L.detailHeader.top + PxI(22), right,
                               L.detailHeader.top + PxI(22 + kDetailActionHeight)};
         }
+        // The facts and the tagline come under the stats line, the description under them.
+        {
+            const float textW = DetailHeaderTextWidth();
+            m_detailBriefTop = kDetailTextTop + DetailFactsHeight(textW) + DetailTaglineHeight(textW);
+            L.detailHeader.bottom =
+                std::min<LONG>(L.content.top + std::max<int>(PxI(kDetailHeaderHeight), PxI(m_detailBriefTop + 12)),
+                               L.content.bottom);
+        }
+        const float briefTop = m_detailBriefTop;
         // The description is limited to three lines until expanded. Expanded text has its own
         // maximum height and scrollbar, so the song list below always stays reachable.
         if (!m_detail.brief.empty()) {
@@ -1621,7 +1635,7 @@ void MainWindow::UpdateLayout() {
             const float textX = 18 + kDetailArt + 18;
             const float bandSpace = (L.content.bottom - L.content.top) / m_scale;
             const float maxView =
-                std::min(kDetailBriefMaxHeight, std::max(96.0f, bandSpace - 62 - 12 - 18 - 8));
+                std::min(kDetailBriefMaxHeight, std::max(96.0f, bandSpace - briefTop - 12 - 18 - 8));
             auto measure = [&](float width) {
                 auto layout =
                     MakeWrappedText(m_detail.brief, 12.0f, DWRITE_FONT_WEIGHT_NORMAL, width, 4000.0f);
@@ -1646,7 +1660,7 @@ void MainWindow::UpdateLayout() {
                     used = fullBase;
                 }
             }
-            float needed = 62 + used + 12;
+            float needed = briefTop + used + 12;
             if (m_detailBriefOverflow) needed += 18;
             if (m_detailBriefExpanded) needed += 6; // pixel rounding must not clip the last line
             L.detailHeader.bottom = std::min<LONG>(
@@ -1658,7 +1672,7 @@ void MainWindow::UpdateLayout() {
             const float maxScroll = std::max(0.0f, contentH - used);
             m_detailBriefScroll = scrollable ? std::clamp(m_detailBriefScroll, 0.0f, maxScroll) : 0.0f;
             const int briefX = L.detailHeader.left + PxI(textX);
-            const int briefY = L.detailHeader.top + PxI(62);
+            const int briefY = L.detailHeader.top + PxI(briefTop);
             L.detailBriefArea = {briefX, briefY, briefX + PxI(textW), briefY + PxI(used)};
             if (scrollable) {
                 const int barLeft = L.detailHeader.left + PxI(textX + baseW - kDetailScrollWidth);
@@ -1671,7 +1685,7 @@ void MainWindow::UpdateLayout() {
                 DWRITE_TEXT_METRICS linkMetrics{};
                 link->GetMetrics(&linkMetrics);
                 const int linkX = L.detailHeader.left + PxI(textX);
-                const int y = L.detailHeader.top + PxI(62 + used + 2);
+                const int y = L.detailHeader.top + PxI(briefTop + used + 2);
                 const int w = PxI(std::ceil(linkMetrics.widthIncludingTrailingWhitespace) + 4.0f);
                 L.detailBriefToggle = {linkX, y, linkX + w, y + PxI(18)};
             }
@@ -4162,19 +4176,27 @@ void MainWindow::PaintDetailHeader() {
             auto statsLayout = MakeText(m_detail.subtitle, 12.0f, DWRITE_FONT_WEIGHT_NORMAL, textW, 18);
             dc->DrawTextLayout({textX, 42}, statsLayout.get(), sub.get());
         }
+        DrawDetailFacts(dc, textX, kDetailTextTop, textW);
+        if (!m_detail.tagline.empty()) {
+            const float top = kDetailTextTop + DetailFactsHeight(textW);
+            auto tagline = MakeWrappedText(m_detail.tagline, 12.0f, DWRITE_FONT_WEIGHT_NORMAL, textW,
+                                           DetailTaglineHeight(textW));
+            dc->DrawTextLayout({textX, top}, tagline.get(), sub.get());
+        }
+        const float briefTop = m_detailBriefTop;
         if (!m_detail.brief.empty()) {
             const float drawW = m_detailBriefTextW > 0 ? m_detailBriefTextW : textW;
             if (m_detailBriefScrollable) {
-                const D2D1_RECT_F clip{textX, 62, textX + drawW, 62 + m_detailBriefViewH};
+                const D2D1_RECT_F clip{textX, briefTop, textX + drawW, briefTop + m_detailBriefViewH};
                 dc->PushAxisAlignedClip(clip, D2D1_ANTIALIAS_MODE_ALIASED);
                 auto full = MakeWrappedText(m_detail.brief, 12.0f, DWRITE_FONT_WEIGHT_NORMAL, drawW, 4000.0f);
-                dc->DrawTextLayout({textX, 62 - m_detailBriefScroll}, full.get(), faint.get());
+                dc->DrawTextLayout({textX, briefTop - m_detailBriefScroll}, full.get(), faint.get());
                 dc->PopAxisAlignedClip();
             } else {
                 const float maxH = m_detailBriefExpanded ? std::max(24.0f, m_detailBriefViewH) : 48.0f;
                 auto briefLayout =
                     MakeWrappedText(m_detail.brief, 12.0f, DWRITE_FONT_WEIGHT_NORMAL, drawW, maxH);
-                dc->DrawTextLayout({textX, 62}, briefLayout.get(), faint.get());
+                dc->DrawTextLayout({textX, briefTop}, briefLayout.get(), faint.get());
             }
             if (m_detailBriefScrollable && m_layout.detailBriefBar.right > m_layout.detailBriefBar.left) {
                 const RECT& bar = m_layout.detailBriefBar;
@@ -4197,6 +4219,22 @@ void MainWindow::PaintDetailHeader() {
         }
     });
     Place(m_detailHeader, rect); // Repaint resets the visual to its surface origin
+    LogDetail();
+}
+
+// The band's text, written to the log when it changes, so what a page shows from a service can
+// be read back without looking at the screen (see ui/dev_commands.cpp).
+void MainWindow::LogDetail() {
+    std::wstring text = L"page: " + m_detail.title;
+    if (!m_detail.subtitle.empty()) text += L" | " + m_detail.subtitle;
+    for (const auto& fact : m_detail.facts) text += L" | " + fact.label + L": " + fact.value;
+    if (!m_detail.tagline.empty()) text += L" | tagline: " + m_detail.tagline;
+    if (!m_detail.brief.empty())
+        text += L" | brief: " + std::to_wstring(m_detail.brief.size()) + L" chars, \"" +
+                m_detail.brief.substr(0, 24) + L"...\"";
+    if (text == m_loggedDetail) return;
+    m_loggedDetail = text;
+    netease::Log(text);
 }
 
 void MainWindow::RepaintDetailHeader() {
@@ -4216,6 +4254,89 @@ float MainWindow::DetailHeaderTextWidth() const {
                             ? (L.detailAction.left - L.detailHeader.left) / s - 18.0f
                             : (L.detailHeader.right - L.detailHeader.left) / s - 18.0f;
     return std::max(120.0f, right - textX);
+}
+
+size_t MainWindow::DetailFactColumns(float textW) const {
+    const size_t n = m_detail.facts.size();
+    if (n == 0) return 0;
+    const auto fit = static_cast<size_t>(std::clamp(static_cast<int>(textW / kDetailFactColumnMinW), 1, 3));
+    return std::min(n, fit);
+}
+
+float MainWindow::DetailFactsHeight(float textW) const {
+    const size_t columns = DetailFactColumns(textW);
+    if (columns == 0) return 0;
+    const size_t rows = (m_detail.facts.size() + columns - 1) / columns;
+    return rows * kDetailFactRowH + 4;
+}
+
+float MainWindow::DetailTaglineHeight(float textW) const {
+    if (m_detail.tagline.empty()) return 0;
+    auto layout = MakeWrappedText(m_detail.tagline, 12.0f, DWRITE_FONT_WEIGHT_NORMAL, textW, 2 * kDetailFactRowH);
+    DWRITE_TEXT_METRICS metrics{};
+    layout->GetMetrics(&metrics);
+    return std::min(std::ceil(metrics.height), 2 * kDetailFactRowH) + 6;
+}
+
+// The facts in columns: each column's labels start at one line and its values at another
+// (owner, 2026-11-14: right-aligned labels made the rows look crooked); long values end in an
+// ellipsis. A column takes the width its text needs; when they do not all fit, the narrow
+// ones keep theirs and the wide ones share the rest equally.
+void MainWindow::DrawDetailFacts(ID2D1DeviceContext* dc, float x, float y, float textW) const {
+    const size_t columns = DetailFactColumns(textW);
+    if (columns == 0) return;
+    const size_t n = m_detail.facts.size();
+    const size_t rows = (n + columns - 1) / columns;
+    const auto width = [](const std::wstring& text) {
+        DWRITE_TEXT_METRICS metrics{};
+        MakeText(text, 12.0f)->GetMetrics(&metrics);
+        return std::ceil(metrics.widthIncludingTrailingWhitespace);
+    };
+    std::vector<float> labelW(columns, 0), need(columns, 0);
+    for (size_t c = 0; c < columns; ++c) {
+        float valueW = 0;
+        for (size_t i = c * rows; i < std::min(n, (c + 1) * rows); ++i) {
+            labelW[c] = std::max(labelW[c], width(m_detail.facts[i].label + L":"));
+            valueW = std::max(valueW, width(m_detail.facts[i].value));
+        }
+        need[c] = labelW[c] + kDetailFactGap + valueW;
+    }
+    // Water-filling: share what is left among the columns that need more than their share.
+    std::vector<float> columnW = need;
+    float room = textW - kDetailFactColumnGap * (columns - 1);
+    std::vector<bool> settled(columns, false);
+    for (size_t open = columns; open > 0;) {
+        const float share = room / open;
+        bool changed = false;
+        for (size_t c = 0; c < columns; ++c)
+            if (!settled[c] && need[c] <= share) {
+                settled[c] = true;
+                room -= need[c];
+                --open;
+                changed = true;
+            }
+        if (!changed) {
+            for (size_t c = 0; c < columns; ++c)
+                if (!settled[c]) columnW[c] = share;
+            break;
+        }
+    }
+    com_ptr<ID2D1SolidColorBrush> label, value;
+    dc->CreateSolidColorBrush(Hex(0x6B7B8E), label.put());
+    dc->CreateSolidColorBrush(Hex(0x1E395B), value.put());
+    float cx = x;
+    for (size_t c = 0; c < columns; ++c) {
+        const float nameW = std::min(labelW[c], columnW[c] * 0.45f);
+        const float valueW = std::max(1.0f, columnW[c] - nameW - kDetailFactGap);
+        for (size_t i = c * rows; i < std::min(n, (c + 1) * rows); ++i) {
+            const float top = y + (i - c * rows) * kDetailFactRowH;
+            auto name = MakeText(m_detail.facts[i].label + L":", 12.0f, DWRITE_FONT_WEIGHT_NORMAL, nameW, kDetailFactRowH);
+            dc->DrawTextLayout({cx, top}, name.get(), label.get());
+            auto text = MakeText(m_detail.facts[i].value, 12.0f, DWRITE_FONT_WEIGHT_NORMAL, valueW, kDetailFactRowH);
+            dc->DrawTextLayout({cx + nameW + kDetailFactGap, top}, text.get(), value.get());
+        }
+        cx += columnW[c] + kDetailFactColumnGap;
+    }
 }
 
 void MainWindow::OnDetailAction() {

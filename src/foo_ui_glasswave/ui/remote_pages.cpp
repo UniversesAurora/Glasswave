@@ -35,6 +35,98 @@ std::wstring Count(int n, const wchar_t* unit) {
     return n > 0 ? std::to_wstring(n) + L" " + Tr(unit) : std::wstring();
 }
 
+// A list of values in one fact: "a, b" or, in Chinese, "a、b".
+std::wstring ListText(const std::vector<std::wstring>& values) {
+    std::wstring out;
+    for (const auto& value : values) {
+        if (value.empty()) continue;
+        if (!out.empty()) out += UsingChinese() ? L"、" : L", ";
+        out += value;
+    }
+    return out;
+}
+
+// A number with the UI language's digit grouping (4,888,171).
+std::wstring NumberText(long long n) {
+    std::wstring digits = std::to_wstring(n < 0 ? -n : n), out;
+    for (size_t i = 0; i < digits.size(); ++i) {
+        if (i > 0 && (digits.size() - i) % 3 == 0) out += L',';
+        out += digits[i];
+    }
+    return n < 0 ? L"-" + out : out;
+}
+
+// A date as a service writes it ("2017", "1979-01-18", "January 18, 1979") in the UI
+// language's long form; text it cannot read is shown as it is.
+std::wstring DateText(const std::wstring& text) {
+    if (text.size() == 4 && std::all_of(text.begin(), text.end(), iswdigit)) return text;
+    SYSTEMTIME date{};
+    static constexpr const wchar_t* kMonths[] = {L"January", L"February", L"March",     L"April",
+                                                 L"May",     L"June",     L"July",      L"August",
+                                                 L"September", L"October", L"November", L"December"};
+    int year = 0, month = 0, day = 0;
+    if (swscanf_s(text.c_str(), L"%d-%d-%d", &year, &month, &day) == 3) {
+    } else {
+        wchar_t name[16]{};
+        if (swscanf_s(text.c_str(), L"%15ls %d, %d", name, static_cast<unsigned>(std::size(name)), &day, &year) != 3)
+            return text;
+        for (int i = 0; i < 12; ++i)
+            if (_wcsicmp(name, kMonths[i]) == 0) month = i + 1;
+    }
+    if (year < 1 || month < 1 || month > 12 || day < 1 || day > 31) return text;
+    date.wYear = static_cast<WORD>(year);
+    date.wMonth = static_cast<WORD>(month);
+    date.wDay = static_cast<WORD>(day);
+    wchar_t out[64]{};
+    if (!GetDateFormatEx(UsingChinese() ? L"zh-CN" : L"en-US", DATE_LONGDATE, &date, nullptr, out,
+                         static_cast<int>(std::size(out)), nullptr))
+        return text;
+    return out;
+}
+
+// An artist's profile as details-pane facts, most telling first; what the source does not
+// know is left out.
+std::vector<DetailInfo::Fact> ArtistFacts(const stream::Artist& artist) {
+    std::vector<DetailInfo::Fact> facts;
+    const auto add = [&facts](const wchar_t* label, std::wstring value) {
+        if (!value.empty()) facts.push_back({Tr(label), std::move(value)});
+    };
+    using Kind = stream::ArtistKind;
+    add(artist.kind == Kind::Group ? L"Formed" : artist.kind == Kind::Unknown ? L"Born or formed" : L"Born",
+        artist.born.empty() ? std::wstring() : DateText(artist.born));
+    add(L"From", artist.origin);
+    add(L"Area", artist.area.empty() ? std::wstring() : Tr(artist.area));
+    add(L"Type", artist.kind == Kind::Group    ? Tr(L"Band or group")
+                 : artist.kind == Kind::Male   ? Tr(L"Male artist")
+                 : artist.kind == Kind::Female ? Tr(L"Female artist")
+                 : artist.kind == Kind::Person ? Tr(L"Solo artist")
+                                               : std::wstring());
+    add(L"Genre", ListText(artist.genres));
+    add(L"Also known as", ListText(artist.aliases));
+    add(L"Roles", ListText(artist.roles));
+    add(L"Music videos", artist.videoCount > 0 ? NumberText(artist.videoCount) : std::wstring());
+    add(L"Followers", artist.followerCount >= 0 ? NumberText(artist.followerCount) : std::wstring());
+    return facts;
+}
+
+// An album's details as details-pane facts.
+std::vector<DetailInfo::Fact> AlbumFacts(const stream::Album& album) {
+    std::vector<DetailInfo::Fact> facts;
+    const auto add = [&facts](const wchar_t* label, std::wstring value) {
+        if (!value.empty()) facts.push_back({Tr(label), std::move(value)});
+    };
+    std::vector<std::wstring> traits;
+    for (const auto& trait : album.traits) traits.push_back(Tr(trait));
+    add(L"Type", album.type.empty() ? std::wstring() : Tr(album.type));
+    add(L"Released", album.released.empty() ? std::wstring() : DateText(album.released));
+    add(L"Genre", ListText(album.genres));
+    add(L"Label", album.label);
+    add(L"Audio", ListText(traits));
+    add(L"Also known as", ListText(album.aliases));
+    add(L"Copyright", album.copyright);
+    return facts;
+}
+
 bool Contains(const std::vector<stream::Album>& albums, const stream::Id& id) {
     return std::any_of(albums.begin(), albums.end(), [&id](const stream::Album& a) { return a.id == id; });
 }
@@ -1107,6 +1199,7 @@ class AlbumPage final : public TrackPagedPage {
             d.subtitle = Joined({stream::JoinArtists(m_info->artists),
                                  m_info->year ? std::to_wstring(m_info->year) : L"",
                                  Count(m_info->trackCount, L"songs")});
+            d.facts = AlbumFacts(*m_info);
             d.brief = m_info->description;
         }
         d.artKey = m_provider.ArtKey(stream::ArtKind::Album, m_view.remoteId);
@@ -1391,6 +1484,7 @@ class AlbumBrowsePage : public PagedPage {
         if (const auto& header = m_state.artist; header && !header->id.empty()) {
             stream::Artist artist = *header;
             if (m_artist) {
+                if (m_artist->profile && !artist.profile) stream::CopyArtistProfile(*m_artist, artist);
                 if (artist.bio.empty()) artist.bio = m_artist->bio;
                 if (!artist.followKnown && m_artist->followKnown) {
                     artist.followKnown = true;
@@ -1647,7 +1741,7 @@ class ArtistPage final : public AlbumBrowsePage {
     std::unique_ptr<media::ListSource> Start(bool reuse) override {
         auto source = PagedPage::Start(reuse);
         AfterStart([this] {
-            if (!m_artist || m_artist->bio.empty()) LoadProfile();
+            if (!m_artist || !m_artist->profile || m_artist->bio.empty()) LoadProfile();
         });
         return source;
     }
@@ -1660,6 +1754,8 @@ class ArtistPage final : public AlbumBrowsePage {
         if (d.title.empty()) d.title = Tr(L"Artist");
         if (!m_artist) return d;
         d.subtitle = Joined({Count(m_artist->albumCount, L"albums"), Count(m_artist->trackCount, L"songs")});
+        d.tagline = m_artist->tagline;
+        d.facts = ArtistFacts(*m_artist);
         d.brief = m_artist->bio;
         d.artKey = m_provider.ArtKey(stream::ArtKind::Artist, m_artist->id);
         d.artItem = m_provider.ArtItem(stream::ArtKind::Artist, m_artist->id);

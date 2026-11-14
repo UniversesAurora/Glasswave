@@ -87,6 +87,18 @@ Album ParseAlbum(const json::Object& object) {
     album.artistRefs = ArtistRefs(object);
     album.description = json::GetString(object, L"description");
     album.company = json::GetString(object, L"company");
+    album.type = json::GetString(object, L"type");
+    album.subType = json::GetString(object, L"subType");
+    for (const wchar_t* key : {L"alias", L"transNames"})
+        if (const auto names = json::GetArray(object, key))
+            for (uint32_t i = 0; i < names->Size(); ++i)
+                if (const auto value = names->GetAt(i);
+                    value && value.ValueType() == winrt::Windows::Data::Json::JsonValueType::String) {
+                    std::wstring name = value.GetString().c_str();
+                    if (!name.empty() && name != album.name &&
+                        std::find(album.aliases.begin(), album.aliases.end(), name) == album.aliases.end())
+                        album.aliases.push_back(std::move(name));
+                }
     if (album.name.empty()) album.name = L"Unknown";
     return album;
 }
@@ -797,8 +809,50 @@ bool Client::GetArtistDetail(int64_t artistId, abort_callback& abort, Artist& ou
     out.brief = json::GetString(*artist, L"briefDesc");
     out.albumCount = json::GetInt(*artist, L"albumSize");
     out.songCount = json::GetInt(*artist, L"musicSize");
+    out.videoCount = json::GetInt(*artist, L"mvSize", -1);
+    const auto addAlias = [&out](std::wstring name) {
+        if (!name.empty() && name != out.name &&
+            std::find(out.aliases.begin(), out.aliases.end(), name) == out.aliases.end())
+            out.aliases.push_back(std::move(name));
+    };
+    for (const wchar_t* key : {L"alias", L"transNames"})
+        if (const auto names = json::GetArray(*artist, key))
+            for (uint32_t i = 0; i < names->Size(); ++i)
+                if (const auto value = names->GetAt(i);
+                    value && value.ValueType() == winrt::Windows::Data::Json::JsonValueType::String)
+                    addAlias(value.GetString().c_str());
+    // "网易音乐人、歌手、作词、作曲": what the artist does, as the client's profile shows it.
+    if (auto data = json::GetObject(body, L"data"))
+        if (auto identify = json::GetObject(*data, L"identify")) {
+            const std::wstring roles = json::GetString(*identify, L"imageDesc");
+            size_t start = 0;
+            while (start < roles.size()) {
+                size_t end = roles.find(L'、', start);
+                if (end == std::wstring::npos) end = roles.size();
+                if (end > start) out.roles.push_back(roles.substr(start, end - start));
+                start = end + 1;
+            }
+        }
+    out.profile = true;
     if (out.name.empty()) out.name = L"Unknown";
     return true;
+}
+
+void Client::GetArtistExtras(int64_t artistId, abort_callback& abort, Artist& out) {
+    json::Object body;
+    int code = 0;
+    std::wstring error;
+    const std::wstring id = std::to_wstring(artistId);
+    // The artist wiki (as the client's artist page edits it): area and type.
+    if (Request(L"/ugc/artist/get", {{L"id", id}}, false, abort, body, code, error) && code == 200) {
+        if (const auto data = json::GetObject(body, L"data")) {
+            out.area = json::GetInt(*data, L"area", -1);
+            out.type = json::GetInt(*data, L"type", 0);
+        }
+    }
+    if (Request(L"/artist/follow/count", {{L"id", id}}, false, abort, body, code, error) && code == 200) {
+        if (const auto data = json::GetObject(body, L"data")) out.fans = json::GetInt64(*data, L"fansCnt", -1);
+    }
 }
 
 bool Client::GetArtistDescription(int64_t artistId, abort_callback& abort, std::wstring& brief,

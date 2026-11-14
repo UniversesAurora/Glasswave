@@ -226,6 +226,11 @@ class MainWindow : public PageHost, public PlayerHost {
     void PaintDetailHeader();
     void RepaintDetailHeader();
     float DetailHeaderTextWidth() const; // DIP available for the name, stats and description
+    size_t DetailFactColumns(float textW) const;
+    float DetailFactsHeight(float textW) const;   // DIP, 0 without facts
+    float DetailTaglineHeight(float textW) const; // DIP, 0 without a tagline
+    void DrawDetailFacts(ID2D1DeviceContext* dc, float x, float y, float textW) const;
+    void LogDetail();
     void OnDetailAction();
     // The description's own scroll area (long artist/album/playlist introductions).
     bool DetailBriefThumb(float* top, float* height) const; // DIP within the bar
@@ -431,6 +436,8 @@ class MainWindow : public PageHost, public PlayerHost {
     winrt::Windows::UI::Composition::SpriteVisual m_detailHeader{nullptr};
     SIZE m_detailHeaderSize{};
     DetailInfo m_detail; // rebuilt by UpdateLayout for the current page
+    float m_detailBriefTop = 62; // DIP: the description's top, below the facts and the tagline
+    std::wstring m_loggedDetail; // LogDetail: the band's text last written to the log
     bool m_detailBriefExpanded = false;
     bool m_detailBriefOverflow = false;
     float m_detailBriefScroll = 0; // DIP into the description
