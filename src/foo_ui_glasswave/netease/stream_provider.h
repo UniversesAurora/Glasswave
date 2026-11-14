@@ -56,6 +56,7 @@ class StreamProvider final : public stream::Provider {
     void FetchAlbumsTracks(std::vector<stream::Id> albums, TracksDone done) override;
     void FetchArtist(const stream::Id& artist, ArtistDone done) override;
     void FetchArtistBio(const stream::Id& artist, TextDone done) override;
+    void FetchSongDetails(const stream::Id& track, SongDetailsDone done) override;
     void FetchArtistAlbums(const stream::Id& artist, size_t offset, size_t limit,
                            AlbumPageDone done) override;
     void FetchArtistTopTracks(const stream::Id& artist, size_t offset, size_t limit,

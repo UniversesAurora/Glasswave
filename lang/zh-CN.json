@@ -539,5 +539,22 @@
   "Editorial playlist": "编辑精选",
   "Personal mix": "个人合辑",
   "Replay": "年度回顾",
-  "Shared playlist": "共享歌单"
+  "Shared playlist": "共享歌单",
+  "Song info": "歌曲信息",
+  "Song": "歌曲",
+  "Similar songs": "相似歌曲",
+  "Role": "参与内容",
+  "Position": "曲目",
+  "Track {0}": "第 {0} 首",
+  "Disc {0}": "第 {0} 碟",
+  "BPM": "BPM",
+  "Version": "版本",
+  "ISRC": "ISRC",
+  "Synced": "同步歌词",
+  "Unsynced": "无时间轴歌词",
+  "Original": "原唱",
+  "Cover": "翻唱",
+  "Go to album": "转到唱片集",
+  "The service lists no credits for this song.": "该服务没有列出这首歌的制作人员。",
+  "This song is not in the Apple Music catalog.": "这首歌不在 Apple Music 目录中。"
 }

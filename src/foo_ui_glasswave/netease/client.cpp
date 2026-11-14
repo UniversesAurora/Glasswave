@@ -852,6 +852,92 @@ bool Client::GetArtistDetail(int64_t artistId, abort_callback& abort, Artist& ou
     return true;
 }
 
+bool Client::GetSongInfo(int64_t songId, abort_callback& abort, SongInfo& out, std::wstring& error) {
+    out = {};
+    json::Object body;
+    int code = 0;
+    if (!Request(L"/song/detail", {{L"ids", std::to_wstring(songId)}}, false, abort, body, code, error)) return false;
+    if (code != 200) {
+        error = MessageOf(body, code);
+        return false;
+    }
+    const auto songs = json::GetArray(body, L"songs");
+    const auto list = songs ? json::Objects(*songs) : std::vector<json::Object>{};
+    if (list.empty()) {
+        error = L"NetEase returned no song.";
+        return false;
+    }
+    const json::Object& object = list.front();
+    out.song = ParseSong(object);
+    out.disc = _wtoi(json::GetString(object, L"cd").c_str());
+    out.number = json::GetInt(object, L"no");
+    out.publishTime = json::GetInt64(object, L"publishTime");
+    out.originCoverType = json::GetInt(object, L"originCoverType");
+    out.hiRes = static_cast<bool>(json::GetObject(object, L"hr"));
+    out.lossless = out.hiRes || static_cast<bool>(json::GetObject(object, L"sq"));
+    for (const wchar_t* key : {L"alia", L"tns"})
+        if (const auto names = json::GetArray(object, key))
+            for (uint32_t i = 0; i < names->Size(); ++i)
+                if (const auto value = names->GetAt(i);
+                    value && value.ValueType() == winrt::Windows::Data::Json::JsonValueType::String) {
+                    std::wstring name = value.GetString().c_str();
+                    if (!name.empty() && std::find(out.aliases.begin(), out.aliases.end(), name) == out.aliases.end())
+                        out.aliases.push_back(std::move(name));
+                }
+
+    // The song wiki: blocks of "creatives" (2026-11-14, through the local service).
+    std::wstring ignored;
+    if (!Request(L"/song/wiki/summary", {{L"id", std::to_wstring(songId)}}, false, abort, body, code, ignored) ||
+        code != 200)
+        return true;
+    const auto data = json::GetObject(body, L"data");
+    const auto blocks = data ? json::GetArray(*data, L"blocks") : std::nullopt;
+    if (!blocks) return true;
+    const auto title = [](const json::Object& item) {
+        const auto ui = json::GetObject(item, L"uiElement");
+        const auto main = ui ? json::GetObject(*ui, L"mainTitle") : std::nullopt;
+        return main ? json::GetString(*main, L"title") : std::wstring();
+    };
+    const auto links = [](const json::Object& item) {
+        std::vector<std::wstring> out;
+        const auto ui = json::GetObject(item, L"uiElement");
+        if (const auto texts = ui ? json::GetArray(*ui, L"textLinks") : std::nullopt)
+            for (const auto& link : json::Objects(*texts))
+                if (auto text = json::GetString(link, L"text"); !text.empty()) out.push_back(std::move(text));
+        return out;
+    };
+    for (const auto& block : json::Objects(*blocks)) {
+        const std::wstring kind = json::GetString(block, L"code");
+        const auto creatives = json::GetArray(block, L"creatives");
+        if (!creatives) continue;
+        for (const auto& creative : json::Objects(*creatives)) {
+            const std::wstring type = json::GetString(creative, L"creativeType");
+            std::vector<std::wstring> names; // the resources' titles (style and tag words)
+            const auto resources = json::GetArray(creative, L"resources");
+            const auto items = resources ? json::Objects(*resources) : std::vector<json::Object>{};
+            for (const auto& resource : items)
+                if (auto name = title(resource); !name.empty()) names.push_back(std::move(name));
+            if (kind == L"SONG_PLAY_ABOUT_SIMILAR_SONG") {
+                for (const auto& resource : items)
+                    if (json::GetString(resource, L"resourceType") == L"SONG")
+                        if (const int64_t id = _wtoi64(json::GetString(resource, L"resourceId").c_str()))
+                            out.similar.push_back(id);
+            } else if (type == L"songTag") {
+                out.styles = std::move(names);
+            } else if (type == L"songBizTag") {
+                out.tags = std::move(names);
+            } else if (type == L"language") {
+                const auto values = links(creative);
+                if (!values.empty()) out.language = values.front();
+            } else if (type == L"bpm") {
+                const auto values = links(creative);
+                if (!values.empty()) out.bpm = _wtoi(values.front().c_str());
+            }
+        }
+    }
+    return true;
+}
+
 void Client::GetArtistExtras(int64_t artistId, abort_callback& abort, Artist& out) {
     json::Object body;
     int code = 0;

@@ -53,6 +53,7 @@ enum class Capability {
     CatalogSearch,
     SearchSuggestions, // completions and top results while typing
     NativeLyrics,      // the service has its own lyrics for its tracks
+    SongDetails,       // FetchSongDetails: a song's details, credits or similar songs
     Count
 };
 
@@ -110,6 +111,7 @@ class Provider {
     using ArtistDone = std::function<void(Artist artist, std::wstring error)>;
     using ArtistsDone = std::function<void(std::vector<Artist> artists, std::wstring error)>;
     using TextDone = std::function<void(std::wstring text, std::wstring error)>;
+    using SongDetailsDone = std::function<void(SongDetails details, std::wstring error)>;
     using CreatedDone = std::function<void(Id playlist, std::wstring error)>;
     struct CatalogSearchSuggestionQuery {
         std::wstring term;
@@ -248,6 +250,10 @@ class Provider {
     virtual void FetchAlbumsTracks(std::vector<Id> albums, TracksDone done) = 0;
     virtual void FetchArtist(const Id& artist, ArtistDone done) = 0;
     virtual void FetchArtistBio(const Id& artist, TextDone done) = 0;
+    // Everything the service knows of one song (Capability::SongDetails); main thread.
+    virtual void FetchSongDetails(const Id& /*track*/, SongDetailsDone done) {
+        if (done) done({}, L"This source has no song details.");
+    }
     virtual void FetchArtistAlbums(const Id& artist, size_t offset, size_t limit, AlbumPageDone done) = 0;
     virtual void FetchArtistTopTracks(const Id& artist, size_t offset, size_t limit, TrackPageDone done) = 0;
     virtual void FetchFollowedArtists(ArtistsDone done) = 0;

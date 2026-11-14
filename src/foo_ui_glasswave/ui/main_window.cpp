@@ -3578,6 +3578,9 @@ void MainWindow::AddRemoteCrumbs(std::vector<Crumb>& path, stream::Provider& pro
     case View::Kind::RemoteSearch:
         named(m_view.name, L"Search", go(m_view));
         break;
+    case View::Kind::RemoteSong:
+        named(m_view.name, L"Song", go(m_view));
+        break;
     default:
         break;
     }
@@ -3915,6 +3918,7 @@ bool MainWindow::LoadLastView(View& view, size_t& top) {
     case View::Kind::RemoteArtist:
     case View::Kind::RemoteTopTracks:
     case View::Kind::RemoteSearch:
+    case View::Kind::RemoteSong:
         if (v.remoteId.empty()) return false;
         break;
     case View::Kind::RemoteSectionTracks:
@@ -4229,6 +4233,12 @@ void MainWindow::LogDetail(bool art) {
     if (!m_detail.subtitle.empty()) text += L" | " + m_detail.subtitle;
     for (const auto& fact : m_detail.facts) text += L" | " + fact.label + L": " + fact.value;
     if (!m_detail.tagline.empty()) text += L" | tagline: " + m_detail.tagline;
+    if (m_source) {
+        text += L" | rows: " + std::to_wstring(m_source->Count());
+        if (const auto* groups = m_source->Groups())
+            for (const auto& group : *groups)
+                text += L" | " + group.header + L" (" + std::to_wstring(group.count) + L")";
+    }
     if (!m_detail.brief.empty())
         text += L" | brief: " + std::to_wstring(m_detail.brief.size()) + L" chars, \"" +
                 m_detail.brief.substr(0, 24) + L"...\"";
@@ -4637,6 +4647,16 @@ std::vector<ContextAction> MainWindow::BuildContextActions(metadb_handle_list_cr
                               onPlaylist ? m_view.remoteId : stream::Id());
     }
 
+    // One song of a source that has song details: its page.
+    if (provider && selected.get_count() == 1 && provider->Can(stream::Capability::SongDetails) &&
+        !(m_view.kind == View::Kind::RemoteSong && m_view.remoteId == provider->TrackId(selected[0]))) {
+        const stream::Id id = provider->TrackId(selected[0]);
+        const auto known = provider->FindTrack(id);
+        const std::wstring title = known ? known->title : std::wstring();
+        if (!id.empty())
+            actions.push_back({L"Song info", [this, provider, id, title] { Navigate(SongView(*provider, id, title), true); }});
+    }
+
     // Removals that belong to the page go last.
     std::vector<MenuAction> page;
     if (m_page) m_page->AddSongActions(page, selected);
@@ -5039,6 +5059,7 @@ cfg_var_modern::cfg_int* MainWindow::ViewStyleSetting(const View& view) {
         return &cfg_viewRemoteArtist;
     case View::Kind::RemoteArtists:
     case View::Kind::RemoteGroups:
+    case View::Kind::RemoteSong:
         return nullptr;
     case View::Kind::RemoteAlbums:
         return &cfg_viewRemoteAlbums;

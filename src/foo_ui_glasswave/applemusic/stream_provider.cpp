@@ -2853,7 +2853,7 @@ stream::Capabilities StreamProvider::Offers() const {
             FavoriteArtists,   LibraryAlbums,   SaveAlbums,           LibraryPlaylists,
             SavePlaylists,     CreatePlaylists, AppendPlaylistTracks, RemovePlaylistTracks,
             RenamePlaylists,   DeletePlaylists, CatalogSearch,        SearchSuggestions,
-            NativeLyrics};
+            NativeLyrics,      SongDetails};
 }
 
 // Apple Music keeps things in a "library" and marks artists as favorites; its playlists are
@@ -5021,6 +5021,94 @@ void StreamProvider::FetchArtistBio(const stream::Id& artist, TextDone done) {
                           if (done) done(std::move(text), std::move(error));
                       });
          });
+}
+
+// The song's catalog record and its credits. Audio traits and credits come only from the web
+// API surface (the bridge picks it for requests extending inFavorites; checked 2026-11-14).
+void StreamProvider::FetchSongDetails(const stream::Id& track, SongDetailsDone done) {
+    uint64_t generation = 0;
+    const std::wstring storefront = Storefront();
+    {
+        std::lock_guard lock(m_mutex);
+        generation = m_generation;
+    }
+    Post(generation, [this, generation, track, storefront, done = std::move(done)]() mutable {
+        stream::SongDetails details;
+        std::wstring error;
+        try {
+            const auto known = Catalog::Get().FindSong(track);
+            if (known) details.track = known->track;
+            const std::wstring catalogId = known && !known->catalogId.empty() ? known->catalogId : track;
+            if (!IsCatalogResourceId(catalogId)) {
+                error = L"This song is not in the Apple Music catalog.";
+            } else {
+                const Object response = Apple(L"/v1/catalog/" + storefront + L"/songs/" + Encode(catalogId) +
+                                                  L"?include=albums,artists&extend=inFavorites,audioTraits",
+                                              *m_abort);
+                const auto item = FirstData(response);
+                const auto attributes = item ? json::GetObject(*item, L"attributes") : std::nullopt;
+                if (!item || !attributes) throw std::runtime_error("Apple Music returned no song.");
+                if (const auto song = ParseSong(*item)) {
+                    stream::Track parsed = song->track;
+                    parsed.id = track; // the identity the caller plays
+                    details.track = std::move(parsed);
+                    details.composer = song->composerName;
+                }
+                details.disc = json::GetInt(*attributes, L"discNumber");
+                details.number = json::GetInt(*attributes, L"trackNumber");
+                details.released = json::GetString(*attributes, L"releaseDate");
+                details.isrc = json::GetString(*attributes, L"isrc");
+                details.language = json::GetString(*attributes, L"audioLocale");
+                for (auto& genre : StringArray(*attributes, L"genreNames"))
+                    if (genre != L"Music" && genre != L"音乐") details.genres.push_back(std::move(genre));
+                details.lyrics = json::GetBool(*attributes, L"hasTimeSyncedLyrics") ? L"Synced"
+                                 : json::GetBool(*attributes, L"hasLyrics")         ? L"Unsynced"
+                                                                                    : L"";
+                for (const auto& trait : StringArray(*attributes, L"audioTraits")) {
+                    if (trait == L"lossless") details.traits.push_back(L"Lossless");
+                    else if (trait == L"hi-res-lossless") details.traits.push_back(L"Hi-Res Lossless");
+                    else if (trait == L"atmos") details.traits.push_back(L"Dolby Atmos");
+                }
+                if (json::GetBool(*attributes, L"isAppleDigitalMaster")) details.traits.push_back(L"Apple Digital Master");
+                if (json::GetString(*attributes, L"contentRating") == L"explicit") details.traits.push_back(L"Explicit");
+                // Credits, in the service's groups. A song without them answers 404.
+                try {
+                    const Object credits = Apple(L"/v1/catalog/" + storefront + L"/songs/" + Encode(catalogId) +
+                                                     L"/credits?extend=inFavorites",
+                                                 *m_abort);
+                    if (const auto groups = json::GetArray(credits, L"data")) {
+                        for (const auto& group : json::Objects(*groups)) {
+                            stream::CreditGroup out;
+                            if (const auto a = json::GetObject(group, L"attributes"))
+                                out.title = json::GetString(*a, L"title");
+                            for (const auto& person : EmbeddedRelationship(group, L"credit-artists")) {
+                                const auto a = json::GetObject(person, L"attributes");
+                                if (!a) continue;
+                                stream::Credit credit;
+                                credit.name = json::GetString(*a, L"name");
+                                credit.roles = StringArray(*a, L"roleNames");
+                                for (const auto& artist : EmbeddedRelationship(person, L"artist"))
+                                    if (credit.artistId.empty()) credit.artistId = json::GetString(artist, L"id");
+                                if (!credit.name.empty()) out.credits.push_back(std::move(credit));
+                            }
+                            if (!out.credits.empty()) details.credits.push_back(std::move(out));
+                        }
+                    }
+                } catch (const exception_aborted&) {
+                    throw;
+                } catch (const std::exception& exception) {
+                    if (!DefiniteNotFound(exception)) throw;
+                }
+            }
+        } catch (const exception_aborted&) {
+            return;
+        } catch (const std::exception& exception) {
+            error = Wide(exception.what());
+        }
+        PostMain(generation, [done = std::move(done), details = std::move(details), error = std::move(error)]() mutable {
+            if (done) done(std::move(details), std::move(error));
+        });
+    });
 }
 
 void StreamProvider::FetchArtistAlbums(const stream::Id& artist, size_t offset, size_t limit,

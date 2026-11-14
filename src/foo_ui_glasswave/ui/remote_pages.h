@@ -24,6 +24,7 @@ View ArtistView(const stream::Provider& provider, const stream::Id& id, std::wst
                 stream::Id sectionId = {});
 View AlbumView(const stream::Provider& provider, const stream::Id& id, std::wstring name, const stream::Id& artistId = {},
                std::wstring artistName = {}, stream::Id sectionId = {});
+View SongView(const stream::Provider& provider, const stream::Id& track, std::wstring title);
 View TopTracksView(const stream::Provider& provider, const stream::Id& artistId, std::wstring artistName,
                    stream::Id sectionId = {});
 View CatalogSearchView(const stream::Provider& provider, std::wstring query);

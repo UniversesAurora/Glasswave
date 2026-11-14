@@ -13,7 +13,7 @@ namespace glasswave::ui {
 
 // The detail band above artist, album and playlist pages.
 struct DetailInfo {
-    enum class Action { None, Follow, Save };
+    enum class Action { None, Follow, Save, Play };
     // One property of the page's subject, as Windows 7's details pane lists them: a label and
     // its value, both ready to show. Pages list only what the source knows.
     struct Fact {

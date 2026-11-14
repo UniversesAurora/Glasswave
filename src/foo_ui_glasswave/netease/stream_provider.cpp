@@ -774,7 +774,7 @@ stream::Capabilities StreamProvider::Offers() const {
             FollowArtists,    LibraryAlbums,        SaveAlbums,           LibraryPlaylists,
             SavePlaylists,    CreatePlaylists,      AppendPlaylistTracks, RemovePlaylistTracks,
             RenamePlaylists,  DeletePlaylists,      ReorderPlaylists,     RecommendedPlaylists,
-            NativeLyrics};
+            NativeLyrics,     SongDetails};
 }
 
 std::vector<settings::Field> StreamProvider::SettingFields() {
@@ -1092,6 +1092,54 @@ void StreamProvider::FetchArtistBio(const Id& artist, TextDone done) {
         Num(artist), [done = std::move(done)](std::wstring brief, std::wstring full, std::wstring error) {
             done(full.empty() ? std::move(brief) : std::move(full), std::move(error));
         });
+}
+
+// The song's detail and wiki, and the wiki's similar songs in full (so they play like any row).
+void StreamProvider::FetchSongDetails(const Id& track, SongDetailsDone done) {
+    if (!m_listTasks) {
+        if (done) done({}, L"The NetEase provider has not started.");
+        return;
+    }
+    m_listTasks->Post([this, track, done = std::move(done)]() mutable {
+        stream::SongDetails details;
+        std::vector<Song> songs;
+        std::wstring error;
+        if (Ncm().Service().EnsureStarted(*m_abort, &error)) {
+            Client& client = Ncm().Api();
+            SongInfo info;
+            if (client.GetSongInfo(Num(track), *m_abort, info, error)) {
+                details.track = ToTrack(info.song);
+                details.disc = info.disc;
+                details.number = info.number;
+                details.released = Date(info.publishTime);
+                details.aliases = info.aliases;
+                details.version = info.originCoverType == 1   ? L"Original"
+                                  : info.originCoverType == 2 ? L"Cover"
+                                                              : L"";
+                if (info.hiRes) details.traits.push_back(L"Hi-Res Lossless");
+                else if (info.lossless) details.traits.push_back(L"Lossless");
+                details.genres = info.styles;
+                details.tags = info.tags;
+                details.language = info.language;
+                details.bpm = info.bpm;
+                songs.push_back(info.song);
+                std::vector<Song> similar;
+                std::wstring ignored;
+                if (!info.similar.empty() && SongDetailsInBatches(client, Unique(info.similar), *m_abort, similar, ignored)) {
+                    details.similar = ToTracks(OrderDetails(info.similar, similar));
+                    songs.insert(songs.end(), similar.begin(), similar.end());
+                }
+            }
+        }
+        if (m_abort->is_aborting()) return;
+        fb2k::inMainThread([this, done = std::move(done), details = std::move(details), songs = std::move(songs),
+                            error = ErrorOf(std::move(error))]() mutable {
+            if (!m_started) return;
+            if (!songs.empty()) Catalog::Get().PutAndHint(songs);
+            if (!details.track.id.empty()) error.clear();
+            if (done) done(std::move(details), std::move(error));
+        });
+    });
 }
 
 void StreamProvider::FetchArtistAlbums(const Id& artist, size_t offset, size_t limit, AlbumPageDone done) {

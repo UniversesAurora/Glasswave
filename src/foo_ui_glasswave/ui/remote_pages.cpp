@@ -8,6 +8,7 @@
 #include "ui/remote_grids.h"
 #include "ui/song_actions.h"
 #include "ui/song_table.h"
+#include "ui/text.h"
 #include "ui/text_prompt.h"
 #include "stream/list_session.h"
 
@@ -2211,6 +2212,127 @@ void Page::OnFavoritesChanged() {
     }
 }
 
+// ---- one song --------------------------------------------------------------------------------
+
+// A song's page: the details band holds the song (cover, title, artist and album, every detail
+// the service has, Play); the list under it the credits in the service's groups and the
+// similar songs. A source shows only what it has: Apple Music credits, NetEase similar songs.
+class SongPage final : public Page {
+  public:
+    SongPage(PageHost& host, stream::Provider& provider, View view)
+        : Page(host, std::move(view)), m_provider(provider) {}
+
+    std::unique_ptr<media::ListSource> Start(bool) override {
+        m_provider.FetchSongDetails(m_view.remoteId, Guard([this](stream::SongDetails details, std::wstring error) {
+                                        m_error = std::move(error);
+                                        if (m_error.empty()) {
+                                            m_details = std::move(details);
+                                            if (!m_details->track.title.empty())
+                                                m_host.SetPageName(m_details->track.title);
+                                        }
+                                        m_host.ShowSource(Source());
+                                        m_host.ChromeChanged();
+                                    }));
+        return Source();
+    }
+
+    DetailInfo Detail() const override {
+        DetailInfo d;
+        d.visible = true;
+        d.title = m_details && !m_details->track.title.empty() ? m_details->track.title : m_view.name;
+        if (d.title.empty()) d.title = Tr(L"Song");
+        const metadb_handle_ptr item = m_provider.TrackItem(m_view.remoteId);
+        if (item.is_valid()) {
+            d.artItem = item;
+            d.artKey = ArtCache::SourceKey(item);
+        }
+        d.action = DetailInfo::Action::Play;
+        d.actionLabel = Tr(L"Play");
+        if (!m_details) return d;
+        const stream::Track& track = m_details->track;
+        const std::wstring released = m_details->released.size() >= 4 ? m_details->released.substr(0, 4) : L"";
+        d.subtitle = Joined({stream::JoinArtists(track.artists), track.album, released});
+        d.facts = Facts(*m_details);
+        return d;
+    }
+
+    void DetailAction() override {
+        const metadb_handle_ptr item = m_provider.TrackItem(m_view.remoteId);
+        if (!item.is_valid()) return;
+        metadb_handle_list items;
+        items.add_item(item);
+        media::PlayItems(items, 0);
+    }
+
+    void AddPageActions(std::vector<MenuAction>& actions) override {
+        if (!m_details) return;
+        const stream::Track& track = m_details->track;
+        AddGoToArtist(actions, m_host, m_provider, track.artists, {});
+        if (!track.albumId.empty())
+            actions.push_back({L"Go to album", [this, track] {
+                                   m_host.Open(AlbumView(m_provider, track.albumId, track.album));
+                               }});
+    }
+
+  private:
+    std::unique_ptr<media::ListSource> Source() {
+        const std::wstring empty = !m_error.empty() ? m_error
+                                   : !m_details     ? Tr(L"Loading...")
+                                                    : Tr(L"The service lists no credits for this song.");
+        return std::make_unique<SongInfoSource>(
+            m_provider, m_details ? *m_details : stream::SongDetails{}, empty,
+            [this](const stream::Id& artist, const std::wstring& name) {
+                m_host.Open(ArtistView(m_provider, artist, name));
+            });
+    }
+
+    static std::vector<DetailInfo::Fact> Facts(const stream::SongDetails& song) {
+        std::vector<DetailInfo::Fact> facts;
+        const auto add = [&facts](const wchar_t* label, std::wstring value) {
+            if (!value.empty()) facts.push_back({Tr(label), std::move(value)});
+        };
+        std::vector<std::wstring> traits;
+        for (const auto& trait : song.traits) traits.push_back(Tr(trait));
+        add(L"Length", song.track.durationMs > 0 ? FormatTime(song.track.durationMs / 1000.0) : L"");
+        std::wstring position;
+        if (song.number > 0) {
+            position = Tr(L"Track {0}");
+            position.replace(position.find(L"{0}"), 3, std::to_wstring(song.number));
+            if (song.disc > 0) {
+                std::wstring disc = Tr(L"Disc {0}");
+                disc.replace(disc.find(L"{0}"), 3, std::to_wstring(song.disc));
+                position = disc + L" · " + position;
+            }
+        }
+        add(L"Position", position);
+        add(L"Released", song.released.empty() ? std::wstring() : DateText(song.released));
+        add(L"Genre", ListText(song.genres));
+        add(L"Tags", ListText(song.tags));
+        add(L"Language", LanguageText(song.language));
+        add(L"BPM", song.bpm > 0 ? std::to_wstring(song.bpm) : L"");
+        add(L"Version", song.version.empty() ? std::wstring() : Tr(song.version));
+        add(L"Audio", ListText(traits));
+        add(L"Lyrics", song.lyrics.empty() ? std::wstring() : Tr(song.lyrics));
+        if (song.credits.empty()) add(L"Composer", song.composer);
+        add(L"Also known as", ListText(song.aliases));
+        add(L"ISRC", song.isrc);
+        return facts;
+    }
+
+    // A language tag ("zh-Hans-CN") as the system names the language; other text as it is.
+    static std::wstring LanguageText(const std::wstring& language) {
+        if (language.find(L'-') == std::wstring::npos) return language;
+        wchar_t name[LOCALE_NAME_MAX_LENGTH * 2]{};
+        if (GetLocaleInfoEx(language.c_str(), LOCALE_SLOCALIZEDLANGUAGENAME, name, static_cast<int>(std::size(name))))
+            return name;
+        return language;
+    }
+
+    stream::Provider& m_provider;
+    std::optional<stream::SongDetails> m_details;
+    std::wstring m_error;
+};
+
 std::unique_ptr<Page> MakeRemotePage(PageHost& host, stream::Provider& provider, const View& view) {
     switch (view.kind) {
     case View::Kind::RemoteFavorites:
@@ -2237,6 +2359,8 @@ std::unique_ptr<Page> MakeRemotePage(PageHost& host, stream::Provider& provider,
         return std::make_unique<GroupsPage>(host, provider, view);
     case View::Kind::RemoteGroupTracks:
         return std::make_unique<GroupTracksPage>(host, provider, view);
+    case View::Kind::RemoteSong:
+        return std::make_unique<SongPage>(host, provider, view);
     default:
         return nullptr;
     }
@@ -2333,6 +2457,13 @@ View AlbumView(const stream::Provider& provider, const stream::Id& id, std::wstr
     view.parentId = artistId;
     view.parentName = std::move(artistName);
     view.sectionId = std::move(sectionId);
+    return view;
+}
+
+View SongView(const stream::Provider& provider, const stream::Id& track, std::wstring title) {
+    View view = RemoteView(provider, View::Kind::RemoteSong);
+    view.remoteId = track;
+    view.name = std::move(title);
     return view;
 }
 

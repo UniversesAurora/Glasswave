@@ -18,7 +18,8 @@ struct View {
         Playlist, AllMusic, Category, Group, Playlists, SmartPlaylists, AllFavorites, AllRecentPlayed, AllMostPlayed,
         // a provider's pages
         RemoteFavorites, RemoteShelf, RemotePlaylist, RemoteArtists, RemoteAlbums, RemoteArtist, RemoteAlbum,
-        RemoteTopTracks, RemoteSearch, RemoteSectionTracks, RemoteGroups, RemoteGroupTracks
+        RemoteTopTracks, RemoteSearch, RemoteSectionTracks, RemoteGroups, RemoteGroupTracks,
+        RemoteSong // one song's details (remoteId: the track id)
     };
     Library library = Library::Local;
     Kind kind = Kind::AllMusic;

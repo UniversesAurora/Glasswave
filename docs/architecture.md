@@ -88,7 +88,15 @@ foobar2000.exe (core: decoding, playlists, library, DSP, output, components)
   is not shown. Apple Music's profile attributes (`artistBio`, `bornOrFormed`, `origin`,
   `isGroup`, `audioTraits`) exist only on the web API surface; NetEase adds its artist wiki
   (`/ugc/artist/get`: area, type) to the artist detail.
-- **Checking pages with real data.** `foobar2000.exe /glasswave:open:<source>:<artist|album|playlist>:<id>`
+- **Song pages.** A source with `Capability::SongDetails` answers `FetchSongDetails` with a
+  `stream::SongDetails`: the song's details (position, release, genres, tags, language, BPM,
+  version, audio, lyrics, ISRC, aliases), the credits in the service's own groups and the
+  similar songs. The page (`View::Kind::RemoteSong`, "Song info" in a song's context menu)
+  shows the details in the details band with Play, and the credits and similar songs as WMP
+  12's details grouped under header lines (`SongInfoSource`). Apple Music reads the song and
+  `/songs/{id}/credits` (both on the web API surface); NetEase reads `/song/detail` and the
+  song wiki (`/song/wiki/summary`: style, tags, language, BPM, similar songs).
+- **Checking pages with real data.** `foobar2000.exe /glasswave:open:<source>:<artist|album|playlist|song>:<id>`
   opens that page in the running window (`ui/dev_commands.cpp`), and the details band of the
   page on screen is written to the log when it changes ("page: ..."), so a page can be
   checked against the service without constructed data or screenshots.

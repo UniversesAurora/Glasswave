@@ -82,6 +82,8 @@ public:
     // added as reference lines. `lrc` stays empty when the song has none.
     bool GetLyrics(int64_t id, abort_callback& abort, std::wstring& lrc, std::wstring& error);
     bool GetArtistDetail(int64_t artistId, abort_callback& abort, Artist& out, std::wstring& error);
+    // The song's detail and, best effort, its wiki (style, tags, language, BPM, similar songs).
+    bool GetSongInfo(int64_t songId, abort_callback& abort, SongInfo& out, std::wstring& error);
     // The artist wiki's area and type, into `out` (best effort: a failed request leaves them
     // unknown).
     void GetArtistExtras(int64_t artistId, abort_callback& abort, Artist& out);

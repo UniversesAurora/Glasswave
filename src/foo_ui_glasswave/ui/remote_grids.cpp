@@ -1,6 +1,7 @@
 #include "pch.h"
 #include "ui/remote_grids.h"
 #include "ui/i18n.h"
+#include "ui/win7_menu.h"
 
 namespace glasswave::ui {
 
@@ -392,6 +393,104 @@ void PlaylistGridSource::RenamePlaylist(const stream::Id& playlist, const std::w
 void PlaylistGridSource::SetViewStyle(media::ViewStyle style) {
     m_style = style;
     Refilter();
+}
+
+// ---- a song's credits and similar songs ------------------------------------------------------
+
+SongInfoSource::SongInfoSource(stream::Provider& provider, const stream::SongDetails& details,
+                               std::wstring emptyText, OpenArtist openArtist)
+    : GridSource(details.credits.empty() && !details.similar.empty()
+                     ? std::vector<media::Column>{{L"Title", 280}, {L"Artist", 0, true}}
+                     : std::vector<media::Column>{{L"Name", 240}, {L"Role", 0, true}},
+                 std::move(emptyText)),
+      m_provider(provider),
+      m_openArtist(std::move(openArtist)) {
+    for (const auto& group : details.credits) {
+        m_groupTitles.push_back(group.title);
+        for (const auto& credit : group.credits) {
+            std::wstring roles;
+            for (const auto& role : credit.roles) {
+                if (!roles.empty()) roles += UsingChinese() ? L"、" : L", ";
+                roles += role;
+            }
+            m_lines.push_back({m_groupTitles.size() - 1, credit.name, std::move(roles), credit.artistId, {}});
+        }
+    }
+    if (!details.similar.empty()) {
+        m_groupTitles.push_back(Tr(L"Similar songs"));
+        for (const auto& track : details.similar)
+            m_lines.push_back({m_groupTitles.size() - 1, track.title, stream::JoinArtists(track.artists), {}, track.id});
+    }
+    Refilter();
+}
+
+std::wstring SongInfoSource::Cell(size_t row, size_t column) const {
+    return row < m_rows.size() ? ItemCell(m_rows[row], column) : std::wstring();
+}
+
+std::wstring SongInfoSource::ItemCell(size_t item, size_t column) const {
+    if (item >= m_lines.size()) return {};
+    return column == 0 ? m_lines[item].name : column == 1 ? m_lines[item].detail : std::wstring();
+}
+
+std::wstring SongInfoSource::Identity(size_t item) const {
+    const Line& line = m_lines[item];
+    return std::to_wstring(line.group) + L"|" + line.name + L"|" + line.trackId;
+}
+
+// One header line per group, over the rows the filter left (they keep the groups' order).
+const std::vector<media::RowGroup>* SongInfoSource::Groups() const {
+    m_groups.clear();
+    for (size_t row = 0; row < m_rows.size(); ++row) {
+        const size_t group = m_lines[m_rows[row]].group;
+        if (m_groups.empty() || m_groups.back().key != std::to_wstring(group)) {
+            media::RowGroup header;
+            header.key = std::to_wstring(group);
+            header.first = row;
+            header.header = m_groupTitles[group];
+            m_groups.push_back(std::move(header));
+        }
+        ++m_groups.back().count;
+    }
+    return &m_groups;
+}
+
+metadb_handle_ptr SongInfoSource::Item(size_t row) const {
+    if (row >= m_rows.size() || m_lines[m_rows[row]].trackId.empty()) return {};
+    return m_provider.TrackItem(m_lines[m_rows[row]].trackId);
+}
+
+void SongInfoSource::Activate(size_t row) {
+    if (row >= m_rows.size()) return;
+    const Line& line = m_lines[m_rows[row]];
+    if (!line.trackId.empty()) {
+        // The similar songs play as a list, from the one chosen.
+        metadb_handle_list items;
+        size_t start = 0;
+        for (size_t r = 0; r < m_rows.size(); ++r)
+            if (auto item = Item(r); item.is_valid()) {
+                if (r == row) start = items.get_count();
+                items.add_item(item);
+            }
+        if (items.get_count()) media::PlayItems(items, start);
+    } else if (!line.artistId.empty() && m_openArtist) {
+        m_openArtist(line.artistId, line.name);
+    }
+}
+
+void SongInfoSource::ContextMenu(HWND owner, POINT screen) {
+    auto items = SelectedItems();
+    if (items.get_count() == 0 && Focus() < m_rows.size())
+        if (auto item = Item(Focus()); item.is_valid()) items.add_item(item);
+    if (items.get_count()) RunContextMenu(owner, items, screen);
+}
+
+metadb_handle_list SongInfoSource::SelectedItems() const {
+    metadb_handle_list items;
+    for (size_t row = 0; row < m_rows.size(); ++row)
+        if (IsSelected(row))
+            if (auto item = Item(row); item.is_valid()) items.add_item(item);
+    return items;
 }
 
 }  // namespace glasswave::ui

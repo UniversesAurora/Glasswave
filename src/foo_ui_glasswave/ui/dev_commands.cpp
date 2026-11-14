@@ -7,7 +7,7 @@
 
 // Developer switch for checking pages with a service's real data without driving the UI:
 //
-//   foobar2000.exe /glasswave:open:<source>:<artist|album|playlist>:<id>
+//   foobar2000.exe /glasswave:open:<source>:<artist|album|playlist|song>:<id>
 //
 // opens that page of a source ("apple", "ncm") in the running window. The details band of the
 // page on screen is written to the log as it changes (MainWindow::LogDetail), so what the page
@@ -45,6 +45,8 @@ class OpenPageCommand : public commandline_handler {
             window->Open(AlbumView(*provider, id, {}));
         else if (kind == L"playlist")
             window->Open(PlaylistView(*provider, id, {}, std::nullopt));
+        else if (kind == L"song")
+            window->Open(SongView(*provider, id, {}));
         else
             netease::Log(L"dev: unknown page kind " + kind);
         return RESULT_PROCESSED;

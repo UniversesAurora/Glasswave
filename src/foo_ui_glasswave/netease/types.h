@@ -30,6 +30,20 @@ struct Song {
     int bitsPerSample = 0;
 };
 
+// One song's details for the song page: /song/detail and the song wiki (音乐百科).
+struct SongInfo {
+    Song song;
+    int disc = 0, number = 0;
+    int64_t publishTime = 0; // epoch milliseconds
+    std::vector<std::wstring> aliases; // alia and tns
+    int originCoverType = 0;           // 1 original, 2 cover
+    bool lossless = false, hiRes = false;
+    std::vector<std::wstring> styles, tags; // 曲风, 推荐标签
+    std::wstring language;
+    int bpm = 0;
+    std::vector<int64_t> similar; // the wiki's similar songs
+};
+
 // A NetEase playlist (created, subscribed or the liked "我喜欢的音乐" list).
 struct Playlist {
     int64_t id = 0;

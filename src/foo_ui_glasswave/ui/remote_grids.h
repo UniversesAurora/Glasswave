@@ -181,4 +181,43 @@ private:
     media::ViewStyle m_style = media::ViewStyle::Icons;
 };
 
+// The song page's list: the credits in the service's groups (a person and their roles), then
+// the similar songs (title and artist), as WMP 12's details grouped under header lines.
+// A credited person with an artist page opens it; a similar song plays from where it is.
+class SongInfoSource : public GridSource {
+public:
+    using OpenArtist = std::function<void(const stream::Id& artist, const std::wstring& name)>;
+    SongInfoSource(stream::Provider& provider, const stream::SongDetails& details, std::wstring emptyText,
+                   OpenArtist openArtist);
+
+    std::wstring ColumnSetKey() const override { return L"stream-song-info"; }
+    std::wstring Cell(size_t row, size_t column) const override;
+    const std::vector<media::RowGroup>* Groups() const override;
+    bool GroupArt() const override { return false; }
+    bool CanSort(size_t) const override { return false; }
+    bool SupportsViewStyle(media::ViewStyle style) const override { return style == media::ViewStyle::Details; }
+    metadb_handle_ptr Item(size_t row) const override;
+    void Activate(size_t row) override;
+    void ContextMenu(HWND owner, POINT screen) override;
+    metadb_handle_list SelectedItems() const override;
+
+private:
+    struct Line {
+        size_t group = 0;
+        std::wstring name, detail;
+        stream::Id artistId; // a credit with an artist page
+        stream::Id trackId;  // a similar song
+    };
+    size_t ItemCount() const override { return m_lines.size(); }
+    std::wstring ItemCell(size_t item, size_t column) const override;
+    std::wstring FilterText(size_t item) const override { return m_lines[item].name + L" " + m_lines[item].detail; }
+    std::wstring Identity(size_t item) const override;
+
+    stream::Provider& m_provider;
+    std::vector<std::wstring> m_groupTitles;
+    std::vector<Line> m_lines;
+    OpenArtist m_openArtist;
+    mutable std::vector<media::RowGroup> m_groups;
+};
+
 }  // namespace glasswave::ui

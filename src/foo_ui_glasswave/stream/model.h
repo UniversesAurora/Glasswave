@@ -109,6 +109,35 @@ struct Artist {
     bool operator==(const Artist&) const = default;
 };
 
+// Who made a song and what each did, in the service's own groups ("出演艺人", "作曲和作词",
+// "制作和工程" on Apple Music); titles and roles come localized from the service.
+struct Credit {
+    std::wstring name;
+    std::vector<std::wstring> roles;
+    Id artistId; // the service's artist page, when the person has one
+};
+struct CreditGroup {
+    std::wstring title;
+    std::vector<Credit> credits;
+};
+
+// Everything a service knows of one song, for the song page; an empty field is not shown.
+struct SongDetails {
+    Track track;            // title, album, artists, length
+    int disc = 0, number = 0;
+    std::wstring released;  // "YYYY-MM-DD" or as the service writes it
+    std::wstring language;  // as the service writes it ("国语", "zh-Hans-CN" read as a name)
+    std::wstring lyrics;    // untranslated UI key: Synced, Unsynced
+    std::wstring version;   // untranslated UI key: Original, Cover
+    std::wstring isrc;
+    std::wstring composer;  // as the service credits the composition, when it has no credits
+    int bpm = 0;
+    std::vector<std::wstring> genres, tags, aliases;
+    std::vector<std::wstring> traits; // untranslated UI keys, as Album::traits
+    std::vector<CreditGroup> credits;
+    std::vector<Track> similar;
+};
+
 // Gives `to` the profile of `from` (bio included), for a list row standing in for a record
 // that had been read in full.
 inline void CopyArtistProfile(const Artist& from, Artist& to) {
