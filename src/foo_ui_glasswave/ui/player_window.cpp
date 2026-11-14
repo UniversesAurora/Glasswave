@@ -1926,6 +1926,13 @@ void PlayerWindow::TogglePane(NowPlayingPane::Mode mode) {
 void PlayerWindow::ShowChrome(bool show) {
     if (show == m_chromeShown) return;
     m_chromeShown = show;
+    // Only the full screen hides the pointer with its chrome. Leaving it with the chrome away
+    // (Escape, a double click) used to keep the pointer hidden over the mini window.
+    const bool hideCursor = !show && m_mode == Mode::Full;
+    if (hideCursor != m_cursorHidden) {
+        m_cursorHidden = hideCursor;
+        SetCursor(hideCursor ? nullptr : LoadCursorW(nullptr, IDC_ARROW));
+    }
     auto& host = gfx::CompositionHost::Get();
     const auto& comp = host.Compositor();
     if (m_mode != Mode::Full) {
@@ -1963,8 +1970,6 @@ void PlayerWindow::ShowChrome(bool show) {
     slide(m_barLayer, 0, barH, 0);
     slide(m_capsLayer, 0, -topH, 0);
     slide(m_menuLayer, -menuW, 0, show ? 60 : 0);
-    m_cursorHidden = !show;
-    SetCursor(show ? LoadCursorW(nullptr, IDC_ARROW) : nullptr);
     if (!m_paneShown) UpdateLayout(true); // the cover and its lines take the room the menu left
 }
 
@@ -3595,7 +3600,7 @@ LRESULT PlayerWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
 
     case WM_SETCURSOR:
-        if (LOWORD(lp) == HTCLIENT && m_cursorHidden) {
+        if (LOWORD(lp) == HTCLIENT && m_cursorHidden && m_mode == Mode::Full) {
             SetCursor(nullptr);
             return TRUE;
         }
