@@ -67,7 +67,11 @@ heart, lyrics and queue 29x25, six apart. Every state change fades (the widgets'
 **Full screen** is Media Center's now-playing screen with its windowed-mode chrome: the back
 orb top left, minimize / restore / exit top right, the bottom bar with the controls at the
 right in WMC's order (lyrics, queue | stop, previous, play, next | mute, volume down, up) and
-the seek bar in the space left of them. Chrome and pointer leave after 3 s without movement.
+the seek bar in the space left of them. Chrome and pointer leave after 3 s without movement
+(the pointer only here: leaving the full screen brings it back, the mini window never hides
+it). The back orb is there only with the lyrics or the queue, a step back to the song: it
+slides down from above the screen in 520 ms (ease-out 0.16, 1, 0.3, 1; fading in over the
+first half) and goes back up in 300 ms (ease-in 0.5, 0, 0.85, 0.35).
 Without the pane the cover and the song's lines stand side by side as in WMC, the sung line of
 synced lyrics as the last of those lines (flush left, the lines' size, shrinking to 70 % before
 it is cut); with the pane the cover moves left and the pane lies on a card of Media Center's

@@ -78,6 +78,8 @@ constexpr float kSliderW = 80, kSliderH = 23, kSliderThumbMin = 11, kSliderThumb
 constexpr float kSeekThumbW = 16, kSeekThumbH = 9; // WMP's seek thumb (4058 / 3884 / 3883)
 constexpr int kSeekThumbInMs = 160, kSeekThumbOutMs = 280;
 constexpr int kMoveMs = 480, kFadeMs = 260;
+// Media Center's back orb coming down with the lyrics or the queue, and going back up.
+constexpr int kBackInMs = 520, kBackOutMs = 300;
 constexpr auto kEhres = win7::Module::Ehres;
 constexpr auto kWmploc = win7::Module::Wmploc;
 constexpr int kSwitchToLibrary = 4603; // wmploc: the "switch to library" corner glyph, 25x25
@@ -1230,11 +1232,13 @@ void PlayerWindow::CreateWidgets() {
         {})
         ->onClick = [this] {
         // Back is a step inside the full screen: from the lyrics or the queue to the song.
+        // Media Center's orb is there only for that step (SlideBack).
         if (m_mode == Mode::Full && m_paneShown && m_pane)
             SetPaneShown(false, m_pane->CurrentMode());
         else
             Close();
     };
+    WidgetById(kLibrary)->enabled = [this] { return !Wmc() || m_paneShown; };
     // Media Center's own caption buttons, top right of the full screen.
     add(kMinimize, m_capsLayer, [](auto* dc, D2D1_SIZE_F s, Layer l) { DrawControl(dc, s, L"MINIMIZE", l); }, {})
         ->onClick = [this] { ShowWindow(m_hwnd, SW_MINIMIZE); };
@@ -1903,6 +1907,45 @@ void PlayerWindow::SetPaneShown(bool shown, NowPlayingPane::Mode mode) {
         if (auto* w = WidgetById(id)) w->Invalidate();
 }
 
+// Media Center's back orb belongs to the lyrics and the queue: when one of them opens it
+// slides down from above the screen, quickly out of the top and softly into place, and when
+// the song returns it goes back up the way it came. Out of sight it is transparent and takes
+// no clicks; Widget::SetBounds keeps placing it, which the running slide overrides.
+void PlayerWindow::SlideBack(bool animate) {
+    auto* w = WidgetById(kLibrary);
+    if (!w) return;
+    const bool in = !Wmc() || m_paneShown;
+    const RECT& b = w->Bounds();
+    const wuc::Visual v = w->Visual();
+    const float3 at{static_cast<float>(b.left), static_cast<float>(b.top), 0};
+    const float3 above{at.x, -static_cast<float>(b.bottom - b.top) - Px(8), 0};
+    // Only the pane's coming and going slides it; entering or leaving the full screen sets it.
+    const bool slide = animate && m_shown && !Empty(b) && Wmc() == m_backWmc;
+    m_backWmc = Wmc();
+    if (in == m_backIn) return;
+    m_backIn = in;
+    v.StopAnimation(L"Offset");
+    v.StopAnimation(L"Opacity");
+    v.Offset(at);
+    if (!slide) {
+        v.Opacity(in ? 1.0f : 0.0f);
+        return;
+    }
+    const auto& comp = gfx::CompositionHost::Get().Compositor();
+    const auto ease = in ? comp.CreateCubicBezierEasingFunction({0.16f, 1.0f}, {0.3f, 1.0f})
+                         : comp.CreateCubicBezierEasingFunction({0.5f, 0.0f}, {0.85f, 0.35f});
+    auto move = comp.CreateVector3KeyFrameAnimation();
+    move.InsertKeyFrame(0.0f, in ? above : at);
+    move.InsertKeyFrame(1.0f, in ? at : above, ease);
+    move.Duration(Ms(in ? kBackInMs : kBackOutMs));
+    v.StartAnimation(L"Offset", move);
+    auto fade = comp.CreateScalarKeyFrameAnimation();
+    fade.InsertKeyFrame(0.0f, in ? 0.0f : 1.0f);
+    fade.InsertKeyFrame(1.0f, in ? 1.0f : 0.0f, ease);
+    fade.Duration(Ms(in ? kBackInMs / 2 : kBackOutMs));
+    v.StartAnimation(L"Opacity", fade);
+}
+
 // Sizes the mini window over a few frames, quick at first and soft at the end.
 void PlayerWindow::AnimateWindowTo(const RECT& target) {
     GetWindowRect(m_hwnd, &m_sizeFrom);
@@ -2199,7 +2242,8 @@ void PlayerWindow::UpdateLayout(bool animate) {
         L.timeLeft = {PxI(20), cy - PxI(9), PxI(20 + 52), cy + PxI(9)};
         L.timeRight = {x - PxI(52), cy - PxI(9), x, cy + PxI(9)};
         L.seek = {L.timeLeft.right + PxI(2), cy - PxI(12), L.timeRight.left - PxI(2), cy + PxI(12)};
-        if (m_paneShown) L.library = {PxI(14), PxI(8), PxI(14 + 42), PxI(8 + 42)}; // back to the song
+        // Back to the song: placed always, shown only with the lyrics or the queue (SlideBack).
+        L.library = {PxI(14), PxI(8), PxI(14 + 42), PxI(8 + 42)};
         L.exit = {W - PxI(12 + 29), PxI(10), W - PxI(12), PxI(10 + 24)};
         L.restore = {L.exit.left - PxI(29), L.exit.top, L.exit.left, L.exit.bottom};
         L.minimize = {L.restore.left - PxI(29), L.exit.top, L.restore.left, L.exit.bottom};
@@ -2475,6 +2519,7 @@ void PlayerWindow::UpdateLayout(bool animate) {
         }
         w->SetBounds(r, m_scale);
     }
+    SlideBack(animate);
     if (m_splitVolume) {
         const RECT pr{L.mute.left, L.mute.top, L.volArrow.right, L.mute.bottom};
         Place(m_splitPlate, pr);

@@ -144,6 +144,7 @@ class PlayerWindow {
     void ReadTrack();
     void RequestArt();
     void SetPaneShown(bool shown, NowPlayingPane::Mode mode);
+    void SlideBack(bool animate); // Media Center's back orb in or out with the pane
     void TogglePane(NowPlayingPane::Mode mode);
     void ShowChrome(bool show);
     void ArmHideTimer();
@@ -166,6 +167,7 @@ class PlayerWindow {
     bool m_shown = false, m_active = true;
     Mode m_mode = Mode::Mini;
     bool m_paneShown = false;
+    bool m_backIn = true, m_backWmc = false; // SlideBack: the orb in place; under WMC's controls
     RECT m_miniRect{}; // screen px, remembered between visits
     bool m_haveMiniRect = false;
     SIZE m_client{};
