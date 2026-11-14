@@ -1,5 +1,5 @@
 #include "lyrics/script_host.h"
-#include "netease/http_request.h"
+#include "net/http_request.h"
 #include <algorithm>
 #include <filesystem>
 #include <iostream>
@@ -49,7 +49,7 @@ ScriptResponse Fetch(const ScriptRequest& input) {
     WinHttpSetTimeouts(session.value, 5000, 5000, input.timeoutMs, input.timeoutMs);
     Handle connection{WinHttpConnect(session.value, host.c_str(), parts.nPort, 0)};
     Event abort;
-    glasswave::netease::detail::HttpRequest request(WinHttpOpenRequest(
+    glasswave::net::detail::HttpRequest request(WinHttpOpenRequest(
         connection.value, method.c_str(), path.c_str(), nullptr, WINHTTP_NO_REFERER,
         WINHTTP_DEFAULT_ACCEPT_TYPES, parts.nScheme == INTERNET_SCHEME_HTTPS ? WINHTTP_FLAG_SECURE : 0));
     if (!request) throw std::runtime_error("Cannot create HTTP request");

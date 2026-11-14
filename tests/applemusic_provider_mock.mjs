@@ -2272,15 +2272,13 @@ async function dispatchApple(method, rawPath, body) {
         if (path === `/v1/catalog/US/playlists/${playlistCatalog}`) {
             isolation.catalogPlaylistReads++;
             const actualKeys = [...params.keys()].sort().join('|');
-            const legacyKeys = ['include', 'include[songs]', 'l'].sort().join('|');
-            const pagedKeys = ['include', 'include[songs]', 'limit', 'l'].sort().join('|');
+            // Apple answers a resource request carrying "limit" with 400 ("Limit may not be
+            // supplied on this request", observed 2026-11-13).
+            const detailKeys = ['include', 'include[songs]', 'l'].sort().join('|');
             const artworkKeys = ['l'].sort().join('|');
-            const legacy = actualKeys === legacyKeys;
-            const paged = actualKeys === pagedKeys &&
-                Number.isSafeInteger(Number(params.get('limit'))) &&
-                Number(params.get('limit')) >= 1 && Number(params.get('limit')) <= 100;
+            const detail = actualKeys === detailKeys;
             const artwork = actualKeys === artworkKeys;
-            if ((!legacy && !paged && !artwork) ||
+            if ((!detail && !artwork) ||
                 (actualKeys !== artworkKeys &&
                  (params.get('include') !== 'tracks,catalog,artists' ||
                   params.get('include[songs]') !== 'albums')) ||
@@ -2901,6 +2899,12 @@ const server = http.createServer(async (req, res) => {
     }
     if (req.method === 'POST' && url.pathname === '/api/v1/drm/logout') {
         reply(res, 200, { ok: true });
+        return;
+    }
+    // The dev instance's current track may ask for lyrics while the contract runs; that is
+    // not a provider operation, so it is answered with no results instead of being counted.
+    if (req.method === 'POST' && url.pathname === '/api/v1/glasswave/lyrics') {
+        reply(res, 200, { results: [] });
         return;
     }
     // foobar2000 owns playback-state restoration. This library fixture has no audio.

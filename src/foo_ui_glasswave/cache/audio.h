@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 
@@ -66,7 +67,23 @@ struct Request {
     Fetcher fetch;
     Workload workload = Workload::Inherit;
     bool persistent = true;
+    // Only use what is already there: a complete cached generation or a running transfer of
+    // this key. Never starts one (fetch is not called); a miss returns admitted=false.
+    bool cachedOnly = false;
 };
+
+// The source a track resolved to the last time it was opened: whatever its input needs to
+// name the cache entry again (level, codec, bit rate, ...), as a small opaque text. A track
+// that is in the cache can then be opened without asking the service which source it would
+// deliver, so cached music starts at once and plays without a connection. `request` is what
+// was asked for (the quality setting), so another setting resolves afresh. Scoped to the
+// current account; never contains a URL or a credential. Call from a decode worker.
+std::optional<std::string> RecallSource(const std::string& provider, const std::string& identity,
+                                        const std::string& request);
+void RememberSource(const std::string& provider, const std::string& identity, const std::string& request,
+                    std::string description);
+void ForgetSource(const std::string& provider, const std::string& identity,
+                  const std::string& request) noexcept;
 
 struct Opened {
     file::ptr stream;

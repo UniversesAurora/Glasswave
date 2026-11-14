@@ -5,9 +5,11 @@
 #include "applemusic/config.h"
 #include "applemusic/handle.h"
 #include "applemusic/playback_log.h"
+#include "applemusic/stream_provider.h"
 #include "cache/audio.h"
-#include "netease/http.h"
+#include "net/http.h"
 #include "netease/json.h"
+#include "stream/playback_source.h"
 
 #include <SDK/input_impl.h>
 
@@ -56,7 +58,7 @@ struct SessionCleanup {
         try {
             const std::wstring cleanupBridge = bridge.empty() ? BridgeUrl() : bridge;
             const std::string cleanupToken = token.empty() ? BridgeToken() : token;
-            netease::HttpOptions options;
+            net::HttpOptions options;
             options.method = L"DELETE";
             options.noProxy = true;
             options.timeoutMs = 1000;
@@ -67,7 +69,7 @@ struct SessionCleanup {
                     L"X-Glasswave-Probe-Transaction",
                     pfc::stringcvt::string_wide_from_utf8(transactionTag.c_str()).get_ptr());
             abort_callback_dummy abort;
-            netease::SendHttp(cleanupBridge + L"/api/v1/playback/" + Encode(session), options, abort);
+            net::SendHttp(cleanupBridge + L"/api/v1/playback/" + Encode(session), options, abort);
         } catch (...) {
         }
     }
@@ -130,6 +132,59 @@ std::string AppleSourceVersion(const Object& session, std::wstring_view containe
     return value.str();
 }
 
+// What a playback session said it delivers: everything that names the song's cache entry and
+// that the decoder is checked against. Remembered per song (cache::audio::RememberSource) so
+// a cached song opens without a new session.
+struct DeliveredSource {
+    std::wstring asset, codec, extension, spatial, mime;
+    std::string sourceVersion;
+    int durationMs = 0, sampleRate = 0, bitDepth = 0, bitRate = 0, channels = 0;
+
+    bool ValidCodec() const {
+        return codec == L"alac" || codec == L"aac" || codec == L"mp3" || codec == L"atmos";
+    }
+    std::string ContentType() const {
+        if (!mime.empty() && mime.starts_with(L"audio/")) return Utf8(mime);
+        return codec == L"atmos" ? "audio/eac3" : codec == L"mp3" ? "audio/mpeg" : "audio/mp4";
+    }
+    std::string Memo() const {
+        std::string out;
+        for (const std::string& field :
+             {Utf8(asset), Utf8(codec), Utf8(extension), Utf8(spatial), Utf8(mime), sourceVersion,
+              std::to_string(durationMs), std::to_string(sampleRate), std::to_string(bitDepth),
+              std::to_string(bitRate), std::to_string(channels)}) {
+            out += field;
+            out += '\n';
+        }
+        return out;
+    }
+    bool Parse(const std::string& memo) {
+        std::vector<std::string> fields;
+        for (size_t start = 0; start < memo.size();) {
+            const size_t end = memo.find('\n', start);
+            if (end == std::string::npos) return false;
+            fields.push_back(memo.substr(start, end - start));
+            start = end + 1;
+        }
+        if (fields.size() != 11) return false;
+        const auto wide = [](const std::string& text) {
+            return std::wstring(pfc::stringcvt::string_wide_from_utf8(text.c_str()).get_ptr());
+        };
+        asset = wide(fields[0]);
+        codec = wide(fields[1]);
+        extension = wide(fields[2]);
+        spatial = wide(fields[3]);
+        mime = wide(fields[4]);
+        sourceVersion = fields[5];
+        durationMs = std::atoi(fields[6].c_str());
+        sampleRate = std::atoi(fields[7].c_str());
+        bitDepth = std::atoi(fields[8].c_str());
+        bitRate = std::atoi(fields[9].c_str());
+        channels = std::atoi(fields[10].c_str());
+        return !asset.empty() && ValidCodec() && durationMs > 0;
+    }
+};
+
 } // namespace
 
 // A session owns encoded media only. Its consumer is always the core's input decoder.
@@ -140,6 +195,7 @@ class AppleInput : public input_stubs {
     void open(file::ptr, const char* path, t_input_open_reason reason, abort_callback&) {
         if (reason == input_open_info_write) throw exception_tagging_unsupported();
         if (!ParseSongPath(path, m_id)) throw exception_io_data("Invalid Apple Music track");
+        m_path = path;
         m_cacheKey = {};
     }
 
@@ -177,6 +233,7 @@ class AppleInput : public input_stubs {
 
     void decode_initialize(unsigned flags, abort_callback& abort) {
         m_flags = flags;
+        stream::AnnouncePlaybackOpening(m_path, flags);
         const auto log_failure = [this](std::string_view stage, std::string_view error_class,
                                         const std::string_view error) noexcept {
             playback_log::Failure(m_id, stage, m_positionSeconds, error_class, error);
@@ -243,99 +300,130 @@ class AppleInput : public input_stubs {
             };
 
             std::string transactionTag = ProbeTransactionTag();
-            Object session;
-            try {
-                session = open_session(asset);
-            } catch (const BridgeHttpError& error) {
-                if (error.status() != 404 || !song || song->libraryId.empty() || song->catalogId.empty() ||
-                    asset != song->catalogId) {
-                    throw;
-                }
-                const auto mapping = ResolveLibraryPlaybackMapping(song->libraryId, song->catalogId, abort);
-                if (!mapping) throw;
-                asset = mapping->reportingId;
-                session = open_session(asset);
-            }
-            const std::wstring sessionId = json::GetString(session, L"sessionId");
-            std::wstring bridge;
-            std::string token;
-            std::shared_ptr<SessionCleanup> cleanup;
-            if (!sessionId.empty()) {
-                cleanup = std::make_shared<SessionCleanup>();
-                cleanup->transactionTag = std::move(transactionTag);
-                cleanup->session = sessionId;
-                bridge = BridgeUrl();
-                token = BridgeToken();
-                cleanup->bridge = bridge;
-                cleanup->token = token;
-            }
-            m_durationMs = json::GetInt(session, L"durationMs");
-            const int declaredSampleRate = json::GetInt(session, L"sampleRate");
-            const int declaredBitDepth = json::GetInt(session, L"bitDepth");
-            const int declaredBitRate = json::GetInt(session, L"bitRate");
-            const int declaredChannels = json::GetInt(session, L"channelCount");
-            const auto streams = json::GetObject(session, L"streams");
-            const std::wstring audio = streams ? json::GetString(*streams, L"audio") : std::wstring();
-            const std::wstring expected = L"/api/v1/playback/" + Encode(sessionId) + L"/audio";
-            const std::wstring codec = json::GetString(session, L"codec");
-            if (sessionId.empty() || m_durationMs <= 0 || audio != expected ||
-                (codec != L"alac" && codec != L"aac" && codec != L"mp3" && codec != L"atmos"))
-                throw exception_io_data("Apple Music returned an invalid full-song session");
-            if (song && song->track.durationMs > 0 &&
-                static_cast<double>(m_durationMs) / 1000.0 + kFullSongDurationToleranceSeconds <
-                    static_cast<double>(song->track.durationMs) / 1000.0)
-                throw exception_io_data("Apple Music returned an incomplete full-song session");
-            const bool mp3 = codec == L"mp3";
-            const bool spatial = codec == L"atmos";
-            if (spatial && !rendererAvailable)
-                throw exception_io_data("The Dolby Atmos renderer is unavailable");
-            const std::wstring declaredContainer = json::GetString(session, L"container");
-            const std::wstring declaredExtension = json::GetString(session, L"extension");
-            const std::wstring spatialAudio = json::GetString(session, L"spatialAudio");
-            const std::wstring declaredMime = json::GetString(session, L"codecMimeType");
-            const std::string extension = AppleExtension(codec, declaredExtension);
-            const std::string contentType = !declaredMime.empty() && declaredMime.starts_with(L"audio/")
-                                                ? Utf8(declaredMime)
-                                            : spatial ? "audio/eac3"
-                                            : mp3     ? "audio/mpeg"
-                                                      : "audio/mp4";
-            m_decodePath = "apple://decode/stream." + extension;
-
-            cache::audio::Source source;
-            source.provider = "apple";
+            const std::string memoIdentity = Utf8(m_id);
+            m_sourceRequest = preferAtmos ? "atmos" : "stereo";
             bool persistent = true;
-            try {
-                source.accountScope = cache::AccountScope(source.provider);
-            } catch (...) {
-                persistent = false;
-                source.accountScope = "ephemeral-" + std::to_string(GetCurrentProcessId());
-            }
-            source.identity = Utf8(asset);
-            source.quality = AppleQuality(codec, declaredSampleRate, declaredBitDepth, declaredBitRate,
-                                          declaredChannels, spatialAudio);
-            source.codec = Lower(codec);
-            source.sourceVersion = AppleSourceVersion(session, declaredContainer, declaredExtension,
-                                                      declaredMime, spatialAudio, m_durationMs);
-            m_cacheKey = cache::audio::MakeKey(std::move(source));
 
-            cache::Metadata metadata;
-            metadata.contentType = contentType;
-            metadata.validatedAt = cache::Store::Now();
-            metadata.extra = "schema=audio-v1;producer=" + std::string(cache::audio::kProducerSalt) +
-                             ";codec=" + Lower(codec) + ";quality=" +
-                             AppleQuality(codec, declaredSampleRate, declaredBitDepth, declaredBitRate,
-                                          declaredChannels, spatialAudio);
-            cache::audio::Request transfer;
-            transfer.key = m_cacheKey;
-            transfer.metadata = std::move(metadata);
-            transfer.fetch = AppleEncodedFetch{Utf8(bridge + audio + (spatial ? L"?container=ec3" : L"")),
-                                               token, std::move(cleanup)};
-            transfer.persistent = persistent;
-            auto opened = cache::audio::OpenOrStart(std::move(transfer), abort);
-            if (!opened.admitted || !opened.stream.is_valid())
-                throw exception_io_data("Audio prefetch capacity is full");
-            m_source = std::move(opened.stream);
-            m_flight = std::move(opened.flight);
+            // Names the cache entry of one delivered source and opens it: from the cache, by
+            // joining its running transfer, or (with a fetcher) by starting the download.
+            const auto openSource = [&](const DeliveredSource& delivered, cache::audio::Fetcher fetch) {
+                cache::audio::Source source;
+                source.provider = "apple";
+                persistent = true;
+                try {
+                    source.accountScope = cache::AccountScope(source.provider);
+                } catch (...) {
+                    persistent = false;
+                    source.accountScope = "ephemeral-" + std::to_string(GetCurrentProcessId());
+                }
+                const std::string quality =
+                    AppleQuality(delivered.codec, delivered.sampleRate, delivered.bitDepth, delivered.bitRate,
+                                 delivered.channels, delivered.spatial);
+                source.identity = Utf8(delivered.asset);
+                source.quality = quality;
+                source.codec = Lower(delivered.codec);
+                source.sourceVersion = delivered.sourceVersion;
+                const cache::Key key = cache::audio::MakeKey(std::move(source));
+
+                cache::Metadata metadata;
+                metadata.contentType = delivered.ContentType();
+                metadata.validatedAt = cache::Store::Now();
+                metadata.extra = "schema=audio-v1;producer=" + std::string(cache::audio::kProducerSalt) +
+                                 ";codec=" + Lower(delivered.codec) + ";quality=" + quality;
+                cache::audio::Request transfer;
+                transfer.key = key;
+                transfer.metadata = std::move(metadata);
+                transfer.cachedOnly = !fetch;
+                transfer.fetch = std::move(fetch);
+                transfer.persistent = persistent;
+                auto opened = cache::audio::OpenOrStart(std::move(transfer), abort);
+                if (!opened.admitted || !opened.stream.is_valid()) return false;
+                m_cacheKey = key;
+                m_source = std::move(opened.stream);
+                m_flight = std::move(opened.flight);
+                return true;
+            };
+
+            // A song that is already in the cache starts from it at once: a playback session
+            // is opened with the service only when there is nothing to play yet.
+            DeliveredSource delivered;
+            bool fromCache = false;
+            if (transactionTag.empty()) {
+                if (const auto remembered = cache::audio::RecallSource("apple", memoIdentity, m_sourceRequest)) {
+                    DeliveredSource known;
+                    if (known.Parse(*remembered) && (known.codec != L"atmos" || rendererAvailable) &&
+                        openSource(known, {})) {
+                        delivered = std::move(known);
+                        fromCache = true;
+                    }
+                }
+            }
+            if (!fromCache) {
+                Object session;
+                try {
+                    session = open_session(asset);
+                } catch (const BridgeHttpError& error) {
+                    if (error.status() != 404 || !song || song->libraryId.empty() ||
+                        song->catalogId.empty() || asset != song->catalogId) {
+                        throw;
+                    }
+                    const auto mapping =
+                        ResolveLibraryPlaybackMapping(song->libraryId, song->catalogId, abort);
+                    if (!mapping) throw;
+                    asset = mapping->reportingId;
+                    session = open_session(asset);
+                }
+                const std::wstring sessionId = json::GetString(session, L"sessionId");
+                std::wstring bridge;
+                std::string token;
+                std::shared_ptr<SessionCleanup> cleanup;
+                if (!sessionId.empty()) {
+                    cleanup = std::make_shared<SessionCleanup>();
+                    cleanup->transactionTag = std::move(transactionTag);
+                    cleanup->session = sessionId;
+                    bridge = BridgeUrl();
+                    token = BridgeToken();
+                    cleanup->bridge = bridge;
+                    cleanup->token = token;
+                }
+                delivered.asset = asset;
+                delivered.durationMs = json::GetInt(session, L"durationMs");
+                delivered.sampleRate = json::GetInt(session, L"sampleRate");
+                delivered.bitDepth = json::GetInt(session, L"bitDepth");
+                delivered.bitRate = json::GetInt(session, L"bitRate");
+                delivered.channels = json::GetInt(session, L"channelCount");
+                delivered.codec = json::GetString(session, L"codec");
+                delivered.extension = json::GetString(session, L"extension");
+                delivered.spatial = json::GetString(session, L"spatialAudio");
+                delivered.mime = json::GetString(session, L"codecMimeType");
+                const auto streams = json::GetObject(session, L"streams");
+                const std::wstring audio = streams ? json::GetString(*streams, L"audio") : std::wstring();
+                const std::wstring expected = L"/api/v1/playback/" + Encode(sessionId) + L"/audio";
+                if (sessionId.empty() || delivered.durationMs <= 0 || audio != expected || !delivered.ValidCodec())
+                    throw exception_io_data("Apple Music returned an invalid full-song session");
+                if (song && song->track.durationMs > 0 &&
+                    static_cast<double>(delivered.durationMs) / 1000.0 + kFullSongDurationToleranceSeconds <
+                        static_cast<double>(song->track.durationMs) / 1000.0)
+                    throw exception_io_data("Apple Music returned an incomplete full-song session");
+                if (delivered.codec == L"atmos" && !rendererAvailable)
+                    throw exception_io_data("The Dolby Atmos renderer is unavailable");
+                delivered.sourceVersion =
+                    AppleSourceVersion(session, json::GetString(session, L"container"), delivered.extension,
+                                       delivered.mime, delivered.spatial, delivered.durationMs);
+                if (!openSource(delivered,
+                                AppleEncodedFetch{Utf8(bridge + audio +
+                                                       (delivered.codec == L"atmos" ? L"?container=ec3" : L"")),
+                                                  token, std::move(cleanup)}))
+                    throw exception_io_data("Audio prefetch capacity is full");
+                if (persistent && ProbeTransactionTag().empty())
+                    cache::audio::RememberSource("apple", memoIdentity, m_sourceRequest, delivered.Memo());
+            }
+            m_durationMs = delivered.durationMs;
+            const std::wstring& codec = delivered.codec;
+            const int declaredSampleRate = delivered.sampleRate;
+            const int declaredBitDepth = delivered.bitDepth;
+            const bool spatial = codec == L"atmos";
+            m_decodePath = "apple://decode/stream." + AppleExtension(codec, delivered.extension);
             m_flags = flags;
             if (spatial) {
                 const auto output = GetAtmosOutput();
@@ -578,8 +666,10 @@ class AppleInput : public input_stubs {
             if (!song->track.album.empty()) out.meta_set("album", Utf8(song->track.album).c_str());
             if (!m_decoder.is_valid() && song->track.durationMs > 0)
                 out.set_length(static_cast<double>(song->track.durationMs) / 1000.0);
-        } else if (!out.meta_get("title", 0)) {
-            out.meta_set("title", Utf8(L"Apple Music " + m_id).c_str());
+        } else {
+            // Read in the background and published to the metadata of every view showing it.
+            StreamProvider::Get().RequestUnknownSong(m_id);
+            if (!out.meta_get("title", 0)) out.meta_set("title", Utf8(L"Apple Music " + m_id).c_str());
         }
     }
 
@@ -593,11 +683,21 @@ class AppleInput : public input_stubs {
     }
 
     void InvalidateCache() noexcept {
-        if (!m_cacheKey.identity.empty()) cache::audio::Invalidate(m_cacheKey);
+        if (m_cacheKey.identity.empty()) return;
+        cache::audio::Invalidate(m_cacheKey);
+        // The remembered source led to bytes the decoder rejected: open a session next time.
+        if (!m_sourceRequest.empty()) {
+            try {
+                cache::audio::ForgetSource("apple", Utf8(m_id), m_sourceRequest);
+            } catch (...) {
+            }
+        }
     }
 
     stream::Id m_id;
+    std::string m_path;
     cache::Key m_cacheKey;
+    std::string m_sourceRequest; // what was asked for (stereo or Atmos) when this opened
     std::string m_decodePath;
     int m_durationMs = 0;
     double m_positionSeconds = 0;

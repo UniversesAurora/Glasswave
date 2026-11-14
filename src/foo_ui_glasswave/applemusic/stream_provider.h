@@ -27,15 +27,12 @@ class StreamProvider final : public stream::Provider {
 
     std::wstring_view Key() const override { return L"apple"; }
     std::wstring Name() const override { return L"Apple Music"; }
-    std::wstring PlaylistText(std::wstring_view english) const override;
+    std::wstring Wording(std::wstring_view english) const override;
+    std::wstring_view TextContext() const override { return L"Apple Music"; }
     std::wstring ArtistTracksLabel(const stream::Id& artist) const override;
     std::vector<stream::ArtistSection> ArtistSections(const stream::Id& artist) const override;
     std::vector<stream::ListKind> CatalogSearchKinds() const override;
-    bool SupportsCatalogSearchSuggestions() const override { return true; }
-    Features Offers() const override;
-    std::wstring LibraryActionText(stream::LibraryAction action) const override;
-    std::wstring LibraryStateText(bool saved) const override;
-    std::wstring ArtistPreferenceActionText(stream::ArtistPreferenceAction action) const override;
+    stream::Capabilities Offers() const override;
     bool IsAlbumSaved(const stream::Id& album) const override;
     std::optional<bool> PlaylistSavedState(const stream::Id& playlist) const override;
     std::optional<bool> ArtistPreferenceState(const stream::Id& artist) const override;
@@ -53,13 +50,18 @@ class StreamProvider final : public stream::Provider {
 
     stream::Id TrackId(const metadb_handle_ptr& item) const override;
     std::wstring Lyrics(const stream::Id& track, abort_callback& abort) override;
-    bool HasNativeLyrics() const override { return true; }
     metadb_handle_ptr TrackItem(const stream::Id& track) const override;
     std::optional<stream::Track> FindTrack(const stream::Id& track) const override;
+    stream::Id AlbumOfTrack(const stream::Id& track) const override;
+    // A song the catalog does not know (a queue from an earlier run, a list not opened in this
+    // one) is read in a batch with the others asked for meanwhile and published to foobar2000's
+    // metadata, so every view gets its name and album. A failed read is asked again later.
+    // Any thread.
+    void RequestUnknownSong(const stream::Id& track) const;
     metadb_handle_ptr ArtItem(stream::ArtKind kind, const stream::Id& id) const override;
     bool SameCover(std::wstring_view a, std::wstring_view b) const override;
 
-    bool IsFavorite(const stream::Id& track) const override;
+    bool ReadFavorite(const stream::Id& track) const override;
     std::vector<stream::Playlist> Playlists(stream::Shelf shelf) const override;
     std::optional<stream::Shelf> ShelfOf(const stream::Id& playlist) const override;
     std::vector<stream::Artist> FollowedArtists() const override;
@@ -93,7 +95,7 @@ class StreamProvider final : public stream::Provider {
 
     // These write routes mirror the private Apple Music current-web contract. They are not
     // a documented stable API and have not been exercised against a real account here.
-    void SetFavorite(const stream::Id& track, bool favorite, Done done = {}) override;
+    void WriteFavorite(const stream::Id& track, bool favorite, Done done) override;
     void SetFollowed(const stream::Id& artist, bool follow, Done done = {}) override;
     void SetAlbumSaved(const stream::Id& album, bool saved, Done done = {}) override;
     void SetPlaylistSaved(const stream::Id& playlist, bool saved, Done done = {}) override;
@@ -322,8 +324,20 @@ class StreamProvider final : public stream::Provider {
     bool m_favoriteBindingReadInFlight = false;
     std::vector<FavoritePageWaiter> m_favoritePageWaiters;
     std::vector<Song> m_librarySongs;
+    std::chrono::steady_clock::time_point m_librarySongsAt{}; // when m_librarySongs was read
+    // RequestUnknownSong: ids waiting for the next batch, and when each was last asked for.
+    mutable std::mutex m_unknownMutex;
+    mutable std::set<stream::Id> m_unknownSongs;
+    mutable std::unordered_map<stream::Id, std::chrono::steady_clock::time_point> m_unknownAsked;
+    mutable bool m_unknownQueued = false;
+    void ReadUnknownSongs() const;
+    // The library's songs for the lists derived from them (genres, composers and their songs):
+    // the copy read within the library window, else one read shared by every such list. Worker.
+    std::vector<Song> RecentLibrarySongs(uint64_t generation, abort_callback& abort);
     std::vector<Song> m_favoriteSongs;
     std::set<stream::Id> m_favoriteIds;
+    int64_t m_favoriteIdsCheckedAt = 0; // when the ids were last read from the service
+    void SaveFavoriteIdsAsync();
     bool m_librarySongsLoaded = false;
     bool m_favoriteSongsLoaded = false;
 };

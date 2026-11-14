@@ -4,7 +4,7 @@
 #include <winhttp.h>
 #include <atomic>
 
-namespace glasswave::netease::detail {
+namespace glasswave::net::detail {
 
 // Owns an asynchronous WinHTTP request and its callback context. Callers can expose a
 // blocking interface by waiting on completion plus an abort event. Context storage stays
@@ -101,4 +101,4 @@ class HttpRequest {
     bool m_callbacks = false;
     std::atomic<DWORD> m_error = 0, m_available = 0, m_read = 0;
 };
-} // namespace glasswave::netease::detail
+} // namespace glasswave::net::detail

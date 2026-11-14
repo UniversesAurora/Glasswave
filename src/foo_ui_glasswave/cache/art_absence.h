@@ -7,7 +7,9 @@
 #include <mutex>
 
 namespace glasswave::cache::art_absence {
-inline constexpr int64_t kFreshSeconds = 300;
+// A picture the service confirmed absent is not asked for again for a day, also across
+// restarts; an explicit refresh (Invalidate) asks at once.
+inline constexpr int64_t kFreshSeconds = 24 * 60 * 60;
 struct Entry {
     uint64_t account = 0;
     int64_t checked = 0;
@@ -67,10 +69,7 @@ inline bool KnownMissing(const ImageIdentity& identity) {
         const auto checked = record->Info().validatedAt;
         const auto now = Store::Now();
         if (checked <= 0 || now < checked || now - checked >= kFreshSeconds) return false;
-        Remember(identity, account, checked, epoch);
-        // First demand after a process restart revalidates in the existing background
-        // resolver. The persisted negative remains the visible placeholder meanwhile.
-        return false;
+        return Remember(identity, account, checked, epoch);
     } catch (...) {
         return false;
     }

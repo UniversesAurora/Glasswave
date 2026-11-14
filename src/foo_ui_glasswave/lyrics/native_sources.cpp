@@ -113,6 +113,7 @@ class SidecarSearcher final : public Searcher {
         candidate.source = Name();
         candidate.sourceKey = Key();
         candidate.lrc = std::move(text);
+        candidate.file = path.wstring();
         candidate.confidence = 100;
         found(std::move(candidate));
     }
@@ -187,7 +188,7 @@ void Start() {
     g_builtins.push_back(std::make_shared<EmbeddedSearcher>());
     g_builtins.push_back(std::make_shared<SidecarSearcher>());
     for (auto* provider : stream::Providers()) {
-        if (!provider || !provider->HasNativeLyrics()) continue;
+        if (!provider || !provider->Can(stream::Capability::NativeLyrics)) continue;
         g_builtins.push_back(std::make_shared<ProviderSearcher>(*provider));
     }
     for (const auto& searcher : g_builtins)

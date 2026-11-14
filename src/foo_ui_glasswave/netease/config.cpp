@@ -9,9 +9,6 @@ namespace {
 
 // {3B8E6C21-9F4A-4D7C-A251-6E8B3D1F7C90}
 cfg_var_modern::cfg_int cfg_quality({0x3b8e6c21, 0x9f4a, 0x4d7c, {0xa2, 0x51, 0x6e, 0x8b, 0x3d, 0x1f, 0x7c, 0x90}}, 0);
-// {2F8C4A91-6D3E-4B7A-8E15-3C7F9A2D6B40}
-cfg_var_modern::cfg_int cfg_coverCacheMb({0x2f8c4a91, 0x6d3e, 0x4b7a, {0x8e, 0x15, 0x3c, 0x7f, 0x9a, 0x2d, 0x6b, 0x40}},
-                                         kCoverCacheDefaultMb);
 // {7C4D2E91-3A6B-4F18-9D72-5E1C8A4B6F23}
 cfg_var_modern::cfg_string cfg_service_url({0x7c4d2e91, 0x3a6b, 0x4f18, {0x9d, 0x72, 0x5e, 0x1c, 0x8a, 0x4b, 0x6f, 0x23}}, "");
 // {1F9A7C53-6E2D-4B80-853F-2A7D9C510E64}
@@ -44,12 +41,6 @@ void SetQuality(Quality quality) {
         if (auto* host = cache::PrefetchHost::Existing()) host->NotifyContextChanged();
     });
 }
-
-int CoverCacheLimitMb() {
-    return static_cast<int>(std::clamp<int64_t>(cfg_coverCacheMb.get(), kCoverCacheMinMb, kCoverCacheMaxMb));
-}
-
-void SetCoverCacheLimitMb(int mb) { cfg_coverCacheMb.set(std::clamp(mb, kCoverCacheMinMb, kCoverCacheMaxMb)); }
 
 std::wstring GetServiceUrlOverride() { return Wide(cfg_service_url.get()); }
 

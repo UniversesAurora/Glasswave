@@ -4,7 +4,10 @@
 #include "stream/model.h"
 #include "stream/list.h"
 
+#include <chrono>
 #include <functional>
+#include <map>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -21,52 +24,56 @@
 // caller decides whether the result still matters (see ui::PageToken).
 namespace glasswave::stream {
 
-enum class LibraryAction {
-    Add,
-    Remove
+// One thing a source can do. A source declares exactly the abilities its service has and
+// the UI offers nothing else, so sources differ without the UI knowing which one it talks
+// to. Reads and writes are separate (a service may list favorites without a way to change
+// them, or append to a playlist without a way to remove from it). A new ability is one more
+// enumerator; nothing is implied by another.
+enum class Capability {
+    // The signed-in user's library.
+    ReadFavorites,
+    AddFavorite,
+    RemoveFavorite,
+    LibraryArtists,  // the library lists artists
+    FollowArtists,   // the artist relation is "follow"
+    FavoriteArtists, // the artist relation is "favorite"
+    LibraryAlbums,
+    SaveAlbums, // add albums to and remove them from the library
+    LibraryPlaylists,
+    SavePlaylists, // add other users' playlists to and remove them from the library
+    // The user's own playlists.
+    CreatePlaylists,
+    AppendPlaylistTracks,
+    RemovePlaylistTracks,
+    RenamePlaylists,
+    DeletePlaylists,
+    ReorderPlaylists, // the library's playlist order can be changed
+    // The catalog.
+    RecommendedPlaylists, // a set of playlists recommended to the user
+    CatalogSearch,
+    SearchSuggestions, // completions and top results while typing
+    NativeLyrics,      // the service has its own lyrics for its tracks
+    Count
 };
-enum class ArtistPreferenceAction {
-    Favorite,
-    Unfavorite
+
+class Capabilities {
+  public:
+    constexpr Capabilities() = default;
+    constexpr Capabilities(std::initializer_list<Capability> list) {
+        for (const Capability capability : list)
+            m_bits |= Bit(capability);
+    }
+    constexpr bool Has(Capability capability) const { return (m_bits & Bit(capability)) != 0; }
+
+  private:
+    static constexpr uint64_t Bit(Capability capability) {
+        return uint64_t{1} << static_cast<unsigned>(capability);
+    }
+    uint64_t m_bits = 0;
 };
 
 class Provider {
   public:
-    // Optional features; the UI hides what a provider does not offer.
-    struct Features {
-        bool favorites = false; // legacy full add/remove favorite capability
-        bool followArtists = false;
-        bool favoriteArtists = false;
-        bool saveAlbums = false;       // collect albums into the library
-        bool savePlaylists = false;    // collect other users' playlists
-        bool editPlaylists = false;    // create, rename, delete, add and remove tracks
-        bool reorderPlaylists = false; // the library's playlist order can be changed
-        bool recommended = false;      // a daily set of recommended playlists
-        bool artistTopTracks = false;  // artist pages expose a track-list tile/page
-        // Read access and individual writes can differ (Apple permits playlist append,
-        // for example, without a documented removal endpoint).
-        bool libraryFavorites = false; // favorites can be read even when toggling is unsupported
-        bool addFavorites = false;
-        bool removeFavorites = false;
-        bool libraryArtists = false;
-        bool libraryAlbums = false;
-        bool libraryPlaylists = false;
-        bool createPlaylists = false;
-        bool appendPlaylistTracks = false;
-        bool removePlaylistTracks = false;
-        bool renamePlaylists = false;
-        bool deletePlaylists = false;
-        bool catalogSearch = false;
-
-        bool CanCreatePlaylist() const { return editPlaylists || createPlaylists; }
-        bool CanSetFavorite(bool favorite) const {
-            return favorites || (favorite ? addFavorites : removeFavorites);
-        }
-        bool CanAppendPlaylist() const { return editPlaylists || appendPlaylistTracks; }
-        bool CanRemovePlaylistTracks() const { return editPlaylists || removePlaylistTracks; }
-        bool CanRenamePlaylist() const { return editPlaylists || renamePlaylists; }
-        bool CanDeletePlaylist() const { return editPlaylists || deletePlaylists; }
-    };
 
     // Changes the provider reports by itself (sign-in, a write finished, a background
     // refresh). None of them requires the open page to be re-read.
@@ -130,22 +137,33 @@ class Provider {
     virtual std::wstring_view Key() const = 0;
     // Display name, untranslated (the UI passes it through Tr).
     virtual std::wstring Name() const = 0;
-    // Provider-scoped wording for playlist controls and empty states. The default is the
-    // common translation key; a provider may map it to wording that fits its service.
-    virtual std::wstring PlaylistText(std::wstring_view english) const;
+    // ---- wording -----------------------------------------------------------------------
+    // Services name the same concepts differently (a "playlist" is 歌单 on one and 播放列表 on
+    // another; "collect" is "add to library" elsewhere). The UI writes every source-facing
+    // string once, in the common English wording, and shows Text(): the source's own English
+    // term for it (Wording) translated in the source's context (TextContext), so a language
+    // file can carry "<context> | <english>" entries per source and falls back to the common
+    // translation. A new term needs no interface change, and a new source only overrides the
+    // words that differ.
+    std::wstring Text(std::wstring_view english) const;
+    // The source's own English term for a common one. Default: the common term.
+    virtual std::wstring Wording(std::wstring_view english) const { return std::wstring(english); }
+    // Translation context of this source's terms. Empty: only the common translations.
+    virtual std::wstring_view TextContext() const { return {}; }
     // Untranslated label for an artist's track-list tile and page.
     virtual std::wstring ArtistTracksLabel(const Id& artist) const;
     // Read-only, network-free descriptors for independently loadable artist views. Labels
     // follow the normal untranslated-key contract and are passed through Tr by display code.
     virtual std::vector<ArtistSection> ArtistSections(const Id& artist) const;
-    // Typed catalog-search categories available from this provider. The default preserves
-    // the legacy song-only catalogSearch capability; Apple may advertise all five kinds.
+    // Typed catalog-search categories available from this provider. The default is the song
+    // search of a source with Capability::CatalogSearch; a source may advertise more kinds.
     virtual std::vector<ListKind> CatalogSearchKinds() const;
-    virtual bool SupportsCatalogSearchSuggestions() const { return false; }
-    virtual Features Offers() const = 0;
-    virtual std::wstring LibraryActionText(LibraryAction action) const;
-    virtual std::wstring LibraryStateText(bool saved) const;
-    virtual std::wstring ArtistPreferenceActionText(ArtistPreferenceAction action) const;
+    // Everything this source can do (see Capability). Constant for a source's lifetime.
+    virtual Capabilities Offers() const = 0;
+    bool Can(Capability capability) const { return Offers().Has(capability); }
+    bool CanSetFavorite(bool favorite) const {
+        return Can(favorite ? Capability::AddFavorite : Capability::RemoveFavorite);
+    }
     virtual bool IsAlbumSaved(const Id& album) const;
     virtual std::optional<bool> PlaylistSavedState(const Id& playlist) const;
     virtual std::optional<bool> ArtistPreferenceState(const Id& artist) const;
@@ -186,6 +204,14 @@ class Provider {
     virtual metadb_handle_ptr ArtItem(ArtKind kind, const Id& id) const = 0;
     // Cache key shared by every view of the same cover: "<key>:<kind>:<id>".
     std::wstring ArtKey(ArtKind kind, const Id& id) const;
+    // The cover one of this provider's tracks shows: its album's when the album is known, so
+    // every track of an album shares one picture that is downloaded and decoded once, else
+    // the track's own. The provider's art extractor stores the picture under the same
+    // identity. Empty when the item is not this provider's.
+    std::wstring ArtKeyOf(const metadb_handle_ptr& item) const;
+    // The album of a track for ArtKeyOf. The art extractor must answer the same in every run,
+    // so a provider overrides this with whatever its extractor consults.
+    virtual Id AlbumOfTrack(const Id& track) const;
     // Prefix of every ArtKey of one kind, to drop all of them after a refresh.
     std::wstring ArtKeyPrefix(ArtKind kind) const;
     // True when two cover URLs show the same image (e.g. only a size parameter differs).
@@ -195,11 +221,13 @@ class Provider {
     // The provider's own lyrics for one of its tracks as LRC: enhanced LRC (<mm:ss.xx>) for
     // word timing, translations as reference lines with the line's timestamp. Blocking, on a
     // worker thread (lyrics::Service). Empty when the provider has none.
+    // Asked only of a source with Capability::NativeLyrics.
     virtual std::wstring Lyrics(const Id& /*track*/, abort_callback& /*abort*/) { return {}; }
-    virtual bool HasNativeLyrics() const { return false; }
 
     // ---- library snapshot (last fetched; cheap) ----------------------------------------
-    virtual bool IsFavorite(const Id& track) const = 0;
+    // A song being favorited or unfavorited reads as its new state from the click on, until
+    // the service has answered; a refused change reads as the service's state again.
+    bool IsFavorite(const Id& track) const;
     virtual std::vector<Playlist> Playlists(Shelf shelf) const = 0;
     virtual std::optional<Shelf> ShelfOf(const Id& playlist) const = 0;
     virtual std::vector<Artist> FollowedArtists() const = 0;
@@ -266,7 +294,9 @@ class Provider {
     virtual void RestoreListRecords(const ListPage& page) { (void)page; }
 
     // ---- writes (the snapshot is updated before `done` runs) ------------------------
-    virtual void SetFavorite(const Id& track, bool favorite, Done done = {}) = 0;
+    // Shows the new state at once (listeners hear OnFavoritesChanged) and completes in the
+    // background whatever the UI does meanwhile; on failure the old state comes back.
+    void SetFavorite(const Id& track, bool favorite, Done done = {});
     virtual void SetFollowed(const Id& artist, bool follow, Done done = {}) = 0;
     virtual void SetAlbumSaved(const Id& album, bool saved, Done done = {}) = 0;
     virtual void SetPlaylistSaved(const Id& playlist, bool saved, Done done = {}) = 0;
@@ -290,8 +320,22 @@ class Provider {
     void NotifyLanguageChanged();
     void NotifyDisplayChanged();
 
+    // The service's own favorite state and its write; `done` may run on any thread.
+    virtual bool ReadFavorite(const Id& track) const = 0;
+    virtual void WriteFavorite(const Id& track, bool favorite, Done done) = 0;
+
   private:
+    struct PendingFavorite {
+        bool favorite = false;
+        uint64_t serial = 0;
+        std::chrono::steady_clock::time_point since;
+    };
+    void FinishFavorite(const Id& track, uint64_t serial, std::wstring error, Done done);
+
     std::vector<Listener*> m_listeners;
+    mutable std::mutex m_favoritesMutex;
+    mutable std::map<Id, PendingFavorite> m_pendingFavorites;
+    uint64_t m_favoriteSerial = 0;
 };
 
 // The providers compiled into the component, in navigation order. Providers register

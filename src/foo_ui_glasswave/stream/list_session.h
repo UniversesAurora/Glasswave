@@ -70,8 +70,16 @@ class ListSession final {
 // RetireInMemory cancels active publishers and resets generation ownership while preserving
 // readable persisted snapshots. PurgePersistent also rotates the provider-local disk guard
 // for explicit data mutations and clears.
-void InvalidateListCache(std::wstring_view provider, bool restart = true,
-                         ListCacheInvalidation mode = ListCacheInvalidation::PurgePersistent);
+// Purging is destructive (every list of the provider loads from the network again), so the
+// caller always states the mode.
+void InvalidateListCache(std::wstring_view provider, bool restart, ListCacheInvalidation mode);
+// The provider's lists may have changed (a write went through). Nothing is dropped: lists on
+// screen re-read behind their rows, the others when they are opened next, and the persisted
+// snapshots keep serving the first paint after a restart.
+void RevalidateLists(std::wstring_view provider);
+// The provider's account was confirmed to be the one its cached data belongs to: reads that
+// were waiting for that start now. Reads already under way are left alone.
+void ResumeLists(std::wstring_view provider);
 void ShutdownListSessions();
 
 } // namespace glasswave::stream

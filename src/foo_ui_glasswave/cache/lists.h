@@ -18,6 +18,10 @@ struct Record {
     int64_t validatedAt = 0;
     // Load only: contiguous prefix whose persisted pages contain completed enrichment.
     size_t metadataReadyRows = 0;
+    // Load: the persisted snapshot's generation. SavePage/UpdatePage: when not empty, the page
+    // continues (or describes) that loaded snapshot instead of starting the caller's own
+    // generation, so a later run can extend a partly read list without reading it again.
+    std::string base;
 };
 using Loaded = std::function<void(std::optional<Record>)>;
 // Reports whether the exact background page/manifest publication completed. Called on the
@@ -39,5 +43,7 @@ void RetireProvider(std::string provider);
 // Cancels in-memory publishers and rotates the provider-local persisted guard.
 void InvalidateProvider(std::string provider);
 void Shutdown();
+// Where the reason of a rejected publication goes (a log line). Called on cache workers.
+void SetDiagnostics(std::function<void(std::string_view reason)> sink);
 
 } // namespace glasswave::cache::lists

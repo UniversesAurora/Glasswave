@@ -1,6 +1,6 @@
 #include "pch.h"
 #include "netease/config.h"
-#include "netease/http.h"
+#include "net/http.h"
 #include "netease/log.h"
 #include "netease/profile.h"
 #include "netease/service.h"
@@ -207,13 +207,13 @@ bool ServiceManager::Install(abort_callback& abort, const std::function<void(lon
     Stop();  // a running helper would keep the old executable locked
     Log(L"service: downloading " + std::wstring(kServiceUrl));
 
-    HttpOptions options;
+    net::HttpOptions options;
     options.noProxy = false;
     options.timeoutMs = 120000;
     options.maxBodyBytes = 100u * 1024u * 1024u;
     options.headers = {{L"Accept", L"application/octet-stream"}};
     options.progress = progress;
-    const HttpResponse response = SendHttp(kServiceUrl, options, abort);
+    const net::HttpResponse response = net::SendHttp(kServiceUrl, options, abort);
     if (!response.ok()) {
         if (error) *error = response.error.empty() ? L"Download failed (HTTP " + std::to_wstring(response.status) + L")."
                                                    : response.error;
@@ -261,11 +261,11 @@ bool ServiceManager::EnsureStarted(abort_callback& abort, std::wstring* error) {
     if (!m_externalUrl.empty()) {
         m_state = ServiceState::External;
         m_baseUrl = Utf8(m_externalUrl);
-        HttpOptions probe;
+        net::HttpOptions probe;
         probe.noProxy = true;
         probe.timeoutMs = 3000;
         probe.maxBodyBytes = 64u * 1024u;
-        const HttpResponse response = SendHttp(m_externalUrl + L"/", probe, abort);
+        const net::HttpResponse response = net::SendHttp(m_externalUrl + L"/", probe, abort);
         if (response.status == 0) {
             SetErrorLocked(L"External NetEase service is not reachable: " + response.error);
             if (error) *error = m_lastError;
@@ -379,11 +379,11 @@ bool ServiceManager::StartLocked(abort_callback& abort, std::wstring* error) {
             if (error) *error = m_lastError;
             return false;
         }
-        HttpOptions probe;
+        net::HttpOptions probe;
         probe.noProxy = true;
         probe.timeoutMs = 1000;
         probe.maxBodyBytes = 64u * 1024u;
-        const HttpResponse response = SendHttp(Wide(m_baseUrl) + L"/", probe, startAbort);
+        const net::HttpResponse response = net::SendHttp(Wide(m_baseUrl) + L"/", probe, startAbort);
         if (response.status != 0) {
             m_state = ServiceState::Ready;
             m_lastError.clear();

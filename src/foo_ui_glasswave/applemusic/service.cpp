@@ -1,6 +1,6 @@
 #include "pch.h"
 #include "applemusic/service.h"
-#include "netease/http.h"
+#include "net/http.h"
 #include "netease/json.h"
 
 #include <fstream>
@@ -65,13 +65,13 @@ unsigned Port(const std::wstring& url) {
     return colon == std::wstring::npos ? 80u : static_cast<unsigned>(std::stoul(url.substr(colon + 1)));
 }
 
-netease::HttpResponse Probe(const std::wstring& url, const std::string& token, abort_callback& abort) {
-    netease::HttpOptions options;
+net::HttpResponse Probe(const std::wstring& url, const std::string& token, abort_callback& abort) {
+    net::HttpOptions options;
     options.noProxy = true;
     options.timeoutMs = 500;
     options.maxBodyBytes = 64u * 1024u;
     options.headers = {{L"X-API-Token", pfc::stringcvt::string_wide_from_utf8(token.c_str()).get_ptr()}};
-    return netease::SendHttp(url + L"/api/v1/status", options, abort);
+    return net::SendHttp(url + L"/api/v1/status", options, abort);
 }
 
 void WriteRecord(const fs::path& path, HANDLE process, const fs::path& engine, unsigned port) {

@@ -331,6 +331,7 @@ void NavPane::Rebuild() {
                       navigation.kind == stream::SectionKind::PlaylistShelf, provider};
             item.sectionId = navigation.id;
             item.sectionKind = navigation.kind;
+            item.sectionFacet = navigation.facet;
             item.sectionShelf = navigation.shelf;
             item.reorderChildren = navigation.reorderChildren;
             m_items.push_back(std::move(item));
@@ -341,7 +342,7 @@ void NavPane::Rebuild() {
                 Item child{Target::RemotePlaylist,
                            0,
                            2,
-                           playlist.name.empty() ? provider->PlaylistText(L"Unnamed playlist")
+                           playlist.name.empty() ? provider->Text(L"Unnamed playlist")
                                                  : playlist.name,
                            wp::NavIcon::Playlist,
                            false,
@@ -516,7 +517,7 @@ bool NavPane::MovableItem(size_t index) const {
         const Item& parent = m_items[i - 1];
         if (parent.target == Target::RemoteSection) {
             return parent.sectionKind == stream::SectionKind::PlaylistShelf && parent.reorderChildren &&
-                   parent.provider && parent.provider->Offers().reorderPlaylists;
+                   parent.provider && parent.provider->Can(stream::Capability::ReorderPlaylists);
         }
         return parent.target == Target::PlaylistsHeader || parent.target == Target::SmartHeader;
     }
@@ -656,7 +657,10 @@ void NavPane::Paint() {
                                 : it.target == Target::AllMostPlayed   ? 550   // pie chart
                                 : it.target == Target::SmartHeader     ? 29572
                                 : it.target == Target::Category ? CategoryIcon(static_cast<media::GroupKind>(it.playlist))
-                                                                : 0;
+                                : it.target == Target::RemoteSection && it.sectionKind == stream::SectionKind::Groups &&
+                                        it.sectionFacet == stream::GroupFacet::Composer
+                                    ? CategoryIcon(media::GroupKind::Composer) // WMP's composer icon
+                                    : 0;
             bool drewCover = false;
             if (it.target == Target::RemotePlaylist && !it.remoteId.empty()) {
                 const auto track = it.provider->ArtItem(stream::ArtKind::Playlist, it.remoteId);

@@ -5,7 +5,6 @@
 #include "stream/playback_source.h"
 #include "netease/catalog.h"
 #include "netease/config.h"
-#include "netease/cover_cache.h"
 #include "netease/handle.h"
 #include "netease/session.h"
 #include "ui/i18n.h"
@@ -13,6 +12,8 @@
 
 #include <ctime>
 #include <array>
+#include <future>
+#include <unordered_set>
 #include <limits>
 #include <list>
 #include <unordered_map>
@@ -52,7 +53,7 @@ int64_t Num(const Id& id) {
     return id.empty() ? 0 : static_cast<int64_t>(_wcstoi64(id.c_str(), nullptr, 10));
 }
 
-Id Text(int64_t id) {
+Id IdText(int64_t id) {
     return id ? std::to_wstring(id) : Id();
 }
 
@@ -75,16 +76,16 @@ std::vector<stream::ArtistRef> Refs(const std::vector<ArtistRef>& refs) {
     std::vector<stream::ArtistRef> out;
     out.reserve(refs.size());
     for (const auto& ref : refs)
-        out.push_back({Text(ref.id), ref.name});
+        out.push_back({IdText(ref.id), ref.name});
     return out;
 }
 
 stream::Track ToTrack(const Song& song) {
     stream::Track track;
-    track.id = Text(song.id);
+    track.id = IdText(song.id);
     track.title = song.title;
     track.album = song.album;
-    track.albumId = Text(song.albumId);
+    track.albumId = IdText(song.albumId);
     track.artists = Refs(song.artistRefs);
     if (track.artists.empty()) // songs cached before ids were stored
         for (const auto& name : song.artists)
@@ -131,7 +132,7 @@ bool IsOwn(const Playlist& playlist) {
 
 stream::Playlist ToPlaylist(const Playlist& playlist) {
     stream::Playlist out;
-    out.id = Text(playlist.id);
+    out.id = IdText(playlist.id);
     out.name = playlist.name;
     out.coverUrl = playlist.coverUrl;
     out.creator = playlist.creatorName;
@@ -168,7 +169,7 @@ std::vector<stream::Playlist> ToPlaylists(const std::vector<Playlist>& playlists
 
 stream::Album ToAlbum(const Album& album) {
     stream::Album out;
-    out.id = Text(album.id);
+    out.id = IdText(album.id);
     out.name = album.name;
     out.coverUrl = album.coverUrl;
     out.artists = Refs(album.artistRefs);
@@ -212,7 +213,7 @@ std::vector<stream::Album> ToAlbums(const std::vector<Album>& albums) {
 
 stream::Artist ToArtist(const Artist& artist) {
     stream::Artist out;
-    out.id = Text(artist.id);
+    out.id = IdText(artist.id);
     out.name = artist.name;
     out.avatarUrl = artist.avatarUrl;
     out.bio = artist.brief;
@@ -300,11 +301,53 @@ std::vector<Song> OrderDetails(const std::vector<int64_t>& ids, const std::vecto
 
 std::vector<int64_t> Unique(const std::vector<int64_t>& ids) {
     std::vector<int64_t> unique;
+    std::unordered_set<int64_t> seen;
     unique.reserve(ids.size());
-    for (const int64_t id : ids) {
-        if (id && std::find(unique.begin(), unique.end(), id) == unique.end()) unique.push_back(id);
-    }
+    seen.reserve(ids.size());
+    for (const int64_t id : ids)
+        if (id && seen.insert(id).second) unique.push_back(id);
     return unique;
+}
+
+constexpr size_t kSnapshotPageLimit = 1000; // rows of a playlist / favorites page at most
+
+// The details of `ids` (unique), asked for in batches of 200 that run side by side: a large
+// page of a playlist costs about one request's time instead of one per batch.
+bool SongDetailsInBatches(Client& client, const std::vector<int64_t>& ids, abort_callback& abort,
+                          std::vector<Song>& out, std::wstring& error) {
+    constexpr size_t kBatch = 200;
+    out.clear();
+    if (ids.size() <= kBatch) return ids.empty() || client.SongDetails(ids, abort, out, error);
+    struct Batch {
+        std::vector<int64_t> ids;
+        std::vector<Song> songs;
+        std::wstring error;
+        bool ok = false;
+    };
+    std::vector<Batch> batches;
+    for (size_t start = 0; start < ids.size(); start += kBatch)
+        batches.push_back({std::vector<int64_t>(ids.begin() + static_cast<std::ptrdiff_t>(start),
+                                                ids.begin() + static_cast<std::ptrdiff_t>(
+                                                                  std::min(start + kBatch, ids.size())))});
+    std::vector<std::future<void>> running;
+    running.reserve(batches.size() - 1);
+    for (size_t i = 1; i < batches.size(); ++i)
+        running.push_back(std::async(std::launch::async, [&client, &abort, &batch = batches[i]] {
+            batch.ok = client.SongDetails(batch.ids, abort, batch.songs, batch.error);
+        }));
+    batches[0].ok = client.SongDetails(batches[0].ids, abort, batches[0].songs, batches[0].error);
+    for (auto& task : running)
+        task.wait();
+    for (auto& batch : batches) {
+        if (!batch.ok) {
+            error = std::move(batch.error);
+            out.clear();
+            return false;
+        }
+        out.insert(out.end(), std::make_move_iterator(batch.songs.begin()),
+                   std::make_move_iterator(batch.songs.end()));
+    }
+    return true;
 }
 
 bool RequiresLogin(stream::ListKind kind) {
@@ -664,11 +707,13 @@ void StreamProvider::CompleteSnapshotSave(uint64_t generation) {
     if (rerun) QueueSnapshotSave();
 }
 
-stream::Provider::Features StreamProvider::Offers() const {
-    Features f;
-    f.favorites = f.followArtists = f.saveAlbums = f.savePlaylists = f.editPlaylists = true;
-    f.reorderPlaylists = f.recommended = f.artistTopTracks = true;
-    return f;
+stream::Capabilities StreamProvider::Offers() const {
+    using enum stream::Capability;
+    return {ReadFavorites,    AddFavorite,          RemoveFavorite,       LibraryArtists,
+            FollowArtists,    LibraryAlbums,        SaveAlbums,           LibraryPlaylists,
+            SavePlaylists,    CreatePlaylists,      AppendPlaylistTracks, RemovePlaylistTracks,
+            RenamePlaylists,  DeletePlaylists,      ReorderPlaylists,     RecommendedPlaylists,
+            NativeLyrics};
 }
 
 std::vector<settings::Field> StreamProvider::SettingFields() {
@@ -748,7 +793,7 @@ void StreamProvider::SignIn(HWND owner) {
 void StreamProvider::OnSessionChanged() {
     const bool signedIn = Ncm().LoggedIn();
     const Account account = Ncm().CurrentAccount();
-    const std::wstring accountId = Text(account.userId);
+    const std::wstring accountId = IdText(account.userId);
     bool accountChanged = false;
     bool accountObserved = false;
     {
@@ -811,7 +856,7 @@ void StreamProvider::RefreshLibrary(Done done) {
 
 stream::Id StreamProvider::TrackId(const metadb_handle_ptr& item) const {
     int64_t id = 0;
-    return item.is_valid() && ParseSongPath(item->get_path(), id) ? Text(id) : Id();
+    return item.is_valid() && ParseSongPath(item->get_path(), id) ? IdText(id) : Id();
 }
 
 std::wstring StreamProvider::Lyrics(const Id& track, abort_callback& abort) {
@@ -852,7 +897,7 @@ bool StreamProvider::SameCover(std::wstring_view a, std::wstring_view b) const {
     return base(a) == base(b);
 }
 
-bool StreamProvider::IsFavorite(const Id& track) const {
+bool StreamProvider::ReadFavorite(const Id& track) const {
     return Ncm().IsLiked(Num(track));
 }
 
@@ -1081,8 +1126,14 @@ void StreamProvider::FinishListWrite(bool ok, std::wstring error, Done done) {
 }
 
 void StreamProvider::FetchListPage(const stream::ListQuery& query, const stream::ListCursor& cursor,
-                                   size_t limit, stream::ListPageDone done) {
+                                   size_t requested, stream::ListPageDone done) {
     if (!done || ListCancelled(query.cancelled)) return;
+    // Playlist and favorites pages come from a known id list and may be large (their details
+    // are fetched in parallel batches). Offset-paged endpoints keep the size the service
+    // honors, since a short answer is how they report the end.
+    const bool snapshotKind =
+        query.kind == stream::ListKind::PlaylistTracks || query.kind == stream::ListKind::Favorites;
+    const size_t limit = snapshotKind ? requested : std::min<size_t>(requested, 100);
     if (query.kind == stream::ListKind::Playlists) {
         if (!SignedIn()) {
             PostListPage(std::move(done), {}, {}, L"Please sign in to NetEase Cloud Music.", query.cancelled);
@@ -1159,12 +1210,11 @@ void StreamProvider::FetchListPage(const stream::ListQuery& query, const stream:
                 error = L"The playlist cursor is outside the current track list.";
                 break;
             }
-            const size_t count = std::min({limit, snapshot->ids.size() - cursor.offset, size_t{200}});
+            const size_t count = std::min({limit, snapshot->ids.size() - cursor.offset, kSnapshotPageLimit});
             const auto begin = snapshot->ids.begin() + static_cast<std::ptrdiff_t>(cursor.offset);
             std::vector<int64_t> ids(begin, begin + static_cast<std::ptrdiff_t>(count));
             std::vector<Song> details;
-            const auto requestedIds = Unique(ids);
-            if (!requestedIds.empty() && !client.SongDetails(requestedIds, *m_abort, details, error)) break;
+            if (!SongDetailsInBatches(client, Unique(ids), *m_abort, details, error)) break;
             hintSongs = OrderDetails(ids, details);
             page.rows = ToTracks(hintSongs);
             page.playlist = ToPlaylist(snapshot->info);
@@ -1206,12 +1256,11 @@ void StreamProvider::FetchListPage(const stream::ListQuery& query, const stream:
                 error = L"The favorites cursor is outside the current track list.";
                 break;
             }
-            const size_t count = std::min({limit, snapshot->ids.size() - cursor.offset, size_t{200}});
+            const size_t count = std::min({limit, snapshot->ids.size() - cursor.offset, kSnapshotPageLimit});
             const auto begin = snapshot->ids.begin() + static_cast<std::ptrdiff_t>(cursor.offset);
             std::vector<int64_t> selected(begin, begin + static_cast<std::ptrdiff_t>(count));
             std::vector<Song> details;
-            const auto requestedIds = Unique(selected);
-            if (!requestedIds.empty() && !client.SongDetails(requestedIds, *m_abort, details, error)) break;
+            if (!SongDetailsInBatches(client, Unique(selected), *m_abort, details, error)) break;
             hintSongs = OrderDetails(selected, details);
             page.rows = ToTracks(hintSongs);
             page.total = snapshot->ids.size();
@@ -1334,7 +1383,7 @@ void StreamProvider::FetchListPage(const stream::ListQuery& query, const stream:
     });
 }
 
-void StreamProvider::SetFavorite(const Id& track, bool favorite, Done done) {
+void StreamProvider::WriteFavorite(const Id& track, bool favorite, Done done) {
     Ncm().ToggleLike(Num(track), favorite,
                      [this, done = std::move(done)](bool ok, std::wstring error) mutable {
                          FinishListWrite(ok, std::move(error), std::move(done));
@@ -1385,7 +1434,7 @@ void StreamProvider::CreatePlaylist(std::wstring name, CreatedDone done) {
             }
             if (!done) return;
             if (ok && id)
-                done(Text(id), {});
+                done(IdText(id), {});
             else
                 done({}, error.empty() ? std::wstring(L"The request failed.") : std::move(error));
         });

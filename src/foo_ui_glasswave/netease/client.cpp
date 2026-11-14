@@ -1,7 +1,7 @@
 #include "pch.h"
 #include "netease/client.h"
 #include "netease/cookie.h"
-#include "netease/http.h"
+#include "net/http.h"
 #include "netease/log.h"
 #include "lyrics/lyrics.h"
 
@@ -240,14 +240,14 @@ bool Client::Request(std::wstring_view path, const std::vector<std::pair<std::ws
     const std::wstring method = post ? L"POST" : L"GET";
     const auto started = std::chrono::steady_clock::now();
 
-    HttpOptions options;
+    net::HttpOptions options;
     options.method = method;
     options.noProxy = true;
     options.timeoutMs = 25000;
     options.maxBodyBytes = 48u * 1024u * 1024u;
     options.headers = {{L"Accept", L"application/json"}};
     if (!cookie.empty()) options.headers.emplace_back(L"Cookie", cookie);
-    const HttpResponse response = SendHttp(url, options, abort);
+    const net::HttpResponse response = net::SendHttp(url, options, abort);
     const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
                              std::chrono::steady_clock::now() - started)
                              .count();

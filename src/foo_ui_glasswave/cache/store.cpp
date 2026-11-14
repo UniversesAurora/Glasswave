@@ -124,7 +124,6 @@ struct Snapshot::Blob {
     fs::path path;
     Kind kind = Kind::Data;
     uint64_t size = 0, revision = 0;
-    Metadata metadata;
     std::atomic_bool retired = false;
     ~Blob() {
         if (retired) Remove(path);
@@ -141,7 +140,7 @@ uint64_t Snapshot::Revision() const {
     return m_blob->revision;
 }
 const Metadata& Snapshot::Info() const {
-    return m_blob->metadata;
+    return m_info;
 }
 
 struct Store::Impl {
@@ -151,9 +150,17 @@ struct Store::Impl {
     fs::path root;
     std::map<std::string, std::weak_ptr<Snapshot::Blob>> pins;
     std::array<uint64_t, 3> limits{10'240 * kMiB, 512 * kMiB, 128 * kMiB};
+    // Published bytes per kind, kept beside the index so a commit does not rescan it.
+    std::array<uint64_t, 3> totals{};
     int64_t access = 0;
+    // Recency of entries read since the last flush; written with the next index change.
+    std::map<std::string, int64_t> touched;
 
     ~Impl() {
+        try {
+            if (db) FlushTouched();
+        } catch (...) { /* Recency is advisory. */
+        }
         if (db) sqlite3_close_v2(db);
         if (owner != INVALID_HANDLE_VALUE) CloseHandle(owner);
     }
@@ -185,14 +192,34 @@ struct Store::Impl {
         const auto found = pins.find(name);
         return found != pins.end() && !found->second.expired();
     }
+    void CountTotals() {
+        totals = {};
+        Statement rows(db, "SELECT kind,COALESCE(SUM(size),0) FROM entries GROUP BY kind");
+        while (rows.Step())
+            if (const int64_t kind = rows.Int(0); kind >= 0 && kind < 3)
+                totals[static_cast<size_t>(kind)] = static_cast<uint64_t>(rows.Int(1));
+    }
+    void Dropped(Kind kind, uint64_t size) {
+        auto& total = totals[static_cast<size_t>(kind)];
+        total -= std::min(total, size);
+    }
+    void FlushTouched() {
+        if (touched.empty()) return;
+        Statement touch(db, "UPDATE entries SET used=? WHERE k=?");
+        for (const auto& [key, used] : touched) {
+            sqlite3_reset(touch.value);
+            touch.Int(1, used);
+            touch.Text(2, key);
+            touch.Step();
+        }
+        touched.clear();
+    }
     void Trim() {
         for (int kind = 0; kind < 3; ++kind) {
-            Statement total(db, "SELECT COALESCE(SUM(size),0) FROM entries WHERE kind=?");
-            total.Int(1, kind);
-            total.Step();
-            uint64_t bytes = static_cast<uint64_t>(total.Int(0));
+            uint64_t& bytes = totals[static_cast<size_t>(kind)];
             const uint64_t limit = limits[static_cast<size_t>(kind)];
             if (bytes <= limit) continue;
+            FlushTouched();
             struct Candidate {
                 std::string key, file;
                 uint64_t size;
@@ -236,9 +263,11 @@ Store::Store(fs::path root) : m_impl(std::make_unique<Impl>()), m_root(fs::absol
     const auto index = m_root / L"index.sqlite3";
     for (int attempt = 0; attempt < 2; ++attempt) {
         try {
+            // Payloads are flushed before they are published and the index is disposable, so
+            // WAL with NORMAL keeps it consistent without a disk flush per lookup or commit.
             Check(sqlite3_open16(index.c_str(), &m_impl->db));
             sqlite3_busy_timeout(m_impl->db, 3000);
-            Execute(m_impl->db, "PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON;"
+            Execute(m_impl->db, "PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA foreign_keys=ON;"
                                 "PRAGMA wal_autocheckpoint=256; PRAGMA journal_size_limit=16777216;");
             int schemaVersion = 0;
             {
@@ -288,6 +317,7 @@ Store::Store(fs::path root) : m_impl(std::make_unique<Impl>()), m_root(fs::absol
     Statement clock(m_impl->db, "SELECT COALESCE(MAX(used),0) FROM entries");
     clock.Step();
     m_impl->access = clock.Int(0);
+    m_impl->CountTotals();
     std::set<std::string> referenced;
     {
         Statement files(m_impl->db, "SELECT file FROM entries WHERE file<>''");
@@ -329,14 +359,17 @@ std::string Store::Digest(const Key& key) {
     field(key.scope);
     field(key.identity);
     field(key.variant);
-    BCRYPT_ALG_HANDLE algorithm = nullptr;
-    if (BCryptOpenAlgorithmProvider(&algorithm, BCRYPT_SHA256_ALGORITHM, nullptr, 0) < 0)
-        throw std::runtime_error("Cannot initialize the cache key digest.");
+    // Opening the provider costs far more than one digest; every cache lookup needs one.
+    static const BCRYPT_ALG_HANDLE algorithm = [] {
+        BCRYPT_ALG_HANDLE handle = nullptr;
+        return BCryptOpenAlgorithmProvider(&handle, BCRYPT_SHA256_ALGORITHM, nullptr, 0) < 0 ? nullptr
+                                                                                             : handle;
+    }();
+    if (!algorithm) throw std::runtime_error("Cannot initialize the cache key digest.");
     std::array<unsigned char, 32> digest{};
     const auto result =
         BCryptHash(algorithm, nullptr, 0, reinterpret_cast<PUCHAR>(data.data()),
                    static_cast<ULONG>(data.size()), digest.data(), static_cast<ULONG>(digest.size()));
-    BCryptCloseAlgorithmProvider(algorithm, 0);
     if (result < 0) throw std::runtime_error("Cannot hash a cache identity.");
     return Hex(digest.data(), digest.size());
 }
@@ -379,6 +412,7 @@ std::optional<Snapshot> Store::Lookup(const Key& key) {
         Statement drop(m_impl->db, "DELETE FROM entries WHERE k=?");
         drop.Text(1, digest);
         drop.Step();
+        m_impl->Dropped(key.kind, size > 0 ? static_cast<uint64_t>(size) : 0);
         m_impl->Retire(name);
         return std::nullopt;
     }
@@ -391,13 +425,12 @@ std::optional<Snapshot> Store::Lookup(const Key& key) {
         blob.kind = key.kind;
         blob.size = static_cast<uint64_t>(size);
         blob.revision = static_cast<uint64_t>(revision);
-        blob.metadata = std::move(metadata);
         m_impl->pins[name] = snapshot.m_blob;
     }
-    Statement touch(m_impl->db, "UPDATE entries SET used=? WHERE k=?");
-    touch.Int(1, ++m_impl->access);
-    touch.Text(2, digest);
-    touch.Step();
+    snapshot.m_info = std::move(metadata);
+    // A read only moves the entry in the eviction order; that is written with the next
+    // index change instead of costing a transaction per lookup.
+    m_impl->touched[digest] = ++m_impl->access;
     return snapshot;
 }
 
@@ -466,10 +499,11 @@ std::optional<Snapshot> Store::Commit(Writer& writer, Metadata metadata) {
     std::lock_guard lock(m_impl->mutex);
     if (!m_impl->Current(writer.m_key)) return std::nullopt;
     Transaction transaction(m_impl->db);
-    Statement existing(m_impl->db, "SELECT gen,file FROM entries WHERE k=?");
+    Statement existing(m_impl->db, "SELECT gen,file,size FROM entries WHERE k=?");
     existing.Text(1, writer.m_digest);
     if (!existing.Step() || static_cast<uint64_t>(existing.Int(0)) != writer.m_ticket) return std::nullopt;
     const auto previous = existing.Text(1);
+    const uint64_t previousSize = existing.Int(2) > 0 ? static_cast<uint64_t>(existing.Int(2)) : 0;
     const auto name = Random() + ".blob";
     const auto destination = m_root / L"objects" / name;
     // Flush data before publishing the SQLite reference. On failure the old entry survives.
@@ -496,12 +530,16 @@ std::optional<Snapshot> Store::Commit(Writer& writer, Metadata metadata) {
         publish.Text(10, writer.m_digest);
         publish.Int(11, static_cast<int64_t>(writer.m_ticket));
         publish.Step();
+        m_impl->touched.erase(writer.m_digest);
+        m_impl->FlushTouched();
         transaction.Commit();
     } catch (...) {
         Remove(destination);
         throw;
     }
     writer.m_path.clear();
+    m_impl->Dropped(writer.m_key.kind, previousSize);
+    m_impl->totals[static_cast<size_t>(writer.m_key.kind)] += size;
     if (previous != name) m_impl->Retire(previous);
     Snapshot snapshot;
     snapshot.m_blob = std::make_shared<Snapshot::Blob>();
@@ -509,8 +547,8 @@ std::optional<Snapshot> Store::Commit(Writer& writer, Metadata metadata) {
     snapshot.m_blob->kind = writer.m_key.kind;
     snapshot.m_blob->size = size;
     snapshot.m_blob->revision = writer.m_ticket;
-    snapshot.m_blob->metadata = std::move(metadata);
-    if (!snapshot.m_blob->metadata.validatedAt) snapshot.m_blob->metadata.validatedAt = Now();
+    snapshot.m_info = std::move(metadata);
+    if (!snapshot.m_info.validatedAt) snapshot.m_info.validatedAt = Now();
     m_impl->pins[name] = snapshot.m_blob;
     m_impl->Trim();
     return snapshot;
@@ -519,13 +557,32 @@ std::optional<Snapshot> Store::Commit(Writer& writer, Metadata metadata) {
 void Store::Erase(const Key& key) {
     std::lock_guard lock(m_impl->mutex);
     const auto digest = Digest(key);
-    Statement read(m_impl->db, "SELECT file FROM entries WHERE k=?");
+    Statement read(m_impl->db, "SELECT file,size FROM entries WHERE k=?");
     read.Text(1, digest);
-    const auto name = read.Step() ? read.Text(0) : "";
+    const bool found = read.Step();
+    const auto name = found ? read.Text(0) : "";
+    if (found && read.Int(1) > 0) m_impl->Dropped(key.kind, static_cast<uint64_t>(read.Int(1)));
     Statement drop(m_impl->db, "DELETE FROM entries WHERE k=?");
     drop.Text(1, digest);
     drop.Step();
+    m_impl->touched.erase(digest);
     m_impl->Retire(name);
+}
+
+bool Store::Revalidate(const Key& key, const Snapshot& snapshot, const Metadata& metadata) {
+    const auto withinLimit = [](const std::string& value) { return value.size() <= kMetadataLimit; };
+    if (!snapshot || !withinLimit(metadata.etag) || !withinLimit(metadata.lastModified)) return false;
+    const auto digest = Digest(key);
+    std::lock_guard lock(m_impl->mutex);
+    if (!m_impl->Current(key)) return false;
+    Statement update(m_impl->db, "UPDATE entries SET validated=?,etag=?,modified=? WHERE k=? AND rev=?");
+    update.Int(1, metadata.validatedAt ? metadata.validatedAt : Now());
+    update.Text(2, metadata.etag);
+    update.Text(3, metadata.lastModified);
+    update.Text(4, digest);
+    update.Int(5, static_cast<int64_t>(snapshot.Revision()));
+    update.Step();
+    return sqlite3_changes(m_impl->db) == 1;
 }
 void Store::SetLimit(Kind kind, uint64_t bytes) {
     std::lock_guard lock(m_impl->mutex);
@@ -566,6 +623,7 @@ void Store::Clear(Kind kind) {
     Statement drop(m_impl->db, "DELETE FROM entries WHERE kind=?");
     drop.Int(1, static_cast<int>(kind));
     drop.Step();
+    m_impl->totals[static_cast<size_t>(kind)] = 0;
     for (const auto& name : names)
         m_impl->Retire(name);
 }

@@ -55,6 +55,11 @@ class Catalog {
     stream::Id FindAlbumCatalogId(const stream::Id& libraryId) const;
     void PutArtistCatalogId(const stream::Id& libraryId, const stream::Id& catalogId);
     stream::Id FindArtistCatalogId(const stream::Id& libraryId) const;
+    // The album a song belongs to, also for songs known only from a list restored from disk
+    // (whose names may be another region's and are not put into the catalog). A song's cover
+    // is named by its album, so the UI and the cover store must agree on this in every run.
+    void PutSongAlbum(const stream::Id& songId, const stream::Id& albumId);
+    stream::Id SongAlbum(const stream::Id& songId) const;
 
     void RemovePlaylist(const stream::Id& id);
     void RemoveAlbum(const stream::Id& id);
@@ -90,6 +95,7 @@ class Catalog {
     std::unordered_map<stream::Id, stream::Artist> m_artists;
     std::unordered_map<stream::Id, stream::Id> m_albumLibraryIds;
     std::unordered_map<stream::Id, stream::Id> m_artistCatalogIds;
+    std::unordered_map<stream::Id, stream::Id> m_songAlbums;
 };
 
 } // namespace glasswave::applemusic

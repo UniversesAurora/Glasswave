@@ -87,6 +87,22 @@ std::string ActualCodec(file_info& info) {
     return {};
 }
 
+// What cache::audio::RememberSource keeps for a song: the fields that name its cache entry.
+std::string SourceMemo(const SongUrl& url) {
+    return Utf8(Lower(url.level)) + '\t' + Utf8(Lower(url.type)) + '\t' + std::to_string(url.bitrate);
+}
+
+bool ParseSourceMemo(const std::string& memo, SongUrl& url) {
+    const size_t first = memo.find('\t');
+    const size_t second = first == std::string::npos ? first : memo.find('\t', first + 1);
+    if (second == std::string::npos) return false;
+    url = {};
+    url.level = Wide(memo.substr(0, first).c_str());
+    url.type = Wide(memo.substr(first + 1, second - first - 1).c_str());
+    url.bitrate = std::atoi(memo.c_str() + second + 1);
+    return !url.level.empty() && url.bitrate > 0;
+}
+
 struct NcmEncodedFetch {
     void operator()(cache::audio::Sink& sink, abort_callback& abort) const {
         uint64_t position = sink.Size();
@@ -201,6 +217,7 @@ public:
 
     void decode_initialize(unsigned p_flags, abort_callback& p_abort) {
         if (m_decoder.is_valid()) return;
+        stream::AnnouncePlaybackOpening(m_path, p_flags);
         try {
             const auto epoch = stream::SourcePlaybackEpoch();
             Log(L"input: decoding song " + std::to_wstring(m_id));
@@ -208,77 +225,103 @@ public:
             if (!provider.LoggedIn())
                 throw exception_io_data("Please sign in to NetEase Cloud Music before playing this track.");
             std::wstring error;
-            if (!provider.Service().EnsureStarted(p_abort, &error))
-                throw exception_io_data(
-                    Utf8(error.empty() ? L"NetEase service is unavailable." : error).c_str());
+            const std::string identity = std::to_string(m_id);
+            m_sourceRequest = "quality-" + std::to_string(static_cast<int>(GetQuality()));
+            bool persistent = true;
 
-            SongUrl resolved;
-            auto status = stream::SourceStatus::Unavailable;
-            std::wstring requestError;
-            for (const auto& level : LevelsFor(GetQuality())) {
-                const auto result = provider.Api().GetSongUrl(m_id, level, p_abort, resolved, error);
-                status = stream::CombineSourceStatus(status, result);
-                if (result == stream::SourceStatus::Playable) break;
-                if (result == stream::SourceStatus::Failed && requestError.empty()) requestError = error;
-            }
-            if (status != stream::SourceStatus::Playable) {
-                if (status == stream::SourceStatus::Unavailable && !cache::audio::IsPrefetchThread() &&
-                    stream::SkipUnavailableSource(epoch, m_path, error, p_flags, p_abort)) {
-                    // No CDN request or audio decoder is created for an unavailable source.
-                    // EOF lets the core choose the next item in its native playback order.
-                    Log(L"input: skipped unavailable song " + std::to_wstring(m_id));
-                    return;
+            // Names the cache entry of one resolved source and opens it: from the cache, by
+            // joining its running transfer, or (unless cachedOnly) by starting the download.
+            const auto openSource = [&](const SongUrl& url, bool cachedOnly) {
+                const std::string extension = ExtensionFor(url);
+                cache::audio::Source source;
+                source.provider = "ncm";
+                persistent = true;
+                try {
+                    source.accountScope = cache::AccountScope(source.provider);
+                } catch (...) {
+                    persistent = false;
+                    source.accountScope = "ephemeral-" + std::to_string(GetCurrentProcessId());
                 }
-                if (!requestError.empty()) error = requestError;
-                throw exception_io_data(
-                    Utf8(error.empty() ? L"No playable source for this song." : error).c_str());
+                source.identity = identity;
+                source.quality = Utf8(Lower(url.level) + L":" + Lower(url.type) + L":" +
+                                      std::to_wstring(url.bitrate) + (url.trial ? L":trial" : L":full"));
+                source.codec = Utf8(Lower(url.type));
+                source.sourceVersion = std::string(cache::audio::kProducerSalt) + ":" + source.codec + ":" +
+                                       std::to_string(url.bitrate) + (url.trial ? ":trial" : ":full");
+                const cache::Key key = cache::audio::MakeKey(std::move(source));
+
+                cache::Metadata metadata;
+                metadata.contentType =
+                    extension == "flac" ? "audio/flac" : extension == "m4a" ? "audio/mp4" : "audio/mpeg";
+                metadata.validatedAt = cache::Store::Now();
+                metadata.extra = "schema=audio-v1;producer=" + std::string(cache::audio::kProducerSalt) +
+                                 ";level=" + Utf8(url.level) + ";type=" + Utf8(url.type) +
+                                 ";bitrate=" + std::to_string(url.bitrate) +
+                                 (url.trial ? ";trial=1" : ";trial=0");
+                cache::audio::Request transfer;
+                transfer.key = key;
+                transfer.metadata = std::move(metadata);
+                if (!cachedOnly) transfer.fetch = NcmEncodedFetch{url.url, m_id, url, url.expireSeconds};
+                transfer.persistent = persistent;
+                transfer.cachedOnly = cachedOnly;
+                auto opened = cache::audio::OpenOrStart(std::move(transfer), p_abort);
+                if (!opened.admitted || !opened.stream.is_valid()) return false;
+                m_cacheKey = key;
+                m_source = std::move(opened.stream);
+                m_flight = std::move(opened.flight);
+                m_trial = url.trial;
+                return true;
+            };
+
+            // A song that is already in the cache starts from it at once: the service is
+            // asked which source it would deliver only when there is nothing to play yet.
+            SongUrl resolved;
+            bool fromCache = false;
+            if (const auto remembered = cache::audio::RecallSource("ncm", identity, m_sourceRequest)) {
+                SongUrl known;
+                if (ParseSourceMemo(*remembered, known) && openSource(known, true)) {
+                    resolved = std::move(known);
+                    fromCache = true;
+                    Log(L"input: song " + std::to_wstring(m_id) + L" from the cache, level " + resolved.level);
+                }
             }
-            if (resolved.trial)
-                Log(L"input: playing a free trial for song " + std::to_wstring(m_id));
+            if (!fromCache) {
+                if (!provider.Service().EnsureStarted(p_abort, &error))
+                    throw exception_io_data(
+                        Utf8(error.empty() ? L"NetEase service is unavailable." : error).c_str());
+
+                auto status = stream::SourceStatus::Unavailable;
+                std::wstring requestError;
+                for (const auto& level : LevelsFor(GetQuality())) {
+                    const auto result = provider.Api().GetSongUrl(m_id, level, p_abort, resolved, error);
+                    status = stream::CombineSourceStatus(status, result);
+                    if (result == stream::SourceStatus::Playable) break;
+                    if (result == stream::SourceStatus::Failed && requestError.empty()) requestError = error;
+                }
+                if (status != stream::SourceStatus::Playable) {
+                    if (status == stream::SourceStatus::Unavailable && !cache::audio::IsPrefetchThread() &&
+                        stream::SkipUnavailableSource(epoch, m_path, error, p_flags, p_abort)) {
+                        // No CDN request or audio decoder is created for an unavailable source.
+                        // EOF lets the core choose the next item in its native playback order.
+                        Log(L"input: skipped unavailable song " + std::to_wstring(m_id));
+                        return;
+                    }
+                    if (!requestError.empty()) error = requestError;
+                    throw exception_io_data(
+                        Utf8(error.empty() ? L"No playable source for this song." : error).c_str());
+                }
+                if (resolved.trial)
+                    Log(L"input: playing a free trial for song " + std::to_wstring(m_id));
+                Log(L"input: song " + std::to_wstring(m_id) + L", level " + resolved.level + L", type " +
+                    resolved.type + L", ext " + Wide(ExtensionFor(resolved).c_str()));
+                if (!openSource(resolved, false)) throw exception_io_data("Audio prefetch capacity is full");
+                // A trial clip is never remembered: the full song must be asked for again.
+                if (persistent && !resolved.trial)
+                    cache::audio::RememberSource("ncm", identity, m_sourceRequest, SourceMemo(resolved));
+            }
             const std::string extension = ExtensionFor(resolved);
-            Log(L"input: song " + std::to_wstring(m_id) + L", level " + resolved.level +
-                L", type " + resolved.type + L", ext " + Wide(extension.c_str()));
             const std::string contentType =
                 extension == "flac" ? "audio/flac" : extension == "m4a" ? "audio/mp4" : "audio/mpeg";
-
-            cache::audio::Source source;
-            source.provider = "ncm";
-            bool persistent = true;
-            try {
-                source.accountScope = cache::AccountScope(source.provider);
-            } catch (...) {
-                persistent = false;
-                source.accountScope = "ephemeral-" + std::to_string(GetCurrentProcessId());
-            }
-            source.identity = std::to_string(m_id);
-            source.quality = Utf8(Lower(resolved.level) + L":" + Lower(resolved.type) + L":" +
-                                  std::to_wstring(resolved.bitrate) +
-                                  (resolved.trial ? L":trial" : L":full"));
-            source.codec = Utf8(Lower(resolved.type));
-            source.sourceVersion = std::string(cache::audio::kProducerSalt) + ":" + source.codec + ":" +
-                                   std::to_string(resolved.bitrate) +
-                                   (resolved.trial ? ":trial" : ":full");
-            m_cacheKey = cache::audio::MakeKey(std::move(source));
-
-            cache::Metadata metadata;
-            metadata.contentType = contentType;
-            metadata.validatedAt = cache::Store::Now();
-            metadata.extra = "schema=audio-v1;producer=" + std::string(cache::audio::kProducerSalt) +
-                             ";level=" + Utf8(resolved.level) + ";type=" + Utf8(resolved.type) +
-                             ";bitrate=" + std::to_string(resolved.bitrate) +
-                             (resolved.trial ? ";trial=1" : ";trial=0");
-            cache::audio::Request transfer;
-            transfer.key = m_cacheKey;
-            transfer.metadata = std::move(metadata);
-            transfer.fetch =
-                NcmEncodedFetch{resolved.url, m_id, resolved, resolved.expireSeconds};
-            transfer.persistent = persistent;
-            auto opened = cache::audio::OpenOrStart(std::move(transfer), p_abort);
-            if (!opened.admitted || !opened.stream.is_valid())
-                throw exception_io_data("Audio prefetch capacity is full");
-            m_source = std::move(opened.stream);
-            m_flight = std::move(opened.flight);
-            m_trial = resolved.trial;
             m_flags = p_flags;
             m_durationSeconds = 0;
             if (const auto song = Catalog::Get().FindSong(m_id); song && song->durationMs > 0)
@@ -416,7 +459,10 @@ public:
 
 private:
     void InvalidateCache() noexcept {
-        if (!m_cacheKey.identity.empty()) cache::audio::Invalidate(m_cacheKey);
+        if (m_cacheKey.identity.empty()) return;
+        cache::audio::Invalidate(m_cacheKey);
+        // The remembered source led to bytes the decoder rejected: resolve it again next time.
+        if (!m_sourceRequest.empty()) cache::audio::ForgetSource("ncm", m_cacheKey.identity, m_sourceRequest);
     }
 
     void ReleaseDecoder() noexcept {
@@ -436,6 +482,7 @@ private:
     file::ptr m_source;
     std::shared_ptr<cache::audio::Flight> m_flight;
     cache::Key m_cacheKey;
+    std::string m_sourceRequest; // what was asked for (the quality setting) when this opened
     std::string m_decodePath;
     double m_positionSeconds = 0;
     double m_durationSeconds = 0;

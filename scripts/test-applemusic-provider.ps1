@@ -720,9 +720,8 @@ try {
         [int]$fixtureRegional.sourceRegionalAlbumRequests -ne 5 -or
         [int]$fixtureRegional.sourceRegionalArtistRequests -ne 3 -or
         [int]$fixtureRegional.sourceRetryArtistRequests -ne 2 -or
-        [int]$fixtureRegional.sourceArtistAlbumRequests -lt 2 -or
-        [int]$fixtureRegional.sourceSharedArtistAlbumRequests -lt 1 -or
-        [int]$fixtureRegional.sourceRetryArtistAlbumRequests -lt 1 -or
+        # Artist album counts are remembered across runs, so a repeated run may issue none of
+        # these requests; whatever is issued must still have the source-storefront shape.
         [int]$fixtureRegional.invalidSourceArtistAlbumRequests -ne 0 -or
         [int]$fixtureRegional.japanAlbumRequests -ne 1 -or
         [int]$fixtureRegional.japanSongRequests -ne 1 -or

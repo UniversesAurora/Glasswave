@@ -393,7 +393,7 @@ class FakeProvider final : public Provider {
         return key;
     }
     std::wstring Name() const override { return L"List session probe"; }
-    Features Offers() const override { return {}; }
+    Capabilities Offers() const override { return {}; }
     bool SignedIn() const override { return false; }
     bool SessionRestoring() const override { return m_sessionRestoring.load(std::memory_order_acquire); }
     bool AccountVerified() const override { return m_accountVerified.load(std::memory_order_acquire); }
@@ -410,7 +410,7 @@ class FakeProvider final : public Provider {
     }
     std::optional<Track> FindTrack(const Id&) const override { return std::nullopt; }
     metadb_handle_ptr ArtItem(ArtKind, const Id&) const override { return {}; }
-    bool IsFavorite(const Id&) const override { return false; }
+    bool ReadFavorite(const Id&) const override { return false; }
     std::vector<Playlist> Playlists(Shelf) const override { return {}; }
     std::optional<Shelf> ShelfOf(const Id&) const override { return std::nullopt; }
     std::vector<Artist> FollowedArtists() const override { return {}; }
@@ -483,7 +483,7 @@ class FakeProvider final : public Provider {
         return m_cacheContext;
     }
 
-    void SetFavorite(const Id&, bool, Done) override {}
+    void WriteFavorite(const Id&, bool, Done) override {}
     void SetFollowed(const Id&, bool, Done) override {}
     void SetAlbumSaved(const Id&, bool, Done) override {}
     void SetPlaylistSaved(const Id&, bool, Done) override {}

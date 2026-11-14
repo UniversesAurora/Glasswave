@@ -37,7 +37,23 @@ public:
 };
 play_callback_static_factory_t<SourcePlaybackEvents> g_playbackEvents;
 
+std::function<void(const std::string&)>& OpeningListener() {  // main thread only
+    static std::function<void(const std::string&)> listener;
+    return listener;
+}
+
 }  // namespace
+
+void AnnouncePlaybackOpening(std::string_view path, unsigned flags) {
+    if ((flags & input_flag_playback) == 0 || (flags & input_flag_testing_integrity) != 0) return;
+    fb2k::inMainThread([path = std::string(path)] {
+        if (auto& listener = OpeningListener()) listener(path);
+    });
+}
+
+void SetPlaybackOpeningListener(std::function<void(const std::string& path)> listener) {
+    OpeningListener() = std::move(listener);
+}
 
 uint64_t SourcePlaybackEpoch() { return g_availability.Epoch(); }
 

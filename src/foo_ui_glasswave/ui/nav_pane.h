@@ -42,6 +42,7 @@ public:
         stream::Id remoteId;        // RemotePlaylist
         stream::Id sectionId;       // RemoteSection / RemotePlaylist parent
         stream::SectionKind sectionKind = stream::SectionKind::Tracks;
+        stream::GroupFacet sectionFacet = stream::GroupFacet::Genre;
         stream::Shelf sectionShelf = stream::Shelf::Created;
         bool reorderChildren = false;
     };

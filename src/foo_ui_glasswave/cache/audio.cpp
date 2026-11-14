@@ -3,6 +3,7 @@
 
 #include <atomic>
 #include <filesystem>
+#include <fstream>
 #include <limits>
 #include <unordered_map>
 
@@ -613,6 +614,7 @@ class Manager {
         // Another opener may have installed the shared flight while this lookup ran.
         if (auto opened = adoptLocked()) return std::move(*opened);
         if (cached) return std::move(*cached);
+        if (request.cachedOnly) return Opened{{}, {}, false, false};
 
         if (requested == Workload::Prefetch && prefetchFlights >= kMaxPrefetchFlights)
             return Opened{{}, {}, false, false};
@@ -917,6 +919,58 @@ void Flight::Invalidate() noexcept {
 
 Opened OpenOrStart(Request request, abort_callback& abort) {
     return SharedManager().Open(std::move(request), abort);
+}
+
+namespace {
+constexpr char kSourceMemoSchema[] = "audio-source/1";
+
+Key SourceMemoKey(const std::string& provider, const std::string& identity, const std::string& request) {
+    return {Kind::Data, provider, AccountScope(provider), "audio-source/" + identity, request};
+}
+} // namespace
+
+std::optional<std::string> RecallSource(const std::string& provider, const std::string& identity,
+                                        const std::string& request) {
+    try {
+        const auto record = GetStore().Lookup(SourceMemoKey(provider, identity, request));
+        if (!record || record->Info().contentType != kSourceMemoSchema || record->Info().extra.empty())
+            return std::nullopt;
+        return record->Info().extra;
+    } catch (...) {
+        return std::nullopt;
+    }
+}
+
+void RememberSource(const std::string& provider, const std::string& identity, const std::string& request,
+                    std::string description) {
+    try {
+        const Key key = SourceMemoKey(provider, identity, request);
+        if (const auto record = GetStore().Lookup(key);
+            record && record->Info().contentType == kSourceMemoSchema && record->Info().extra == description)
+            return;
+        auto writer = GetStore().Begin(key);
+        if (!writer) return;
+        {
+            std::ofstream output(writer->Path(), std::ios::binary | std::ios::trunc);
+            output << "source";
+            output.close();
+            if (!output) return;
+        }
+        Metadata metadata;
+        metadata.contentType = kSourceMemoSchema;
+        metadata.extra = std::move(description);
+        writer->Commit(std::move(metadata));
+    } catch (...) {
+        // The memo only saves a request; playback does not depend on it.
+    }
+}
+
+void ForgetSource(const std::string& provider, const std::string& identity,
+                  const std::string& request) noexcept {
+    try {
+        GetStore().Erase(SourceMemoKey(provider, identity, request));
+    } catch (...) {
+    }
 }
 
 std::shared_ptr<Flight> Adopt(const Key& key, Workload workload) {

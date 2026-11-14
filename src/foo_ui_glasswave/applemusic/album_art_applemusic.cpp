@@ -193,12 +193,26 @@ class AppleArtInstance : public album_art_extractor_instance_v2 {
                                         : kind == CoverKind::Artist   ? stream::ArtKind::Artist
                                         : kind == CoverKind::Playlist ? stream::ArtKind::Playlist
                                                                       : stream::ArtKind::Track;
+        // A song shows its album's cover. Storing it under the album makes every song of the
+        // album, the album page and the grids share one download (stream::Provider::ArtKeyOf
+        // names the same identity for the UI). The URL is still resolved through the song.
+        stream::Id albumOfSong;
+        if (artKind == stream::ArtKind::Track) albumOfSong = Catalog::Get().SongAlbum(id);
+        std::wstring catalogUrl = Catalog::Get().CoverUrl(artKind, id);
+        if (catalogUrl.empty() && !albumOfSong.empty())
+            catalogUrl = Catalog::Get().CoverUrl(stream::ArtKind::Album, albumOfSong);
+
         cache::ImageRequest request;
-        request.identity = {"apple", ArtKindName(artKind), Utf8(id), "1200-jpg-bb-v1"};
+        request.identity = albumOfSong.empty()
+                               ? cache::ImageIdentity{"apple", ArtKindName(artKind), Utf8(id), "1200-jpg-bb-v1"}
+                               : cache::ImageIdentity{"apple", ArtKindName(stream::ArtKind::Album),
+                                                      Utf8(albumOfSong), "1200-jpg-bb-v1"};
+        if (!albumOfSong.empty())
+            request.alternates.push_back({"apple", ArtKindName(artKind), Utf8(id), "1200-jpg-bb-v1"});
         request.limits.maxBodyBytes = kMaxArtworkBytes;
         request.resolve = [artKind, id, identity = request.identity, epoch = cache::art_absence::Epoch(),
                            account = cache::AccountRevision("apple"),
-                           catalogUrl = ResizeArtwork(Catalog::Get().CoverUrl(artKind, id))](
+                           catalogUrl = ResizeArtwork(std::move(catalogUrl))](
                               abort_callback& workerAbort, unsigned attempt) mutable {
             std::wstring url = attempt == 0 ? catalogUrl : std::wstring();
             if (cache::AccountRevision("apple") != account) throw exception_aborted();

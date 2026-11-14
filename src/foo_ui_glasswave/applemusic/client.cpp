@@ -1,8 +1,9 @@
 #include "pch.h"
 #include "applemusic/client.h"
 #include "applemusic/service.h"
-#include "netease/http.h"
+#include "net/http.h"
 #include "netease/json.h"
+#include "netease/log.h"
 #include "netease/profile.h"
 #include "ui/i18n.h"
 
@@ -120,6 +121,25 @@ BridgeConfig ReadBridge() {
     const uintmax_t size = std::filesystem::file_size(path, ec);
     if (ec || size == 0 || size > kBridgeFileLimit) Fail("The Apple Music bridge file is invalid.");
 
+    // Every request reads the bridge configuration. The file changes only when the bridge
+    // is set up again, so its parsed form is reused while its size and write time stand.
+    const auto written = std::filesystem::last_write_time(path, ec);
+    if (ec) Fail("The Apple Music bridge file cannot be read.");
+    static std::mutex cacheMutex;
+    static std::optional<BridgeConfig> cached;
+    static uintmax_t cachedSize = 0;
+    static std::filesystem::file_time_type cachedWritten{};
+    {
+        std::lock_guard lock(cacheMutex);
+        if (cached && cachedSize == size && cachedWritten == written) {
+            const BridgeConfig& config = *cached;
+            if (!g_probeTag.empty() && (config.url != g_probeUrl || config.token != g_probeToken ||
+                                        config.fixtureTransactionTag != g_probeTag))
+                Fail("The Apple Music fixture bridge changed during the probe.");
+            return config;
+        }
+    }
+
     std::ifstream input(path, std::ios::binary);
     if (!input) Fail("The Apple Music bridge file cannot be read.");
     std::string bytes(static_cast<size_t>(size), '\0');
@@ -164,6 +184,12 @@ BridgeConfig ReadBridge() {
     if (!g_probeTag.empty() && (config.url != g_probeUrl || config.token != g_probeToken ||
                                 config.fixtureTransactionTag != g_probeTag))
         Fail("The Apple Music fixture bridge changed during the probe.");
+    {
+        std::lock_guard lock(cacheMutex);
+        cached = config;
+        cachedSize = size;
+        cachedWritten = written;
+    }
     return config;
 }
 
@@ -223,7 +249,9 @@ std::wstring NormalizeNext(std::wstring_view initial, std::wstring_view next) {
         path.assign(next.substr(pathStart));
     }
     ValidateApplePath(path);
-    if (PathOnly(path) != PathOnly(initial)) Fail("Apple Music returned an unexpected pagination path.");
+    // The service writes the storefront in lower case ("/catalog/us/") whatever case was asked.
+    if (LowerAscii(PathOnly(path)) != LowerAscii(PathOnly(initial)))
+        Fail("Apple Music returned an unexpected pagination path.");
     return path;
 }
 
@@ -242,6 +270,36 @@ bool HasLocaleParameter(std::wstring_view path) {
         at = end + 1;
     }
     return false;
+}
+
+bool HasQueryParameter(std::wstring_view path, std::wstring_view name) {
+    const size_t query = path.find(L'?');
+    if (query == std::wstring_view::npos) return false;
+    for (size_t at = query + 1; at < path.size();) {
+        const size_t end = std::min(path.find(L'&', at), path.size());
+        const std::wstring_view parameter = path.substr(at, end - at);
+        if (parameter.substr(0, parameter.find(L'=')) == name) return true;
+        at = end + 1;
+    }
+    return false;
+}
+
+std::wstring WithoutQueryParameter(std::wstring_view path, std::wstring_view name) {
+    const size_t query = path.find(L'?');
+    if (query == std::wstring_view::npos) return std::wstring(path);
+    std::wstring out(path.substr(0, query));
+    wchar_t separator = L'?';
+    for (size_t at = query + 1; at < path.size();) {
+        const size_t end = std::min(path.find(L'&', at), path.size());
+        const std::wstring_view parameter = path.substr(at, end - at);
+        if (!parameter.empty() && parameter.substr(0, parameter.find(L'=')) != name) {
+            out += separator;
+            out += parameter;
+            separator = L'&';
+        }
+        at = end + 1;
+    }
+    return out;
 }
 
 bool ChineseLocale() {
@@ -336,7 +394,7 @@ Object Request(std::wstring_view path, abort_callback& abort, std::wstring_view 
     const BridgeConfig config = ReadBridge();
     ServiceManager::Get().EnsureStarted(config.url, config.token, config.runtime, abort);
 
-    netease::HttpOptions options;
+    net::HttpOptions options;
     options.method = verb;
     options.body = std::move(body);
     options.noProxy = true;
@@ -349,7 +407,7 @@ Object Request(std::wstring_view path, abort_callback& abort, std::wstring_view 
     if (!g_probeTag.empty()) options.headers.emplace_back(L"X-Glasswave-Probe-Transaction", Wide(g_probeTag));
     if (!options.body.empty()) options.headers.emplace_back(L"Content-Type", L"application/json");
 
-    const netease::HttpResponse response = netease::SendHttp(config.url + std::wstring(path), options, abort);
+    const net::HttpResponse response = net::SendHttp(config.url + std::wstring(path), options, abort);
     if (response.status == 0 || !response.error.empty()) Fail("Cannot reach the Apple Music bridge.");
     if (response.status < 200 || response.status >= 300) throw BridgeHttpError(response.status);
     if (response.body.empty()) return EmptyObject();
@@ -405,13 +463,49 @@ std::optional<LibraryPlaybackMapping> ResolveLibraryPlaybackMapping(std::wstring
 Object Apple(std::wstring_view path, abort_callback& abort, std::wstring_view method, const Object* body) {
     ValidateApplePath(path);
     const bool libraryDelete = Method(method) == L"DELETE" && path.starts_with(L"/v1/me/library/");
-    const std::wstring localizedPath = libraryDelete ? std::wstring(path) : WithLocale(std::wstring(path));
-    Object request;
-    request.Insert(L"method", JsonValue::CreateStringValue(Method(method)));
-    request.Insert(L"path", JsonValue::CreateStringValue(localizedPath));
-    request.Insert(L"body", body && *body ? static_cast<winrt::Windows::Data::Json::IJsonValue>(*body)
-                                          : JsonValue::CreateNullValue());
-    return Request(L"/api/v1/glasswave/apple", abort, L"POST", Utf8(json::Stringify(request)));
+    std::wstring localizedPath = libraryDelete ? std::wstring(path) : WithLocale(std::wstring(path));
+    const auto send = [&](const std::wstring& requestPath) {
+        Object request;
+        request.Insert(L"method", JsonValue::CreateStringValue(Method(method)));
+        request.Insert(L"path", JsonValue::CreateStringValue(requestPath));
+        request.Insert(L"body", body && *body ? static_cast<winrt::Windows::Data::Json::IJsonValue>(*body)
+                                              : JsonValue::CreateNullValue());
+        // One line per request, as for the other source: what was asked and how long it took
+        // is what shows duplicated or repeated work.
+        const ULONGLONG started = GetTickCount64();
+        try {
+            Object response =
+                Request(L"/api/v1/glasswave/apple", abort, L"POST", Utf8(json::Stringify(request)));
+            netease::LogHttp(L"apple " + Method(method), requestPath, 200,
+                             static_cast<long long>(GetTickCount64() - started));
+            return response;
+        } catch (const BridgeHttpError& error) {
+            netease::LogHttp(L"apple " + Method(method), requestPath, static_cast<unsigned long>(error.status()),
+                             static_cast<long long>(GetTickCount64() - started));
+            throw;
+        }
+    };
+
+    // The catalog host has been observed (2026-11) to answer every request that carries
+    // "platform=web" with 400 "Platform web is not supported", while the same request
+    // without the parameter succeeds; the library host accepts it. A catalog request that
+    // is refused is sent once more without the parameter, and once that has worked the
+    // parameter is left out of catalog requests for the rest of the run, so a refusal costs
+    // one extra request per run instead of failing every catalog read.
+    static std::atomic_bool catalogRefusesPlatform = false;
+    const bool catalogWithPlatform =
+        path.starts_with(L"/v1/catalog/") && HasQueryParameter(localizedPath, L"platform");
+    if (!catalogWithPlatform) return send(localizedPath);
+    const std::wstring withoutPlatform = WithoutQueryParameter(localizedPath, L"platform");
+    if (catalogRefusesPlatform.load(std::memory_order_relaxed)) return send(withoutPlatform);
+    try {
+        return send(localizedPath);
+    } catch (const BridgeHttpError& error) {
+        if (error.status() != 400) throw;
+    }
+    Object response = send(withoutPlatform);
+    catalogRefusesPlatform.store(true, std::memory_order_relaxed);
+    return response;
 }
 
 std::vector<Object> Collection(std::wstring_view firstPath, abort_callback& abort) {

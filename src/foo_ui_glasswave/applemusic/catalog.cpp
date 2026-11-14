@@ -79,12 +79,16 @@ void Catalog::Put(const Song& song) {
     if (song.track.id.empty()) return;
     std::lock_guard lock(m_mutex);
     m_songs[song.track.id] = song;
+    if (!song.track.albumId.empty()) m_songAlbums[song.track.id] = song.track.albumId;
 }
 
 void Catalog::Put(const std::vector<Song>& songs) {
     std::lock_guard lock(m_mutex);
-    for (const auto& song : songs)
-        if (!song.track.id.empty()) m_songs[song.track.id] = song;
+    for (const auto& song : songs) {
+        if (song.track.id.empty()) continue;
+        m_songs[song.track.id] = song;
+        if (!song.track.albumId.empty()) m_songAlbums[song.track.id] = song.track.albumId;
+    }
 }
 
 void Catalog::Put(const stream::Playlist& playlist) {
@@ -118,6 +122,20 @@ void Catalog::Put(const stream::Artist& artist) {
 void Catalog::Put(const std::vector<stream::Artist>& artists) {
     for (const auto& artist : artists)
         Put(artist);
+}
+
+void Catalog::PutSongAlbum(const stream::Id& songId, const stream::Id& albumId) {
+    if (songId.empty() || albumId.empty()) return;
+    std::lock_guard lock(m_mutex);
+    m_songAlbums[songId] = albumId;
+}
+
+stream::Id Catalog::SongAlbum(const stream::Id& songId) const {
+    std::lock_guard lock(m_mutex);
+    if (const auto song = m_songs.find(songId); song != m_songs.end() && !song->second.track.albumId.empty())
+        return song->second.track.albumId;
+    const auto found = m_songAlbums.find(songId);
+    return found == m_songAlbums.end() ? stream::Id() : found->second;
 }
 
 std::optional<Song> Catalog::FindSongRaw(const stream::Id& id) const {
@@ -381,6 +399,7 @@ void Catalog::InstallCached(std::vector<Song> songs) {
                 IsLibraryId(song.libraryAlbumId) && song.libraryAlbumId[0] == L'l') {
                 m_albumLibraryIds[song.track.albumId] = song.libraryAlbumId;
             }
+            if (!song.track.albumId.empty()) m_songAlbums.try_emplace(song.track.id, song.track.albumId);
             if (m_songs.contains(song.track.id)) continue;
             const stream::Id id = song.track.id;
             installed.push_back(song);
@@ -455,6 +474,7 @@ void Catalog::ClearMemory() {
     m_playlists.clear();
     m_albums.clear();
     m_artists.clear();
+    m_songAlbums.clear();
 }
 
 void Catalog::Clear() {

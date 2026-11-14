@@ -15,6 +15,8 @@ namespace glasswave::stream {
 using Id = std::wstring;
 inline constexpr int kUnknownCount = -1; // callers omit this count instead of showing a false zero
 
+// A credit. The id is empty when the service names an artist it has no page for (uploaded
+// or matched library songs); such a credit is shown but not navigable.
 struct ArtistRef {
     Id id;
     std::wstring name;
@@ -101,12 +103,19 @@ enum class SectionKind {
     Groups
 };
 
+// What a Groups section groups by, for its icon (WMP's genre or composer icon).
+enum class GroupFacet {
+    Genre,
+    Composer
+};
+
 struct NavigationSection {
     Id id;
     std::wstring label;
     SectionKind kind = SectionKind::Tracks;
     Shelf shelf = Shelf::Created;
     bool reorderChildren = false;
+    GroupFacet facet = GroupFacet::Genre;
 };
 
 // One provider-defined value below a Groups section (genre, composer, collection, ...).

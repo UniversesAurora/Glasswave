@@ -4,7 +4,7 @@
 #include "applemusic/client.h"
 #include "applemusic/config.h"
 #include "applemusic/display_metadata.h"
-#include "netease/http.h"
+#include "net/http.h"
 #include "netease/json.h"
 #include "stream/list_session.h"
 #include "stream/provider.h"
@@ -687,14 +687,14 @@ std::optional<json::Object> ReadMockTestingState() {
     try {
         const std::wstring url = BridgeUrl();
         if (!TestBridgeUrl(url)) return std::nullopt;
-        netease::HttpOptions options;
+        net::HttpOptions options;
         options.method = L"GET";
         options.noProxy = true;
         options.timeoutMs = 2000;
         options.maxBodyBytes = 64u * 1024u;
         options.headers = {{L"X-API-Token", Wide(BridgeToken())}, {L"Accept", L"application/json"}};
         abort_callback_dummy abort;
-        const auto response = netease::SendHttp(url + L"/api/v1/glasswave/testing", options, abort);
+        const auto response = net::SendHttp(url + L"/api/v1/glasswave/testing", options, abort);
         if (!response.ok() || response.body.empty()) return std::nullopt;
         const auto parsed = json::Parse(response.body);
         if (!parsed || !json::GetBool(*parsed, L"ok")) return std::nullopt;
@@ -1701,7 +1701,7 @@ void RunCatalogRegression(const std::shared_ptr<State>& state) {
             stream::ListKind::CatalogSearchArtists,    stream::ListKind::CatalogSearchAlbums,
             stream::ListKind::CatalogSearchPlaylists,
         };
-        if (provider->CatalogSearchKinds() != expectedKinds || !provider->SupportsCatalogSearchSuggestions())
+        if (provider->CatalogSearchKinds() != expectedKinds || !provider->Can(stream::Capability::SearchSuggestions))
             return Fail(state, L"catalog_search_kinds", L"catalog_kind_advertisement_mismatch");
         AddOperation(state, L"catalog_search_kinds", true);
 

@@ -2,6 +2,7 @@
 #include "stream/provider.h"
 #include "stream/playback_source.h"
 #include "stream/list_session.h"
+#include "ui/i18n.h"
 
 namespace glasswave::stream {
 
@@ -42,20 +43,26 @@ std::wstring Provider::ArtKey(ArtKind kind, const Id& id) const {
     return ArtKeyPrefix(kind) + id;
 }
 
+std::wstring Provider::ArtKeyOf(const metadb_handle_ptr& item) const {
+    const Id id = TrackId(item);
+    if (id.empty()) return {};
+    const Id album = AlbumOfTrack(id);
+    return !album.empty() ? ArtKey(ArtKind::Album, album) : ArtKey(ArtKind::Track, id);
+}
+
+Id Provider::AlbumOfTrack(const Id& track) const {
+    const auto found = FindTrack(track);
+    return found ? found->albumId : Id();
+}
+
 std::wstring Provider::ArtKeyPrefix(ArtKind kind) const {
     return std::wstring(Key()) + L':' + KindName(kind) + L':';
 }
 
-std::wstring Provider::LibraryActionText(LibraryAction action) const {
-    return action == LibraryAction::Add ? L"Collect album" : L"Uncollect album";
-}
-
-std::wstring Provider::LibraryStateText(bool saved) const {
-    return saved ? L"Collected" : L"Collect";
-}
-
-std::wstring Provider::ArtistPreferenceActionText(ArtistPreferenceAction action) const {
-    return action == ArtistPreferenceAction::Favorite ? L"Follow artist" : L"Unfollow artist";
+std::wstring Provider::Text(std::wstring_view english) const {
+    const std::wstring term = Wording(english);
+    const std::wstring_view context = TextContext();
+    return context.empty() ? ui::Tr(term) : ui::Tr(term, context);
 }
 
 bool Provider::IsAlbumSaved(const Id& album) const {
@@ -72,10 +79,6 @@ std::optional<bool> Provider::ArtistPreferenceState(const Id&) const {
     return std::nullopt;
 }
 
-std::wstring Provider::PlaylistText(std::wstring_view english) const {
-    return std::wstring(english);
-}
-
 std::wstring Provider::ArtistTracksLabel(const Id&) const {
     return L"Hot songs";
 }
@@ -86,24 +89,26 @@ std::vector<ArtistSection> Provider::ArtistSections(const Id& artist) const {
 }
 
 std::vector<ListKind> Provider::CatalogSearchKinds() const {
-    return Offers().catalogSearch ? std::vector<ListKind>{ListKind::CatalogSearch} : std::vector<ListKind>{};
+    return Can(Capability::CatalogSearch) ? std::vector<ListKind>{ListKind::CatalogSearch}
+                                          : std::vector<ListKind>{};
 }
 
 std::vector<NavigationSection> Provider::Sections() const {
-    const Features offers = Offers();
+    const Capabilities offers = Offers();
+    const bool reorder = offers.Has(Capability::ReorderPlaylists);
     std::vector<NavigationSection> sections;
-    if (offers.favorites || offers.libraryFavorites)
+    if (offers.Has(Capability::ReadFavorites))
         sections.push_back({L"favorites", L"Favorites", SectionKind::Favorites, Shelf::Created, false});
-    if (offers.followArtists || offers.libraryArtists)
+    if (offers.Has(Capability::LibraryArtists))
         sections.push_back({L"artists", L"Artists", SectionKind::Artists, Shelf::Created, false});
-    if (offers.saveAlbums || offers.libraryAlbums)
+    if (offers.Has(Capability::LibraryAlbums))
         sections.push_back({L"albums", L"Albums", SectionKind::Albums, Shelf::Created, false});
-    sections.push_back({L"created", L"Created playlists", SectionKind::PlaylistShelf, Shelf::Created,
-                        offers.reorderPlaylists});
-    if (offers.savePlaylists || offers.libraryPlaylists)
-        sections.push_back({L"saved", L"Collected playlists", SectionKind::PlaylistShelf, Shelf::Saved,
-                            offers.reorderPlaylists});
-    if (offers.recommended)
+    sections.push_back(
+        {L"created", L"Created playlists", SectionKind::PlaylistShelf, Shelf::Created, reorder});
+    if (offers.Has(Capability::LibraryPlaylists))
+        sections.push_back(
+            {L"saved", L"Collected playlists", SectionKind::PlaylistShelf, Shelf::Saved, reorder});
+    if (offers.Has(Capability::RecommendedPlaylists))
         sections.push_back(
             {L"recommended", L"Recommended", SectionKind::PlaylistShelf, Shelf::Recommended, false});
     return sections;
@@ -144,6 +149,62 @@ void Provider::OnLanguageChanged() {
     RefreshLibrary([this](std::wstring) { fb2k::inMainThread([this] { NotifyLanguageChanged(); }); });
 }
 
+namespace {
+// A write whose answer never comes (the service stopped, the account changed) stops
+// overriding the service's state after this long.
+constexpr auto kFavoriteAnswerTimeout = std::chrono::minutes(2);
+}  // namespace
+
+bool Provider::IsFavorite(const Id& track) const {
+    {
+        std::lock_guard lock(m_favoritesMutex);
+        if (const auto it = m_pendingFavorites.find(track); it != m_pendingFavorites.end()) {
+            if (std::chrono::steady_clock::now() - it->second.since < kFavoriteAnswerTimeout)
+                return it->second.favorite;
+            m_pendingFavorites.erase(it);
+        }
+    }
+    return ReadFavorite(track);
+}
+
+// The new state shows at once; the write runs on the provider's own queues, which pages,
+// playback and list changes do not cancel. Only the latest click on a song decides what it
+// shows: an earlier write's answer neither confirms nor rolls back a later one.
+void Provider::SetFavorite(const Id& track, bool favorite, Done done) {
+    uint64_t serial = 0;
+    {
+        std::lock_guard lock(m_favoritesMutex);
+        serial = ++m_favoriteSerial;
+        m_pendingFavorites[track] = {favorite, serial, std::chrono::steady_clock::now()};
+    }
+    NotifyFavoritesChanged();
+    WriteFavorite(track, favorite, [this, track, serial, done = std::move(done)](std::wstring error) mutable {
+        if (core_api::is_main_thread()) {
+            FinishFavorite(track, serial, std::move(error), std::move(done));
+            return;
+        }
+        fb2k::inMainThread([this, track, serial, error = std::move(error), done = std::move(done)]() mutable {
+            FinishFavorite(track, serial, std::move(error), std::move(done));
+        });
+    });
+}
+
+void Provider::FinishFavorite(const Id& track, uint64_t serial, std::wstring error, Done done) {
+    bool settled = false;
+    {
+        std::lock_guard lock(m_favoritesMutex);
+        if (const auto it = m_pendingFavorites.find(track); it != m_pendingFavorites.end() && it->second.serial == serial) {
+            m_pendingFavorites.erase(it);
+            settled = true;
+        }
+    }
+    if (!error.empty())
+        console::print("Glasswave: favorite change failed: ", pfc::stringcvt::string_utf8_from_wide(error.c_str()).get_ptr());
+    // Success: the service's state is the new one now. Failure: it is the old one again.
+    if (settled) NotifyFavoritesChanged();
+    if (done) done(std::move(error));
+}
+
 void Provider::AddListener(Listener* listener) {
     if (std::find(m_listeners.begin(), m_listeners.end(), listener) == m_listeners.end())
         m_listeners.push_back(listener);
@@ -155,7 +216,12 @@ void Provider::RemoveListener(Listener* listener) {
 
 // Listeners may remove themselves while being notified, so iterate over a copy.
 void Provider::NotifyAccountObserved() {
-    InvalidateListCache(Key(), true, ListCacheInvalidation::RetireInMemory);
+    // While the session is still being restored the reads are stopped at the gate (their rows
+    // stay); once the account is verified only the reads that were waiting start.
+    if (SessionRestoring() && !AccountVerified())
+        InvalidateListCache(Key(), true, ListCacheInvalidation::RetireInMemory);
+    else
+        ResumeLists(Key());
     for (Listener* listener : std::vector<Listener*>(m_listeners))
         listener->OnAccountObserved(*this);
 }
@@ -192,7 +258,7 @@ void Provider::NotifyDisplayChanged() {
 }
 
 void Provider::NotifyListChanged() {
-    InvalidateListCache(Key());
+    RevalidateLists(Key());
 }
 
 ListCachePolicy Provider::ListPolicy(const ListQuery& query) const {

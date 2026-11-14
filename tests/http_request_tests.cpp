@@ -1,5 +1,5 @@
 #include <winsock2.h>
-#include "netease/http_request.h"
+#include "net/http_request.h"
 #include <array>
 #include <chrono>
 #include <iostream>
@@ -7,7 +7,7 @@
 #include <string>
 #include <thread>
 
-using glasswave::netease::detail::HttpRequest;
+using glasswave::net::detail::HttpRequest;
 
 void Check(bool condition, const char* message) {
     if (!condition) throw std::runtime_error(message);

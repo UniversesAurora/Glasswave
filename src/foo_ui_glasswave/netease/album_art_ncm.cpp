@@ -12,15 +12,22 @@ namespace glasswave::netease {
 
 namespace {
 
-std::wstring CoverUrl(std::wstring url) {
-    if (url.empty()) return {};
-    if (url.rfind(L"http://", 0) == 0) url = L"https://" + url.substr(7); // NCM avatars come as http
-    url += url.find(L'?') == std::wstring::npos ? L"?param=500y500" : L"&param=500y500";
-    return url;
+// Two renditions: 500 px for lists, grids and tiles, 1200 px where a cover is drawn larger
+// than that (the mini player and the full screen), each its own cache entry.
+constexpr int kSmallRendition = 500;
+struct Rendition {
+    const wchar_t* param;
+    const char* version;
+};
+Rendition RenditionFor(int sizePx) {
+    return sizePx > kSmallRendition ? Rendition{L"1200y1200", "1200y1200-v1"} : Rendition{L"500y500", "500y500-v1"};
 }
 
-std::wstring Wide(const char* text) {
-    return text ? pfc::stringcvt::string_wide_from_utf8(text).get_ptr() : std::wstring();
+std::wstring CoverUrl(std::wstring url, const Rendition& rendition) {
+    if (url.empty()) return {};
+    if (url.rfind(L"http://", 0) == 0) url = L"https://" + url.substr(7); // NCM avatars come as http
+    url += (url.find(L'?') == std::wstring::npos ? L"?param=" : L"&param=") + std::wstring(rendition.param);
+    return url;
 }
 
 const char* ArtKindName(CoverKind kind) {
@@ -64,11 +71,23 @@ class NcmArtInstance : public album_art_extractor_instance_v2 {
             if (!ParseSongPath(m_path.c_str(), id)) throw exception_album_art_not_found();
         }
 
-        Log(L"art: query " + Wide(m_path.c_str()));
+        // A song shows its album's cover. Storing it under the album makes every song of the
+        // album, the album page and the grids share one download (stream::Provider::ArtKeyOf
+        // names the same identity for the UI).
+        int64_t albumOfSong = 0;
+        if (kind == CoverKind::Song)
+            if (const auto song = Catalog::Get().FindSong(id)) albumOfSong = song->albumId;
 
+        const Rendition rendition = RenditionFor(cache::SizeHint());
         cache::ImageRequest request;
-        request.identity = {"ncm", ArtKindName(kind), std::to_string(id), "500y500-v1"};
-        request.resolve = [kind, id, identity = request.identity, epoch = cache::art_absence::Epoch(),
+        request.identity = albumOfSong ? cache::ImageIdentity{"ncm", ArtKindName(CoverKind::Album),
+                                                              std::to_string(albumOfSong), rendition.version}
+                                       : cache::ImageIdentity{"ncm", ArtKindName(kind), std::to_string(id),
+                                                              rendition.version};
+        if (albumOfSong)
+            request.alternates.push_back({"ncm", ArtKindName(kind), std::to_string(id), rendition.version});
+        request.resolve = [kind, id, albumOfSong, rendition, identity = request.identity,
+                           epoch = cache::art_absence::Epoch(),
                            account = cache::AccountRevision("ncm")](abort_callback& workerAbort,
                                                                     unsigned attempt) {
             if (cache::AccountRevision("ncm") != account) throw exception_aborted();
@@ -85,6 +104,7 @@ class NcmArtInstance : public album_art_extractor_instance_v2 {
                 break;
             case CoverKind::Song:
                 url = Catalog::Get().SongCover(id);
+                if (url.empty() && albumOfSong) url = Catalog::Get().AlbumCover(albumOfSong);
                 break;
             }
 
@@ -103,7 +123,7 @@ class NcmArtInstance : public album_art_extractor_instance_v2 {
                 if (!songs.empty() && url.empty()) cache::art_absence::StoreMissing(identity, account, epoch);
             }
 
-            url = CoverUrl(std::move(url));
+            url = CoverUrl(std::move(url), rendition);
             if (url.empty()) return std::optional<cache::HttpSource>();
             cache::art_absence::Clear(identity, account, epoch);
             cache::HttpSource source;
@@ -147,7 +167,6 @@ class NcmArtExtractor : public album_art_extractor_v2 {
                                           abort_callback& abort) override {
         (void)filehint;
         (void)abort;
-        Log(L"art: open " + Wide(path ? path : ""));
         return fb2k::service_new<NcmArtInstance>(std::string(path ? path : ""));
     }
 
@@ -174,7 +193,6 @@ class NcmArtFallback : public album_art_fallback {
             CoverKind kind = CoverKind::Song;
             int64_t id = 0;
             if (ParseCoverPath(path, kind, id) || ParseSongPath(path, id)) {
-                Log(L"art: fallback for " + Wide(path ? path : ""));
                 album_art_extractor_instance_v2::ptr instance;
                 instance ^= fb2k::service_new<NcmArtInstance>(std::string(path ? path : ""));
                 return instance;

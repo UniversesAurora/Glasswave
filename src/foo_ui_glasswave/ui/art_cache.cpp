@@ -12,6 +12,15 @@ namespace {
 std::unique_ptr<ArtCache> g_cache;
 uint64_t g_nextGeneration = 0;
 
+// A provider picture that failed to load is asked for again only after a growing pause, and
+// one the service confirmed absent after the longest one. Requests come from painting, so
+// nothing is retried while the picture is not on screen.
+constexpr std::chrono::seconds kRetryBase{30};
+constexpr std::chrono::seconds kRetryMax{600};
+// Fetches of uncached provider pictures run beside the local lane. The image cache coalesces
+// one download per picture, so this bounds waiting threads, not requests per picture.
+constexpr int kNetworkThreads = 3;
+
 std::string Utf8(std::wstring_view text) {
     if (text.empty()) return {};
     return pfc::stringcvt::string_utf8_from_wide(text.data(), text.size()).get_ptr();
@@ -22,27 +31,11 @@ std::wstring Wide(std::string_view text) {
     return pfc::stringcvt::string_wide_from_utf8(text.data(), text.size()).get_ptr();
 }
 
-std::wstring SourceKeyFor(const std::wstring& key, const metadb_handle_ptr& track) {
-    if (!key.empty()) return key;
-    std::wstring sourceKey = pfc::stringcvt::string_wide_from_utf8(track->get_path()).get_ptr();
-    sourceKey += L'|' + std::to_wstring(track->get_subsong_index());
-    return sourceKey;
-}
-
 std::string ProviderFor(std::wstring_view sourceKey) {
     const size_t colon = sourceKey.find(L':');
     if (colon == std::wstring_view::npos || colon == 0) return {};
     const std::wstring name(sourceKey.substr(0, colon));
     return stream::FindProvider(name) ? Utf8(name) : std::string();
-}
-
-uint64_t AccountRevisionFor(const std::string& provider) {
-    return provider.empty() ? 0 : cache::AccountRevision(provider);
-}
-
-std::wstring MemoryKey(std::wstring_view sourceKey, uint64_t accountRevision, int sizePx) {
-    return std::to_wstring(sourceKey.size()) + L':' + std::wstring(sourceKey) + L':' +
-           std::to_wstring(accountRevision) + L':' + std::to_wstring(sizePx);
 }
 
 bool HasPrefix(std::wstring_view value, std::wstring_view prefix) {
@@ -62,6 +55,14 @@ ArtCache* ArtCache::Existing() {
 
 void ArtCache::Shutdown() {
     g_cache.reset();
+}
+
+std::wstring ArtCache::SourceKey(const metadb_handle_ptr& track) {
+    if (!track.is_valid()) return {};
+    if (auto* provider = stream::ProviderOf(track)) return provider->ArtKeyOf(track);
+    std::wstring sourceKey = pfc::stringcvt::string_wide_from_utf8(track->get_path()).get_ptr();
+    sourceKey += L'|' + std::to_wstring(track->get_subsong_index());
+    return sourceKey;
 }
 
 ArtCache::ArtCache() {
@@ -85,7 +86,9 @@ ArtCache::ArtCache() {
         });
     });
     for (int i = 0, n = settings::CoverThreads(); i < n; ++i)
-        m_threads.emplace_back([this] { Worker(); });
+        m_threads.emplace_back([this] { Worker(false); });
+    for (int i = 0; i < kNetworkThreads; ++i)
+        m_threads.emplace_back([this] { Worker(true); });
 }
 
 ArtCache::~ArtCache() {
@@ -94,12 +97,51 @@ ArtCache::~ArtCache() {
         std::lock_guard lock(m_mutex);
         m_quit = true;
         m_queue.clear();
+        m_network.clear();
         m_done.clear();
     }
     m_abort.abort();
     m_wake.notify_all();
+    m_wakeNetwork.notify_all();
     for (auto& thread : m_threads)
         if (thread.joinable()) thread.join();
+}
+
+ArtCache::Source& ArtCache::SourceFor(const std::wstring& sourceKey) {
+    auto [it, inserted] = m_sources.try_emplace(sourceKey);
+    Source& source = it->second;
+    if (inserted) {
+        source.provider = ProviderFor(sourceKey);
+        if (!source.provider.empty()) source.accountRevision = cache::AccountRevision(source.provider);
+    } else if (!source.provider.empty()) {
+        // Another account's picture is neither shown nor reused, not even while it reloads.
+        if (const uint64_t current = cache::AccountRevision(source.provider);
+            current != source.accountRevision) {
+            source.accountRevision = current;
+            m_entryCount -= source.sizes.size();
+            source.sizes.clear();
+            source.replaceCallerCopies = true;
+        }
+    }
+    source.used = ++m_clock;
+    return source;
+}
+
+void ArtCache::Queue(const std::wstring& sourceKey, const Source& source, int sizePx, Entry& entry) {
+    entry.epoch = ++m_epoch;
+    {
+        std::lock_guard lock(m_mutex);
+        m_queue.push_front(
+            {sourceKey, entry.track, sizePx, entry.epoch, source.provider, source.accountRevision});
+    }
+    m_wake.notify_one();
+}
+
+// The old bitmap stays in place while the replacement loads.
+void ArtCache::Reload(const std::wstring& sourceKey, const Source& source, int sizePx, Entry& entry) {
+    entry.stale = true;
+    entry.reloading = true;
+    Queue(sourceKey, source, sizePx, entry);
 }
 
 ArtCache::State ArtCache::Find(const std::wstring& key, const metadb_handle_ptr& track, int sizePx,
@@ -107,149 +149,106 @@ ArtCache::State ArtCache::Find(const std::wstring& key, const metadb_handle_ptr&
     *out = nullptr;
     if (!track.is_valid()) return State::Missing;
 
-    const std::wstring sourceKey = SourceKeyFor(key, track);
-    const std::string provider = ProviderFor(sourceKey);
-    const uint64_t accountRevision = AccountRevisionFor(provider);
-    bool accountChanged = false;
-    if (!provider.empty()) {
-        auto [revision, inserted] = m_sourceRevisions.try_emplace(sourceKey, accountRevision);
-        if (!inserted && revision->second != accountRevision) {
-            revision->second = accountRevision;
-            accountChanged = true;
-        }
-    }
-    if (accountChanged) m_replaceCallerCopies.insert(sourceKey);
-    const bool resetCachedBitmap = m_replaceCallerCopies.count(sourceKey) != 0;
-    if (!provider.empty()) {
-        for (auto it = m_entries.begin(); it != m_entries.end();) {
-            if (it->second.sourceKey == sourceKey && it->second.accountRevision != accountRevision)
-                it = m_entries.erase(it);
-            else
-                ++it;
-        }
-    }
+    const std::wstring sourceKey = key.empty() ? SourceKey(track) : key;
+    Source& source = SourceFor(sourceKey);
 
-    const std::wstring cacheKey = MemoryKey(sourceKey, accountRevision, sizePx);
-
-    // The same picture is requested at several sizes (grid tile, detail header, list
-    // column). Reuse a finished larger thumbnail instead of decoding it again; the list
-    // scales it into its smaller box. A stale larger thumbnail is still shown at once
-    // while this size reloads.
-    if (m_entries.find(cacheKey) == m_entries.end()) {
-        auto pick = [&](bool allowStale) -> Entry* {
-            Entry* found = nullptr;
-            for (auto& [candidateKey, candidate] : m_entries) {
-                (void)candidateKey;
-                if (candidate.sourceKey != sourceKey || candidate.accountRevision != accountRevision ||
-                    candidate.state != State::Ready || !candidate.bitmap || candidate.placeholder)
+    auto found = source.sizes.find(sizePx);
+    if (found == source.sizes.end()) {
+        // The same picture is requested at several sizes (grid tile, detail header, list
+        // column). Serve a smaller request from a finished larger thumbnail instead of
+        // decoding it again; the view scales it into its box. A stale larger thumbnail is
+        // still shown at once while this size reloads.
+        Entry* best = nullptr;
+        for (auto it = source.sizes.lower_bound(sizePx); it != source.sizes.end(); ++it) {
+            Entry& candidate = it->second;
+            if (candidate.state != State::Ready || !candidate.bitmap || candidate.placeholder) continue;
+            if (!best || (best->stale && !candidate.stale)) best = &candidate;
+            if (!best->stale) break;
+        }
+        // Nothing as large yet (a player cover after the list's thumbnails): the largest smaller
+        // one stands in, scaled up, while this size loads; then the sharp one replaces it.
+        bool interim = false;
+        if (!best)
+            for (auto it = source.sizes.rbegin(); it != source.sizes.rend(); ++it) {
+                Entry& candidate = it->second;
+                if (it->first >= sizePx || candidate.state != State::Ready || !candidate.bitmap ||
+                    candidate.placeholder)
                     continue;
-                if (candidate.stale && !allowStale) continue;
-                if (candidate.sizePx < sizePx) continue;
-                if (!found || candidate.sizePx < found->sizePx) found = &candidate;
+                best = &candidate;
+                interim = true;
+                break;
             }
-            return found;
-        };
-        Entry* best = pick(false);
-        if (!best) best = pick(true);
-        if (best) {
-            Entry& alias = m_entries[cacheKey];
-            alias.state = State::Ready;
-            alias.bitmap = best->bitmap;
-            alias.used = ++m_clock;
-            alias.content = best->content;
-            alias.sourceKey = sourceKey;
-            alias.accountRevision = accountRevision;
-            alias.track = track;
-            alias.sizePx = sizePx;
-            if (best->stale) {
-                alias.stale = true;
-                alias.epoch = ++m_epoch;
-                alias.reloading = true;
-                {
-                    std::lock_guard lock(m_mutex);
-                    m_queue.push_front({sourceKey, track, sizePx, alias.epoch, provider, accountRevision});
-                }
-                m_wake.notify_one();
-            }
-            *out = alias.bitmap;
-            return alias.bitmap ? State::Ready : State::Pending;
-        }
-    }
+        const bool bestStale = best && (best->stale || interim);
+        const auto bestBitmap = best ? best->bitmap : nullptr;
+        const uint64_t bestContent = best ? best->content : 0;
 
-    auto [it, inserted] = m_entries.try_emplace(cacheKey);
-    Entry& entry = it->second;
-    entry.sourceKey = sourceKey;
-    entry.accountRevision = accountRevision;
-    entry.track = track;
-    entry.sizePx = sizePx;
-    entry.used = ++m_clock;
-    if (inserted) {
-        entry.epoch = ++m_epoch;
-        if (cache::art_absence::Fresh(Utf8(sourceKey))) {
+        Entry& entry = source.sizes[sizePx];
+        ++m_entryCount;
+        entry.track = track;
+        if (bestBitmap) {
+            entry.state = State::Ready;
+            entry.bitmap = bestBitmap;
+            entry.content = bestContent;
+            if (bestStale) Reload(sourceKey, source, sizePx, entry);
+            *out = entry.bitmap;
+            return State::Ready;
+        }
+        if (!source.provider.empty() && cache::art_absence::Fresh(Utf8(sourceKey))) {
             entry.state = State::Missing;
+            entry.retryAt = Clock::now() + kRetryMax;
             ++entry.content;
             return State::Missing;
         }
-        if (resetCachedBitmap && m_resetArt) {
+        if (source.replaceCallerCopies && m_resetArt) {
             entry.bitmap = m_resetArt;
             entry.state = State::Ready;
             entry.placeholder = true;
             entry.stale = true;
             entry.reloading = true;
         }
-        {
-            std::lock_guard lock(m_mutex);
-            m_queue.push_front({sourceKey, track, sizePx, entry.epoch, provider, accountRevision});
-        }
-        m_wake.notify_one();
-
-        if (const size_t limit = static_cast<size_t>(settings::ThumbnailCacheEntries());
-            m_entries.size() > limit) {
-            std::vector<std::pair<uint64_t, std::wstring>> old;
-            for (const auto& [entryKey, candidate] : m_entries)
-                if (candidate.state != State::Pending && !candidate.reloading)
-                    old.emplace_back(candidate.used, entryKey);
-            std::sort(old.begin(), old.end());
-            for (size_t i = 0; i < old.size() && m_entries.size() > limit * 3 / 4; ++i)
-                m_entries.erase(old[i].second);
-        }
-        if (entry.placeholder) {
-            *out = entry.bitmap;
+        Queue(sourceKey, source, sizePx, entry);
+        const bool placeholder = entry.placeholder;
+        const auto bitmap = entry.bitmap;
+        Evict(); // may not drop this source: it was used last and its entry is loading
+        if (placeholder) {
+            *out = bitmap;
             return State::Ready;
         }
         return State::Pending;
     }
 
-    if (entry.stale) {
-        // Keep showing the old bitmap until the replacement is ready; enqueue the reload
-        // once. A cover that did not change simply decodes the same image again.
-        if (!entry.reloading) {
-            entry.epoch = ++m_epoch;
-            entry.reloading = true;
-            {
-                std::lock_guard lock(m_mutex);
-                m_queue.push_front({sourceKey, track, sizePx, entry.epoch, provider, accountRevision});
-            }
-            m_wake.notify_one();
-        }
-        *out = entry.bitmap;
-        return entry.bitmap ? State::Ready : State::Pending;
-    }
-    if (!provider.empty() && !entry.reloading && cache::ImageRefreshDue(Utf8(sourceKey)) &&
-        (entry.state == State::Ready || entry.state == State::Missing)) {
-        entry.stale = true;
-        entry.epoch = ++m_epoch;
-        entry.reloading = true;
-        {
-            std::lock_guard lock(m_mutex);
-            m_queue.push_front({sourceKey, track, sizePx, entry.epoch, provider, accountRevision});
-        }
-        m_wake.notify_one();
-        *out = entry.bitmap;
-        return entry.bitmap ? State::Ready : State::Pending;
+    Entry& entry = found->second;
+    entry.track = track;
+    if (entry.stale && !entry.reloading) {
+        Reload(sourceKey, source, sizePx, entry);
+    } else if (entry.state == State::Missing && !entry.reloading && !source.provider.empty() &&
+               Clock::now() >= entry.retryAt) {
+        Reload(sourceKey, source, sizePx, entry);
     }
     *out = entry.bitmap;
-    return entry.state;
+    if (entry.bitmap) return State::Ready;
+    return entry.state == State::Missing && !entry.reloading ? State::Missing : State::Pending;
+}
+
+void ArtCache::Evict() {
+    const size_t limit = static_cast<size_t>(settings::ThumbnailCacheEntries());
+    if (m_entryCount <= limit) return;
+    std::vector<std::pair<uint64_t, const std::wstring*>> old;
+    old.reserve(m_sources.size());
+    for (const auto& [sourceKey, source] : m_sources) {
+        const bool busy = std::any_of(source.sizes.begin(), source.sizes.end(), [](const auto& item) {
+            return item.second.state == State::Pending || item.second.reloading;
+        });
+        if (!busy) old.emplace_back(source.used, &sourceKey);
+    }
+    std::sort(old.begin(), old.end());
+    for (const auto& [used, sourceKey] : old) {
+        (void)used;
+        if (m_entryCount <= limit * 3 / 4) break;
+        const auto it = m_sources.find(*sourceKey);
+        m_entryCount -= it->second.sizes.size();
+        m_sources.erase(it);
+    }
 }
 
 int ArtCache::Subscribe(std::function<void()> callback) {
@@ -261,139 +260,125 @@ void ArtCache::Unsubscribe(int token) {
     m_listeners.erase(token);
 }
 
+void ArtCache::Notify() {
+    auto listeners = m_listeners;
+    for (auto& [token, callback] : listeners) {
+        (void)token;
+        callback();
+    }
+}
+
+void ArtCache::DropQueued(std::wstring_view prefix) {
+    std::lock_guard lock(m_mutex);
+    std::erase_if(m_queue, [&](const Request& request) { return HasPrefix(request.sourceKey, prefix); });
+    std::erase_if(m_network, [&](const Request& request) { return HasPrefix(request.sourceKey, prefix); });
+    std::erase_if(m_done, [&](const Done& done) { return HasPrefix(done.sourceKey, prefix); });
+}
+
 void ArtCache::Invalidate(std::wstring_view prefix) {
     cache::Images::Get().Invalidate(Utf8(prefix));
-    std::vector<Request> restart;
-    for (auto& [cacheKey, entry] : m_entries) {
-        if (!HasPrefix(entry.sourceKey, prefix)) continue;
-        entry.stale = true;
-        entry.reloading = false;
-        entry.epoch = ++m_epoch;
-        ++entry.content;
-        if (entry.state == State::Pending) {
-            entry.reloading = true;
-            restart.push_back({entry.sourceKey, entry.track, entry.sizePx, entry.epoch,
-                               ProviderFor(entry.sourceKey), entry.accountRevision});
+    DropQueued(prefix);
+    for (auto& [sourceKey, source] : m_sources) {
+        if (!HasPrefix(sourceKey, prefix)) continue;
+        for (auto& [sizePx, entry] : source.sizes) {
+            entry.failures = 0;
+            entry.retryAt = {};
+            ++entry.content;
+            if (entry.state == State::Pending) {
+                // Its load was dropped from the queue (or will be ignored): start it again.
+                Reload(sourceKey, source, sizePx, entry);
+            } else {
+                // Reloaded by the next paint that still wants it.
+                entry.stale = true;
+                entry.reloading = false;
+                entry.epoch = ++m_epoch;
+            }
         }
     }
-    {
-        std::lock_guard lock(m_mutex);
-        auto matches = [prefix](const std::wstring& sourceKey) { return HasPrefix(sourceKey, prefix); };
-        m_queue.erase(std::remove_if(m_queue.begin(), m_queue.end(),
-                                     [&](const Request& request) { return matches(request.sourceKey); }),
-                      m_queue.end());
-        m_done.erase(std::remove_if(m_done.begin(), m_done.end(),
-                                    [&](const Done& done) { return matches(done.sourceKey); }),
-                     m_done.end());
-        for (auto it = restart.rbegin(); it != restart.rend(); ++it)
-            m_queue.push_front(std::move(*it));
-    }
-    m_wake.notify_all();
-
-    auto listeners = m_listeners;
-    for (auto& [token, callback] : listeners)
-        callback();
+    Notify();
 }
 
 void ArtCache::Forget(std::wstring_view prefix) {
     cache::Images::Get().Invalidate(Utf8(prefix));
-    for (const auto& [sourceKey, revision] : m_sourceRevisions) {
-        (void)revision;
-        if (HasPrefix(sourceKey, prefix)) m_replaceCallerCopies.insert(sourceKey);
+    DropQueued(prefix);
+    for (auto& [sourceKey, source] : m_sources) {
+        if (!HasPrefix(sourceKey, prefix)) continue;
+        m_entryCount -= source.sizes.size();
+        source.sizes.clear();
+        source.replaceCallerCopies = true;
     }
-    for (auto it = m_entries.begin(); it != m_entries.end();) {
-        if (HasPrefix(it->second.sourceKey, prefix))
-            it = m_entries.erase(it);
-        else
-            ++it;
-    }
-    {
-        std::lock_guard lock(m_mutex);
-        auto matches = [prefix](const std::wstring& sourceKey) { return HasPrefix(sourceKey, prefix); };
-        m_queue.erase(std::remove_if(m_queue.begin(), m_queue.end(),
-                                     [&](const Request& request) { return matches(request.sourceKey); }),
-                      m_queue.end());
-        m_done.erase(std::remove_if(m_done.begin(), m_done.end(),
-                                    [&](const Done& done) { return matches(done.sourceKey); }),
-                     m_done.end());
-    }
-
-    auto listeners = m_listeners;
-    for (auto& [token, callback] : listeners)
-        callback();
+    Notify();
 }
 
 void ArtCache::InvalidateMissing(std::wstring_view prefix) {
-    cache::Images::Get().Invalidate(Utf8(prefix));
     bool changed = false;
-    for (auto& [cacheKey, entry] : m_entries) {
-        (void)cacheKey;
-        if (entry.state != State::Missing || entry.stale || entry.reloading) continue;
-        if (!HasPrefix(entry.sourceKey, prefix)) continue;
-        entry.stale = true;
-        entry.epoch = ++m_epoch;
-        ++entry.content;
-        changed = true;
+    for (auto& [sourceKey, source] : m_sources) {
+        if (!HasPrefix(sourceKey, prefix)) continue;
+        for (auto& [sizePx, entry] : source.sizes) {
+            (void)sizePx;
+            if (entry.state != State::Missing || entry.stale || entry.reloading) continue;
+            entry.stale = true;
+            entry.failures = 0;
+            entry.epoch = ++m_epoch;
+            ++entry.content;
+            changed = true;
+        }
     }
     if (!changed) return;
-    auto listeners = m_listeners;
-    for (auto& [token, callback] : listeners)
-        callback();
+    cache::Images::Get().Invalidate(Utf8(prefix));
+    Notify();
 }
 
 uint64_t ArtCache::Version(const std::wstring& key, const metadb_handle_ptr& track, int sizePx) const {
     if (!track.is_valid()) return 0;
-    const std::wstring sourceKey = SourceKeyFor(key, track);
-    const uint64_t accountRevision = AccountRevisionFor(ProviderFor(sourceKey));
-    const auto it = m_entries.find(MemoryKey(sourceKey, accountRevision, sizePx));
-    return it == m_entries.end() ? 0 : it->second.content;
+    const auto source = m_sources.find(key.empty() ? SourceKey(track) : key);
+    if (source == m_sources.end()) return 0;
+    const auto entry = source->second.sizes.find(sizePx);
+    return entry == source->second.sizes.end() ? 0 : entry->second.content;
 }
 
+// The persistent image cache replaced this picture's bytes: decode the sizes on screen again.
 void ArtCache::ImageChanged(cache::ImageEvent event) {
     const std::wstring artKey = Wide(event.artKey);
-    const std::string provider = ProviderFor(artKey);
-    if (provider.empty() || cache::AccountRevision(provider) != event.accountRevision) return;
+    const auto found = m_sources.find(artKey);
+    if (found == m_sources.end()) return;
+    Source& source = found->second;
+    if (source.provider.empty() || source.accountRevision != event.accountRevision ||
+        cache::AccountRevision(source.provider) != event.accountRevision)
+        return;
 
     bool changed = false;
-    for (auto& [cacheKey, entry] : m_entries) {
-        (void)cacheKey;
-        if (entry.sourceKey != artKey || entry.accountRevision != event.accountRevision) continue;
-        if (entry.reloading) continue;
-        entry.stale = true;
-        entry.epoch = ++m_epoch;
-        entry.reloading = true;
-        {
-            std::lock_guard lock(m_mutex);
-            m_queue.push_front(
-                {entry.sourceKey, entry.track, entry.sizePx, entry.epoch, provider, event.accountRevision});
-        }
+    for (auto& [sizePx, entry] : source.sizes) {
+        if (entry.reloading || entry.state == State::Pending) continue;
+        Reload(artKey, source, sizePx, entry);
         changed = true;
     }
-    if (!changed) return;
-    m_wake.notify_all();
-
-    auto listeners = m_listeners;
-    for (auto& [token, callback] : listeners)
-        callback();
+    if (changed) Notify();
 }
 
-void ArtCache::Worker() {
+void ArtCache::Worker(bool network) {
     // WIC objects are created on this thread; the decoded bitmaps own their pixels.
     winrt::init_apartment(winrt::apartment_type::multi_threaded);
     winrt::com_ptr<IWICImagingFactory> wic;
     CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(wic.put()));
+    auto& queue = network ? m_network : m_queue;
+    auto& wake = network ? m_wakeNetwork : m_wake;
     for (;;) {
         Request request;
         {
             std::unique_lock lock(m_mutex);
-            m_wake.wait(lock, [this] { return m_quit || !m_queue.empty(); });
+            wake.wait(lock, [this, &queue] { return m_quit || !queue.empty(); });
             if (m_quit) break;
-            request = std::move(m_queue.front());
-            m_queue.pop_front();
+            request = std::move(queue.front());
+            queue.pop_front();
         }
 
         winrt::com_ptr<IWICBitmapSource> bitmap;
+        bool missed = false;
         try {
+            std::optional<cache::CacheOnlyScope> cacheOnly;
+            if (!request.network) cacheOnly.emplace();
+            const cache::SizeHintScope sizeHint(request.sizePx);
             auto api = album_art_manager_v2::get();
             auto extractor = api->open(pfc::list_single_ref_t<metadb_handle_ptr>(request.track),
                                        pfc::list_single_ref_t<GUID>(album_art_ids::cover_front), m_abort);
@@ -403,6 +388,17 @@ void ArtCache::Worker() {
             break;
         } catch (...) {
             // Not found or unreadable: remembered as missing.
+        }
+        if (!request.network && !bitmap && cache::TakeCacheMiss()) missed = true;
+        if (missed) {
+            {
+                std::lock_guard lock(m_mutex);
+                if (m_quit) break;
+                request.network = true;
+                m_network.push_front(std::move(request));
+            }
+            m_wakeNetwork.notify_one();
+            continue;
         }
 
         if (!request.provider.empty() && cache::AccountRevision(request.provider) != request.accountRevision)
@@ -433,10 +429,14 @@ void ArtCache::Delivered() {
 
     bool changed = false;
     for (auto& item : done) {
+        const auto found = m_sources.find(item.sourceKey);
+        if (found == m_sources.end()) continue;
+        Source& source = found->second;
+        if (source.accountRevision != item.accountRevision) continue;
         if (!item.provider.empty() && cache::AccountRevision(item.provider) != item.accountRevision) continue;
-        const auto it = m_entries.find(MemoryKey(item.sourceKey, item.accountRevision, item.sizePx));
-        if (it == m_entries.end()) continue;
-        Entry& entry = it->second;
+        const auto size = source.sizes.find(item.sizePx);
+        if (size == source.sizes.end()) continue;
+        Entry& entry = size->second;
         if (entry.epoch != item.epoch) continue;
 
         entry.reloading = false;
@@ -446,9 +446,14 @@ void ArtCache::Delivered() {
             entry.bitmap = std::move(item.bitmap);
             entry.state = State::Ready;
             entry.placeholder = false;
-            m_replaceCallerCopies.erase(item.sourceKey);
+            entry.failures = 0;
+            source.replaceCallerCopies = false;
             ++entry.content;
-        } else if (cache::art_absence::Fresh(Utf8(item.sourceKey)) || entry.placeholder) {
+            continue;
+        }
+        const bool absent = !item.provider.empty() && cache::art_absence::Fresh(Utf8(item.sourceKey));
+        if (absent || entry.placeholder) {
+            // Confirmed to have no cover, or another account's picture: show none.
             entry.bitmap = nullptr;
             entry.placeholder = false;
             entry.state = State::Missing;
@@ -457,12 +462,13 @@ void ArtCache::Delivered() {
             entry.state = State::Missing;
         }
         // A transient failure keeps any older bitmap in place.
+        if (!entry.bitmap) {
+            entry.failures = std::min(entry.failures + 1, 8u);
+            const auto pause = absent ? kRetryMax : std::min(kRetryMax, kRetryBase * (1u << (entry.failures - 1)));
+            entry.retryAt = Clock::now() + pause;
+        }
     }
-    if (!changed) return;
-
-    auto listeners = m_listeners;
-    for (auto& [token, callback] : listeners)
-        callback();
+    if (changed) Notify();
 }
 
 } // namespace glasswave::ui

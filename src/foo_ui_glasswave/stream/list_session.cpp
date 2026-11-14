@@ -3,6 +3,7 @@
 #include "stream/provider.h"
 #include "cache/lists.h"
 #include "cache/store.h"
+#include "netease/log.h"
 #include "ui/i18n.h"
 
 #include <map>
@@ -13,11 +14,15 @@ namespace glasswave::stream {
 namespace {
 
 constexpr size_t kPageSize = 100;
+constexpr size_t kBulkPageSize = 1000; // rows asked for at once when they are read anyway
 constexpr size_t kMaxRows = 200000;
 constexpr size_t kMaxPages = 4096;
 constexpr size_t kWarmSessions = 24;
 constexpr size_t kWarmRows = 128000;
-constexpr int64_t kFreshSeconds = 60;
+// A list confirmed within this window is shown without asking the service again. Changes
+// made here revalidate at once (RevalidateLists), a manual refresh always re-reads; the
+// window only bounds how late a change made on another device shows up by itself.
+constexpr int64_t kFreshSeconds = 5 * 60;
 constexpr size_t kEnrichmentConcurrency = 2;
 
 std::string Utf8(std::wstring_view value) {
@@ -106,6 +111,22 @@ bool AppendPage(ListPage& target, ListPage page) {
     return true;
 }
 
+// `first` is what a source now returns as page one of the list `shown` holds (completely, or
+// its head): the same known total and the same rows, in order, at the head.
+bool SameLeadingPage(const ListPage& shown, const ListPage& first) {
+    if (shown.rows.index() != first.rows.index() || !shown.total || !first.total ||
+        *shown.total != *first.total || (!shown.more && *shown.total != RowCount(shown)))
+        return false;
+    return std::visit(
+        [&first](const auto& rows) {
+            const auto& head = std::get<std::decay_t<decltype(rows)>>(first.rows);
+            if (head.size() > rows.size() || (head.empty() && !rows.empty())) return false;
+            return std::equal(head.begin(), head.end(), rows.begin(),
+                              [](const auto& a, const auto& b) { return RowIdentity(a) == RowIdentity(b); });
+        },
+        shown.rows);
+}
+
 bool SameOccurrences(const ListRows& left, const ListRows& right) {
     if (left.index() != right.index()) return false;
     return std::visit(
@@ -162,6 +183,7 @@ struct Read : std::enable_shared_from_this<Read> {
     std::vector<std::weak_ptr<Lease>> leases;
     std::shared_ptr<std::atomic_bool> cancelled;
     std::optional<ListPage> shadow;
+    std::vector<cache::lists::Record> shadowRecords; // the re-read's pages, persisted on publication
     std::set<std::string> cursors;
     ListCursor cursor;
     uint64_t request = 0, generation = 0, used = 0;
@@ -171,6 +193,16 @@ struct Read : std::enable_shared_from_this<Read> {
     int64_t validatedAt = 0;
     bool started = false, initializing = false, cacheLoading = false, inFlight = false, valid = true;
     bool restoreWaiting = false, restoreFailed = false;
+    bool fullReread = false; // the running re-read must not stop at an unchanged first page
+    bool changedByWrite = false; // a write went through since the rows were read
+    // The read goes on from the cursor saved with the rows on screen; once the service has
+    // rejected such a cursor, this list is read from its start instead.
+    bool resumedCursor = false, cursorRejected = false;
+    bool gated = false;          // interrupted while the account was not verified
+    // How a page read after the rows on screen joins their persisted snapshot: the generation
+    // that wrote them in this run (0: none), or the snapshot loaded from disk (`writeBase`).
+    uint64_t writeGeneration = 0;
+    std::string writeBase;
     size_t metadataFrontier = 0, activeEnrichments = 0;
     std::map<size_t, size_t> metadataReadyRanges;
     std::deque<std::shared_ptr<EnrichmentWork>> enrichmentQueue;
@@ -233,6 +265,7 @@ struct Read : std::enable_shared_from_this<Read> {
     void Next(const std::shared_ptr<Lease>& lease);
     void Fetch();
     void Received(uint64_t id, ListPage page, std::wstring error);
+    bool PublishShadowIfReady();
     void MarkMetadataReady(size_t offset, size_t count);
     void PumpEnrichment();
     void Enriched(const std::shared_ptr<EnrichmentWork>& work, ListPage page, std::wstring error);
@@ -310,13 +343,16 @@ void Read::Start() {
         Emit();
         if (refresh)
             Refresh(true);
-        else if (NetworkAllowed() && (shadow || (WantsAll() && !state.complete)) && state.error.empty())
+        else if (NetworkAllowed() &&
+                 ((shadow && RowCount(*shadow) < shadowTarget) || (WantsAll() && !state.complete)) &&
+                 state.error.empty())
             Fetch();
         return;
     }
     started = true;
     initializing = true;
-    state.loading = NetworkAllowed();
+    // Reading the disk snapshot is not a load the user should see; only a miss is.
+    state.loading = policy != ListCachePolicy::Persistent && NetworkAllowed();
     Emit();
     if (policy != ListCachePolicy::Persistent) {
         if (NetworkAllowed())
@@ -343,6 +379,14 @@ void Read::LoadCache() {
         if (!self->Current(id)) return;
         self->cacheLoading = false;
         self->initializing = false;
+        netease::Log(L"list cache: " + std::wstring(self->provider.Key()) + L" kind " +
+                     std::to_wstring(static_cast<int>(self->query.kind)) + L" id " + self->query.id +
+                     L" section " + self->query.section +
+                     (cached ? L" hit rows " + std::to_wstring(RowCount(cached->page)) + L" pages " +
+                                   std::to_wstring(cached->pages) + (cached->page.more ? L" partial" : L" complete") +
+                                   L" described " + std::to_wstring(cached->metadataReadyRows) + L" age " +
+                                   std::to_wstring(cache::Store::Now() - cached->validatedAt) + L"s"
+                             : std::wstring(L" miss")));
         if (cached && cached->page.rows.index() == self->state.page.rows.index()) {
             self->provider.RestoreListRecords(cached->page);
             self->state.page = std::move(cached->page);
@@ -355,7 +399,15 @@ void Read::LoadCache() {
             self->state.updatedRows.reset();
             self->state.loading = self->state.refreshing = false;
             self->validatedAt = cached->validatedAt;
+            self->writeGeneration = 0;
+            self->writeBase = std::move(cached->base);
             self->Emit();
+            // A complete snapshot that was confirmed moments ago needs no request at all.
+            if (self->state.complete && !self->state.page.enrichmentPending &&
+                cache::Store::Now() - self->validatedAt < kFreshSeconds) {
+                self->generation = ++nextGeneration;
+                return;
+            }
         }
         if (self->NetworkAllowed())
             self->Refresh(true);
@@ -429,7 +481,8 @@ void Read::RestoreAttemptDone(uint64_t id, std::wstring error) {
     if (NetworkAllowed()) {
         restoreFailed = false;
         state.error.clear();
-        Refresh(true, false);
+        // The account notification may already have started this read.
+        if (!inFlight) Refresh(true, false);
         return;
     }
 
@@ -444,6 +497,8 @@ void Read::RestoreAttemptDone(uint64_t id, std::wstring error) {
 void Read::PersistPage(bool update, cache::lists::Record record) {
     const uint64_t id = ++saveSequence;
     pendingSaves.emplace(id);
+    record.base = writeBase;
+    writeGeneration = generation;
     auto persisted = [weak = weak_from_this(), id](bool success) {
         if (auto self = weak.lock()) self->SaveCompleted(id, success);
     };
@@ -454,6 +509,10 @@ void Read::PersistPage(bool update, cache::lists::Record record) {
 }
 void Read::SaveCompleted(uint64_t id, bool success) {
     pendingSaves.erase(id);
+    if (!success)
+        netease::Log(L"list cache: " + std::wstring(provider.Key()) + L" kind " +
+                     std::to_wstring(static_cast<int>(query.kind)) + L" id " + query.id +
+                     L" page was not persisted");
     if (!success && (!firstFailedSave || id < *firstFailedSave)) firstFailedSave = id;
     ResolveSaveWaiters();
 }
@@ -500,9 +559,11 @@ void Read::Refresh(bool preserveDemand, bool allowRestoreRetry) {
         cacheLoading = false;
         initializing = false;
         inFlight = false;
+        gated = true;
         BeginRestoreAttempt(allowRestoreRetry);
         return;
     }
+    gated = false;
     ++request;
     if (cancelled) cancelled->store(true);
     cancelled = std::make_shared<std::atomic_bool>(false);
@@ -513,13 +574,17 @@ void Read::Refresh(bool preserveDemand, bool allowRestoreRetry) {
     initializing = false;
     generation = ++nextGeneration;
     inFlight = false;
+    fullReread = !preserveDemand || changedByWrite; // asked for explicitly, or known to differ
+    changedByWrite = false;
     if (!preserveDemand) ConsumeNext();
     cursor = {};
+    resumedCursor = false;
     cursors.clear();
     cursors.insert(CursorKey(cursor));
     networkPages = emptyPages = 0;
     shadowTarget = RowCount(state.page);
     shadow = EmptyPage(query.kind);
+    shadowRecords.clear();
     state.loading = true;
     state.refreshing = shadowTarget != 0;
     state.error.clear();
@@ -577,8 +642,16 @@ void Read::Fetch() {
     try {
         ListQuery requestQuery = query;
         requestQuery.cancelled = cancelled;
+        // The first page stays small: it is shown at once and may end an unchanged re-read.
+        // Rows that will be read anyway (a re-read catching up, a list wanted whole) are asked
+        // for in larger pages, which a source may serve with parallel requests.
+        size_t limit = kPageSize;
+        if (shadow && networkPages != 0 && RowCount(*shadow) < shadowTarget)
+            limit = std::clamp(shadowTarget - RowCount(*shadow), kPageSize, kBulkPageSize);
+        else if ((!shadow || networkPages != 0) && WantsAll())
+            limit = kBulkPageSize;
         provider.FetchListPage(
-            requestQuery, cursor, kPageSize,
+            requestQuery, cursor, limit,
             [weak = weak_from_this(), id](ListPage page, std::wstring error) mutable {
                 // Even a synchronous legacy adapter must not recursively drain a list.
                 fb2k::inMainThread([weak, id, page = std::move(page), error = std::move(error)]() mutable {
@@ -607,12 +680,28 @@ void Read::Received(uint64_t id, ListPage page, std::wstring error) {
     }
     if (!Current(id)) return;
     inFlight = false;
+    if (!error.empty())
+        netease::Log(L"list: " + std::wstring(provider.Key()) + L" kind " +
+                     std::to_wstring(static_cast<int>(query.kind)) + L" id " + query.id + L" failed: " + error);
     if (error.empty() && page.rows.index() != state.page.rows.index())
         error = L"The service returned a different list type.";
     if (error.empty() && page.more && cursors.contains(CursorKey(page.next)))
         error = L"The service returned a repeated page. Refresh to try again.";
     const size_t followingEmpty = page.more && RowCount(page) == 0 ? emptyPages + 1 : 0;
     if (error.empty() && followingEmpty > 8) error = L"The service returned too many empty pages.";
+    if (!error.empty() && resumedCursor && !cursorRejected) {
+        // A continuation saved with the rows may no longer be accepted (it expired, or an
+        // earlier build made it): the list is read again from its start rather than failing.
+        netease::Log(L"list: " + std::wstring(provider.Key()) + L" kind " +
+                     std::to_wstring(static_cast<int>(query.kind)) + L" id " + query.id +
+                     L" saved cursor rejected; reading from the start");
+        cursorRejected = true;
+        resumedCursor = false;
+        changedByWrite = true; // the re-read must not stop at an unchanged first page
+        Refresh(true);
+        return;
+    }
+    resumedCursor = false;
     if (!error.empty()) {
         state.loading = state.refreshing = false;
         state.error = std::move(error);
@@ -633,6 +722,41 @@ void Read::Received(uint64_t id, ListPage page, std::wstring error) {
         Emit();
         return;
     }
+    // A list read only in part continues where its rows end, in the snapshot that holds them.
+    const bool resumable = state.complete || policy != ListCachePolicy::Persistent || writeGeneration != 0 ||
+                           !writeBase.empty();
+    if (shadow && networkPages == 0 && resumable && !cursorRejected && RowCount(state.page) != 0 &&
+        !state.page.enrichmentPending &&
+        ((!page.revision.empty() && page.revision == state.page.revision) ||
+         (!fullReread && SameLeadingPage(state.page, page)))) {
+        // The service still has the rows on screen: the re-read ends with its first page
+        // instead of downloading every page of an unchanged list again. A source that gives
+        // a revision is exact. Without one an automatic re-read accepts the same total with
+        // the same first page as unchanged; a refresh the user asks for always reads it all.
+        // A list read only in part goes on from its last row when more is wanted.
+        if (page.playlist) state.page.playlist = std::move(page.playlist);
+        if (page.album) state.page.album = std::move(page.album);
+        if (page.artist) state.page.artist = std::move(page.artist);
+        shadow.reset();
+        shadowRecords.clear();
+        if (writeGeneration != 0) generation = writeGeneration;
+        cursor = state.complete ? ListCursor{} : state.page.next;
+        resumedCursor = !cursor.value.empty() || cursor.offset != 0;
+        cursors.clear();
+        cursors.insert(CursorKey({}));
+        cursors.insert(CursorKey(cursor));
+        networkPages = state.pages;
+        emptyPages = 0;
+        metadataFrontier = RowCount(state.page);
+        state.loading = state.refreshing = false;
+        state.updatedRows.reset();
+        validatedAt = cache::Store::Now();
+        const bool continueRead = !state.complete && (WantsAll() || WantsNext());
+        ConsumeNext();
+        Emit();
+        if (continueRead && Current(id) && HasLeases()) Fetch();
+        return;
+    }
     ++networkPages;
     emptyPages = followingEmpty;
     if (page.more) cursors.insert(CursorKey(page.next));
@@ -646,43 +770,73 @@ void Read::Received(uint64_t id, ListPage page, std::wstring error) {
     } else {
         MarkMetadataReady(offset, RowCount(page));
     }
-    if (policy == ListCachePolicy::Persistent)
-        PersistPage(false, {page, networkPages, cache::Store::Now()});
     if (shadow) {
+        // A re-read is written to disk only when it replaces the rows on screen. Until then
+        // the persisted snapshot stays the complete older one, so closing the program in the
+        // middle of a re-read cannot leave a shorter list behind.
+        if (policy == ListCachePolicy::Persistent)
+            shadowRecords.push_back({page, networkPages, cache::Store::Now()});
         AppendPage(*shadow, std::move(page));
-        if (!more || RowCount(*shadow) >= shadowTarget) {
-            state.page = std::move(*shadow);
-            shadow.reset();
-            state.appendOffset = 0;
-            ++state.dataVersion;
-            state.fromCache = false;
-            state.refreshing = false;
-        }
+        if (enrichment) enrichmentQueue.push_back(std::move(enrichment));
+        PublishShadowIfReady();
     } else {
+        if (policy == ListCachePolicy::Persistent)
+            PersistPage(false, {page, networkPages, cache::Store::Now()});
         state.appendOffset = RowCount(state.page);
         AppendPage(state.page, std::move(page));
         ++state.dataVersion;
-    }
-    if (!shadow) {
         state.pages = networkPages;
         state.complete = !more;
         state.metadataReadyRows = metadataFrontier;
         state.page.enrichmentPending = metadataFrontier < RowCount(state.page);
+        if (enrichment) enrichmentQueue.push_back(std::move(enrichment));
     }
     state.updatedRows.reset();
-    validatedAt = cache::Store::Now();
+    // Rows still waiting behind an unpublished re-read are not confirmed yet.
+    if (!shadow) validatedAt = cache::Store::Now();
     state.loading = false;
     const auto publishedGeneration = generation;
-    if (enrichment) enrichmentQueue.push_back(std::move(enrichment));
     Emit();
     Prune();
     // A consumer may already request the next page from Emit(). That changes request,
     // but must not abandon enrichment for this still-current source generation.
     if (valid && !stopping && generation == publishedGeneration && HasLeases()) PumpEnrichment();
     if (!Current(id) || !HasLeases()) return;
-    const bool continueRead = more && (shadow || WantsAll() || WantsNext() || emptyPages != 0);
+    // A re-read fetches as far as the rows it replaces; past that only on demand.
+    const bool catchingUp = shadow && RowCount(*shadow) < shadowTarget;
+    const bool continueRead = more && (catchingUp || WantsAll() || WantsNext() || emptyPages != 0);
     ConsumeNext();
     if (continueRead) Fetch();
+}
+
+// The re-read replaces the rows on screen once it is no worse than them: it reaches as far
+// (or the list ended) and none of its pages still waits for related records. Swapping
+// earlier would put bare rows in place of described ones, and a view that needs the
+// descriptions (album tiles) would empty out and fill again.
+bool Read::PublishShadowIfReady() {
+    if (!shadow) return false;
+    if (shadow->more && RowCount(*shadow) < shadowTarget) return false;
+    if (metadataFrontier < std::min(state.metadataReadyRows, RowCount(*shadow)) &&
+        (activeEnrichments != 0 || !enrichmentQueue.empty()))
+        return false;
+    const bool more = shadow->more;
+    state.page = std::move(*shadow);
+    shadow.reset();
+    state.appendOffset = 0;
+    ++state.dataVersion;
+    state.fromCache = false;
+    state.refreshing = false;
+    state.pages = networkPages;
+    state.complete = !more;
+    state.metadataReadyRows = metadataFrontier;
+    state.page.enrichmentPending = metadataFrontier < RowCount(state.page);
+    state.updatedRows.reset();
+    auto records = std::move(shadowRecords);
+    shadowRecords.clear();
+    writeBase.clear(); // the re-read starts a snapshot of its own
+    for (auto& record : records)
+        PersistPage(false, std::move(record));
+    return true;
 }
 
 void Read::MarkMetadataReady(size_t offset, size_t count) {
@@ -754,9 +908,13 @@ void Read::Enriched(const std::shared_ptr<EnrichmentWork>& work, ListPage page, 
     if (ReplaceMetadata(target, work->offset, work->page)) {
         MarkMetadataReady(work->offset, RowCount(work->page));
         target.enrichmentPending = metadataFrontier < RowCount(target);
-        if (policy == ListCachePolicy::Persistent)
-            PersistPage(true, {work->page, work->ordinal, cache::Store::Now()});
-        if (!shadow) {
+        if (shadow) {
+            // Not on disk yet: the page is written, described, when the re-read is published.
+            for (auto& record : shadowRecords)
+                if (record.pages == work->ordinal) record.page = work->page;
+        } else {
+            if (policy == ListCachePolicy::Persistent)
+                PersistPage(true, {work->page, work->ordinal, cache::Store::Now()});
             state.metadataReadyRows = metadataFrontier;
             state.updatedRows.reset();
             if (changed) {
@@ -766,6 +924,11 @@ void Read::Enriched(const std::shared_ptr<EnrichmentWork>& work, ListPage page, 
             }
             Emit();
         }
+    }
+    // The re-read may have been waiting for this description (or for its failure).
+    if (PublishShadowIfReady()) {
+        validatedAt = cache::Store::Now();
+        Emit();
     }
     PumpEnrichment();
 }
@@ -893,6 +1056,41 @@ void InvalidateListCache(std::wstring_view provider, bool restart, ListCacheInva
             read->Stop();
     }
 }
+void ResumeLists(std::wstring_view provider) {
+    if (stopping) return;
+    std::vector<std::shared_ptr<Read>> waiting;
+    for (const auto& [key, read] : reads) {
+        (void)key;
+        if (read->provider.Key() != provider || !read->valid || !read->HasLeases() || !read->started) continue;
+        // A read that is already loading or was just confirmed carries on undisturbed;
+        // restarting it would send the request it has in flight a second time.
+        if (read->inFlight || read->cacheLoading) continue;
+        // A read the closed gate interrupted starts again; so does one that was never
+        // confirmed. Rows confirmed moments ago need nothing.
+        const bool confirmed = !read->gated && read->generation != 0 && read->state.error.empty() &&
+                               !read->shadow && cache::Store::Now() - read->validatedAt < kFreshSeconds;
+        if (!confirmed) waiting.push_back(read);
+    }
+    for (const auto& read : waiting)
+        read->Refresh(true);
+}
+void RevalidateLists(std::wstring_view provider) {
+    if (stopping) return;
+    std::vector<std::shared_ptr<Read>> affected;
+    for (const auto& [key, read] : reads) {
+        (void)key;
+        if (read->provider.Key() == provider && read->valid) affected.push_back(read);
+    }
+    for (const auto& read : affected) {
+        // The rows stay where they are: a list on screen catches up behind them, the others
+        // do so when they are opened next.
+        read->validatedAt = 0;
+        // The lists on screen are the ones a write was made from; they are read in full. The
+        // others are compared with their first page when they are opened next.
+        read->changedByWrite = read->HasLeases();
+        if (read->HasLeases() && read->started && !read->cacheLoading) read->Refresh(true);
+    }
+}
 void ShutdownListSessions() {
     stopping = true;
     auto retired = std::move(reads);
@@ -909,7 +1107,13 @@ void ShutdownListSessions() {
 namespace {
 class ListSessionLifetime : public initquit {
   public:
-    void on_init() override {}
+    void on_init() override {
+        glasswave::cache::lists::SetDiagnostics([](std::string_view reason) {
+            glasswave::netease::Log(
+                L"list cache: " +
+                std::wstring(pfc::stringcvt::string_wide_from_utf8(reason.data(), reason.size()).get_ptr()));
+        });
+    }
     void on_quit() override { glasswave::stream::ShutdownListSessions(); }
 };
 FB2K_SERVICE_FACTORY(ListSessionLifetime);

@@ -31,11 +31,6 @@ std::filesystem::path CacheDir() {
     return dir.empty() ? dir : dir / L"cache";
 }
 
-std::filesystem::path CoverDir() {
-    const auto dir = CacheDir();
-    return dir.empty() ? dir : dir / L"covers";
-}
-
 std::filesystem::path ServiceDir() {
     const auto dir = ProfileDir();
     return dir.empty() ? dir : dir / L"service";

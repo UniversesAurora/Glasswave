@@ -440,6 +440,55 @@ void TestIncrementalSaveAndGenerationSwitch() {
           "The superseded generation retained an unreachable page chunk");
 }
 
+// A later run (another generation) extends a partly read snapshot it loaded, page for page;
+// without the loaded base, or with a base that was replaced, the page is refused.
+void TestContinueLoadedSnapshot() {
+    Identity identity{.provider = "continue-loaded", .logical = "tracks/v1/lang=en", .accountRevision = 0};
+    glasswave::cache::lists::SavePage(
+        identity, MakePageRecord({MakeTrack(L"1", L"First"), MakeTrack(L"2", L"Second")}, 1, true, L"cursor-1", 2, 4),
+        10);
+    auto loaded = LoadAndWait(identity);
+    Check(loaded && loaded->pages == 1 && loaded->page.more && !loaded->base.empty(),
+          "A partial snapshot did not load with its generation as base");
+    const std::string base = loaded->base;
+
+    glasswave::cache::lists::SavePage(
+        identity, MakePageRecord({MakeTrack(L"3", L"Third")}, 2, true, L"cursor-2", 3, 4), 11);
+    loaded = LoadAndWait(identity);
+    Check(loaded && loaded->pages == 1, "A page of another generation was appended without the loaded base");
+
+    auto stale = MakePageRecord({MakeTrack(L"3", L"Third")}, 2, true, L"cursor-2", 3, 4);
+    stale.base = base + "-replaced";
+    glasswave::cache::lists::SavePage(identity, std::move(stale), 11);
+    loaded = LoadAndWait(identity);
+    Check(loaded && loaded->pages == 1, "A page continuing a replaced snapshot was appended");
+
+    auto second = MakePageRecord({MakeTrack(L"3", L"Third")}, 2, true, L"cursor-2", 3, 4, true);
+    second.base = base;
+    glasswave::cache::lists::SavePage(identity, std::move(second), 11);
+    auto third = MakePageRecord({MakeTrack(L"4", L"Fourth")}, 3, false, {}, 0, 4);
+    third.base = base;
+    glasswave::cache::lists::SavePage(identity, std::move(third), 11);
+    loaded = LoadAndWait(identity);
+    Check(loaded && loaded->pages == 3 && !loaded->page.more && Rows(*loaded).size() == 4 &&
+              Rows(*loaded)[2].id == L"3" && Rows(*loaded)[3].id == L"4" && loaded->base == base,
+          "Pages continuing the loaded snapshot were not appended to it");
+    Check(loaded->metadataReadyRows == 2, "An appended page lost its pending description");
+
+    auto described = MakePageRecord({MakeTrack(L"3", L"Third described")}, 2, true, L"cursor-2", 3, 4);
+    described.base = base;
+    glasswave::cache::lists::UpdatePage(identity, std::move(described), 11);
+    loaded = LoadAndWait(identity);
+    Check(loaded && loaded->metadataReadyRows == 4 && Rows(*loaded)[2].title == L"Third described",
+          "A description of an appended page was not written into the loaded snapshot");
+
+    glasswave::cache::lists::SavePage(
+        identity, MakePageRecord({MakeTrack(L"new", L"Fresh read")}, 1, false, {}, 0, 1), 12);
+    loaded = LoadAndWait(identity);
+    Check(loaded && loaded->pages == 1 && Rows(*loaded)[0].id == L"new" && loaded->base != base,
+          "A fresh read did not replace the continued snapshot");
+}
+
 void TestDelayedPageUpdatePreservesLaterPagesAndContinuation() {
     Identity identity{.provider = "patch-continuation", .logical = "tracks/v1/lang=en", .accountRevision = 0};
     glasswave::cache::lists::SavePage(
@@ -928,6 +977,7 @@ int wmain(int argc, wchar_t** argv) {
         TestSnapshotSurvivesStoreReopen(store);
         TestCurrentFormatOnlyRejectsLegacyManifest();
         TestIncrementalSaveAndGenerationSwitch();
+        TestContinueLoadedSnapshot();
         TestDelayedPageUpdatePreservesLaterPagesAndContinuation();
         TestWarmSnapshotRetainsMetadataFrontier();
         TestOverlappingUpdatesRemainCoherent();

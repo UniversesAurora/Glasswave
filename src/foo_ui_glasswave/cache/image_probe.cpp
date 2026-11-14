@@ -1,7 +1,7 @@
 #include "pch.h"
 #include "cache/images.h"
 #include "cache/art_absence.h"
-#include "netease/http.h"
+#include "net/http.h"
 
 #include <SDK/initquit.h>
 #include <bcrypt.h>
@@ -270,11 +270,11 @@ bool WaitMockCaseRequested(const std::shared_ptr<State>& state, const std::wstri
     const auto deadline = Clock::now() + std::chrono::seconds(2);
     while (Clock::now() < deadline && !abort.is_aborting() && !state->stopping) {
         try {
-            netease::HttpOptions options;
+            net::HttpOptions options;
             options.noProxy = true;
             options.timeoutMs = 500;
             options.maxBodyBytes = 64u * 1024u;
-            const auto response = netease::SendHttp(baseUrl + L"/__counters", options, abort);
+            const auto response = net::SendHttp(baseUrl + L"/__counters", options, abort);
             if (response.ok() && !response.body.empty()) {
                 const JsonObject counters = JsonObject::Parse(winrt::to_hstring(response.body));
                 const JsonObject byCase = counters.GetNamedObject(L"byCase");
@@ -395,7 +395,6 @@ bool Seed(const std::shared_ptr<State>& state, const ImageIdentity& identity,
         metadata.contentType = "image/png";
         metadata.etag = std::move(etag);
         metadata.lastModified = "Tue, 10 Nov 2026 00:00:00 GMT";
-        metadata.extra = "image-v2;sha256=" + Sha256(bytes);
         metadata.validatedAt = Store::Now();
         return writer->Commit(std::move(metadata)).has_value();
     } catch (...) {
@@ -447,8 +446,7 @@ std::string RunCases(const std::shared_ptr<State>& state, const Marker& marker, 
             state->cleanupKeys.push_back(art_absence::StorageKey(identity));
             const bool initiallyAbsent = !art_absence::KnownMissing(identity);
             art_absence::StoreMissing(identity, account);
-            bool ok = initiallyAbsent && art_absence::KnownMissing(identity) && art_absence::Fresh(artKey) &&
-                      !images.RefreshDue(artKey);
+            bool ok = initiallyAbsent && art_absence::KnownMissing(identity) && art_absence::Fresh(artKey);
             auto otherSize = identity;
             otherSize.renditionVersion = "different-thumbnail-size";
             ok = ok && art_absence::KnownMissing(otherSize);
@@ -456,8 +454,8 @@ std::string RunCases(const std::shared_ptr<State>& state, const Marker& marker, 
                 std::lock_guard lock(art_absence::mutex);
                 art_absence::entries.erase(artKey);
             }
-            ok = ok && !art_absence::KnownMissing(identity) && art_absence::Fresh(artKey) &&
-                 art_absence::KnownMissing(identity);
+            // After a restart (memory dropped) the persisted record is trusted at once.
+            ok = ok && art_absence::KnownMissing(identity) && art_absence::Fresh(artKey);
             images.Invalidate(artKey);
             ok = ok && !art_absence::Fresh(artKey) && !art_absence::KnownMissing(identity);
             const auto staleEpoch = art_absence::Epoch();
@@ -467,7 +465,7 @@ std::string RunCases(const std::shared_ptr<State>& state, const Marker& marker, 
             art_absence::StoreMissing(identity, account);
             {
                 std::lock_guard lock(art_absence::mutex);
-                art_absence::entries.at(artKey).checked = Store::Now() - 301;
+                art_absence::entries.at(artKey).checked = Store::Now() - art_absence::kFreshSeconds - 1;
             }
             ok = ok && !art_absence::KnownMissing(identity);
             art_absence::Clear(identity, account);
@@ -482,6 +480,8 @@ std::string RunCases(const std::shared_ptr<State>& state, const Marker& marker, 
             const std::string artKey = ImageArtKey(identity);
             bool ok = Seed(state, identity, pngA, R"("cached-first-a")");
             if (ok) {
+                // A fresh entry is served without a request; ask for the revalidation.
+                images.Invalidate(artKey);
                 const auto start = Clock::now();
                 const OpenAttempt attempt =
                     OpenOnce(images, RequestFor(marker.runId, marker.baseUrl, name), abort, state);
@@ -797,7 +797,6 @@ std::string RunCases(const std::shared_ptr<State>& state, const Marker& marker, 
                 images.Invalidate(artKey);
                 const int postShutdownListener = images.Subscribe([](ImageEvent) {});
                 require(postShutdownListener == 0, "post_shutdown_subscribe_succeeded");
-                require(!ImageRefreshDue(artKey), "post_shutdown_refresh_due");
                 const OpenAttempt late =
                     OpenOnce(images, RequestFor(marker.runId, marker.baseUrl, name), abort, state);
                 require(late.invoked && !late.result, "post_shutdown_open_succeeded");

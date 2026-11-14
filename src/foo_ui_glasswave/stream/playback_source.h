@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <mutex>
 #include <set>
 #include <string>
@@ -73,5 +74,12 @@ bool CanPlaySource(std::string_view path);
 // during realtime playback. Conversion/scanning still reports the unavailable source.
 bool SkipUnavailableSource(uint64_t epoch, std::string_view path, std::wstring_view reason,
                            unsigned flags, abort_callback& abort);
+
+// Provider inputs call this (any thread) as playback starts opening one of their tracks,
+// before the stream is resolved, so the UI can show the song it is about to play. The
+// listener runs on the main thread with the track's path; a gapless pre-open of the next
+// song reports it too, so the listener decides whether a switch is under way.
+void AnnouncePlaybackOpening(std::string_view path, unsigned flags);
+void SetPlaybackOpeningListener(std::function<void(const std::string& path)> listener);
 
 }  // namespace glasswave::stream

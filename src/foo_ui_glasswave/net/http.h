@@ -7,7 +7,8 @@
 #include <utility>
 #include <vector>
 
-namespace glasswave::netease {
+// Plain HTTP for every source (NetEase, Apple Music, images, lyrics scripts).
+namespace glasswave::net {
 
 struct HttpResponse {
     unsigned long status = 0;
@@ -34,4 +35,4 @@ struct HttpOptions {
 // Blocking WinHTTP request. `abort` is checked between reads.
 HttpResponse SendHttp(std::wstring_view url, const HttpOptions& options, abort_callback& abort);
 
-}  // namespace glasswave::netease
+}  // namespace glasswave::net

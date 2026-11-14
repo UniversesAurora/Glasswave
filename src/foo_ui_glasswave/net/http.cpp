@@ -1,12 +1,13 @@
 #include "pch.h"
-#include "netease/http.h"
-#include "netease/http_request.h"
+#include "net/http.h"
+#include "net/http_request.h"
 
 #include <winhttp.h>
 
 #include <cwchar>
+#include <mutex>
 
-namespace glasswave::netease {
+namespace glasswave::net {
 
 namespace {
 
@@ -54,6 +55,22 @@ std::wstring QueryString(HINTERNET request, DWORD query) {
     return out;
 }
 
+// One session per proxy mode for the whole process. WinHTTP pools connections per session,
+// so requests to the same host (a page of covers, consecutive API calls) reuse one TLS
+// connection instead of each paying for a handshake. Callbacks and timeouts stay per
+// request; the sessions live until the process exits.
+HINTERNET SharedSession(bool noProxy) {
+    static std::mutex mutex;
+    static HINTERNET sessions[2]{};
+    std::lock_guard lock(mutex);
+    HINTERNET& session = sessions[noProxy ? 1 : 0];
+    if (!session)
+        session = WinHttpOpen(L"Glasswave/0.1",
+                              noProxy ? WINHTTP_ACCESS_TYPE_NO_PROXY : WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
+                              WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, WINHTTP_FLAG_ASYNC);
+    return session;
+}
+
 } // namespace
 
 HttpResponse SendHttp(std::wstring_view url, const HttpOptions& options, abort_callback& abort) {
@@ -76,19 +93,14 @@ HttpResponse SendHttp(std::wstring_view url, const HttpOptions& options, abort_c
     if (path.empty()) path = L"/";
     const bool secure = parts.nScheme == INTERNET_SCHEME_HTTPS;
 
-    InternetHandle session;
-    session.Set(
-        WinHttpOpen(L"Glasswave/0.1",
-                    options.noProxy ? WINHTTP_ACCESS_TYPE_NO_PROXY : WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
-                    WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, WINHTTP_FLAG_ASYNC));
+    const HINTERNET session = SharedSession(options.noProxy);
     if (!session) {
         result.error = L"WinHttpOpen: " + Win32Error(GetLastError());
         return result;
     }
-    WinHttpSetTimeouts(session.get(), 5000, 5000, options.timeoutMs, options.timeoutMs);
 
     InternetHandle connection;
-    connection.Set(WinHttpConnect(session.get(), host.c_str(), parts.nPort, 0));
+    connection.Set(WinHttpConnect(session, host.c_str(), parts.nPort, 0));
     if (!connection) {
         result.error = L"WinHttpConnect: " + Win32Error(GetLastError());
         return result;
@@ -101,6 +113,7 @@ HttpResponse SendHttp(std::wstring_view url, const HttpOptions& options, abort_c
         result.error = L"WinHttpOpenRequest: " + Win32Error(request.Error());
         return result;
     }
+    WinHttpSetTimeouts(request.get(), 5000, 5000, options.timeoutMs, options.timeoutMs);
 
     std::wstring headers;
     for (const auto& [name, value] : options.headers) {
@@ -211,4 +224,4 @@ HttpResponse SendHttp(std::wstring_view url, const HttpOptions& options, abort_c
     return result;
 }
 
-} // namespace glasswave::netease
+} // namespace glasswave::net

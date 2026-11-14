@@ -11,10 +11,6 @@ enum class Quality { Auto, Lossless, Hires, Exhigh, Standard };
 Quality GetQuality();
 void SetQuality(Quality quality);
 
-// Total size allowed for downloaded album covers, in MB.
-inline constexpr int kCoverCacheMinMb = 32, kCoverCacheMaxMb = 4096, kCoverCacheDefaultMb = 256;
-int CoverCacheLimitMb();
-void SetCoverCacheLimitMb(int mb);
 
 // Non-empty: use an externally managed NeteaseCloudMusicApi service instead of our
 // downloaded helper process.

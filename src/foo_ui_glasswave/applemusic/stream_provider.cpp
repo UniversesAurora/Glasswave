@@ -17,6 +17,7 @@
 #include <climits>
 #include <cmath>
 #include <cstdlib>
+#include <fstream>
 #include <future>
 #include <limits>
 #include <type_traits>
@@ -94,9 +95,13 @@ bool ListCancelled(const std::shared_ptr<std::atomic_bool>& cancelled) {
     return cancelled && cancelled->load(std::memory_order_acquire);
 }
 
+// The service answered that this request cannot succeed as asked (no such resource, or a
+// request it rejects as malformed). Asking again gives the same answer, so the caller records
+// the absence instead of repeating the request for every page that shows the item.
 bool DefiniteNotFound(const std::exception& exception) {
     const std::string_view message(exception.what());
-    return message.find("HTTP 404") != std::string_view::npos;
+    return message.find("HTTP 404") != std::string_view::npos ||
+           message.find("HTTP 400") != std::string_view::npos;
 }
 
 bool EnrichableList(stream::ListKind kind) {
@@ -475,11 +480,14 @@ std::wstring Hex64(uint64_t value) {
     return out;
 }
 
-uint64_t ListQueryFingerprint(const stream::ListQuery& query, uint64_t generation,
-                              std::wstring_view storefront, std::wstring_view locale) {
+// Cursors are saved with the list's rows and a list read in part goes on from them after a
+// restart, so the fingerprint names only what the query is, never the provider's in-process
+// generation: stale generations are dropped where work is posted, list sessions stop on a
+// context change, and an account change rotates the cached lists away.
+uint64_t ListQueryFingerprint(const stream::ListQuery& query, std::wstring_view storefront,
+                              std::wstring_view locale) {
     uint64_t hash = 1469598103934665603ull;
     HashFingerprint(hash, std::to_wstring(static_cast<int>(query.kind)));
-    HashFingerprint(hash, std::to_wstring(generation));
     HashFingerprint(hash, storefront);
     HashFingerprint(hash, locale);
     HashFingerprint(hash, query.id);
@@ -2460,6 +2468,76 @@ void StreamProvider::Shutdown() {
     }
 }
 
+namespace {
+
+// The ids of the favorite songs, kept across runs so the stars are right from the first
+// paint and the Favorite Songs playlist is not downloaded at every start just to draw them.
+constexpr int64_t kFavoriteIdsFreshSeconds = 6 * 60 * 60;
+constexpr char kFavoriteIdsSchema[] = "favorite-song-ids/1";
+
+cache::Key FavoriteIdsKey(std::string accountScope) {
+    return {cache::Kind::Data, "apple", std::move(accountScope), "favorite-song-ids", "1"};
+}
+
+// Returns when the ids were last confirmed with the service, 0 when there is no record.
+int64_t LoadFavoriteIds(const std::string& accountScope, std::set<stream::Id>& ids) {
+    try {
+        const auto record = cache::GetStore().Lookup(FavoriteIdsKey(accountScope));
+        if (!record || record->Info().contentType != kFavoriteIdsSchema) return 0;
+        std::ifstream input(record->Path(), std::ios::binary);
+        std::string id;
+        while (std::getline(input, id))
+            if (!id.empty()) ids.insert(Wide(id));
+        return record->Info().validatedAt;
+    } catch (...) {
+        ids.clear();
+        return 0;
+    }
+}
+
+void SaveFavoriteIds(const std::string& accountScope, const std::set<stream::Id>& ids, int64_t checkedAt) {
+    try {
+        auto writer = cache::GetStore().Begin(FavoriteIdsKey(accountScope));
+        if (!writer) return;
+        {
+            std::ofstream output(writer->Path(), std::ios::binary | std::ios::trunc);
+            for (const auto& id : ids)
+                if (!id.empty() && id.find_first_of(L"\r\n") == std::wstring::npos) output << Utf8(id) << '\n';
+            output.close();
+            if (!output) return;
+        }
+        cache::Metadata metadata;
+        metadata.contentType = kFavoriteIdsSchema;
+        metadata.validatedAt = checkedAt > 0 ? checkedAt : 1;
+        writer->Commit(std::move(metadata));
+    } catch (...) {
+        // Only saved requests depend on this record.
+    }
+}
+
+} // namespace
+
+void StreamProvider::SaveFavoriteIdsAsync() {
+    uint64_t generation = 0;
+    std::set<stream::Id> ids;
+    int64_t checkedAt = 0;
+    {
+        std::lock_guard lock(m_mutex);
+        if (!m_started || !m_accountVerified) return;
+        generation = m_generation;
+        ids = m_favoriteIds;
+        checkedAt = m_favoriteIdsCheckedAt;
+    }
+    const uint64_t accountRevision = cache::AccountRevision("apple");
+    Post(generation, [ids = std::move(ids), checkedAt, accountRevision] {
+        try {
+            const std::string scope = cache::AccountScope("apple");
+            if (cache::AccountRevision("apple") == accountRevision) SaveFavoriteIds(scope, ids, checkedAt);
+        } catch (...) {
+        }
+    });
+}
+
 void StreamProvider::LoadBootstrapSnapshot(uint64_t generation) {
     std::string sourceOrigin;
     std::string accountScope;
@@ -2495,12 +2573,17 @@ void StreamProvider::LoadBootstrapSnapshot(uint64_t generation) {
         break;
     }
 
+    std::set<stream::Id> favoriteIds;
+    const int64_t favoriteIdsCheckedAt = LoadFavoriteIds(accountScope, favoriteIds);
+
     std::vector<stream::Playlist> created;
     std::vector<stream::Playlist> saved;
     std::wstring sourceStorefront;
     {
         std::lock_guard lock(m_mutex);
         if (!m_started || generation != m_generation || m_accountVerified) return;
+        m_favoriteIds = std::move(favoriteIds);
+        m_favoriteIdsCheckedAt = favoriteIdsCheckedAt;
         m_cachedAccountId = std::move(accountId);
         m_cachedAccountName = std::move(accountName);
         m_cachedStorefront = std::move(storefront);
@@ -2678,29 +2761,25 @@ void StreamProvider::CompleteFavoriteBinding(uint64_t generation, uint64_t bindi
     if (complete) QueueSnapshotSave();
 }
 
-stream::Provider::Features StreamProvider::Offers() const {
-    Features features;
-    features.addFavorites = true;
-    features.removeFavorites = true;
-    features.libraryFavorites = true;
-    features.libraryArtists = true;
-    features.favoriteArtists = true;
-    features.libraryAlbums = true;
-    features.libraryPlaylists = true;
-    features.saveAlbums = true;
-    features.savePlaylists = true;
-    features.createPlaylists = true;
-    features.appendPlaylistTracks = true;
-    features.removePlaylistTracks = true;
-    features.renamePlaylists = true;
-    features.deletePlaylists = true;
-    features.artistTopTracks = true;
-    features.catalogSearch = true;
-    return features;
+stream::Capabilities StreamProvider::Offers() const {
+    using enum stream::Capability;
+    return {ReadFavorites,     AddFavorite,     RemoveFavorite,       LibraryArtists,
+            FavoriteArtists,   LibraryAlbums,   SaveAlbums,           LibraryPlaylists,
+            SavePlaylists,     CreatePlaylists, AppendPlaylistTracks, RemovePlaylistTracks,
+            RenamePlaylists,   DeletePlaylists, CatalogSearch,        SearchSuggestions,
+            NativeLyrics};
 }
 
-std::wstring StreamProvider::PlaylistText(std::wstring_view english) const {
-    return ui::Tr(std::wstring(english), L"Apple Music");
+// Apple Music keeps things in a "library" and marks artists as favorites; its playlists are
+// translated in its own context (播放列表 rather than 歌单).
+std::wstring StreamProvider::Wording(std::wstring_view english) const {
+    static const std::map<std::wstring_view, std::wstring_view> terms{
+        {L"Collect album", L"Add to Library"},     {L"Uncollect album", L"Remove from Library"},
+        {L"Collect", L"Add to Library"},           {L"Collected", L"Added to Library"},
+        {L"Follow artist", L"Favorite artist"},    {L"Unfollow artist", L"Unfavorite artist"},
+    };
+    const auto found = terms.find(english);
+    return std::wstring(found == terms.end() ? english : found->second);
 }
 
 std::wstring StreamProvider::ArtistTracksLabel(const stream::Id& artist) const {
@@ -2731,18 +2810,6 @@ std::vector<stream::ListKind> StreamProvider::CatalogSearchKinds() const {
     };
 }
 
-std::wstring StreamProvider::LibraryActionText(stream::LibraryAction action) const {
-    return action == stream::LibraryAction::Add ? L"Add to Library" : L"Remove from Library";
-}
-
-std::wstring StreamProvider::LibraryStateText(bool saved) const {
-    return saved ? L"Added to Library" : L"Add to Library";
-}
-
-std::wstring StreamProvider::ArtistPreferenceActionText(stream::ArtistPreferenceAction action) const {
-    return action == stream::ArtistPreferenceAction::Favorite ? L"Favorite artist" : L"Unfavorite artist";
-}
-
 std::vector<stream::NavigationSection> StreamProvider::Sections() const {
     using Kind = stream::SectionKind;
     using Shelf = stream::Shelf;
@@ -2752,7 +2819,7 @@ std::vector<stream::NavigationSection> StreamProvider::Sections() const {
         {kArtistsSection, L"Artists", Kind::Artists, Shelf::Created, false},
         {kAlbumsSection, L"Albums", Kind::Albums, Shelf::Created, false},
         {kGenresSection, L"Genres", Kind::Groups, Shelf::Created, false},
-        {kComposersSection, L"Composers", Kind::Groups, Shelf::Created, false},
+        {kComposersSection, L"Composers", Kind::Groups, Shelf::Created, false, stream::GroupFacet::Composer},
         {kCreatedSection, L"My playlists", Kind::PlaylistShelf, Shelf::Created, false},
         {kSavedSection, L"Saved playlists", Kind::PlaylistShelf, Shelf::Saved, false},
     };
@@ -3756,6 +3823,7 @@ void StreamProvider::CompleteRefresh(uint64_t generation, Snapshot snapshot, std
         }
         const bool previousFavoritesLoaded = m_favoriteSongsLoaded;
         const std::set<stream::Id> previousFavoriteIds = m_favoriteIds;
+        std::vector<Song> previousFavoriteSongs = m_favoriteSongs;
         if (!preserveLibrary) {
             m_account = snapshot.account;
             DisplayMetadata::Get().SetSourceStorefront(snapshot.account.signedIn ? snapshot.account.storefront
@@ -3816,12 +3884,21 @@ void StreamProvider::CompleteRefresh(uint64_t generation, Snapshot snapshot, std
             m_favoriteBindingState =
                 m_favoritePlaylistId.empty() ? FavoriteBindingState::Empty : FavoriteBindingState::Ready;
             m_librarySongs = std::move(snapshot.librarySongs);
-            m_favoriteSongs = std::move(snapshot.favoriteSongs);
             m_librarySongsLoaded = snapshot.librarySongsLoaded;
-            m_favoriteSongsLoaded = snapshot.favoriteSongsLoaded;
-            m_favoriteIds.clear();
-            for (const auto& song : m_favoriteSongs)
-                m_favoriteIds.emplace(song.track.id);
+            if (m_librarySongsLoaded) m_librarySongsAt = std::chrono::steady_clock::now();
+            // A library refresh does not read the favorite songs. The same account keeps the
+            // ones it has (also the ids restored at start); dropping them here made every
+            // refresh download the whole Favorite Songs playlist again.
+            if (accountChanged) {
+                m_favoriteSongs.clear();
+                m_favoriteIds.clear();
+                m_favoriteSongsLoaded = false;
+                m_favoriteIdsCheckedAt = 0;
+            } else {
+                m_favoriteSongs = std::move(previousFavoriteSongs);
+                m_favoriteIds = previousFavoriteIds;
+                m_favoriteSongsLoaded = previousFavoritesLoaded;
+            }
             if (keepPlaylistDetails) {
                 // List refreshes do not contain track details. Preserve only details whose
                 // playlist is still present in this verified same-account snapshot.
@@ -3910,13 +3987,17 @@ void StreamProvider::CompleteRefresh(uint64_t generation, Snapshot snapshot, std
         if (waiter) waiter(error);
     if (snapshotReady) {
         uint64_t current = 0;
-        bool favoritesLoaded = false;
+        bool favoritesKnown = false;
         {
             std::lock_guard lock(m_mutex);
             current = m_generation;
-            favoritesLoaded = m_favoriteSongsLoaded;
+            // The stars need the favorite ids. They are read from the service when they are
+            // not known or were last confirmed long ago, not at every start and refresh.
+            favoritesKnown = m_favoriteSongsLoaded ||
+                             (!m_favoriteIds.empty() &&
+                              cache::Store::Now() - m_favoriteIdsCheckedAt < kFavoriteIdsFreshSeconds);
         }
-        if (!favoritesLoaded) FetchFavorites({});
+        if (!favoritesKnown) FetchFavorites({});
         EnrichArtistCountsAsync(current);
     }
 }
@@ -4004,7 +4085,97 @@ metadb_handle_ptr StreamProvider::TrackItem(const stream::Id& track) const {
 
 std::optional<stream::Track> StreamProvider::FindTrack(const stream::Id& track) const {
     const auto song = Catalog::Get().FindSong(track);
+    if (!song) RequestUnknownSong(track);
     return song ? std::optional<stream::Track>(song->track) : std::nullopt;
+}
+
+stream::Id StreamProvider::AlbumOfTrack(const stream::Id& track) const {
+    stream::Id album = Catalog::Get().SongAlbum(track); // what album_art_applemusic.cpp names the cover by
+    if (album.empty() && !Catalog::Get().FindSongRaw(track)) RequestUnknownSong(track);
+    return album;
+}
+
+void StreamProvider::RequestUnknownSong(const stream::Id& track) const {
+    if (track.empty()) return;
+    constexpr auto kRetry = std::chrono::minutes(2);
+    const auto now = std::chrono::steady_clock::now();
+    {
+        std::lock_guard lock(m_unknownMutex);
+        if (const auto asked = m_unknownAsked.find(track); asked != m_unknownAsked.end() && now - asked->second < kRetry)
+            return;
+        m_unknownAsked[track] = now;
+        m_unknownSongs.insert(track);
+        if (m_unknownQueued) return;
+        m_unknownQueued = true;
+    }
+    // Gathered until the main thread is free: a queue asks for its rows one by one in one paint.
+    auto* self = const_cast<StreamProvider*>(this);
+    fb2k::inMainThread([self] {
+        {
+            std::lock_guard unknown(self->m_unknownMutex);
+            self->m_unknownQueued = false; // later requests post again; the set is read once
+        }
+        uint64_t generation = 0;
+        {
+            std::lock_guard lock(self->m_mutex);
+            if (!self->m_started) return;
+            generation = self->m_generation;
+        }
+        self->Post(generation, [self] { self->ReadUnknownSongs(); });
+    });
+}
+
+void StreamProvider::ReadUnknownSongs() const {
+    std::vector<stream::Id> library, catalog;
+    {
+        std::lock_guard lock(m_unknownMutex);
+        for (const auto& id : m_unknownSongs) {
+            if (Catalog::Get().FindSongRaw(id)) continue;
+            (IsLibraryId(id) && id[0] == L'i' ? library : catalog).push_back(id);
+        }
+        m_unknownSongs.clear();
+    }
+    if (library.empty() && catalog.empty()) return;
+    std::wstring storefront;
+    try {
+        storefront = Storefront();
+    } catch (...) {
+    }
+    if (storefront.empty()) storefront = L"US";
+    std::vector<Song> songs;
+    const auto read = [&](const std::vector<stream::Id>& ids, bool inLibrary) {
+        constexpr size_t kBatch = 100;
+        for (size_t first = 0; first < ids.size(); first += kBatch) {
+            std::wstring joined;
+            for (size_t i = first; i < std::min(ids.size(), first + kBatch); ++i) {
+                if (!joined.empty()) joined += L',';
+                joined += ids[i];
+            }
+            const std::wstring path =
+                inLibrary ? L"/v1/me/library/songs?ids=" + Encode(joined) +
+                                L"&include=catalog,albums,artists&include[songs]=albums"
+                          : L"/v1/catalog/" + storefront + L"/songs?ids=" + Encode(joined) + L"&include=albums,artists";
+            try {
+                const Object response = Apple(path, *m_abort);
+                if (const auto data = json::GetArray(response, L"data")) {
+                    auto parsed = ParseSongs(json::Objects(*data));
+                    songs.insert(songs.end(), std::make_move_iterator(parsed.begin()),
+                                 std::make_move_iterator(parsed.end()));
+                }
+            } catch (...) {
+                // Asked again after the retry pause by whatever still needs the songs.
+                std::lock_guard lock(m_unknownMutex);
+                for (size_t i = first; i < std::min(ids.size(), first + kBatch); ++i) m_unknownAsked.erase(ids[i]);
+            }
+        }
+    };
+    read(library, true);
+    read(catalog, false);
+    if (songs.empty()) return;
+    fb2k::inMainThread([songs = std::move(songs)]() mutable {
+        // Persisted with the restart catalog: a queue restored next time has its names at once.
+        Catalog::Get().PutAndHint(songs, true);
+    });
 }
 
 metadb_handle_ptr StreamProvider::ArtItem(stream::ArtKind kind, const stream::Id& id) const {
@@ -4015,7 +4186,7 @@ bool StreamProvider::SameCover(std::wstring_view a, std::wstring_view b) const {
     return SameArtworkBase(a, b);
 }
 
-bool StreamProvider::IsFavorite(const stream::Id& track) const {
+bool StreamProvider::ReadFavorite(const stream::Id& track) const {
     std::lock_guard lock(m_mutex);
     return m_favoriteIds.count(track) != 0;
 }
@@ -4238,6 +4409,22 @@ std::optional<std::vector<stream::Track>> StreamProvider::CachedAlbum(const stre
                   : std::nullopt;
 }
 
+std::vector<Song> StreamProvider::RecentLibrarySongs(uint64_t generation, abort_callback& abort) {
+    {
+        std::lock_guard lock(m_mutex);
+        if (m_librarySongsLoaded && std::chrono::steady_clock::now() - m_librarySongsAt < kLibrarySnapshotTtl)
+            return m_librarySongs;
+    }
+    std::vector<Song> songs = LoadLibrarySongs(abort);
+    std::lock_guard lock(m_mutex);
+    if (generation == m_generation) {
+        m_librarySongs = songs;
+        m_librarySongsLoaded = true;
+        m_librarySongsAt = std::chrono::steady_clock::now();
+    }
+    return songs;
+}
+
 void StreamProvider::RefreshLibrarySongsAsync(uint64_t generation, TracksDone done) {
     Post(generation, [this, generation, done = std::move(done)]() mutable {
         std::vector<Song> songs;
@@ -4260,6 +4447,7 @@ void StreamProvider::RefreshLibrarySongsAsync(uint64_t generation, TracksDone do
                     if (generation == m_generation) {
                         m_librarySongs = songs;
                         m_librarySongsLoaded = true;
+                        m_librarySongsAt = std::chrono::steady_clock::now();
                     }
                 }
                 NotifyLibraryChanged();
@@ -4319,8 +4507,10 @@ void StreamProvider::FetchFavoritesWithInvalidation(TracksDone done, bool invali
                              m_favoriteIds.clear();
                              for (const auto& song : m_favoriteSongs)
                                  m_favoriteIds.emplace(song.track.id);
+                             m_favoriteIdsCheckedAt = cache::Store::Now();
                          }
                      }
+                     SaveFavoriteIdsAsync();
                      NotifyFavoritesChanged();
                      NotifyLibraryChanged();
                  }
@@ -4995,11 +5185,13 @@ stream::ListCachePolicy StreamProvider::ListPolicy(const stream::ListQuery& quer
     if (query.cache) return *query.cache;
     if (stream::IsCatalogSearch(query.kind)) return stream::ListCachePolicy::None;
     switch (query.kind) {
-    case stream::ListKind::Groups:
     case stream::ListKind::ArtistTopTracks:
     case stream::ListKind::ArtistAlbums:
     case stream::ListKind::ArtistPlaylists:
         return stream::ListCachePolicy::Memory;
+    // Genres and composers are derived from the whole library (every song page); kept on disk
+    // they show at once after a restart while the derivation runs again behind them.
+    case stream::ListKind::Groups:
     case stream::ListKind::PlaylistTracks:
     case stream::ListKind::Favorites:
     case stream::ListKind::AlbumTracks:
@@ -5024,8 +5216,30 @@ std::string StreamProvider::ListCacheContext(const stream::ListQuery& query) con
 }
 
 void StreamProvider::RestoreListRecords(const stream::ListPage& page) {
+    // Whatever the names, a restored song's album is known again: its cover is named by the
+    // album, as when the list was read (see Catalog::SongAlbum).
+    if (const auto* tracks = std::get_if<std::vector<stream::Track>>(&page.rows))
+        for (const auto& track : *tracks)
+            Catalog::Get().PutSongAlbum(track.id, track.albumId);
     if (const auto target = DisplayTargetFor(GetAppleMusicDisplayRegion())) {
         WarmDisplayCacheFromPage(page, *target, DisplayMetadata::Get().SourceStorefront());
+        // The rows carry another region's names, so they do not replace what the catalog
+        // knows; songs it does not know at all are installed, or playback and the queue would
+        // show them as "Apple Music <id>" until something read them again.
+        if (const auto* tracks = std::get_if<std::vector<stream::Track>>(&page.rows)) {
+            std::vector<Song> songs;
+            songs.reserve(tracks->size());
+            for (const auto& track : *tracks) {
+                Song song;
+                song.track = track;
+                if (IsLibraryId(track.id) && track.id[0] == L'i')
+                    song.libraryId = track.id;
+                else
+                    song.catalogId = track.id;
+                songs.push_back(std::move(song));
+            }
+            Catalog::Get().InstallCached(std::move(songs));
+        }
         return;
     }
     std::visit(
@@ -5207,7 +5421,7 @@ void StreamProvider::FetchListPage(const stream::ListQuery& sourceQuery, const s
     }
     if (favoriteQuery) query.id = favoritePlaylist;
 
-    const uint64_t fingerprint = ListQueryFingerprint(query, generation, storefront, locale);
+    const uint64_t fingerprint = ListQueryFingerprint(query, storefront, locale);
     ListCursorState cursorState;
     std::wstring cursorError;
     if (!DecodeListCursor(cursor, query.kind, fingerprint, cursorState, cursorError)) {
@@ -5302,10 +5516,11 @@ void StreamProvider::FetchListPage(const stream::ListQuery& sourceQuery, const s
                     page.total = static_cast<size_t>(page.playlist->trackCount);
                 // Apple's library playlist detail endpoint rejects projected relationship
                 // queries in practice, so the tracks collection itself is page one.
+                // The catalog answers a resource request that carries "limit" with 400 ("Limit may
+                // not be supplied on this request", observed 2026-11-13); its included tracks come
+                // in the service's own page size, continued through the relationship's next link.
                 if (cursorState.path.empty() && !library) {
-                    std::wstring path = PlaylistPath(playlist, storefront, library, true);
-                    path = WithQueryValue(std::move(path), L"limit", std::to_wstring(pageLimit));
-                    const Object response = Apple(path, abort);
+                    const Object response = Apple(PlaylistPath(playlist, storefront, library, true), abort);
                     const auto item = FirstData(response);
                     if (!item) throw std::runtime_error("Apple Music returned no playlist.");
                     page.playlist = ParsePlaylist(*item);
@@ -5339,10 +5554,8 @@ void StreamProvider::FetchListPage(const stream::ListQuery& sourceQuery, const s
                 std::optional<stream::Album> albumInfo;
                 // Library album details show the same query restriction as playlists;
                 // the tracks collection is the stable source for page one and continuations.
-                if (cursorState.path.empty() && !library) {
-                    std::wstring path = AlbumPath(album, storefront, library);
-                    path = WithQueryValue(std::move(path), L"limit", std::to_wstring(pageLimit));
-                    const Object response = Apple(path, abort);
+                if (cursorState.path.empty() && !library) { // no "limit": see the playlist above
+                    const Object response = Apple(AlbumPath(album, storefront, library), abort);
                     const auto item = FirstData(response);
                     if (!item) throw std::runtime_error("Apple Music returned no album.");
                     albumInfo = ParseAlbum(*item);
@@ -5442,8 +5655,7 @@ void StreamProvider::FetchListPage(const stream::ListQuery& sourceQuery, const s
                 const std::wstring prefix = genres ? kGenreGroupPrefix : kComposerGroupPrefix;
                 if (!StartsWith(query.id, prefix) || query.id.size() == prefix.size())
                     throw std::runtime_error("The selected group is invalid for this section.");
-                songs = LoadLibrarySongs(abort);
-                songs = SongsInGroup(songs, query.id, genres);
+                songs = SongsInGroup(RecentLibrarySongs(generation, abort), query.id, genres);
                 page.total = songs.size();
                 trackRows = true;
                 break;
@@ -5747,7 +5959,7 @@ void StreamProvider::FetchListPage(const stream::ListQuery& sourceQuery, const s
                     throw std::runtime_error("This section does not provide groups.");
                 if (!cursorState.path.empty())
                     throw std::runtime_error("This derived list has no continuation.");
-                songs = LoadLibrarySongs(abort);
+                songs = RecentLibrarySongs(generation, abort);
                 const bool genres = query.section == kGenresSection;
                 auto groups = DerivedGroups(songs, songs, genres);
                 page.total = groups.size();
@@ -5880,6 +6092,7 @@ void StreamProvider::FetchListPage(const stream::ListQuery& sourceQuery, const s
                 if (generation == m_generation) {
                     m_librarySongs = songs;
                     m_librarySongsLoaded = true;
+                    m_librarySongsAt = std::chrono::steady_clock::now();
                 }
             }
             if (error.empty() && catalogItemRows) {
@@ -6160,7 +6373,7 @@ bool StreamProvider::EnrichListPage(const stream::ListQuery& query, const stream
     return true;
 }
 
-void StreamProvider::SetFavorite(const stream::Id& track, bool favorite, Done done) {
+void StreamProvider::WriteFavorite(const stream::Id& track, bool favorite, Done done) {
     std::wstring signInError;
     if (!RequireSignedIn(signInError)) {
         if (done) done(signInError);
@@ -6198,8 +6411,9 @@ void StreamProvider::SetFavorite(const stream::Id& track, bool favorite, Done do
     }
     const stream::Id libraryId = song ? song->libraryId : stream::Id();
     const stream::Id catalogId = song ? song->catalogId : stream::Id();
-    Post(generation, [this, generation, track, requestId, resourceType, favorite, libraryId, catalogId,
-                      done = std::move(done)]() mutable {
+    // On the write queue, so a favorite never waits behind page reads.
+    PostMutation(generation, [this, generation, track, requestId, resourceType, favorite, libraryId, catalogId,
+                              done = std::move(done)]() mutable {
         std::wstring error;
         const auto request = [&](const stream::Id& id, const std::wstring& type) {
             const std::wstring path = L"/v1/me/favorites?ids[" + type + L"]=" + Encode(id) + L"&platform=web";
@@ -6225,20 +6439,24 @@ void StreamProvider::SetFavorite(const stream::Id& track, bool favorite, Done do
                          if (done) done(std::move(error));
                          return;
                      }
+                     // The service accepted the change, so the known set is updated in place.
+                     // Reading the whole Favorite Songs playlist back after every star (all
+                     // its pages, their related records and names) only repeated the answer.
                      {
                          std::lock_guard lock(m_mutex);
-                         m_favoriteSongs.clear();
-                         m_favoriteIds.clear();
-                         m_favoriteSongsLoaded = false;
+                         if (favorite) {
+                             m_favoriteIds.insert(track);
+                         } else {
+                             m_favoriteIds.erase(track);
+                             std::erase_if(m_favoriteSongs,
+                                           [&track](const Song& song) { return song.track.id == track; });
+                         }
+                         // An added song is not in the loaded rows; the Favorites list reads it.
+                         if (favorite) m_favoriteSongsLoaded = false;
                      }
-                     FetchFavoritesWithInvalidation(
-                         [this, track, favorite, done = std::move(done)](std::vector<stream::Track>,
-                                                                         std::wstring refreshError) mutable {
-                             if (refreshError.empty() && IsFavorite(track) != favorite)
-                                 refreshError = L"Apple Music did not confirm the favorite change.";
-                             if (done) done(std::move(refreshError));
-                         },
-                         true);
+                     SaveFavoriteIdsAsync();
+                     NotifyListChanged();
+                     if (done) done({});
                  });
     });
 }
@@ -6626,13 +6844,70 @@ stream::Id StreamProvider::ArtistCatalogId(const stream::Id& artist) const {
     return Catalog::Get().FindArtistCatalogId(artist);
 }
 
+namespace {
+
+// Album counts of the library's artists, kept across runs. Counting costs one or two
+// requests per artist, so the counts are read back instead of being asked for again at
+// every start; they are recounted after a week, and an artist's page corrects its own.
+constexpr int64_t kArtistCountsFreshSeconds = 7 * 24 * 60 * 60;
+constexpr char kArtistCountsSchema[] = "artist-album-counts/1";
+constexpr int kNoAlbumCount = -1; // asked, and the service has no albums of the artist
+
+cache::Key ArtistCountsKey() {
+    return {cache::Kind::Data, "apple", cache::AccountScope("apple"), "artist-album-counts", "1"};
+}
+
+std::unordered_map<stream::Id, int> LoadArtistCounts() {
+    std::unordered_map<stream::Id, int> counts;
+    try {
+        const auto record = cache::GetStore().Lookup(ArtistCountsKey());
+        if (!record || record->Info().contentType != kArtistCountsSchema ||
+            cache::Store::Now() - record->Info().validatedAt >= kArtistCountsFreshSeconds)
+            return counts;
+        std::ifstream input(record->Path(), std::ios::binary);
+        std::string id;
+        int count = 0;
+        while (input >> id >> count)
+            if (count >= kNoAlbumCount) counts[Wide(id)] = count;
+    } catch (...) {
+        counts.clear();
+    }
+    return counts;
+}
+
+void SaveArtistCounts(const std::unordered_map<stream::Id, int>& counts, int64_t validatedAt) {
+    try {
+        auto writer = cache::GetStore().Begin(ArtistCountsKey());
+        if (!writer) return;
+        {
+            std::ofstream output(writer->Path(), std::ios::binary | std::ios::trunc);
+            for (const auto& [id, count] : counts)
+                if (!id.empty() && id.find_first_of(L" \t\r\n") == std::wstring::npos)
+                    output << Utf8(id) << ' ' << count << '\n';
+            output.close();
+            if (!output) return;
+        }
+        cache::Metadata metadata;
+        metadata.contentType = kArtistCountsSchema;
+        metadata.validatedAt = validatedAt;
+        writer->Commit(std::move(metadata));
+    } catch (...) {
+        // The counts are only saved requests.
+    }
+}
+
+} // namespace
+
 void StreamProvider::EnrichArtistCountsAsync(uint64_t generation) {
     std::vector<std::pair<stream::Id, stream::Id>> artists;
     {
         std::lock_guard lock(m_mutex);
         if (!m_started || generation != m_generation || !m_enrichTasks || m_artistCountsInFlight) return;
-        artists.reserve(m_libraryArtists.size());
+        // Only artists whose count is not known yet. A count costs one or two requests per
+        // artist; the ones already counted (also restored from the snapshot) keep theirs
+        // until the artist's page reads the albums again.
         for (const auto& artist : m_libraryArtists) {
+            if (artist.albumCount != stream::kUnknownCount) continue;
             const auto found = m_artistCatalogIds.find(artist.id);
             artists.emplace_back(artist.id, found == m_artistCatalogIds.end() ? stream::Id() : found->second);
         }
@@ -6643,29 +6918,56 @@ void StreamProvider::EnrichArtistCountsAsync(uint64_t generation) {
     const std::wstring storefront = Storefront();
     m_enrichTasks->Post([this, generation, storefront, artists = std::move(artists)]() mutable {
         std::unordered_map<stream::Id, int> counts;
+        std::unordered_map<stream::Id, int> remembered = LoadArtistCounts();
+        // The first count of a recount period dates the record, so the whole set ages together.
+        int64_t rememberedAt = cache::Store::Now();
+        try {
+            if (const auto record = cache::GetStore().Lookup(ArtistCountsKey()); record && !remembered.empty())
+                rememberedAt = record->Info().validatedAt;
+        } catch (...) {
+        }
+        bool counted = false;
         try {
             abort_callback& abort = *m_abort;
             for (const auto& [libraryId, catalogId] : artists) {
-                try {
-                    counts[libraryId] = CountArtistAlbums(libraryId, catalogId, storefront, true, abort);
-                } catch (const exception_aborted&) {
-                    throw;
-                } catch (...) {
-                    if (catalogId.empty()) {
-                        try {
-                            const stream::Id resolved = ResolveLibraryArtistCatalogId(libraryId, abort);
-                            if (!resolved.empty())
-                                counts[libraryId] =
-                                    CountArtistAlbums(libraryId, resolved, storefront, true, abort);
-                        } catch (const exception_aborted&) {
-                            throw;
-                        } catch (...) {
-                        }
+                if (const auto known = remembered.find(libraryId); known != remembered.end()) {
+                    if (known->second != kNoAlbumCount) counts[libraryId] = known->second;
+                    continue;
+                }
+                counted = true;
+                // A count the service definitely cannot give (it does not know the artist) is
+                // remembered as such, so it is not asked for again at every start.
+                const auto count = [&](const stream::Id& catalog) -> std::optional<int> {
+                    try {
+                        return CountArtistAlbums(libraryId, catalog, storefront, true, abort);
+                    } catch (const exception_aborted&) {
+                        throw;
+                    } catch (const std::exception& exception) {
+                        netease::Log(L"apple: album count of " + libraryId + L" failed: " +
+                                     Wide(exception.what()));
+                        if (DefiniteNotFound(exception)) return kNoAlbumCount;
+                    } catch (...) {
+                    }
+                    return std::nullopt;
+                };
+                auto result = count(catalogId);
+                if ((!result || *result == kNoAlbumCount) && catalogId.empty()) {
+                    try {
+                        const stream::Id resolved = ResolveLibraryArtistCatalogId(libraryId, abort);
+                        if (!resolved.empty()) result = count(resolved);
+                    } catch (const exception_aborted&) {
+                        throw;
+                    } catch (...) {
                     }
                 }
+                if (result) remembered[libraryId] = *result;
+                if (result && *result != kNoAlbumCount) counts[libraryId] = *result;
             }
         } catch (const exception_aborted&) {
         } catch (...) {
+        }
+        if (counted) {
+            SaveArtistCounts(remembered, rememberedAt);
         }
 
         fb2k::inMainThread([this, generation, counts = std::move(counts)]() mutable {

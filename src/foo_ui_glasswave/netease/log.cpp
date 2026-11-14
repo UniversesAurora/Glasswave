@@ -30,25 +30,42 @@ std::filesystem::path FilePath() {
     return dir.empty() ? std::filesystem::path() : dir / L"glasswave-netease.log";
 }
 
-void RotateIfNeeded(const std::filesystem::path& path) {
+constexpr uintmax_t kRotateBytes = 2u * 1024u * 1024u;
+
+// The log stays open: a line costs one buffered write and a flush, not a directory check,
+// a size query and an open/close of the file. Guarded by g_logMutex.
+std::ofstream g_out;
+uintmax_t g_size = 0;
+
+bool OpenLocked() {
+    if (g_out.is_open()) return true;
+    const auto path = FilePath();
+    if (path.empty() || !EnsureDir(path.parent_path())) return false;
     std::error_code ec;
-    const auto size = std::filesystem::file_size(path, ec);
-    if (ec || size < 2u * 1024u * 1024u) return;
-    auto old = path;
-    old += L".1";
-    std::filesystem::remove(old, ec);
-    std::filesystem::rename(path, old, ec);
+    g_size = std::filesystem::file_size(path, ec);
+    if (ec) g_size = 0;
+    if (g_size >= kRotateBytes) {
+        auto old = path;
+        old += L".1";
+        std::filesystem::remove(old, ec);
+        std::filesystem::rename(path, old, ec);
+        g_size = 0;
+    }
+    g_out.open(path, std::ios::binary | std::ios::app);
+    return g_out.is_open();
 }
 
 void Write(std::wstring_view message) {
-    const auto path = FilePath();
-    if (path.empty() || !EnsureDir(path.parent_path())) return;
-    std::lock_guard lock(g_logMutex);
-    RotateIfNeeded(path);
-    std::ofstream out(path, std::ios::binary | std::ios::app);
-    if (!out) return;
     const std::string line = Utf8(Stamp() + L"  ") + Utf8(message) + "\r\n";
-    out.write(line.data(), static_cast<std::streamsize>(line.size()));
+    std::lock_guard lock(g_logMutex);
+    if (!OpenLocked()) return;
+    g_out.write(line.data(), static_cast<std::streamsize>(line.size()));
+    g_out.flush();
+    g_size += line.size();
+    if (!g_out || g_size >= kRotateBytes) { // reopened, and rotated when due, by the next line
+        g_out.close();
+        g_out.clear();
+    }
 }
 
 }  // namespace

@@ -53,7 +53,7 @@ void ShowProviderError(const stream::Provider& provider, const std::wstring& err
 
 void AddRemotePlaylistMenu(std::vector<MenuAction>& actions, stream::Provider& provider, SongsFetch songs,
                            const stream::Id& exclude) {
-    if (!provider.Offers().CanAppendPlaylist() || !provider.AccountVerified()) return;
+    if (!provider.Can(stream::Capability::AppendPlaylistTracks) || !provider.AccountVerified()) return;
     std::vector<MenuAction> targets;
     std::set<stream::Id> seen;
     for (const auto& section : provider.Sections()) {
@@ -62,7 +62,7 @@ void AddRemotePlaylistMenu(std::vector<MenuAction>& actions, stream::Provider& p
         for (const auto& playlist : provider.SectionPlaylists(section.id)) {
             if (playlist.id == exclude || !seen.insert(playlist.id).second) continue;
             targets.push_back(
-                {playlist.name.empty() ? Tr(provider.PlaylistText(L"Unnamed playlist")) : playlist.name,
+                {playlist.name.empty() ? provider.Text(L"Unnamed playlist") : playlist.name,
                  [&provider, songs, id = playlist.id] {
                      songs([&provider, id](metadb_handle_list items) {
                          if (auto ids = TrackIds(provider, items); !ids.empty())
@@ -71,7 +71,7 @@ void AddRemotePlaylistMenu(std::vector<MenuAction>& actions, stream::Provider& p
                  }});
         }
     }
-    if (targets.empty()) targets.push_back({Tr(provider.PlaylistText(L"No created playlists")), nullptr});
+    if (targets.empty()) targets.push_back({provider.Text(L"No created playlists"), nullptr});
     actions.push_back({Tr(L"Add to " + provider.Name() + L" playlist"), nullptr, std::move(targets)});
 }
 

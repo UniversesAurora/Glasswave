@@ -47,6 +47,7 @@ class Snapshot {
   private:
     struct Blob;
     std::shared_ptr<Blob> m_blob; // Pins this immutable generation against eviction.
+    Metadata m_info;              // As read; a later Revalidate does not change this copy.
     friend class Store;
 };
 
@@ -85,6 +86,10 @@ class Store {
     std::optional<Snapshot> Lookup(const Key& key);
     std::unique_ptr<Writer> Begin(const Key& key);
     void Erase(const Key& key);
+    // Records that the published generation `snapshot` was confirmed current (a 304): only
+    // its validators and validation time change, the payload is neither copied nor replaced.
+    // False when another generation has been published since.
+    bool Revalidate(const Key& key, const Snapshot& snapshot, const Metadata& metadata);
     void SetLimit(Kind kind, uint64_t bytes);
     Usage CurrentUsage(Kind kind);
     void Trim();

@@ -474,7 +474,9 @@ std::size_t RowCount(const stream::ListRows& rows) {
 }
 
 JsonObject ArtistJson(const stream::ArtistRef& artist) {
-    if (artist.id.empty()) Invalid("A list cache artist has no stable identity.");
+    // A credit is a name; its id only makes it navigable. Services credit artists they have
+    // no page for (uploaded and matched library songs), and those rows are cached like any.
+    if (artist.id.empty() && artist.name.empty()) Invalid("A list cache artist credit is empty.");
     JsonObject object;
     SetString(object, L"id", artist.id);
     SetString(object, L"name", artist.name);
@@ -484,7 +486,7 @@ JsonArray ArtistsJson(const std::vector<stream::ArtistRef>& artists) {
     if (artists.size() > kMaxArtists) Invalid("A list cache row has too many artists.");
     JsonArray array;
     for (const auto& artist : artists)
-        array.Append(ArtistJson(artist));
+        if (!artist.id.empty() || !artist.name.empty()) array.Append(ArtistJson(artist));
     return array;
 }
 JsonObject TrackJson(const stream::Track& track) {
@@ -591,7 +593,7 @@ stream::ArtistRef ParseArtist(const JsonObject& object) {
     stream::ArtistRef artist;
     artist.id = StringField(object, L"id");
     artist.name = StringField(object, L"name");
-    if (artist.id.empty()) Invalid("A cached artist has no stable identity.");
+    if (artist.id.empty() && artist.name.empty()) Invalid("A cached artist credit is empty.");
     return artist;
 }
 std::vector<stream::ArtistRef> ParseArtists(const JsonArray& array) {
@@ -1282,7 +1284,8 @@ std::optional<Record> AssembleRecord(Store& store, const Identity& identity, con
     combined->more = !manifest->complete;
     combined->total = manifest->total;
     combined->revision = manifest->revision;
-    return Record{std::move(*combined), manifest->pages.size(), manifest->validatedAt, metadataReadyRows};
+    return Record{std::move(*combined), manifest->pages.size(), manifest->validatedAt, metadataReadyRows,
+                  manifest->generation};
 }
 
 bool SameRowIdentities(const stream::ListRows& left, const stream::ListRows& right) {
@@ -1346,6 +1349,20 @@ bool SamePageClosure(const PageRef& ref, const SerializedPage& page) {
            ref.nextOffset == page.next.offset && ref.revision == page.revision && ref.total == page.total;
 }
 
+std::mutex g_diagnosticsMutex;
+std::function<void(std::string_view)> g_diagnostics;
+
+// A page that is not persisted costs the user a full reload after the next start, so the
+// reason is always recorded.
+void Report(std::string_view reason) {
+    std::function<void(std::string_view)> sink;
+    {
+        std::lock_guard lock(g_diagnosticsMutex);
+        sink = g_diagnostics;
+    }
+    if (sink) sink(reason);
+}
+
 bool SavePageDocument(Store& store, const Identity& identity, const std::string& accountScope,
                       const std::string& guardScope, uint64_t generationInput, const std::string& generation,
                       uint64_t saveTicket, const Record& record, const std::function<bool()>& stillCurrent,
@@ -1354,24 +1371,39 @@ bool SavePageDocument(Store& store, const Identity& identity, const std::string&
     SerializedPage next;
     try {
         next = SerializePage(record.pages, record.page);
+    } catch (const std::exception& error) {
+        Report(std::string("page ") + std::to_string(record.pages) + " cannot be serialized: " + error.what());
+        return false;
     } catch (...) {
+        Report("page cannot be serialized");
         return false;
     }
     auto existing = ReadManifest(store, identity, accountScope, guardScope);
-    if (existing) {
+    // A page that continues the snapshot its caller loaded is written into that snapshot's
+    // generation; anything else written meanwhile replaced it, and the page is refused below.
+    const bool continues = existing && !record.base.empty() && existing->generation == record.base;
+    if (!record.base.empty() && !continues) {
+        Report("page continues a snapshot that was replaced");
+        return false;
+    }
+    const std::string token = continues ? existing->generation : generation; // copied: *existing moves
+    if (existing && !continues) {
         const auto incomingEpoch = generation.substr(0, generation.find(':'));
         const auto existingEpoch = existing->generation.substr(0, existing->generation.find(':'));
-        if (incomingEpoch == existingEpoch && generationInput < existing->generationInput) return false;
+        if (incomingEpoch == existingEpoch && generationInput < existing->generationInput) {
+            Report("page belongs to an older generation than the persisted one");
+            return false;
+        }
     }
-    const bool sameGeneration = existing && existing->generation == generation;
+    const bool sameGeneration = existing && existing->generation == token;
     bool replaceCompletedPage = false;
     if (sameGeneration) {
         if (next.ordinal == existing->pages.size()) {
             const auto& final = existing->pages.back();
             if (existing->rowKind != next.rowKind || !SamePageClosure(final, next)) return false;
-            if (saveTicket < existing->saveTicket) return false;
+            if (!continues && saveTicket < existing->saveTicket) return false;
             const auto chunk = store.Lookup(
-                PageChunkKey(identity, accountScope, guardScope, generation, final.ordinal, final.chunk));
+                PageChunkKey(identity, accountScope, guardScope, token, final.ordinal, final.chunk));
             if (chunk) {
                 if (!stillCurrent()) return false;
                 existing->saveTicket = saveTicket;
@@ -1392,22 +1424,30 @@ bool SavePageDocument(Store& store, const Identity& identity, const std::string&
         if (!replaceCompletedPage) {
             try {
                 ValidateContinuity(*existing, next);
+            } catch (const std::exception& error) {
+                Report(std::string("page ") + std::to_string(next.ordinal) + " does not continue the snapshot: " +
+                       error.what());
+                return false;
             } catch (...) {
                 return false;
             }
         }
     } else {
-        if (next.ordinal != 1) return false;
+        if (next.ordinal != 1) {
+            Report("page " + std::to_string(next.ordinal) + " has no persisted predecessor in its generation");
+            return false;
+        }
     }
 
-    const auto pageKey =
-        PageChunkKey(identity, accountScope, guardScope, generation, next.ordinal, next.chunk);
+    const auto pageKey = PageChunkKey(identity, accountScope, guardScope, token, next.ordinal, next.chunk);
     if (!stillCurrent()) return false;
     if (!WriteSnapshot(store, pageKey, next.body, kPageContentType,
                        record.validatedAt ? record.validatedAt : Store::Now(),
-                       "schema=3;generation=" + generation + ";index=" + std::to_string(next.ordinal) +
-                           ";chunk=" + next.chunk))
+                       "schema=3;generation=" + token + ";index=" + std::to_string(next.ordinal) +
+                           ";chunk=" + next.chunk)) {
+        Report("page " + std::to_string(next.ordinal) + " could not be written");
         return false;
+    }
     const PageRef nextRef = RefFromSerialized(next);
 
     Manifest manifest;
@@ -1436,23 +1476,24 @@ bool SavePageDocument(Store& store, const Identity& identity, const std::string&
     try {
         body = SerializeManifest(manifest);
     } catch (...) {
-        ErasePage(store, identity, accountScope, guardScope, generation, nextRef);
+        ErasePage(store, identity, accountScope, guardScope, token, nextRef);
         return false;
     }
     if (!stillCurrent()) {
-        ErasePage(store, identity, accountScope, guardScope, generation, nextRef);
+        ErasePage(store, identity, accountScope, guardScope, token, nextRef);
         return false;
     }
     RunTestManifestPause();
     const bool published = WriteSnapshot(store, ManifestKey(identity, accountScope, guardScope), body,
                                          kManifestContentType, manifest.validatedAt,
-                                         "schema=3;generation=" + generation, publicationGate, &stillCurrent);
+                                         "schema=3;generation=" + token, publicationGate, &stillCurrent);
     if (!published) {
-        ErasePage(store, identity, accountScope, guardScope, generation, nextRef);
+        Report("manifest of page " + std::to_string(next.ordinal) + " could not be published");
+        ErasePage(store, identity, accountScope, guardScope, token, nextRef);
         return false;
     }
 
-    if (existing && existing->generation != generation) {
+    if (existing && !sameGeneration) {
         for (const auto& page : existing->pages)
             ErasePage(store, identity, accountScope, guardScope, existing->generation, page);
     }
@@ -1471,8 +1512,12 @@ bool UpdatePageDocument(Store& store, const Identity& identity, const std::strin
         return false;
     }
     auto existing = ReadManifest(store, identity, accountScope, guardScope);
-    if (!existing || existing->generation != generation || existing->generationInput != generationInput ||
-        updateTicket < existing->saveTicket || replacement.ordinal > existing->pages.size())
+    // A page the caller appended to a loaded snapshot lives in that snapshot's generation.
+    const bool continues = !record.base.empty();
+    const std::string token = continues ? record.base : generation;
+    if (!existing || existing->generation != token ||
+        (!continues && existing->generationInput != generationInput) || updateTicket < existing->saveTicket ||
+        replacement.ordinal > existing->pages.size())
         return false;
 
     const PageRef previous = existing->pages[replacement.ordinal - 1];
@@ -1487,11 +1532,10 @@ bool UpdatePageDocument(Store& store, const Identity& identity, const std::strin
     bool wroteReplacement = false;
     if (bodyChanged) {
         if (!stillCurrent()) return false;
-        const auto key =
-            PageChunkKey(identity, accountScope, guardScope, generation, nextRef.ordinal, nextRef.chunk);
+        const auto key = PageChunkKey(identity, accountScope, guardScope, token, nextRef.ordinal, nextRef.chunk);
         if (!WriteSnapshot(store, key, replacement.body, kPageContentType,
                            record.validatedAt ? record.validatedAt : Store::Now(),
-                           "schema=3;generation=" + generation + ";index=" + std::to_string(nextRef.ordinal) +
+                           "schema=3;generation=" + token + ";index=" + std::to_string(nextRef.ordinal) +
                                ";chunk=" + nextRef.chunk))
             return false;
         wroteReplacement = true;
@@ -1505,21 +1549,20 @@ bool UpdatePageDocument(Store& store, const Identity& identity, const std::strin
     try {
         body = SerializeManifest(manifest);
     } catch (...) {
-        if (wroteReplacement) ErasePage(store, identity, accountScope, guardScope, generation, nextRef);
+        if (wroteReplacement) ErasePage(store, identity, accountScope, guardScope, token, nextRef);
         return false;
     }
     if (!stillCurrent()) {
-        if (wroteReplacement) ErasePage(store, identity, accountScope, guardScope, generation, nextRef);
+        if (wroteReplacement) ErasePage(store, identity, accountScope, guardScope, token, nextRef);
         return false;
     }
     RunTestManifestPause();
     if (!WriteSnapshot(store, ManifestKey(identity, accountScope, guardScope), body, kManifestContentType,
-                       manifest.validatedAt, "schema=3;generation=" + generation, publicationGate,
-                       &stillCurrent)) {
-        if (wroteReplacement) ErasePage(store, identity, accountScope, guardScope, generation, nextRef);
+                       manifest.validatedAt, "schema=3;generation=" + token, publicationGate, &stillCurrent)) {
+        if (wroteReplacement) ErasePage(store, identity, accountScope, guardScope, token, nextRef);
         return false;
     }
-    if (wroteReplacement) ErasePage(store, identity, accountScope, guardScope, generation, previous);
+    if (wroteReplacement) ErasePage(store, identity, accountScope, guardScope, token, previous);
     return true;
 }
 
@@ -1554,11 +1597,23 @@ class WorkerPool {
     WorkerPool(const WorkerPool&) = delete;
     WorkerPool& operator=(const WorkerPool&) = delete;
 
-    bool Post(std::string chain, std::function<void()> task, bool drainOnStop = false) {
+    // urgent: a read someone is waiting to see; it overtakes queued publications of other
+    // lists (its own chain still runs in order).
+    bool Post(std::string chain, std::function<void()> task, bool drainOnStop = false, bool urgent = false) {
         {
             std::lock_guard lock(m_mutex);
             if (m_stopping || !task) return false;
-            m_tasks.push_back(Task{std::move(chain), std::move(task), drainOnStop});
+            if (urgent) {
+                // Ahead of other lists' work, but after everything queued for its own chain:
+                // a read must see the pages that were saved before it was asked for.
+                auto at = m_tasks.begin();
+                if (!chain.empty())
+                    for (auto it = m_tasks.begin(); it != m_tasks.end(); ++it)
+                        if (it->chain == chain) at = std::next(it);
+                m_tasks.insert(at, Task{std::move(chain), std::move(task), drainOnStop});
+            } else {
+                m_tasks.push_back(Task{std::move(chain), std::move(task), drainOnStop});
+            }
         }
         m_ready.notify_one();
         return true;
@@ -1756,7 +1811,8 @@ class Manager final : public std::enable_shared_from_this<Manager> {
         m_pool.Post(std::move(chain),
                     [self, identity = std::move(identity), done = std::move(done), epoch, guard]() mutable {
                         self->RunLoad(std::move(identity), std::move(done), epoch, guard);
-                    });
+                    },
+                    false, true);
     }
 
     void InvalidateProvider(const std::string& provider) {
@@ -1915,13 +1971,24 @@ class Manager final : public std::enable_shared_from_this<Manager> {
     }
     bool RunSave(Identity identity, Record record, uint64_t generation, uint64_t ticket, uint64_t epoch,
                  uint64_t guard) {
-        if (!CurrentEpoch(identity.provider, epoch)) return false;
-        if (!EnsureGuardRotation(identity.provider, guard)) return false;
-        CapturedScope scope;
-        if (!CaptureScope(identity, scope)) return false;
-        if (!CurrentEpoch(identity.provider, epoch) ||
-            AccountRevision(identity.provider) != identity.accountRevision)
+        if (!CurrentEpoch(identity.provider, epoch)) {
+            Report("page publisher was retired before it ran");
             return false;
+        }
+        if (!EnsureGuardRotation(identity.provider, guard)) {
+            Report("the list guard could not be rotated");
+            return false;
+        }
+        CapturedScope scope;
+        if (!CaptureScope(identity, scope)) {
+            Report("the account scope is unavailable or changed");
+            return false;
+        }
+        if (!CurrentEpoch(identity.provider, epoch) ||
+            AccountRevision(identity.provider) != identity.accountRevision) {
+            Report("page publisher was retired while it started");
+            return false;
+        }
         const std::string generationToken = GenerationToken(epoch, generation);
         const auto stillCurrent = [this, &identity, epoch, &scope] {
             if (!CurrentEpoch(identity.provider, epoch) ||
@@ -2073,6 +2140,11 @@ void RetireProvider(std::string provider) {
 void InvalidateProvider(std::string provider) {
     if (provider.empty() || provider.size() > kMaxIdentityBytes) return;
     if (auto manager = Instance()) manager->InvalidateProvider(provider);
+}
+
+void SetDiagnostics(std::function<void(std::string_view)> sink) {
+    std::lock_guard lock(g_diagnosticsMutex);
+    g_diagnostics = std::move(sink);
 }
 
 void Shutdown() {

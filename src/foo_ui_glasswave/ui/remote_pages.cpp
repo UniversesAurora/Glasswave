@@ -55,8 +55,8 @@ bool IsFollowed(stream::Provider& provider, const stream::Id& id) {
     return Contains(provider.FollowedArtists(), id);
 }
 bool SupportsArtistPreference(const stream::Provider& provider) {
-    const auto offers = provider.Offers();
-    return offers.followArtists || offers.favoriteArtists;
+    return provider.Can(stream::Capability::FollowArtists) ||
+           provider.Can(stream::Capability::FavoriteArtists);
 }
 
 std::optional<stream::NavigationSection> FindSection(const stream::Provider& provider, const stream::Id& id) {
@@ -86,7 +86,14 @@ stream::NavigationSection CreatedPlaylistSection(const stream::Provider& provide
 }
 
 std::wstring ProviderPlaylistText(const stream::Provider& provider, std::wstring_view english) {
-    return Tr(provider.PlaylistText(english));
+    return provider.Text(english);
+}
+
+// A list is visibly loading only while it has nothing to show. Re-reading behind rows that
+// are already on screen (a cached snapshot, a refresh) stays silent and updates in place.
+bool VisiblyLoading(const stream::ListState& state) {
+    if (!state.loading && !state.refreshing) return false;
+    return std::visit([](const auto& rows) { return rows.empty(); }, state.page.rows);
 }
 
 std::wstring LoadingArtistTracksLabel(const stream::Provider& provider, const stream::Id& artist) {
@@ -482,7 +489,7 @@ bool MatchesPublishedPrefix(RemoteSongSource& source, stream::Provider& provider
 MenuAction SaveAlbumAction(stream::Provider& provider, const stream::Id& id,
                            std::function<void(bool saved)> done) {
     const bool saved = IsSavedAlbum(provider, id);
-    return {provider.LibraryActionText(saved ? stream::LibraryAction::Remove : stream::LibraryAction::Add),
+    return {provider.Text(saved ? L"Uncollect album" : L"Collect album"),
             [&provider, id, saved, done] {
                 provider.SetAlbumSaved(id, !saved, [&provider, saved, done](std::wstring error) {
                     if (!error.empty()) return ShowProviderError(provider, error);
@@ -494,8 +501,7 @@ MenuAction SaveAlbumAction(stream::Provider& provider, const stream::Id& id,
 MenuAction FollowAction(stream::Provider& provider, const stream::Id& id,
                         std::function<void(bool followed)> done) {
     const bool followed = provider.ArtistPreferenceState(id).value_or(IsFollowed(provider, id));
-    return {provider.ArtistPreferenceActionText(followed ? stream::ArtistPreferenceAction::Unfavorite
-                                                         : stream::ArtistPreferenceAction::Favorite),
+    return {provider.Text(followed ? L"Unfollow artist" : L"Follow artist"),
             [&provider, id, followed, done] {
                 provider.SetFollowed(id, !followed, [&provider, followed, done](std::wstring error) {
                     if (!error.empty()) return ShowProviderError(provider, error);
@@ -639,7 +645,7 @@ class PagedPage : public RemotePage {
     }
 
     virtual std::wstring StatusText() const {
-        if (m_state.loading || m_state.refreshing ||
+        if ((m_session && VisiblyLoading(CurrentListState())) ||
             ((m_allMode || m_drainRequested) && !m_state.complete && m_state.error.empty()))
             return Tr(L"Loading...");
         if (!m_state.error.empty()) return Tr(m_state.error);
@@ -970,11 +976,11 @@ class PlaylistPage final : public TrackPagedPage {
         }
         d.artKey = m_provider.ArtKey(stream::ArtKind::Playlist, m_view.remoteId);
         d.artItem = m_provider.ArtItem(stream::ArtKind::Playlist, m_view.remoteId);
-        if (!Own() && m_provider.AccountVerified() && m_provider.Offers().savePlaylists) {
+        if (!Own() && m_provider.AccountVerified() && m_provider.Can(stream::Capability::SavePlaylists)) {
             d.action = DetailInfo::Action::Save;
             d.actionOn = Saved();
             d.actionBusy = m_busy;
-            d.actionLabel = Tr(m_provider.LibraryStateText(d.actionOn));
+            d.actionLabel = m_provider.Text(d.actionOn ? L"Collected" : L"Collect");
         }
         return d;
     }
@@ -1001,19 +1007,19 @@ class PlaylistPage final : public TrackPagedPage {
         const std::wstring name = m_info && !m_info->name.empty() ? m_info->name : m_view.name;
         if (Own()) {
             const auto offers = m_provider.Offers();
-            if (!offers.CanRenamePlaylist() && !offers.CanDeletePlaylist()) return;
+            if (!offers.Has(stream::Capability::RenamePlaylists) && !offers.Has(stream::Capability::DeletePlaylists)) return;
             actions.push_back({});
-            if (offers.CanRenamePlaylist())
+            if (offers.Has(stream::Capability::RenamePlaylists))
                 actions.push_back({ProviderPlaylistText(m_provider, L"Rename..."), [this, name] {
                                        RenameRemotePlaylist(m_host, m_provider, m_view.remoteId, name);
                                    }});
-            if (offers.CanDeletePlaylist())
+            if (offers.Has(stream::Capability::DeletePlaylists))
                 actions.push_back({ProviderPlaylistText(m_provider, L"Delete playlist"),
                                    [this, name, sectionId = m_view.sectionId] {
                                        DeleteRemotePlaylist(m_host, m_provider, m_view.remoteId, name,
                                                             sectionId);
                                    }});
-        } else if (m_provider.Offers().savePlaylists) {
+        } else if (m_provider.Can(stream::Capability::SavePlaylists)) {
             actions.push_back({});
             actions.push_back(
                 {ProviderPlaylistText(m_provider, Saved() ? L"Uncollect playlist" : L"Collect playlist"),
@@ -1023,7 +1029,7 @@ class PlaylistPage final : public TrackPagedPage {
 
   public:
     void AddSongActions(std::vector<MenuAction>& actions, const metadb_handle_list& items) override {
-        if (!Own() || !m_provider.Offers().CanRemovePlaylistTracks()) return;
+        if (!Own() || !m_provider.Can(stream::Capability::RemovePlaylistTracks)) return;
         auto ids = TrackIds(m_provider, items);
         if (ids.empty()) return;
         actions.push_back({});
@@ -1105,11 +1111,11 @@ class AlbumPage final : public TrackPagedPage {
         }
         d.artKey = m_provider.ArtKey(stream::ArtKind::Album, m_view.remoteId);
         d.artItem = m_provider.ArtItem(stream::ArtKind::Album, m_view.remoteId);
-        if (m_provider.AccountVerified() && m_provider.Offers().saveAlbums) {
+        if (m_provider.AccountVerified() && m_provider.Can(stream::Capability::SaveAlbums)) {
             d.action = DetailInfo::Action::Save;
             d.actionOn = IsSavedAlbum(m_provider, m_view.remoteId);
             d.actionBusy = m_busy;
-            d.actionLabel = Tr(m_provider.LibraryStateText(d.actionOn));
+            d.actionLabel = m_provider.Text(d.actionOn ? L"Collected" : L"Collect");
         }
         return d;
     }
@@ -1128,7 +1134,7 @@ class AlbumPage final : public TrackPagedPage {
 
   protected:
     void AddTrackPageActions(std::vector<MenuAction>& actions) override {
-        if (m_provider.AccountVerified() && m_provider.Offers().saveAlbums) {
+        if (m_provider.AccountVerified() && m_provider.Can(stream::Capability::SaveAlbums)) {
             actions.push_back({});
             actions.push_back(SaveAlbumAction(m_provider, m_view.remoteId,
                                               Guard([this](bool) { m_host.ChromeChanged(); })));
@@ -1287,7 +1293,7 @@ class ShelfPage final : public PagedPage {
     }
 
     void AddPageSpecificActions(std::vector<MenuAction>& actions) override {
-        if (m_view.shelf == Shelf::Created && m_provider.Offers().CanCreatePlaylist())
+        if (m_view.shelf == Shelf::Created && m_provider.Can(stream::Capability::CreatePlaylists))
             actions.push_back({Tr(L"New " + m_provider.Name() + L" playlist"),
                                [this] { CreateRemotePlaylist(m_host, m_provider); }});
     }
@@ -1435,19 +1441,16 @@ class AlbumBrowsePage : public PagedPage {
     std::wstring StatusText() const override {
         if (!m_trackError.empty()) return Tr(m_trackError);
         if (Expanded() && !AlbumsAndTracksComplete() && m_state.error.empty()) return Tr(L"Loading...");
-        for (const auto& entry : m_albumTrackStates)
-            if (entry.second.loading || entry.second.refreshing) return Tr(L"Loading...");
+        for (const auto& [id, session] : m_albumTrackSessions)
+            if (session && VisiblyLoading(session->View())) return Tr(L"Loading...");
         return PagedPage::StatusText();
     }
 
     void RetryPage() override {
         if (!m_state.error.empty() && !m_state.loading && m_session) m_session->Refresh();
         m_trackError.clear();
-        for (auto& entry : m_albumTrackStates) {
-            const auto session = m_albumTrackSessions.find(entry.first);
-            if (!entry.second.error.empty() && session != m_albumTrackSessions.end() && session->second)
-                session->second->Refresh();
-        }
+        for (const auto& [id, session] : m_albumTrackSessions)
+            if (session && !session->View().error.empty()) session->Refresh();
         StartNextAlbumTracks();
     }
 
@@ -1461,7 +1464,7 @@ class AlbumBrowsePage : public PagedPage {
             if (session->second) session->second->Cancel();
             m_albumTrackSessions.erase(session);
         }
-        m_albumTrackStates.erase(id);
+        m_albumTrackVersions.erase(id);
         AssembleTracks();
     }
 
@@ -1479,12 +1482,19 @@ class AlbumBrowsePage : public PagedPage {
         }
     }
 
+    // The album's track list as its shared session holds it (borrowed, never copied), or null
+    // before the session is open.
+    const stream::ListState* AlbumTrackState(const stream::Id& id) const {
+        const auto found = m_albumTrackSessions.find(id);
+        return found != m_albumTrackSessions.end() && found->second ? &found->second->View() : nullptr;
+    }
+
     void AssembleTracks() {
         std::vector<stream::Track> tracks;
         for (const auto& album : m_albums) {
-            const auto state = m_albumTrackStates.find(album.id);
-            if (state == m_albumTrackStates.end()) continue;
-            const auto& rows = Rows<stream::Track>(state->second.page.rows);
+            const auto* state = AlbumTrackState(album.id);
+            if (!state) continue;
+            const auto& rows = Rows<stream::Track>(state->page.rows);
             tracks.insert(tracks.end(), rows.begin(), rows.end());
         }
         m_tracks = std::move(tracks);
@@ -1494,19 +1504,22 @@ class AlbumBrowsePage : public PagedPage {
         if (!m_state.complete) return false;
         for (const auto& album : m_albums) {
             if (album.id.empty()) continue;
-            const auto state = m_albumTrackStates.find(album.id);
-            if (state == m_albumTrackStates.end() || !state->second.complete) return false;
+            const auto* state = AlbumTrackState(album.id);
+            if (!state || !state->complete) return false;
         }
         return true;
     }
 
     void RecomputeTrackError() {
         m_trackError.clear();
-        for (const auto& entry : m_albumTrackStates)
-            if (!entry.second.error.empty() && !entry.second.loading) {
-                m_trackError = entry.second.error;
+        for (const auto& [id, session] : m_albumTrackSessions) {
+            if (!session) continue;
+            const auto& state = session->View();
+            if (!state.error.empty() && !state.loading) {
+                m_trackError = state.error;
                 return;
             }
+        }
     }
 
     void StartNextAlbumTracks() {
@@ -1517,8 +1530,8 @@ class AlbumBrowsePage : public PagedPage {
                 OpenAlbumTracks(album);
                 return;
             }
-            const auto state = m_albumTrackStates.find(album.id);
-            if (state == m_albumTrackStates.end() || !state->second.complete) return;
+            const auto* state = AlbumTrackState(album.id);
+            if (!state || !state->complete) return;
         }
         SettleWaiters();
     }
@@ -1531,10 +1544,9 @@ class AlbumBrowsePage : public PagedPage {
         query.id = album.id;
         auto changed = Guard([this, id = album.id, generation](const stream::ListState& state) {
             if (m_albumTrackGenerations[id] != generation) return;
-            const auto previous = m_albumTrackStates.find(id);
-            const bool dataChanged =
-                previous == m_albumTrackStates.end() || previous->second.dataVersion != state.dataVersion;
-            m_albumTrackStates[id] = state;
+            const auto [version, inserted] = m_albumTrackVersions.try_emplace(id, state.dataVersion);
+            const bool dataChanged = inserted || version->second != state.dataVersion;
+            version->second = state.dataVersion;
             RecomputeTrackError();
             if (dataChanged) {
                 m_host.BeforeListChange();
@@ -1550,7 +1562,15 @@ class AlbumBrowsePage : public PagedPage {
         auto session = stream::ListSession::Open(m_provider, PreparedQuery(m_provider, std::move(query)),
                                                  std::move(changed), stream::ListLoadMode::All);
         m_albumTrackSessions[album.id] = session;
-        m_albumTrackStates[album.id] = session->State();
+        m_albumTrackVersions[album.id] = session->View().dataVersion;
+        // A shared session may already hold the album's tracks (another page read them).
+        if (!Rows<stream::Track>(session->View().page.rows).empty()) {
+            m_host.BeforeListChange();
+            AssembleTracks();
+            if (auto* source = dynamic_cast<RemoteSongSource*>(m_source); source && Expanded())
+                source->ReplaceTracks(m_tracks);
+            m_host.ListChanged();
+        }
     }
 
     void EnsureExpandedSongs(std::function<void(bool)> done) {
@@ -1569,10 +1589,9 @@ class AlbumBrowsePage : public PagedPage {
         if (m_waiters.empty() || !m_state.complete) return;
         for (const auto& album : m_albums) {
             if (album.id.empty()) continue;
-            const auto state = m_albumTrackStates.find(album.id);
-            if (state == m_albumTrackStates.end() || (!state->second.complete && state->second.error.empty()))
-                return;
-            if (!state->second.error.empty() && !state->second.loading) {
+            const auto* state = AlbumTrackState(album.id);
+            if (!state || (!state->complete && state->error.empty())) return;
+            if (!state->error.empty() && !state->loading) {
                 auto waiters = std::move(m_waiters);
                 m_waiters.clear();
                 for (auto& waiter : waiters)
@@ -1614,7 +1633,7 @@ class AlbumBrowsePage : public PagedPage {
     }
 
     std::map<stream::Id, std::shared_ptr<stream::ListSession>> m_albumTrackSessions;
-    std::map<stream::Id, stream::ListState> m_albumTrackStates;
+    std::map<stream::Id, uint64_t> m_albumTrackVersions; // data version last assembled
     std::map<stream::Id, uint64_t> m_albumTrackGenerations;
     std::vector<std::function<void(bool)>> m_waiters;
     std::wstring m_trackError;
@@ -1648,9 +1667,7 @@ class ArtistPage final : public AlbumBrowsePage {
             d.action = DetailInfo::Action::Follow;
             d.actionOn = m_artist->followed;
             d.actionBusy = m_busy;
-            d.actionLabel = Tr(m_provider.ArtistPreferenceActionText(
-                m_artist->followed ? stream::ArtistPreferenceAction::Unfavorite
-                                   : stream::ArtistPreferenceAction::Favorite));
+            d.actionLabel = m_provider.Text(m_artist->followed ? L"Unfollow artist" : L"Follow artist");
         }
         return d;
     }
@@ -1687,9 +1704,7 @@ class ArtistPage final : public AlbumBrowsePage {
 
     void AddAlbumPageActions(std::vector<MenuAction>& actions) override {
         if (m_artist && m_artist->followKnown && SupportsArtistPreference(m_provider)) {
-            actions.push_back({m_provider.ArtistPreferenceActionText(
-                                   m_artist->followed ? stream::ArtistPreferenceAction::Unfavorite
-                                                      : stream::ArtistPreferenceAction::Favorite),
+            actions.push_back({m_provider.Text(m_artist->followed ? L"Unfollow artist" : L"Follow artist"),
                                [this] { DetailAction(); }});
         }
     }
@@ -1731,7 +1746,7 @@ class ArtistPage final : public AlbumBrowsePage {
             actions.push_back({L"View", [this, copy] { OpenTile(&copy); }});
             actions.push_back({});
             AddBulkActions(actions, FetchAlbumSongs(m_provider, copy.id, &m_host), &m_provider);
-            if (m_provider.AccountVerified() && m_provider.Offers().saveAlbums) {
+            if (m_provider.AccountVerified() && m_provider.Can(stream::Capability::SaveAlbums)) {
                 actions.push_back({});
                 actions.push_back(SaveAlbumAction(m_provider, copy.id, {}));
             }
@@ -1774,7 +1789,7 @@ class SavedAlbumsPage final : public AlbumBrowsePage {
         AddGoToArtist(actions, m_host, m_provider, album.artists, m_view.sectionId);
         actions.push_back({});
         AddBulkActions(actions, FetchAlbumSongs(m_provider, album.id, &m_host), &m_provider);
-        if (m_provider.AccountVerified() && m_provider.Offers().saveAlbums) {
+        if (m_provider.AccountVerified() && m_provider.Can(stream::Capability::SaveAlbums)) {
             actions.push_back({});
             actions.push_back(SaveAlbumAction(m_provider, album.id, Guard([this, id = album.id](bool saved) {
                                                   if (saved) return;
@@ -1825,7 +1840,7 @@ class AllFavoritesPage final : public Page {
 
     void NearEnd() override {
         for (auto& feed : m_feeds)
-            if (feed.session && !feed.state.complete && feed.state.error.empty() && !feed.state.loading)
+            if (feed.session && !feed.State().complete && feed.State().error.empty() && !feed.State().loading)
                 feed.session->RequestNext();
     }
 
@@ -1845,7 +1860,7 @@ class AllFavoritesPage final : public Page {
     void OnFavoritesChanged() override {
         auto* source = SongSource();
         if (source &&
-            std::any_of(m_feeds.begin(), m_feeds.end(), [](const Feed& f) { return f.state.pages != 0; })) {
+            std::any_of(m_feeds.begin(), m_feeds.end(), [](const Feed& f) { return f.State().pages != 0; })) {
             m_host.BeforeListChange();
             if (!source->RemoveUnfavorited()) return;
             m_host.ListChanged();
@@ -1858,8 +1873,13 @@ class AllFavoritesPage final : public Page {
     struct Feed {
         stream::Provider* provider = nullptr;
         std::shared_ptr<stream::ListSession> session;
-        stream::ListState state;
+        uint64_t dataVersion = 0; // last published
         uint64_t generation = 0;
+        // The session's state, borrowed rather than copied on every change.
+        const stream::ListState& State() const {
+            static const stream::ListState empty;
+            return session ? session->View() : empty;
+        }
     };
 
     SongTableSource* SongSource() const { return dynamic_cast<SongTableSource*>(m_host.Source()); }
@@ -1889,8 +1909,8 @@ class AllFavoritesPage final : public Page {
                 return feed.provider == providerPtr;
             });
             if (found == m_feeds.end() || found->generation != generation) return;
-            const bool dataChanged = found->state.dataVersion != state.dataVersion;
-            found->state = state;
+            const bool dataChanged = found->dataVersion != state.dataVersion;
+            found->dataVersion = state.dataVersion;
             if (dataChanged) {
                 m_host.BeforeListChange();
                 Publish();
@@ -1908,34 +1928,34 @@ class AllFavoritesPage final : public Page {
         auto query = Query(stream::ListKind::Favorites);
         feed.session = stream::ListSession::Open(provider, PreparedQuery(provider, std::move(query)),
                                                  std::move(changed), stream::ListLoadMode::OnDemand);
-        feed.state = feed.session->State();
+        feed.dataVersion = feed.session->View().dataVersion;
     }
 
     AllFavoritesSource::RemoteFavorites RemoteRows() const {
         AllFavoritesSource::RemoteFavorites rows;
         for (const auto& feed : m_feeds)
-            rows.push_back({feed.provider, Rows<stream::Track>(feed.state.page.rows)});
+            rows.push_back({feed.provider, Rows<stream::Track>(feed.State().page.rows)});
         return rows;
     }
 
     bool Complete() const {
         return std::all_of(m_feeds.begin(), m_feeds.end(),
-                           [](const Feed& feed) { return feed.state.complete; });
+                           [](const Feed& feed) { return feed.State().complete; });
     }
 
     bool HasError() const {
         return std::any_of(m_feeds.begin(), m_feeds.end(),
-                           [](const Feed& feed) { return !feed.state.error.empty() && !feed.state.loading; });
+                           [](const Feed& feed) { return !feed.State().error.empty() && !feed.State().loading; });
     }
 
     std::wstring LoadingText() const {
         if (std::any_of(m_feeds.begin(), m_feeds.end(),
-                        [](const Feed& feed) { return feed.state.loading || feed.state.refreshing; }) ||
+                        [](const Feed& feed) { return VisiblyLoading(feed.State()); }) ||
             ((m_allMode || m_drainRequested) && !Complete() && !HasError()))
             return Tr(L"Loading...");
         const auto failed = std::find_if(m_feeds.begin(), m_feeds.end(),
-                                         [](const Feed& feed) { return !feed.state.error.empty(); });
-        return failed == m_feeds.end() ? std::wstring() : Tr(failed->state.error);
+                                         [](const Feed& feed) { return !feed.State().error.empty(); });
+        return failed == m_feeds.end() ? std::wstring() : Tr(failed->State().error);
     }
 
     void Publish() {
@@ -1958,7 +1978,7 @@ class AllFavoritesPage final : public Page {
 
     void Retry() {
         for (auto& feed : m_feeds)
-            if (!feed.state.error.empty() && feed.session) feed.session->Refresh();
+            if (!feed.State().error.empty() && feed.session) feed.session->Refresh();
     }
 
     void EnsureAllSongs(std::function<void(bool)> done) {
@@ -1976,7 +1996,7 @@ class AllFavoritesPage final : public Page {
         m_host.ListChanged();
         UpdateSessionMode();
         for (auto& feed : m_feeds) {
-            if (!feed.state.loading) feed.session->RequestNext();
+            if (!feed.State().loading) feed.session->RequestNext();
         }
     }
 
@@ -2039,10 +2059,13 @@ class AllFavoritesPage final : public Page {
 
 // ---- Page ------------------------------------------------------------------------------------
 
+// Drops the UI's own page-level requests for a provider. The provider's notification has
+// already treated its list sessions the way the change requires (an account switch purges
+// them, a language or display change only retires the in-memory reads); the persisted
+// snapshots must survive everything but an account switch.
 void InvalidateRemotePageCache(std::wstring_view provider) {
     CancelSongsRequests(provider);
     PagedPlaybackFeed::CancelProvider(provider);
-    stream::InvalidateListCache(provider);
 }
 
 void Page::OnFavoritesChanged() {
@@ -2208,7 +2231,7 @@ const wchar_t* ShelfLabel(Shelf shelf) {
 // ---- playlist commands --------------------------------------------------------------------------
 
 void PromptCatalogSearch(PageHost& host, stream::Provider& provider) {
-    if (!provider.Offers().catalogSearch) return;
+    if (!provider.Can(stream::Capability::CatalogSearch)) return;
     const std::wstring title = Tr(L"Search " + provider.Name());
     PromptText(host.Owner(), title, Tr(L"Search"), {}, [&host, &provider](std::wstring query) {
         const size_t first = query.find_first_not_of(L" \t\r\n");
@@ -2232,17 +2255,17 @@ void ShowRemotePlaylistMenu(PageHost& host, stream::Provider& provider, const st
         shelf == Shelf::Saved || (info && info->saved) || Contains(provider.Playlists(Shelf::Saved), id));
     if (provider.AccountVerified() && own) {
         const auto offers = provider.Offers();
-        if (offers.CanRenamePlaylist() || offers.CanDeletePlaylist()) actions.push_back({});
-        if (offers.CanRenamePlaylist())
+        if (offers.Has(stream::Capability::RenamePlaylists) || offers.Has(stream::Capability::DeletePlaylists)) actions.push_back({});
+        if (offers.Has(stream::Capability::RenamePlaylists))
             actions.push_back({ProviderPlaylistText(provider, L"Rename..."), [&host, &provider, id, name] {
                                    RenameRemotePlaylist(host, provider, id, name);
                                }});
-        if (offers.CanDeletePlaylist())
+        if (offers.Has(stream::Capability::DeletePlaylists))
             actions.push_back(
                 {ProviderPlaylistText(provider, L"Delete playlist"), [&host, &provider, id, name, sectionId] {
                      DeleteRemotePlaylist(host, provider, id, name, sectionId);
                  }});
-    } else if (provider.AccountVerified() && !own && provider.Offers().savePlaylists) {
+    } else if (provider.AccountVerified() && !own && provider.Can(stream::Capability::SavePlaylists)) {
         actions.push_back({});
         actions.push_back(
             {ProviderPlaylistText(provider, saved ? L"Uncollect playlist" : L"Collect playlist"),
@@ -2259,7 +2282,7 @@ void ShowRemotePlaylistMenu(PageHost& host, stream::Provider& provider, const st
 }
 
 void CreateRemotePlaylist(PageHost& host, stream::Provider& provider) {
-    if (!provider.Offers().CanCreatePlaylist()) return;
+    if (!provider.Can(stream::Capability::CreatePlaylists)) return;
     if (!provider.AccountVerified()) {
         if (!provider.SessionRestoring()) provider.SignIn(host.Owner());
         return;
@@ -2280,7 +2303,7 @@ void CreateRemotePlaylist(PageHost& host, stream::Provider& provider) {
 
 void RenameRemotePlaylist(PageHost& host, stream::Provider& provider, const stream::Id& id,
                           std::wstring name) {
-    if (!provider.Offers().CanRenamePlaylist()) return;
+    if (!provider.Can(stream::Capability::RenamePlaylists)) return;
     if (!provider.AccountVerified()) return;
     // The provider reports the new name as a library change; pages update from there.
     PromptText(host.Owner(), ProviderPlaylistText(provider, L"Rename playlist"),
@@ -2295,7 +2318,7 @@ void RenameRemotePlaylist(PageHost& host, stream::Provider& provider, const stre
 
 void DeleteRemotePlaylist(PageHost& host, stream::Provider& provider, const stream::Id& id, std::wstring name,
                           const stream::Id& sectionId) {
-    if (!provider.Offers().CanDeletePlaylist()) return;
+    if (!provider.Can(stream::Capability::DeletePlaylists)) return;
     if (!provider.AccountVerified()) return;
     const std::wstring deleteText = ProviderPlaylistText(provider, L"Delete playlist");
     const std::wstring message = deleteText + L" \"" + name + L"\"?\n" + Tr(L"This cannot be undone.");

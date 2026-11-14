@@ -1,10 +1,8 @@
 #include "pch.h"
 #include "cache/images.h"
 #include "cache/art_absence.h"
-#include "netease/http.h"
+#include "net/http.h"
 #include "netease/log.h"
-
-#include <bcrypt.h>
 
 #include <array>
 #include <cctype>
@@ -27,6 +25,10 @@ constexpr uint64_t kMaxCachedBytes = 20u * 1024u * 1024u;
 constexpr uint64_t kMaxDecodedPixels = 64u * 1024u * 1024u;
 constexpr UINT kMaxDecodedDimension = 32u * 1024u;
 
+thread_local bool t_cacheOnly = false;
+thread_local bool t_cacheMiss = false;
+thread_local int t_sizeHint = 0;
+
 std::wstring Wide(std::string_view text) {
     if (text.empty()) return {};
     return pfc::stringcvt::string_wide_from_utf8(text.data(), text.size()).get_ptr();
@@ -35,45 +37,6 @@ std::wstring Wide(std::string_view text) {
 std::string Utf8(std::wstring_view text) {
     if (text.empty()) return {};
     return pfc::stringcvt::string_utf8_from_wide(text.data(), text.size()).get_ptr();
-}
-
-std::string DigestBytes(const std::vector<unsigned char>& bytes) {
-    BCRYPT_ALG_HANDLE algorithm = nullptr;
-    if (BCryptOpenAlgorithmProvider(&algorithm, BCRYPT_SHA256_ALGORITHM, nullptr, 0) < 0) return {};
-    std::array<unsigned char, 32> digest{};
-    const NTSTATUS status =
-        BCryptHash(algorithm, nullptr, 0, const_cast<PUCHAR>(bytes.data()), static_cast<ULONG>(bytes.size()),
-                   digest.data(), static_cast<ULONG>(digest.size()));
-    BCryptCloseAlgorithmProvider(algorithm, 0);
-    if (status < 0) return {};
-    static constexpr char hex[] = "0123456789abcdef";
-    std::string out;
-    out.reserve(digest.size() * 2);
-    for (const unsigned char byte : digest) {
-        out.push_back(hex[byte >> 4]);
-        out.push_back(hex[byte & 0x0f]);
-    }
-    return out;
-}
-
-std::string MetadataDigest(const Metadata& metadata) {
-    constexpr size_t markerSize = sizeof("sha256=") - 1;
-    const size_t start = metadata.extra.find("sha256=");
-    if (start == std::string::npos) return {};
-    const size_t value = start + markerSize;
-    const size_t end = metadata.extra.find(';', value);
-    const std::string digest =
-        metadata.extra.substr(value, end == std::string::npos ? std::string::npos : end - value);
-    return digest.size() == 64 ? digest : std::string();
-}
-
-bool SameAsciiIgnoreCase(std::string_view left, std::string_view right) {
-    if (left.size() != right.size()) return false;
-    for (size_t i = 0; i < left.size(); ++i)
-        if (std::tolower(static_cast<unsigned char>(left[i])) !=
-            std::tolower(static_cast<unsigned char>(right[i])))
-            return false;
-    return true;
 }
 
 bool EndsWith(const std::vector<unsigned char>& bytes, std::initializer_list<unsigned char> suffix) {
@@ -117,53 +80,38 @@ bool IsCompleteImage(const std::vector<unsigned char>& bytes, const std::string&
     return type.rfind("image/", 0) == 0 && !bytes.empty();
 }
 
-std::string HeaderValue(const netease::HttpResponse& response, std::wstring_view name) {
+std::string HeaderValue(const net::HttpResponse& response, std::wstring_view name) {
     for (const auto& [key, value] : response.headers)
         if (_wcsicmp(key.c_str(), std::wstring(name).c_str()) == 0) return Utf8(value);
     return {};
 }
 
-bool NoStore(const netease::HttpResponse& response) {
+bool NoStore(const net::HttpResponse& response) {
     std::string value = HeaderValue(response, L"cache-control");
     std::transform(value.begin(), value.end(), value.begin(),
                    [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
     return value.find("no-store") != std::string::npos;
 }
 
-bool VerifyImageDecode(IWICImagingFactory* wic, const std::vector<unsigned char>& bytes) {
+// The response is a complete file of a format WIC can open, within sane dimensions. The
+// pixels are decoded once, by the consumer that draws them; decoding them here as well would
+// double the cost of every first download.
+bool VerifyImageHeader(IWICImagingFactory* wic, const std::vector<unsigned char>& bytes) {
     if (!wic || bytes.empty() || bytes.size() > UINT32_MAX) return false;
     winrt::com_ptr<IWICStream> stream;
     winrt::com_ptr<IWICBitmapDecoder> decoder;
     winrt::com_ptr<IWICBitmapFrameDecode> frame;
-    winrt::com_ptr<IWICFormatConverter> converter;
     if (FAILED(wic->CreateStream(stream.put())) ||
         FAILED(stream->InitializeFromMemory(const_cast<BYTE*>(bytes.data()),
                                             static_cast<DWORD>(bytes.size()))) ||
         FAILED(wic->CreateDecoderFromStream(stream.get(), nullptr, WICDecodeMetadataCacheOnDemand,
                                             decoder.put())) ||
-        FAILED(decoder->GetFrame(0, frame.put())) || FAILED(wic->CreateFormatConverter(converter.put())) ||
-        FAILED(converter->Initialize(frame.get(), GUID_WICPixelFormat32bppPBGRA, WICBitmapDitherTypeNone,
-                                     nullptr, 0, WICBitmapPaletteTypeMedianCut)))
+        FAILED(decoder->GetFrame(0, frame.put())))
         return false;
 
     UINT width = 0, height = 0;
-    if (FAILED(converter->GetSize(&width, &height)) || !width || !height || width > kMaxDecodedDimension ||
-        height > kMaxDecodedDimension || static_cast<uint64_t>(width) * height > kMaxDecodedPixels)
-        return false;
-    const uint64_t stride64 = static_cast<uint64_t>(width) * 4;
-    if (stride64 > UINT32_MAX) return false;
-    const UINT stride = static_cast<UINT>(stride64);
-    const size_t targetBytes = 1024u * 1024u;
-    const UINT rowsPerBlock =
-        std::max(1u, std::min(height, static_cast<UINT>(std::max<uint64_t>(1, targetBytes / stride))));
-    std::vector<BYTE> pixels(static_cast<size_t>(stride) * rowsPerBlock);
-    for (UINT y = 0; y < height; y += rowsPerBlock) {
-        const UINT rows = std::min(rowsPerBlock, height - y);
-        const WICRect area{0, static_cast<INT>(y), static_cast<INT>(width), static_cast<INT>(rows)};
-        if (FAILED(converter->CopyPixels(&area, stride, static_cast<UINT>(pixels.size()), pixels.data())))
-            return false;
-    }
-    return true;
+    return SUCCEEDED(frame->GetSize(&width, &height)) && width && height && width <= kMaxDecodedDimension &&
+           height <= kMaxDecodedDimension && static_cast<uint64_t>(width) * height <= kMaxDecodedPixels;
 }
 
 std::vector<unsigned char> ReadPayload(const std::filesystem::path& path, uint64_t size, size_t limit) {
@@ -174,20 +122,6 @@ std::vector<unsigned char> ReadPayload(const std::filesystem::path& path, uint64
     input.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
     if (!input || static_cast<size_t>(input.gcount()) != bytes.size()) return {};
     return bytes;
-}
-
-bool CopyPayload(const std::filesystem::path& source, const std::filesystem::path& destination) {
-    std::ifstream input(source, std::ios::binary);
-    std::ofstream output(destination, std::ios::binary | std::ios::trunc);
-    if (!input || !output) return false;
-    std::array<char, 64 * 1024> buffer{};
-    while (input) {
-        input.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
-        const std::streamsize count = input.gcount();
-        if (count > 0) output.write(buffer.data(), count);
-    }
-    output.close();
-    return input.eof() && static_cast<bool>(output);
 }
 
 bool WritePayload(const std::filesystem::path& path, const std::vector<unsigned char>& bytes) {
@@ -215,7 +149,6 @@ enum class RunFailureReason {
     empty_body,
     image_format,
     image_decode,
-    digest_failed,
     account_revision_changed,
     account_scope_changed,
     invalidated,
@@ -241,8 +174,6 @@ std::wstring_view RunFailureReasonName(RunFailureReason reason) {
         return L"image_format";
     case RunFailureReason::image_decode:
         return L"image_decode";
-    case RunFailureReason::digest_failed:
-        return L"digest_failed";
     case RunFailureReason::account_revision_changed:
         return L"account_revision_changed";
     case RunFailureReason::account_scope_changed:
@@ -294,7 +225,6 @@ struct Images::Impl {
         unsigned failures = 0;
         uint64_t lastScheduledInvalidation = 0;
         uint64_t lastSeen = 0;
-        bool sessionValidated = false;
     };
 
     struct InvalidationRecord {
@@ -302,19 +232,11 @@ struct Images::Impl {
         uint64_t version = 0;
     };
 
-    struct Demand {
-        std::string scope;
-        int64_t nextAt = 0;
-        uint64_t lastSeen = 0;
-        bool inFlight = false;
-    };
-
     struct Job {
         ImageRequest request;
         Key key;
         std::string artKey;
         std::string digest;
-        std::string oldDigest;
         uint64_t accountRevision = 0;
         uint64_t invalidation = 0;
         bool persistent = false;
@@ -326,7 +248,6 @@ struct Images::Impl {
         ImageRequest request;
         Key key;
         std::string artKey;
-        std::string oldDigest;
         uint64_t accountRevision = 0;
         bool persistent = false;
         std::optional<Snapshot> cached;
@@ -349,7 +270,6 @@ struct Images::Impl {
         bool changed = false;
         std::vector<unsigned char> bytes;
         std::string artKey;
-        std::string scope;
         uint64_t accountRevision = 0;
     };
 
@@ -382,7 +302,6 @@ struct Images::Impl {
             std::lock_guard lock(m_mutex);
             m_flights.clear();
             m_policies.clear();
-            m_demands.clear();
             m_invalidations.clear();
             m_listeners.clear();
         }
@@ -417,35 +336,20 @@ struct Images::Impl {
         return policy;
     }
 
-    Demand& DemandLocked(const std::string& artKey) {
-        auto& demand = m_demands[artKey];
-        demand.lastSeen = ++m_clock;
-        if (m_demands.size() > kPolicyEntries) {
-            auto oldest = m_demands.end();
-            for (auto it = m_demands.begin(); it != m_demands.end(); ++it) {
-                if (it->second.inFlight) continue;
-                if (oldest == m_demands.end() || it->second.lastSeen < oldest->second.lastSeen) oldest = it;
-            }
-            if (oldest != m_demands.end() && oldest->first != artKey) m_demands.erase(oldest);
-        }
-        return demand;
-    }
-
+    // Starts or joins the one transfer of this image. Returns null when the cached copy needs
+    // no network: it was validated within its freshness window and nothing invalidated it,
+    // or the last attempt failed and its backoff has not elapsed.
     std::shared_ptr<Flight> EnsureFlight(ImageRequest request, Key key, std::string artKey,
                                          uint64_t accountRevision, std::optional<Snapshot> cached,
-                                         std::string oldDigest, bool fromCache, bool persistent) {
+                                         bool fromCache, bool persistent) {
         const std::string digest = Store::Digest(key);
         std::shared_ptr<Flight> flight;
         {
             std::lock_guard lock(m_mutex);
             if (m_quit || !request.resolve) return {};
             auto found = m_flights.find(digest);
-            Demand& demand = DemandLocked(artKey);
-            demand.scope = key.scope;
             if (found != m_flights.end()) {
-                demand.inFlight = true;
-                found->second->pending =
-                    Pending{request, key, artKey, oldDigest, accountRevision, persistent, cached};
+                found->second->pending = Pending{request, key, artKey, accountRevision, persistent, cached};
                 if (InvalidationLocked(artKey) > found->second->scheduledInvalidation)
                     found->second->dirty = true;
                 return found->second;
@@ -453,32 +357,22 @@ struct Images::Impl {
 
             Policy& policy = PolicyLocked(digest);
             const uint64_t invalidation = InvalidationLocked(artKey);
-            if (fromCache && cached) {
+            const bool invalidated = invalidation > policy.lastScheduledInvalidation;
+            if (fromCache && cached && !invalidated) {
                 const int64_t validated = cached->Info().validatedAt;
-                const bool fresh = validated > 0 && Store::Now() - validated <
-                                                        std::max<int64_t>(0, request.limits.freshForSeconds);
-                if (fresh && policy.sessionValidated && invalidation <= policy.lastScheduledInvalidation) {
-                    demand.inFlight = false;
-                    demand.nextAt = validated + std::max<int64_t>(0, request.limits.freshForSeconds);
+                if (validated > 0 &&
+                    Store::Now() - validated < std::max<int64_t>(0, request.limits.freshForSeconds))
                     return {};
-                }
             }
-            if (policy.nextAttempt > Store::Now() && invalidation <= policy.lastScheduledInvalidation) {
-                demand.inFlight = false;
-                demand.nextAt = policy.nextAttempt;
-                return {};
-            }
+            if (policy.nextAttempt > Store::Now() && !invalidated) return {};
 
             policy.lastScheduledInvalidation = invalidation;
-            demand.inFlight = true;
-            demand.nextAt = Store::Now();
             flight = std::make_shared<Flight>();
             flight->scheduledInvalidation = invalidation;
-            flight->pending = Pending{request, key, artKey, oldDigest, accountRevision, persistent, cached};
+            flight->pending = Pending{request, key, artKey, accountRevision, persistent, cached};
             m_flights.emplace(digest, flight);
             m_queue.push_front({std::move(request), std::move(key), std::move(artKey), digest,
-                                std::move(oldDigest), accountRevision, invalidation, persistent,
-                                std::move(cached), flight});
+                                accountRevision, invalidation, persistent, std::move(cached), flight});
         }
         m_wake.notify_one();
         return flight;
@@ -520,24 +414,12 @@ struct Images::Impl {
             }
         }
 
+        // The store publishes complete, flushed generations atomically and checks the payload
+        // size on lookup, so the bytes are used as read.
         std::vector<unsigned char> cachedBytes;
-        std::string oldDigest;
         if (snapshot) {
             const size_t limit = std::min(request.limits.maxBodyBytes, static_cast<size_t>(kMaxCachedBytes));
             cachedBytes = ReadPayload(snapshot->Path(), snapshot->Size(), limit);
-            if (!cachedBytes.empty()) {
-                oldDigest = DigestBytes(cachedBytes);
-                const std::string expected = MetadataDigest(snapshot->Info());
-                if (!expected.empty() && !SameAsciiIgnoreCase(expected, oldDigest)) {
-                    cachedBytes.clear();
-                    oldDigest.clear();
-                    snapshot.reset();
-                    try {
-                        GetStore().Erase(key);
-                    } catch (...) {
-                    }
-                }
-            }
             if (cachedBytes.empty()) snapshot.reset();
         }
         const uint64_t currentRevision = AccountRevision(request.identity.provider);
@@ -547,11 +429,28 @@ struct Images::Impl {
             key.scope = "@ephemeral:" + request.identity.provider + ':' + std::to_string(accountRevision);
             snapshot.reset();
             cachedBytes.clear();
-            oldDigest.clear();
+        }
+        if (cachedBytes.empty() && persistent) {
+            for (const auto& alternate : request.alternates) {
+                try {
+                    const auto stored = GetStore().Lookup(MakeImageKey(alternate));
+                    if (!stored) continue;
+                    const size_t limit =
+                        std::min(request.limits.maxBodyBytes, static_cast<size_t>(kMaxCachedBytes));
+                    auto bytes = ReadPayload(stored->Path(), stored->Size(), limit);
+                    if (!bytes.empty() && AccountRevision(request.identity.provider) == accountRevision)
+                        return ImageResult{std::move(bytes), true, false};
+                } catch (...) {
+                }
+            }
         }
         const bool fromCache = !cachedBytes.empty();
-        auto flight = EnsureFlight(std::move(request), key, artKey, accountRevision, snapshot, oldDigest,
-                                   fromCache, persistent);
+        if (!fromCache && t_cacheOnly) {
+            t_cacheMiss = true;
+            return std::nullopt;
+        }
+        auto flight =
+            EnsureFlight(std::move(request), key, artKey, accountRevision, snapshot, fromCache, persistent);
 
         if (fromCache) return ImageResult{std::move(cachedBytes), true, static_cast<bool>(flight)};
         if (!flight) return std::nullopt;
@@ -568,7 +467,6 @@ struct Images::Impl {
     Outcome Run(Job job, IWICImagingFactory* wic) {
         Outcome outcome;
         outcome.artKey = job.artKey;
-        outcome.scope = job.key.scope;
         outcome.accountRevision = job.accountRevision;
         unsigned long responseStatus = 0;
         const auto fail = [&](RunFailureReason reason, unsigned long status) {
@@ -591,7 +489,7 @@ struct Images::Impl {
                 }
             }
 
-            netease::HttpOptions options;
+            net::HttpOptions options;
             options.noProxy = false;
             options.timeoutMs = 15000;
             options.maxBodyBytes =
@@ -602,7 +500,7 @@ struct Images::Impl {
             if (!previous.lastModified.empty())
                 options.headers.emplace_back(L"If-Modified-Since", Wide(previous.lastModified));
 
-            netease::HttpResponse response;
+            net::HttpResponse response;
             bool haveResponse = false;
             for (unsigned attempt = 0; attempt < kMaxSourceAttempts; ++attempt) {
                 std::optional<HttpSource> source;
@@ -616,7 +514,7 @@ struct Images::Impl {
                 if (!source || source->url.empty())
                     return fail(RunFailureReason::resolver_empty, responseStatus);
 
-                netease::HttpOptions current = options;
+                net::HttpOptions current = options;
                 current.headers.insert(current.headers.end(), source->headers.begin(), source->headers.end());
                 if (attempt > 0) {
                     current.headers.erase(
@@ -627,7 +525,7 @@ struct Images::Impl {
                                        }),
                         current.headers.end());
                 }
-                response = netease::SendHttp(source->url, current, m_abort);
+                response = net::SendHttp(source->url, current, m_abort);
                 haveResponse = true;
                 responseStatus = response.status;
                 if (!response.error.empty()) return fail(RunFailureReason::transport_error, responseStatus);
@@ -660,20 +558,11 @@ struct Images::Impl {
                 const std::string lastModified = HeaderValue(response, L"last-modified");
                 if (!etag.empty()) metadata.etag = etag;
                 if (!lastModified.empty()) metadata.lastModified = lastModified;
-                if (!job.oldDigest.empty()) metadata.extra = "image-v2;sha256=" + job.oldDigest;
                 metadata.validatedAt = Store::Now();
                 try {
-                    auto writer = GetStore().Begin(job.key);
-                    if (!writer || !CopyPayload(job.cached->Path(), writer->Path())) {
-                        note(RunFailureReason::cache_publish_unavailable, responseStatus);
-                        outcome.success = true;
-                        return outcome;
-                    }
-                    if (!writer->Commit(std::move(metadata))) {
-                        note(RunFailureReason::cache_publish_unavailable, responseStatus);
-                        outcome.success = true;
-                        return outcome;
-                    }
+                    // Unchanged: only the validators move. A newer generation published in
+                    // the meantime already carries its own.
+                    GetStore().Revalidate(job.key, *job.cached, metadata);
                 } catch (...) {
                     // Cache I/O is unavailable. The leased old bytes already reached the caller.
                     note(RunFailureReason::cache_publish_unavailable, responseStatus);
@@ -689,9 +578,10 @@ struct Images::Impl {
             const std::string contentType = Utf8(response.contentType);
             if (!IsCompleteImage(bytes, contentType))
                 return fail(RunFailureReason::image_format, responseStatus);
-            if (!VerifyImageDecode(wic, bytes)) return fail(RunFailureReason::image_decode, responseStatus);
-            const std::string bodyDigest = DigestBytes(bytes);
-            if (bodyDigest.empty()) return fail(RunFailureReason::digest_failed, responseStatus);
+            if (!VerifyImageHeader(wic, bytes)) return fail(RunFailureReason::image_decode, responseStatus);
+            // Listeners reload only when the picture really differs from the one they show.
+            const bool differs =
+                job.cached && ReadPayload(job.cached->Path(), job.cached->Size(), kMaxCachedBytes) != bytes;
 
             if (NoStore(response)) {
                 if (job.persistent && job.cached) {
@@ -721,7 +611,6 @@ struct Images::Impl {
             metadata.contentType = contentType;
             metadata.etag = HeaderValue(response, L"etag");
             metadata.lastModified = HeaderValue(response, L"last-modified");
-            metadata.extra = "image-v2;sha256=" + bodyDigest;
             metadata.validatedAt = Store::Now();
 
             std::unique_ptr<Writer> writer;
@@ -784,7 +673,7 @@ struct Images::Impl {
             }
 
             outcome.success = true;
-            outcome.changed = job.cached && !job.oldDigest.empty() && job.oldDigest != bodyDigest;
+            outcome.changed = differs;
             outcome.bytes = std::move(bytes);
             return outcome;
         } catch (const exception_aborted&) {
@@ -828,7 +717,6 @@ struct Images::Impl {
             if (outcome.success) {
                 policy.failures = 0;
                 policy.nextAttempt = 0;
-                policy.sessionValidated = true;
             } else if (InvalidationLocked(outcome.artKey) > policy.lastScheduledInvalidation) {
                 policy.failures = 0;
                 policy.nextAttempt = Store::Now();
@@ -836,13 +724,6 @@ struct Images::Impl {
                 ++policy.failures;
                 policy.nextAttempt = Store::Now() + BackoffSeconds(limits, policy.failures);
             }
-            Demand& demand = DemandLocked(outcome.artKey);
-            if (demand.scope == outcome.scope) {
-                demand.inFlight = false;
-                demand.nextAt = outcome.success ? Store::Now() + std::max<int64_t>(0, limits.freshForSeconds)
-                                                : policy.nextAttempt;
-            }
-
             if (!m_quit && scopeValid && flight->dirty && flight->pending) {
                 Pending& latest = *flight->pending;
                 const uint64_t invalidation = InvalidationLocked(latest.artKey);
@@ -855,16 +736,11 @@ struct Images::Impl {
                     retry->pending = latest;
                     m_flights.emplace(digest, retry);
                     m_queue.push_front({std::move(latest.request), std::move(latest.key),
-                                        std::move(latest.artKey), digest, std::move(latest.oldDigest),
-                                        latest.accountRevision, invalidation, latest.persistent,
-                                        std::move(latest.cached), retry});
+                                        std::move(latest.artKey), digest, latest.accountRevision,
+                                        invalidation, latest.persistent, std::move(latest.cached), retry});
                     policy.lastScheduledInvalidation = invalidation;
                     policy.failures = 0;
                     policy.nextAttempt = 0;
-                    Demand& retryDemand = DemandLocked(retry->pending->artKey);
-                    retryDemand.scope = retry->pending->key.scope;
-                    retryDemand.inFlight = true;
-                    retryDemand.nextAt = Store::Now();
                     queuedRetry = true;
                 }
             }
@@ -922,8 +798,6 @@ struct Images::Impl {
         std::lock_guard lock(m_mutex);
         if (m_quit) return;
         m_invalidations.push_back({std::string(prefix), ++m_invalidation});
-        for (auto& [artKey, demand] : m_demands)
-            if (artKey.compare(0, prefix.size(), prefix) == 0) demand.nextAt = Store::Now();
         for (auto& [digest, flight] : m_flights) {
             (void)digest;
             if (flight->pending && flight->pending->artKey.compare(0, prefix.size(), prefix) == 0)
@@ -949,19 +823,11 @@ struct Images::Impl {
         m_listeners.erase(token);
     }
 
-    bool RefreshDue(std::string_view artKey) const {
-        std::lock_guard lock(m_mutex);
-        if (m_quit) return false;
-        const auto found = m_demands.find(std::string(artKey));
-        return found != m_demands.end() && !found->second.inFlight && found->second.nextAt <= Store::Now();
-    }
-
     mutable std::mutex m_mutex;
     std::condition_variable m_wake;
     std::deque<Job> m_queue;
     std::unordered_map<std::string, std::shared_ptr<Flight>> m_flights;
     std::unordered_map<std::string, Policy> m_policies;
-    std::unordered_map<std::string, Demand> m_demands;
     std::vector<InvalidationRecord> m_invalidations;
     std::map<int, std::function<void(ImageEvent)>> m_listeners;
     uint64_t m_invalidation = 0;
@@ -971,11 +837,6 @@ struct Images::Impl {
     abort_callback_impl m_abort;
     std::vector<std::thread> m_threads;
 };
-
-bool ImageRefreshDue(std::string_view artKey) {
-    if (auto* images = Images::Existing()) return images->RefreshDue(artKey);
-    return false;
-}
 
 Images& Images::Get() {
     std::lock_guard lock(g_instanceMutex);
@@ -1008,12 +869,33 @@ Images::Images() : m_impl(std::make_unique<Impl>()) {}
 
 Images::~Images() = default;
 
-std::optional<ImageResult> Images::Open(ImageRequest request, abort_callback& abort) {
-    return m_impl->Open(std::move(request), abort);
+CacheOnlyScope::CacheOnlyScope() : m_previous(t_cacheOnly) {
+    t_cacheOnly = true;
+    t_cacheMiss = false;
 }
 
-bool Images::RefreshDue(std::string_view artKey) const {
-    return !art_absence::Fresh(artKey) && m_impl->RefreshDue(artKey);
+CacheOnlyScope::~CacheOnlyScope() {
+    t_cacheOnly = m_previous;
+}
+
+bool TakeCacheMiss() {
+    return std::exchange(t_cacheMiss, false);
+}
+
+SizeHintScope::SizeHintScope(int px) : m_previous(t_sizeHint) {
+    t_sizeHint = px;
+}
+
+SizeHintScope::~SizeHintScope() {
+    t_sizeHint = m_previous;
+}
+
+int SizeHint() {
+    return t_sizeHint;
+}
+
+std::optional<ImageResult> Images::Open(ImageRequest request, abort_callback& abort) {
+    return m_impl->Open(std::move(request), abort);
 }
 
 int Images::Subscribe(std::function<void(ImageEvent)> callback) {

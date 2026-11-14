@@ -4,7 +4,7 @@
 #include "applemusic/lyrics_source.h"
 #include "lyrics/native_sources.h"
 #include "lyrics/source_order.h"
-#include "netease/http.h"
+#include "net/http.h"
 #include "stream/provider.h"
 #include "app/settings.h"
 
@@ -140,7 +140,7 @@ class ScriptSearcher : public Searcher {
             WriteData(DataFile(key, name), value);
         };
         env.request = [&abort](const ScriptRequest& request) {
-            netease::HttpOptions options;
+            net::HttpOptions options;
             options.method = Wide(request.method);
             std::transform(options.method.begin(), options.method.end(), options.method.begin(), towupper);
             options.timeoutMs = request.timeoutMs;
@@ -148,7 +148,7 @@ class ScriptSearcher : public Searcher {
             options.maxBodyBytes = 8 * 1024 * 1024;
             for (const auto& [name, value] : request.headers)
                 options.headers.emplace_back(Wide(name), Wide(value));
-            const auto reply = netease::SendHttp(Wide(request.url), options, abort);
+            const auto reply = net::SendHttp(Wide(request.url), options, abort);
             ScriptResponse result;
             result.status = static_cast<int>(reply.status);
             result.body = reply.body;

@@ -46,7 +46,7 @@ void SetFavorite(metadb_handle_list_cref tracks, bool favorite) {
         if (!track.is_valid()) continue;
         if (auto* provider = stream::ProviderOf(track)) {
             const stream::Id id = provider->TrackId(track);
-            if (provider->Offers().CanSetFavorite(favorite) && provider->IsFavorite(id) != favorite)
+            if (provider->CanSetFavorite(favorite) && provider->IsFavorite(id) != favorite)
                 provider->SetFavorite(id, favorite);
         } else {
             local.add_item(track);
