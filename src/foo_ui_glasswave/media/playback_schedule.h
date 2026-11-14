@@ -121,6 +121,12 @@ class PlaybackSchedule final {
     // current row; ordinary future remains available through FutureOrder().
     std::vector<PlaybackOccurrenceId> Upcoming() const;
     std::vector<PlaybackOccurrenceId> FutureOrder() const;
+    // What Up Next lists, as Apple Music does: the rest of the list in the order Next steps
+    // through it, whatever the repeat mode (repeat-one replays the song, but Next still goes
+    // on down the list). The next round of repeat-all is not listed; RepeatCycleSize says how
+    // many songs it replays.
+    std::vector<PlaybackOccurrenceId> DisplayUpcoming() const;
+    std::size_t RepeatCycleSize() const;
     std::vector<PlaybackOccurrenceId> ProjectionOrder() const;
     std::vector<PlaybackOccurrenceId> AllOccurrenceIds() const;
     std::vector<PlaybackOccurrenceId> CanonicalOrder() const;

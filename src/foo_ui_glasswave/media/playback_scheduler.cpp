@@ -142,22 +142,40 @@ bool TakeMatchingQueueItem(OwnedQueueBuckets& buckets, const t_playback_queue_it
     return true;
 }
 
+// Identifies the queue's content so a checkpoint is applied only to the queue it was taken
+// of. It was the hex of every path, which wrote megabytes into the configuration for a long
+// queue on every change; a count and a 64-bit FNV-1a digest of the same length-prefixed
+// identities keep the comparison and stay a few bytes. (The digest is an identity, not an
+// integrity check: the checkpoint's indices are validated separately before use.)
 std::string QueueFingerprint(const metadb_handle_list& items) {
-    std::string raw;
-    for (const auto& handle : items) {
-        if (handle.is_empty()) {
-            raw.append("!empty;");
-            continue;
+    uint64_t digest = 0xcbf29ce484222325ull;
+    const auto mix = [&digest](std::string_view bytes) {
+        for (const unsigned char byte : bytes) {
+            digest ^= byte;
+            digest *= 0x100000001b3ull;
         }
-        const char* path = handle->get_path();
-        const std::string_view text = path ? std::string_view(path) : std::string_view();
-        raw.append(std::to_string(text.size()));
-        raw.push_back(':');
-        raw.append(text);
-        AppendLe64(raw, handle->get_subsong_index());
-        raw.push_back(';');
+    };
+    std::string part;
+    for (const auto& handle : items) {
+        part.clear();
+        if (handle.is_empty()) {
+            part = "!empty;";
+        } else {
+            const char* path = handle->get_path();
+            const std::string_view text = path ? std::string_view(path) : std::string_view();
+            part.append(std::to_string(text.size()));
+            part.push_back(':');
+            part.append(text);
+            AppendLe64(part, handle->get_subsong_index());
+            part.push_back(';');
+        }
+        mix(part);
     }
-    return HexEncode(raw);
+    std::string count;
+    AppendLe64(count, items.get_count());
+    std::string bytes;
+    AppendLe64(bytes, digest);
+    return HexEncode(count) + HexEncode(bytes);
 }
 
 std::optional<std::string> JsonString(std::string_view json, std::string_view key) {
@@ -252,7 +270,7 @@ struct PlaybackScheduler::Impl {
     bool InsertNewOccurrences(const metadb_handle_list& items, bool playNext,
                               std::optional<std::uint64_t> expectedGeneration = std::nullopt);
     std::vector<std::size_t> ScheduledUpcomingIndices();
-    std::vector<ScheduledUpcomingEntry> ScheduledUpcomingSnapshot();
+    std::vector<ScheduledUpcomingEntry> ScheduledUpcomingSnapshot(bool display = false);
     bool ReorderUpcomingSnapshot(std::uint64_t expectedRevision,
                                  const std::vector<ScheduledUpcomingEntry>& ordered);
     std::optional<std::size_t> ScheduledNextIndex();
@@ -650,12 +668,14 @@ std::vector<std::size_t> PlaybackScheduler::Impl::ScheduledUpcomingIndices() {
     return out;
 }
 
-std::vector<ScheduledUpcomingEntry> PlaybackScheduler::Impl::ScheduledUpcomingSnapshot() {
+std::vector<ScheduledUpcomingEntry> PlaybackScheduler::Impl::ScheduledUpcomingSnapshot(bool display) {
     PFC_ASSERT(core_api::is_main_thread());
     std::vector<ScheduledUpcomingEntry> out;
     pfc::list_t<t_playback_queue_item> queue;
     playlist_manager::get()->queue_get_contents(queue);
-    out.reserve(queue.get_count() + (modelInitialized ? schedule.Upcoming().size() : 0));
+    const auto upcoming = modelInitialized ? (display ? schedule.DisplayUpcoming() : schedule.Upcoming())
+                                           : std::vector<PlaybackOccurrenceId>{};
+    out.reserve(queue.get_count() + upcoming.size());
     std::unordered_set<std::size_t> coveredPhysical;
     const t_size queuePlaylist = QueuePlaylist(false);
     auto owned = BucketQueueItems(ownedCoreQueue);
@@ -668,7 +688,7 @@ std::vector<ScheduledUpcomingEntry> PlaybackScheduler::Impl::ScheduledUpcomingSn
             coveredPhysical.insert(item.m_item);
     }
     if (!modelInitialized) return out;
-    for (const auto occurrence : schedule.Upcoming()) {
+    for (const auto occurrence : upcoming) {
         const auto index = physicalIndex.find(occurrence);
         const auto handle = handles.find(occurrence);
         if (index != physicalIndex.end() && !coveredPhysical.contains(index->second))
@@ -799,8 +819,22 @@ bool PlaybackScheduler::Impl::ReorderUpcomingSnapshot(std::uint64_t expectedRevi
         g_probeCurrentIndex = probeIndexBefore;
     };
 
-    if (!applyPhysical(physicalAfter) ||
-        !schedule.AdoptPhysicalOrder(std::span<const PlaybackOccurrenceId>(physicalAfter), currentAfter)) {
+    // Under shuffle the future is in shuffle order and holds songs physically before the
+    // current one. Writing the dragged order into the playlist and adopting it as physical
+    // order would turn those songs into history: the list lost most of its rows after a drop
+    // (owner, 2026-11-13). The playlist stays as it is; only the future takes the new order.
+    if (schedule.shuffle_enabled()) {
+        currentAfter = SIZE_MAX;
+        if (currentOccurrence) {
+            const auto found = physicalIndex.find(*currentOccurrence);
+            if (found != physicalIndex.end()) currentAfter = found->second;
+        }
+        if (!schedule.ReorderFuture(std::span<const PlaybackOccurrenceId>(desiredFuture))) {
+            rollback();
+            return false;
+        }
+    } else if (!applyPhysical(physicalAfter) ||
+               !schedule.AdoptPhysicalOrder(std::span<const PlaybackOccurrenceId>(physicalAfter), currentAfter)) {
         rollback();
         return false;
     }
@@ -1692,7 +1726,7 @@ void PlaybackScheduler::Impl::SaveCheckpoint(bool force) {
     };
 
     std::ostringstream json;
-    json << "{\"version\":2,\"shuffle\":" << (state.shuffle ? "true" : "false")
+    json << "{\"version\":3,\"shuffle\":" << (state.shuffle ? "true" : "false")
          << ",\"repeat\":" << static_cast<int>(state.repeat) << ",\"fingerprint\":\"" << fingerprint
          << "\",\"current\":" << (currentIndex ? static_cast<std::int64_t>(*currentIndex) : -1);
     appendArray(json, "canonical", canonical);
@@ -1727,7 +1761,7 @@ bool PlaybackScheduler::Impl::LoadCheckpoint(const metadb_handle_list& items) {
     const auto priority = JsonArray(json, "priority");
     const auto prioritySizes = JsonArray(json, "prioritySizes");
     const auto pending = JsonArray(json, "pending");
-    if (!version || *version != 2 || !shuffle || !repeat || !IsValidRepeat(*repeat) || !fingerprint ||
+    if (!version || *version != 3 || !shuffle || !repeat || !IsValidRepeat(*repeat) || !fingerprint ||
         !currentIndex || !canonical || !projection || !history || !future || !priority || !prioritySizes ||
         !pending || *fingerprint != QueueFingerprint(items) || canonical->size() != items.get_count() ||
         projection->size() != items.get_count()) {
@@ -1954,7 +1988,7 @@ bool PlaybackSchedulerProbeAccess::CheckpointUsesCurrentSchema() {
     PFC_ASSERT(core_api::is_main_thread());
     const std::string json(cfg_checkpoint.get().c_str());
     const auto version = JsonInt(json, "version");
-    return version && *version == 2 && JsonArray(json, "canonical") && JsonArray(json, "projection") &&
+    return version && *version == 3 && JsonArray(json, "canonical") && JsonArray(json, "projection") &&
            JsonArray(json, "history") && JsonArray(json, "future") && JsonArray(json, "priority") &&
            JsonArray(json, "prioritySizes") && JsonArray(json, "pending");
 }
@@ -2072,6 +2106,15 @@ std::vector<std::size_t> PlaybackScheduler::ScheduledUpcomingIndices() {
 
 std::vector<ScheduledUpcomingEntry> PlaybackScheduler::ScheduledUpcomingSnapshot() {
     return m_impl->ScheduledUpcomingSnapshot();
+}
+
+std::vector<ScheduledUpcomingEntry> PlaybackScheduler::DisplayUpcomingSnapshot() {
+    return m_impl->ScheduledUpcomingSnapshot(true);
+}
+
+std::size_t PlaybackScheduler::RepeatCycleSize() {
+    PFC_ASSERT(core_api::is_main_thread());
+    return m_impl->modelInitialized ? m_impl->schedule.RepeatCycleSize() : 0;
 }
 
 bool PlaybackScheduler::ReorderUpcomingSnapshot(std::uint64_t expectedRevision,

@@ -78,6 +78,10 @@ class PlaybackScheduler final {
     // ahead of these rows; use ScheduledUpcomingSnapshot() for the combined actual order.
     std::vector<std::size_t> ScheduledUpcomingIndices();
     std::vector<ScheduledUpcomingEntry> ScheduledUpcomingSnapshot();
+    // What Up Next shows (PlaybackSchedule::DisplayUpcoming after the explicit queue), and how
+    // many songs repeat-all replays after it (0: no repeat-all footer).
+    std::vector<ScheduledUpcomingEntry> DisplayUpcomingSnapshot();
+    std::size_t RepeatCycleSize();
     bool ReorderUpcomingSnapshot(std::uint64_t expectedRevision,
                                  const std::vector<ScheduledUpcomingEntry>& ordered);
     // Glasswave's own next row after the explicit SDK queue. Prefetch already consults that

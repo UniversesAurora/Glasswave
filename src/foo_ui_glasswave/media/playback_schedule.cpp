@@ -483,6 +483,16 @@ std::vector<PlaybackOccurrenceId> PlaybackSchedule::Upcoming() const {
     return out;
 }
 
+std::vector<PlaybackOccurrenceId> PlaybackSchedule::DisplayUpcoming() const {
+    auto out = PriorityOrder();
+    out.insert(out.end(), m_ordinaryFuture.begin(), m_ordinaryFuture.end());
+    return out;
+}
+
+std::size_t PlaybackSchedule::RepeatCycleSize() const {
+    return m_repeat == PlaybackRepeatMode::All ? m_canonicalOrder.size() : 0;
+}
+
 std::vector<PlaybackOccurrenceId> PlaybackSchedule::FutureOrder() const {
     auto out = PriorityOrder();
     out.insert(out.end(), m_ordinaryFuture.begin(), m_ordinaryFuture.end());
