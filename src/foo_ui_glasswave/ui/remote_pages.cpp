@@ -35,6 +35,13 @@ std::wstring Count(int n, const wchar_t* unit) {
     return n > 0 ? std::to_wstring(n) + L" " + Tr(unit) : std::wstring();
 }
 
+// The service gave a page's subject another picture than the one known before. A first
+// address is no change: invalidating then threw away the load the page had just started, so
+// the cover came only after a retry (owner, 2026-11-14).
+bool CoverChanged(const stream::Provider& provider, const std::wstring& before, const std::wstring& now) {
+    return !before.empty() && !now.empty() && !provider.SameCover(before, now);
+}
+
 // A list of values in one fact: "a, b" or, in Chinese, "a、b".
 std::wstring ListText(const std::vector<std::wstring>& values) {
     std::wstring out;
@@ -1064,7 +1071,7 @@ class PlaylistPage final : public TrackPagedPage {
     void ApplyTrackState() override {
         if (const auto& info = m_state.playlist; info && !info->id.empty()) {
             const std::wstring previousCover = m_info ? m_info->coverUrl : std::wstring();
-            if (!m_provider.SameCover(previousCover, info->coverUrl))
+            if (CoverChanged(m_provider, previousCover, info->coverUrl))
                 ArtCache::Get().Invalidate(m_provider.ArtKey(stream::ArtKind::Playlist, info->id));
             const bool saved = m_info && (m_info->saved || m_info->own);
             m_info = *info;
@@ -1204,7 +1211,7 @@ class AlbumPage final : public TrackPagedPage {
     void ApplyTrackState() override {
         if (const auto& info = m_state.album; info && !info->id.empty()) {
             const std::wstring previousCover = m_info ? m_info->coverUrl : std::wstring();
-            if (!m_provider.SameCover(previousCover, info->coverUrl))
+            if (CoverChanged(m_provider, previousCover, info->coverUrl))
                 ArtCache::Get().Invalidate(m_provider.ArtKey(stream::ArtKind::Album, info->id));
             m_info = *info;
             if (!m_info->name.empty()) m_host.SetPageName(m_info->name);
@@ -1844,7 +1851,8 @@ class ArtistPage final : public AlbumBrowsePage {
                 if (artist.id.empty()) return;
                 if (artist.name.empty()) artist.name = m_view.name;
                 if (m_artist && artist.bio.empty()) artist.bio = m_artist->bio;
-                ArtCache::Get().Invalidate(m_provider.ArtKey(stream::ArtKind::Artist, artist.id));
+                if (m_artist && CoverChanged(m_provider, m_artist->avatarUrl, artist.avatarUrl))
+                    ArtCache::Get().Invalidate(m_provider.ArtKey(stream::ArtKind::Artist, artist.id));
                 m_artist = std::move(artist);
                 if (!m_artist->name.empty()) m_host.SetPageName(m_artist->name);
                 m_provider.FetchArtistBio(m_view.remoteId,
