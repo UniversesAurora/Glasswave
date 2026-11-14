@@ -189,9 +189,11 @@ ArtCache::State ArtCache::Find(const std::wstring& key, const metadb_handle_ptr&
             entry.state = State::Ready;
             entry.bitmap = bestBitmap;
             entry.content = bestContent;
-            if (bestStale) Reload(sourceKey, source, sizePx, entry);
             *out = entry.bitmap;
-            return State::Ready;
+            if (!bestStale) return State::Ready;
+            // A stand-in: still Pending, so callers keep waiting for the sharp picture.
+            Reload(sourceKey, source, sizePx, entry);
+            return State::Pending;
         }
         if (!source.provider.empty() && cache::art_absence::Fresh(Utf8(sourceKey))) {
             entry.state = State::Missing;
@@ -207,13 +209,8 @@ ArtCache::State ArtCache::Find(const std::wstring& key, const metadb_handle_ptr&
             entry.reloading = true;
         }
         Queue(sourceKey, source, sizePx, entry);
-        const bool placeholder = entry.placeholder;
-        const auto bitmap = entry.bitmap;
+        *out = entry.bitmap; // the blank placeholder after an account change, if any
         Evict(); // may not drop this source: it was used last and its entry is loading
-        if (placeholder) {
-            *out = bitmap;
-            return State::Ready;
-        }
         return State::Pending;
     }
 
@@ -226,8 +223,10 @@ ArtCache::State ArtCache::Find(const std::wstring& key, const metadb_handle_ptr&
         Reload(sourceKey, source, sizePx, entry);
     }
     *out = entry.bitmap;
+    // A bitmap shown while this size (re)loads is a stand-in: Pending until the load ends.
+    if (entry.reloading || entry.state == State::Pending) return State::Pending;
     if (entry.bitmap) return State::Ready;
-    return entry.state == State::Missing && !entry.reloading ? State::Missing : State::Pending;
+    return entry.state == State::Missing ? State::Missing : State::Pending;
 }
 
 void ArtCache::Evict() {

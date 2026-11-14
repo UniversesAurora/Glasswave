@@ -667,7 +667,8 @@ void NavPane::Paint() {
                 const std::wstring key = it.provider->ArtKey(stream::ArtKind::Playlist, it.remoteId);
                 winrt::com_ptr<IWICBitmapSource> cover;
                 const int coverPx = static_cast<int>(std::lround(16 * m_scale));
-                if (ArtCache::Get().Find(key, track, coverPx, &cover) == ArtCache::State::Ready && cover) {
+                ArtCache::Get().Find(key, track, coverPx, &cover); // a stand-in shows too
+                if (cover) {
                     winrt::com_ptr<ID2D1Bitmap> bitmap;
                     if (SUCCEEDED(dc->CreateBitmapFromWicBitmap(cover.get(), nullptr, bitmap.put()))) {
                         const float side = 16.0f;

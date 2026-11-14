@@ -31,8 +31,12 @@ class ArtCache {
     ArtCache& operator=(const ArtCache&) = delete;
 
     enum class State { Pending, Ready, Missing };
-    // Thumbnail of `track`'s front cover fitting `sizePx`. While it loads (Pending) or when
-    // there is none (Missing), *out is null. Main thread only.
+    // Thumbnail of `track`'s front cover fitting `sizePx`. Main thread only.
+    //   Ready:   *out is the picture for this size, final until the picture changes.
+    //   Pending: it loads; *out is null or a stand-in to show meanwhile (a smaller decode
+    //            scaled up, the old picture while it reloads, a blank after an account
+    //            change). Listeners are notified when the load ends: ask again then.
+    //   Missing: there is none; *out is null.
     // `key` names the picture; rows of one album pass the album's key so they share one load.
     // Empty derives it from the track (see SourceKey).
     // Account changes replace old caller-held copies with a transparent in-memory placeholder.
