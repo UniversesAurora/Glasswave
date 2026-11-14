@@ -1,6 +1,26 @@
 # Status
 
-Updated: 2026-11-13
+Updated: 2026-11-14
+
+## Player and lyrics follow-ups (2026-11-14)
+
+Committed after the owner's requests of 2026-11-13/14; built warning-free and deployed, the
+items below not yet checked by the owner:
+
+- Lyrics offsets are kept per lyric (a different lyric of the same song has its own), with
+  +-1 s steps beside +-100 ms. The two per-song offset files of the old format were deleted
+  from the dev profile.
+- Album wall: covers decoded at the tile's size, the sharp one replacing the interim one;
+  covers cross-fade in (600 ms over the placeholder, 400 ms over the blurred stand-in).
+- Apple list cursors no longer carry the process generation ("The list cursor does not
+  belong to this query" after a restart); a refused saved cursor reads the list again.
+- The full-screen sung line runs on the frame clock (WM_TIMER starved to once a second).
+- Full screen: the back orb slides down from above with the lyrics or the queue and back up.
+- Every seek bar (library window, mini and full player) follows the position on the frame
+  clock, a device pixel at a time, instead of the once-a-second callback.
+- The pointer stayed hidden over the mini window after leaving the full screen with its
+  controls away (Escape or a double click); the mini window now never hides it.
+- Open: whether per-song "Add to Library" is wanted for Apple Music (album-level today).
 
 ## Backend review: caches, lists, requests, provider model (2026-11-13)
 
