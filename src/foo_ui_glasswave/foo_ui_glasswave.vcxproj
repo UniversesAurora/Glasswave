@@ -297,6 +297,10 @@
     <ClCompile Include="ui\player_window_seek.cpp" />
     <ClCompile Include="ui\player_window_volume.cpp" />
     <ClCompile Include="ui\player_window_widgets.cpp" />
+    <ClCompile Include="ui\list_view_geometry.cpp" />
+    <ClCompile Include="ui\list_view_paint.cpp" />
+    <ClCompile Include="ui\list_view_tiles.cpp" />
+    <ClCompile Include="ui\list_view_input.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="cd\disc.h" />
@@ -449,6 +453,7 @@
     <ClInclude Include="ui\win32.h" />
     <ClInclude Include="ui\main_window_parts.h" />
     <ClInclude Include="ui\player_window_parts.h" />
+    <ClInclude Include="ui\list_view_parts.h" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="$(SdkRoot)pfc\pfc.vcxproj">
