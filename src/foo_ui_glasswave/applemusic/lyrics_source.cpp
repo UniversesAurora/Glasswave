@@ -95,20 +95,10 @@ class AppleMusicSearcher final : public lyrics::Searcher {
     }
 };
 
-std::shared_ptr<lyrics::Searcher> g_universal;
-
 } // namespace
 
-void Start() {
-    if (!g_universal) {
-        g_universal = std::make_shared<AppleMusicSearcher>();
-        lyrics::RegisterSearcher(g_universal);
-    }
-}
-
-void Shutdown() {
-    if (g_universal) lyrics::UnregisterSearcher(g_universal.get());
-    g_universal.reset();
+std::shared_ptr<lyrics::Searcher> MakeSearcher() {
+    return std::make_shared<AppleMusicSearcher>();
 }
 
 } // namespace glasswave::applemusic::lyrics_source

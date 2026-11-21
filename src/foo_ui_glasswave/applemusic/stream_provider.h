@@ -42,6 +42,7 @@ class StreamProvider final : public stream::Provider {
     std::optional<bool> ReadArtistPreferenceState(const stream::Id& artist) const override;
     std::vector<settings::Field> SettingFields() override;
     std::string PlaybackSettings() const override;
+    std::vector<std::shared_ptr<lyrics::Searcher>> LyricsSearchers() override;
 
     bool SignedIn() const override;
     std::wstring AccountName() const override;

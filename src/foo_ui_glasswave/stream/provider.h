@@ -35,6 +35,10 @@
 // CatalogSearchSuggestionQuery::cancelled): once the token is set, `done` may be dropped
 // without running. What is not covered: a callback queued to the main thread when
 // foobar2000 quits never runs.
+namespace glasswave::lyrics {
+class Searcher;
+}
+
 namespace glasswave::stream {
 
 // One thing a source can do. A source declares exactly the abilities its service has and
@@ -308,6 +312,10 @@ class Provider {
     // worker thread (lyrics::Service). Empty when the provider has none.
     // Asked only of a source with Capability::NativeLyrics.
     virtual std::wstring Lyrics(const Id& /*track*/, abort_callback& /*abort*/) { return {}; }
+    // Lyric searchers of the source's own for any song, local files included (Apple Music
+    // searches its catalog), registered with the shared lyrics pipeline beside its scripts while
+    // the lyrics service runs. Default: none.
+    virtual std::vector<std::shared_ptr<lyrics::Searcher>> LyricsSearchers() { return {}; }
 
     // ---- playback ---------------------------------------------------------------------
     // What playing one of its songs depends on besides the song: the settings that choose what the

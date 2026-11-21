@@ -4,7 +4,6 @@
 #include "core/file.h"
 #include "core/text.h"
 #include "lyrics/script_host.h"
-#include "applemusic/lyrics_source.h"
 #include "lyrics/native_sources.h"
 #include "lyrics/source_order.h"
 #include "net/http.h"
@@ -190,8 +189,7 @@ void Start() {
     if (!g_started) {
         g_started = true;
         g_alive = std::make_shared<int>(0);
-        native_sources::Start();
-        applemusic::lyrics_source::Start();
+        native_sources::Start(); // the built-in searchers and the sources' own
         Reload();
     }
 }
@@ -250,7 +248,6 @@ void Shutdown() {
     g_stopping = true;
     g_alive.reset();
     if (g_loader.joinable()) g_loader.join();
-    applemusic::lyrics_source::Shutdown();
     native_sources::Shutdown();
     Service::Get().Shutdown();
 }

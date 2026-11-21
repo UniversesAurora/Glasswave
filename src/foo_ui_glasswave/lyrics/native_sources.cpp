@@ -178,8 +178,11 @@ void Start() {
     g_builtins.push_back(std::make_shared<EmbeddedSearcher>());
     g_builtins.push_back(std::make_shared<SidecarSearcher>());
     for (auto* provider : stream::Providers()) {
-        if (!provider || !provider->Can(stream::Capability::NativeLyrics)) continue;
-        g_builtins.push_back(std::make_shared<ProviderSearcher>(*provider));
+        if (!provider) continue;
+        if (provider->Can(stream::Capability::NativeLyrics))
+            g_builtins.push_back(std::make_shared<ProviderSearcher>(*provider));
+        for (auto& searcher : provider->LyricsSearchers())
+            if (searcher) g_builtins.push_back(std::move(searcher));
     }
     for (const auto& searcher : g_builtins)
         RegisterSearcher(searcher);

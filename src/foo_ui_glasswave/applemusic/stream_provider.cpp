@@ -4,6 +4,8 @@
 #include "applemusic/artist_preference.h"
 #include "stream/atmos_renderer.h"
 #include "applemusic/config.h"
+#include "applemusic/lyrics_source.h"
+#include "lyrics/lyrics_service.h"
 #include "applemusic/display_metadata.h"
 #include "applemusic/lyrics_protocol.h"
 #include "applemusic/login.h"
@@ -2545,6 +2547,10 @@ void StreamProvider::CompleteFavoriteBinding(uint64_t generation, uint64_t bindi
         }
     }
     if (complete) m_snapshots.Queue();
+}
+
+std::vector<std::shared_ptr<lyrics::Searcher>> StreamProvider::LyricsSearchers() {
+    return {lyrics_source::MakeSearcher()};
 }
 
 // The quality, whether Atmos is asked for and how it is rendered (input_applemusic.cpp).

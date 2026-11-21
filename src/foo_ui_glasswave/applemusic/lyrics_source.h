@@ -1,9 +1,14 @@
 #pragma once
 
+#include <memory>
+
+namespace glasswave::lyrics {
+class Searcher;
+}
+
 namespace glasswave::applemusic::lyrics_source {
 
-// Registers the native Apple Music searcher with the shared lyrics source registry.
-void Start();
-void Shutdown();
+// The Apple Music catalog searcher, for any song (StreamProvider::LyricsSearchers).
+std::shared_ptr<lyrics::Searcher> MakeSearcher();
 
 } // namespace glasswave::applemusic::lyrics_source
