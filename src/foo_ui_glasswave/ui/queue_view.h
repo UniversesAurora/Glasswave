@@ -21,6 +21,7 @@ class QueueView {
     struct Row {
         metadb_handle_ptr handle;
         std::wstring title, artist;
+        std::vector<std::wstring> badges; // drawn before the artist (stream::Track::badges)
         size_t playlistIndex = SIZE_MAX; // up-next rows: index in the queue playlist
     };
 

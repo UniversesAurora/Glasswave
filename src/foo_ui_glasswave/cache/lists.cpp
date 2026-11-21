@@ -42,7 +42,7 @@ using winrt::Windows::Data::Json::JsonValue;
 using winrt::Windows::Data::Json::JsonValueType;
 
 // 4: playlists, albums and artists carry their details (stream::Playlist / Album / Artist).
-constexpr std::string_view kPageSchema = "glasswave-list-page/4";
+constexpr std::string_view kPageSchema = "glasswave-list-page/6"; // 6: Track::badges
 constexpr std::string_view kManifestSchema = "glasswave-list-manifest/3";
 constexpr std::string_view kPageContentType = "application/vnd.glasswave.list-page+json";
 constexpr std::string_view kManifestContentType = "application/vnd.glasswave.list-manifest+json";
@@ -519,6 +519,7 @@ JsonObject TrackJson(const stream::Track& track) {
     object.SetNamedValue(L"artists", ArtistsJson(track.artists));
     SetNumber(object, L"durationMs", track.durationMs);
     SetNumber(object, L"popularity", track.popularity);
+    SetStrings(object, L"badges", track.badges);
     return object;
 }
 JsonObject PlaylistJson(const stream::Playlist& playlist) {
@@ -655,10 +656,12 @@ std::vector<stream::ArtistRef> ParseArtists(const JsonArray& array) {
     return artists;
 }
 stream::Track ParseTrack(const JsonObject& object) {
-    CheckKeys(object, L"id", L"title", L"album", L"albumId", L"artists", L"durationMs", L"popularity");
+    CheckKeys(object, L"id", L"title", L"note", L"album", L"albumId", L"artists", L"durationMs", L"popularity",
+              L"badges");
     stream::Track track;
     track.id = StringField(object, L"id");
     track.title = StringField(object, L"title");
+    track.note = StringField(object, L"note");
     track.album = StringField(object, L"album");
     track.albumId = StringField(object, L"albumId");
     track.artists = ParseArtists(ArrayField(object, L"artists"));
@@ -666,6 +669,7 @@ stream::Track ParseTrack(const JsonObject& object) {
         IntField(object, L"durationMs", std::numeric_limits<int>::min(), std::numeric_limits<int>::max());
     track.popularity =
         IntField(object, L"popularity", std::numeric_limits<int>::min(), std::numeric_limits<int>::max());
+    track.badges = StringsField(object, L"badges");
     if (track.id.empty()) Invalid("A cached track has no stable identity.");
     return track;
 }

@@ -115,6 +115,7 @@ stream::Track ToTrack(const Song& song) {
             track.artists.push_back({{}, name});
     track.durationMs = song.durationMs;
     track.popularity = song.popularity;
+    if (song.original) track.badges.push_back(L"Original");
     return track;
 }
 
@@ -122,10 +123,12 @@ Song FromTrack(const stream::Track& track) {
     Song song;
     song.id = Num(track.id);
     song.title = track.title;
+    song.note = track.note;
     song.album = track.album;
     song.albumId = Num(track.albumId);
     song.durationMs = track.durationMs;
     song.popularity = track.popularity;
+    song.original = std::find(track.badges.begin(), track.badges.end(), L"Original") != track.badges.end();
     for (const auto& ref : track.artists) {
         if (ref.name.empty()) continue;
         song.artists.push_back(ref.name);

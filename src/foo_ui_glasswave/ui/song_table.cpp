@@ -90,6 +90,8 @@ SongTableRow TrackRow(stream::Provider& provider, const stream::Track& track) {
             break;
         }
     row.title = track.title;
+    row.note = track.note;
+    row.badges = track.badges;
     row.artist = stream::JoinArtists(track.artists);
     row.album = track.album;
     row.lengthMs = track.durationMs;

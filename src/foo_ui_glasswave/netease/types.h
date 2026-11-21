@@ -24,6 +24,7 @@ struct Song {
     int durationMs = 0;
     int fee = 0;
     int popularity = 0;  // NetEase pop score when the endpoint reports one
+    bool original = false; // originCoverType 1: the original singer's (NetEase's 原唱 tag)
     std::wstring codec;
     int bitrate = 0;  // bits per second, as NetEase reports it (foobar2000 shows kbps)
     int sampleRate = 0;

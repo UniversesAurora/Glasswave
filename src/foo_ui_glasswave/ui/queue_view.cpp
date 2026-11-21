@@ -523,7 +523,17 @@ void QueueView::DrawRow(RowView& r) {
         const float right = r.history ? W - kContentX : W - kContentX - kHandleW - 16;
         pane::DrawTextLine(dc, r.data.title, 16, DWRITE_FONT_WEIGHT_NORMAL, {textX, cy - 21}, right - textX,
                            pane::White(dc, 0.95f).get());
-        pane::DrawTextLine(dc, r.data.artist, 14, DWRITE_FONT_WEIGHT_NORMAL, {textX, cy + 1}, right - textX,
+        // A song's tags before its artist, as in every list (ui/text.h DrawTag), centred on the
+        // artist line (14 DIP text drawn from cy + 1).
+        float artistX = textX;
+        if (settings::SongTagsShown())
+            for (const auto& badge : r.data.badges) {
+                const float w = DrawTag(dc, Tr(badge), artistX, cy + 1 + 9.5f, right, D2D1::ColorF(0xFF7A7F, 0.95f),
+                                        11.0f, m_scale);
+                if (w <= 0) break;
+                artistX += w + 5;
+            }
+        pane::DrawTextLine(dc, r.data.artist, 14, DWRITE_FONT_WEIGHT_NORMAL, {artistX, cy + 1}, right - artistX,
                            pane::White(dc, 0.6f).get());
         if (!r.history) {
             // Apple Music's reorder handle: three short lines.

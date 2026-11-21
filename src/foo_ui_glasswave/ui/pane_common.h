@@ -24,6 +24,10 @@ inline constexpr wchar_t kShuffle = 0xE8B1, kRepeatAll = 0xE8EE, kRepeatOne = 0x
 }
 void DrawIcon(ID2D1DeviceContext* dc, wchar_t glyph, float size, D2D1_POINT_2F c, ID2D1Brush* brush,
               DWRITE_FONT_WEIGHT weight = DWRITE_FONT_WEIGHT_NORMAL);
+// Repeat in vectors, centred on `c` in a `size` square: a loop of two arrows, and for repeating one
+// song a "1" alone in the loop's open middle (owner, 2026-11-20: the icon font's badge "1" sat
+// on the arrows, half hidden, and soft at small sizes).
+void DrawRepeat(ID2D1DeviceContext* dc, float size, D2D1_POINT_2F c, ID2D1Brush* brush, bool one);
 // Continuous-curvature capsule measured from the owner's iOS references.
 void DrawCapsule(ID2D1DeviceContext* dc, D2D1_RECT_F bounds, ID2D1Brush* brush);
 // iOS's material under the pane's light controls (the tab switch and its thumb, the shuffle /
