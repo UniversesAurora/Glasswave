@@ -1585,9 +1585,12 @@ class AlbumBrowsePage : public PagedPage {
     std::unique_ptr<media::ListSource> BuildSource() override {
         NormalizeAlbums();
         if (Expanded())
-            return Songs(m_provider, m_tracks, m_tracks.empty() ? L"Loading album songs..." : L"No songs.");
-        return Grid(m_albums);
+            return Songs(m_provider, m_query.kind, m_tracks, m_tracks.empty() ? L"Loading album songs..." : L"No songs.");
+        return IconsSource();
     }
+
+    // The icon view: the albums as tiles (an artist's page shows its overview instead).
+    virtual std::unique_ptr<media::ListSource> IconsSource() { return Grid(m_albums); }
 
     void ApplyPageState() override {
         if (const auto& header = m_state.artist; header && !header->id.empty()) {
@@ -1846,6 +1849,26 @@ class ArtistPage final : public AlbumBrowsePage {
   public:
     ArtistPage(PageHost& host, stream::Provider& provider, View view)
         : AlbumBrowsePage(host, provider, view, ArtistAlbumsQuery(view.remoteId)) {}
+
+    // The overview's groups open by their own links; the albums' pages are not paged in here.
+    void NearEnd() override {
+        if (Expanded()) AlbumBrowsePage::NearEnd();
+    }
+
+    std::wstring StatusText() const override {
+        if (Expanded()) return AlbumBrowsePage::StatusText();
+        bool any = false;
+        std::wstring error;
+        for (const auto& session : m_sectionSessions) {
+            if (!session) continue;
+            const auto& state = session->View();
+            if (VisiblyLoading(state)) return Tr(L"Loading...");
+            any |= std::visit([](const auto& rows) { return !rows.empty(); }, state.page.rows);
+            if (error.empty() && !state.error.empty() && !state.loading) error = state.error;
+        }
+        // A section that failed is left out; only an overview with nothing at all says why.
+        return any ? std::wstring() : Tr(error);
+    }
 
     std::unique_ptr<media::ListSource> Start(bool reuse) override {
         auto source = PagedPage::Start(reuse);

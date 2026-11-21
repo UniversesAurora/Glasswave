@@ -1517,6 +1517,27 @@ bool Client::GetFollowedArtistsPage(int offset, int limit, abort_callback& abort
     return true;
 }
 
+bool Client::GetSimilarArtists(int64_t artistId, abort_callback& abort, std::vector<Artist>& out,
+                               std::wstring& error) {
+    out.clear();
+    json::Object body;
+    int code = 0;
+    if (!Request(L"/simi/artist", {{L"id", std::to_wstring(artistId)}}, false, abort, body, code, error))
+        return false;
+    if (code == 301) {
+        error = L"Please sign in to NetEase Cloud Music.";
+        return false;
+    }
+    if (code != 200) {
+        error = MessageOf(body, code);
+        return false;
+    }
+    if (const auto artists = json::GetArray(body, L"artists"))
+        for (const auto& object : json::Objects(*artists))
+            if (Artist artist = ParseArtist(object); artist.id) out.push_back(std::move(artist));
+    return true;
+}
+
 bool Client::GetFollowedArtists(abort_callback& abort, std::vector<Artist>& out, std::wstring& error) {
     out.clear();
     int offset = 0;

@@ -4845,7 +4845,7 @@ std::vector<MenuAction> MainWindow::BuildArtistLinks(metadb_handle_list_cref ite
             if (std::find(seen.begin(), seen.end(), artist.id) != seen.end()) continue;
             seen.push_back(artist.id);
             links.push_back({artist.name, [this, provider, artist, sectionId] {
-                                 Navigate(ArtistView(*provider, artist.id, artist.name, sectionId), true);
+                                 Open(ArtistView(*provider, artist.id, artist.name, sectionId));
                              }});
         }
         return links;

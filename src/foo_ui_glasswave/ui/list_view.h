@@ -242,12 +242,24 @@ private:
     winrt::Windows::UI::Composition::CompositionRectangleGeometry m_clipGeometry{nullptr};
     winrt::Windows::UI::Composition::SpriteVisual m_header{nullptr}, m_status{nullptr}, m_rows{nullptr},
         m_scroll{nullptr};
-    winrt::Windows::UI::Composition::CompositionDrawingSurface m_rowsSurface{nullptr};
-    SIZE m_rowsSurfaceSize{};
+    struct RowsBuffer {
+        winrt::Windows::UI::Composition::CompositionDrawingSurface surface{nullptr};
+        winrt::Windows::UI::Composition::CompositionSurfaceBrush brush{nullptr};
+        SIZE size{};
+        int viewPx = 0;
+    };
+    RowsBuffer m_rowsBuffers[2]; // drawn in turn (PaintRows)
+    int m_rowsFront = 0;         // the one on screen
 
     media::ListSource* m_source = nullptr;
     Mode m_mode = Mode::Plain;
     bool m_groupArt = false;
+    // Tiles mode with groups (an artist's overview): a header line per group, then rows of
+    // tiles (Line::Item, `row` the row's first tile), heights in m_lineTop like Grouped.
+    bool m_tileGroups = false;
+    bool Lined() const { return m_mode == Mode::Grouped || m_tileGroups; } // m_lines / m_lineTop in use
+    size_t TileGroupEnd(size_t group) const; // one past the group's last row shown as a tile
+    bool ShowsMore(size_t group) const;
     std::vector<Line> m_lines;        // Grouped mode
     std::vector<float> m_lineTop;     // Grouped mode: DIP top of each line, plus the end
     std::vector<size_t> m_rowLine;    // Grouped mode: line of each row

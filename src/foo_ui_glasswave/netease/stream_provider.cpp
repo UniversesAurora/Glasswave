@@ -1857,6 +1857,20 @@ void StreamProvider::FetchListPage(const stream::ListQuery& query, const stream:
             page.more = more && received != 0;
             break;
         }
+        case stream::ListKind::ArtistSimilarArtists: {
+            const int64_t artistId = Num(query.id);
+            if (!artistId) {
+                error = L"The artist id is invalid.";
+                break;
+            }
+            std::vector<Artist> artists;
+            if (!client.GetSimilarArtists(artistId, *m_abort, artists, error)) break;
+            for (const auto& artist : artists)
+                Catalog::Get().Put(artist);
+            page.rows = ToArtists(artists);
+            page.total = artists.size();
+            break;
+        }
         case stream::ListKind::FollowedArtists: {
             int offset = 0, count = 0;
             if (!ToInt(cursor.offset, offset, error) || !ToInt(limit, count, error)) break;

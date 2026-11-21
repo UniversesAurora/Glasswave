@@ -90,8 +90,12 @@ std::wstring Provider::ArtistTracksLabel(const Id&) const {
 }
 
 std::vector<ArtistSection> Provider::ArtistSections(const Id& artist) const {
-    return {{L"top-songs", ArtistTracksLabel(artist), ArtistSectionRowKind::Tracks},
-            {L"albums", L"Albums", ArtistSectionRowKind::Albums}};
+    // The albums are the artist page's own list (an empty section: the same query, one session).
+    std::vector<ArtistSection> sections{{L"top-songs", ArtistTracksLabel(artist), ArtistSectionRowKind::Tracks},
+                                        {L"", L"Albums", ArtistSectionRowKind::Albums, true}};
+    if (Can(Capability::SimilarArtists))
+        sections.push_back({L"similar-artists", L"Similar artists", ArtistSectionRowKind::Artists});
+    return sections;
 }
 
 std::vector<ListKind> Provider::CatalogSearchKinds() const {

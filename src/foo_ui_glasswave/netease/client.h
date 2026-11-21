@@ -127,6 +127,8 @@ public:
     void GetArtistExtras(int64_t artistId, abort_callback& abort, Artist& out);
     bool GetArtistDescription(int64_t artistId, abort_callback& abort, std::wstring& brief, std::wstring& full,
                               std::wstring& error);
+    // NetEase's similar artists (signed in only, as in its client).
+    bool GetSimilarArtists(int64_t artistId, abort_callback& abort, std::vector<Artist>& out, std::wstring& error);
     bool GetArtistAlbumsPage(int64_t artistId, int offset, int limit, abort_callback& abort,
                              std::vector<Album>& out, bool* followed, bool* more, std::wstring& error,
                              size_t* received = nullptr);

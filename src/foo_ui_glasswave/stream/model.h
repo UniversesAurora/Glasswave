@@ -167,15 +167,20 @@ enum class ArtistSectionRowKind {
     Tracks,
     Albums,
     Playlists,
+    Artists, // similar artists
 };
 
 // Provider-defined artist view. Keys are stable semantic identities. `label` is an
 // untranslated UI key or provider-owned literal; display consumers pass it through Tr.
-// Enumerating these descriptors must not access the network.
+// Enumerating these descriptors must not access the network. The artist page shows them in
+// the order given, each as a group of tiles (ui/artist_overview.h); an empty one is left out.
 struct ArtistSection {
     Id id;
     std::wstring label;
     ArtistSectionRowKind rowKind = ArtistSectionRowKind::Tracks;
+    // Albums of every kind in one list: the page groups them by Album::type (albums, singles
+    // and EPs, live albums, compilations) and shows the newest as the latest release.
+    bool mixedAlbums = false;
     bool operator==(const ArtistSection&) const = default;
 };
 

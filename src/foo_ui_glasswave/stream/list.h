@@ -106,6 +106,9 @@ inline ListQuery ArtistSectionQuery(const Id& artist, const ArtistSection& secti
     case ArtistSectionRowKind::Playlists:
         query.kind = ListKind::ArtistPlaylists;
         break;
+    case ArtistSectionRowKind::Artists:
+        query.kind = ListKind::ArtistSimilarArtists;
+        break;
     }
     return query;
 }

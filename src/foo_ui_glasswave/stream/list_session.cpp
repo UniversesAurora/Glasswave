@@ -60,6 +60,7 @@ ListPage EmptyPage(ListKind kind) {
         page.rows = std::vector<Album>{};
         break;
     case ListKind::FollowedArtists:
+    case ListKind::ArtistSimilarArtists:
         page.rows = std::vector<Artist>{};
         break;
     case ListKind::Playlists:
