@@ -2,7 +2,30 @@
 
 Updated: 2026-11-21
 
-## Duplicate GUIDs, wall's coloured tiles, a disabled item's glow, components (2026-11-21, latest); owner checks pending, uncommitted
+## Single songs in the Apple Music library; a cut transfer continues (2026-11-21, latest)
+
+- Everything since 2026-11-14 is committed (27 commits by feature and fix; the owner had checked
+  it). From now on each change is committed once built.
+- Apple Music's Add to Library adds the song itself (owner: it must never mean its album).
+  `Capability::SaveSongs`, `Provider::SongsSavedState` / `SetSongsSaved`: POST
+  `/v1/me/library?ids[songs]=...` with catalog ids (an upload is in the library already), DELETE
+  `/v1/me/library/songs/{i.id}` (the library id resolved from the catalog when unknown). Edits
+  made here win until the account changes, and removed songs stay out of Songs and the derived
+  lists while Apple still lists them. The song menu shows Remove from Library only when every
+  selected song is known to be there. Owner check pending.
+- An Apple transfer cut short continues instead of failing: a Range request from the bytes
+  received; the bridge answers 503 + Retry-After while it still caches the song (waited up to
+  90 s), 206 from its committed cache, and a 200 is read past what arrived if its length is the
+  same. Three resumes in a row that bring nothing fail as before. Checked against the bridge: a
+  23 MB ALAC song (906238175) continued from its middle came back 206 with the right
+  Content-Range and bytes identical to the whole transfer's. The cut itself was not reproduced, so
+  the input's resume path has not run on a real cut.
+- Not changed, already there: local album and playlist pages have Play on the command bar
+  (2026-11-15). Owner decisions: no Glasswave fade for DSD, the station restore guard stays, the
+  Apple Songs count was the official app's filter, NetEase lyric blocks and restoring local
+  search pages are not wanted, Apple's 203 / 204 rows are left.
+
+## Duplicate GUIDs, wall's coloured tiles, a disabled item's glow, components (2026-11-21)
 
 - The mini player came back at its default place: settings' cfg_miniPlayerRect had the GUID of
   the search history (0x8d3a51d2, search_scope.cpp) and cfg_songTags that of the recent lists
