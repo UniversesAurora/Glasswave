@@ -218,16 +218,21 @@ class Provider {
     }
     // "Please sign in to <Name()>." in the UI language.
     std::wstring SignInRequiredMessage() const;
-    // Whether the album is in the user's library. Asked per row, so the default (a scan of
-    // SavedAlbums()) is for sources with a small library; others override it with a lookup.
-    virtual bool IsAlbumSaved(const Id& album) const;
+    // ---- library state ---------------------------------------------------------------
+    // A change of the library (SetFollowed, SetAlbumSaved, SetPlaylistSaved, SetSongsSaved)
+    // reads as its new state from the click on, until the service has answered and the
+    // provider's next library read has confirmed it; a refused change reads as the source's
+    // state again. These ask the pending changes first and the source (the Read* hooks) next.
+    //
+    // Whether the album is in the user's library. Asked per row.
+    bool IsAlbumSaved(const Id& album) const;
     // Capability::SaveSongs: true when every one of `tracks` is in the library, false when one
     // is known not to be, nothing while that is not known yet.
-    virtual std::optional<bool> SongsSavedState(const std::vector<Id>& tracks) const;
+    std::optional<bool> SongsSavedState(const std::vector<Id>& tracks) const;
     // The library state of a playlist / an artist while it differs from the last snapshot (a
-    // write in flight or just acknowledged); nullopt: the snapshot is right. Default: nullopt.
-    virtual std::optional<bool> PlaylistSavedState(const Id& playlist) const;
-    virtual std::optional<bool> ArtistPreferenceState(const Id& artist) const;
+    // change in flight or just acknowledged); nullopt: the snapshot is right.
+    std::optional<bool> PlaylistSavedState(const Id& playlist) const;
+    std::optional<bool> ArtistPreferenceState(const Id& artist) const;
     // The provider's own rows on the preferences page (quality, caches, account, ...).
     virtual std::vector<settings::Field> SettingFields() { return {}; }
 
@@ -375,11 +380,14 @@ class Provider {
     // Shows the new state at once (listeners hear OnFavoritesChanged) and completes in the
     // background whatever the UI does meanwhile; on failure the old state comes back.
     void SetFavorite(const Id& track, bool favorite, Done done = {});
-    virtual void SetFollowed(const Id& artist, bool follow, Done done = {}) = 0;
-    virtual void SetAlbumSaved(const Id& album, bool saved, Done done = {}) = 0;
+    // The same for the other library changes: the new state shows from the click on (listeners
+    // hear OnLibraryChanged, and again when a refused change is taken back), the source's
+    // Write* hook does the work.
+    void SetFollowed(const Id& artist, bool follow, Done done = {});
+    void SetAlbumSaved(const Id& album, bool saved, Done done = {});
     // Capability::SaveSongs: the songs themselves, not their albums.
-    virtual void SetSongsSaved(std::vector<Id> tracks, bool saved, Done done = {});
-    virtual void SetPlaylistSaved(const Id& playlist, bool saved, Done done = {}) = 0;
+    void SetSongsSaved(std::vector<Id> tracks, bool saved, Done done = {});
+    void SetPlaylistSaved(const Id& playlist, bool saved, Done done = {});
     virtual void AddToPlaylist(const Id& playlist, std::vector<Id> tracks, Done done = {}) = 0;
     virtual void RemoveFromPlaylist(const Id& playlist, std::vector<Id> tracks, Done done = {}) = 0;
     virtual void CreatePlaylist(std::wstring name, CreatedDone done) = 0;
@@ -404,6 +412,33 @@ class Provider {
     virtual bool ReadFavorite(const Id& track) const = 0;
     virtual void WriteFavorite(const Id& track, bool favorite, Done done) = 0;
 
+    // The source's own answers for the library state queries, asked when no change of the
+    // user's is pending. Read* answer from the snapshot, never from the network.
+    // Default: a scan of SavedAlbums(), which suits a small library (a source with a large one
+    // answers with a lookup).
+    virtual bool ReadAlbumSaved(const Id& album) const;
+    virtual std::optional<bool> ReadSongsSavedState(const std::vector<Id>& tracks) const;
+    virtual std::optional<bool> ReadPlaylistSavedState(const Id& playlist) const;
+    virtual std::optional<bool> ReadArtistPreferenceState(const Id& artist) const;
+    // The service's writes behind SetFollowed, SetAlbumSaved, SetPlaylistSaved and SetSongsSaved;
+    // `done` may run on any thread, once. A completion that is dropped unrun (the source shut
+    // down, the account changed) must still run with an error (GuardDone), so a change it was
+    // carrying is taken back. A source that has updated its own snapshot by the time it
+    // answers calls ConfirmLibraryEdits after that; one that refreshes later does it then.
+    virtual void WriteFollowed(const Id& artist, bool follow, Done done) = 0;
+    virtual void WriteAlbumSaved(const Id& album, bool saved, Done done) = 0;
+    // Capability::SaveSongs. Default: an error.
+    virtual void WriteSongsSaved(std::vector<Id> tracks, bool saved, Done done);
+    virtual void WritePlaylistSaved(const Id& playlist, bool saved, Done done) = 0;
+
+    // A change the service has acknowledged keeps showing as the user made it until the source's
+    // own state shows it too. A source takes the mark before it reads its library and calls
+    // Confirm after a successful read: the changes acknowledged before the mark are in what it
+    // read, so they stop overriding it. (A change that is never confirmed stops overriding after
+    // a while, as a favorite does.)
+    uint64_t LibraryEditMark() const;
+    void ConfirmLibraryEdits(uint64_t mark);
+
   private:
     struct PendingFavorite {
         bool favorite = false;
@@ -412,10 +447,29 @@ class Provider {
     };
     void FinishFavorite(const Id& track, uint64_t serial, std::wstring error, Done done);
 
+    // A library change not confirmed by the source yet: what the user asked for, and where it
+    // stands. Per kind and id; the latest click on an id decides what it shows.
+    enum class EditKind { Follow, Album, Playlist, Song };
+    struct PendingEdit {
+        bool value = false;
+        uint64_t serial = 0;
+        uint64_t ackSerial = 0; // 0: the service has not answered yet
+        std::chrono::steady_clock::time_point since;
+    };
+    using EditKey = std::pair<EditKind, Id>;
+    std::optional<bool> PendingEditState(EditKind kind, const Id& id) const;
+    void SetEdit(EditKind kind, std::vector<Id> ids, bool value, Done done,
+                 std::function<void(Done)> write);
+    void FinishEdit(EditKind kind, const std::vector<Id>& ids, uint64_t serial, std::wstring error,
+                    Done done);
+
     std::vector<Listener*> m_listeners;
     mutable std::mutex m_favoritesMutex;
     mutable std::map<Id, PendingFavorite> m_pendingFavorites;
     uint64_t m_favoriteSerial = 0;
+    mutable std::mutex m_editsMutex;
+    mutable std::map<EditKey, PendingEdit> m_pendingEdits;
+    uint64_t m_editSerial = 0;
 };
 
 namespace detail {

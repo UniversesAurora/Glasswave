@@ -666,6 +666,9 @@ void StreamProvider::Start() {
     // changed sign-in state is an account change, the rest refreshes library lists.
     Ncm().SetStateCallback([this] { OnSessionChanged(); });
     Ncm().SetLibraryCallback([this] {
+        // The session updates its lists before it answers a write, so what it shows is what the
+        // user changed: the changes acknowledged so far need not override it any more.
+        ConfirmLibraryEdits(LibraryEditMark());
         NotifyLibraryChanged();
         if (AccountVerified()) m_snapshots.Queue();
     });
@@ -1359,7 +1362,7 @@ std::vector<stream::Album> StreamProvider::SavedAlbums() const {
     return ToAlbums(Ncm().CollectedAlbums());
 }
 
-bool StreamProvider::IsAlbumSaved(const Id& album) const {
+bool StreamProvider::ReadAlbumSaved(const Id& album) const {
     return Ncm().IsAlbumCollected(Num(album));
 }
 
@@ -1831,21 +1834,21 @@ void StreamProvider::WriteFavorite(const Id& track, bool favorite, Done done) {
                      });
 }
 
-void StreamProvider::SetFollowed(const Id& artist, bool follow, Done done) {
+void StreamProvider::WriteFollowed(const Id& artist, bool follow, Done done) {
     Ncm().SetArtistFollow(Num(artist), follow,
                           [this, done = std::move(done)](bool ok, std::wstring error) mutable {
                               FinishListWrite(ok, std::move(error), std::move(done));
                           });
 }
 
-void StreamProvider::SetAlbumSaved(const Id& album, bool saved, Done done) {
+void StreamProvider::WriteAlbumSaved(const Id& album, bool saved, Done done) {
     Ncm().SetAlbumCollected(Num(album), saved,
                             [this, done = std::move(done)](bool ok, std::wstring error) mutable {
                                 FinishListWrite(ok, std::move(error), std::move(done));
                             });
 }
 
-void StreamProvider::SetPlaylistSaved(const Id& playlist, bool saved, Done done) {
+void StreamProvider::WritePlaylistSaved(const Id& playlist, bool saved, Done done) {
     Ncm().SetPlaylistSubscribed(Num(playlist), saved,
                                 [this, done = std::move(done)](bool ok, std::wstring error) mutable {
                                     FinishListWrite(ok, std::move(error), std::move(done));

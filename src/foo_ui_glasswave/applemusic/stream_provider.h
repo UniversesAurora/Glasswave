@@ -36,10 +36,10 @@ class StreamProvider final : public stream::Provider {
     std::vector<stream::ArtistSection> ArtistSections(const stream::Id& artist) const override;
     std::vector<stream::ListKind> CatalogSearchKinds() const override;
     stream::Capabilities Offers() const override;
-    bool IsAlbumSaved(const stream::Id& album) const override;
-    std::optional<bool> SongsSavedState(const std::vector<stream::Id>& tracks) const override;
-    std::optional<bool> PlaylistSavedState(const stream::Id& playlist) const override;
-    std::optional<bool> ArtistPreferenceState(const stream::Id& artist) const override;
+    bool ReadAlbumSaved(const stream::Id& album) const override;
+    std::optional<bool> ReadSongsSavedState(const std::vector<stream::Id>& tracks) const override;
+    std::optional<bool> ReadPlaylistSavedState(const stream::Id& playlist) const override;
+    std::optional<bool> ReadArtistPreferenceState(const stream::Id& artist) const override;
     std::vector<settings::Field> SettingFields() override;
 
     bool SignedIn() const override;
@@ -90,10 +90,10 @@ class StreamProvider final : public stream::Provider {
     // These write routes mirror the private Apple Music current-web contract. They are not
     // a documented stable API and have not been exercised against a real account here.
     void WriteFavorite(const stream::Id& track, bool favorite, Done done) override;
-    void SetFollowed(const stream::Id& artist, bool follow, Done done = {}) override;
-    void SetAlbumSaved(const stream::Id& album, bool saved, Done done = {}) override;
-    void SetSongsSaved(std::vector<stream::Id> tracks, bool saved, Done done = {}) override;
-    void SetPlaylistSaved(const stream::Id& playlist, bool saved, Done done = {}) override;
+    void WriteFollowed(const stream::Id& artist, bool follow, Done done) override;
+    void WriteAlbumSaved(const stream::Id& album, bool saved, Done done) override;
+    void WriteSongsSaved(std::vector<stream::Id> tracks, bool saved, Done done) override;
+    void WritePlaylistSaved(const stream::Id& playlist, bool saved, Done done) override;
     void AddToPlaylist(const stream::Id& playlist, std::vector<stream::Id> tracks, Done done = {}) override;
     void RemoveFromPlaylist(const stream::Id& playlist, std::vector<stream::Id> tracks,
                             Done done = {}) override;
@@ -117,6 +117,7 @@ class StreamProvider final : public stream::Provider {
     void ApplyAlbumMutations(std::vector<stream::Album>& albums, bool addSaved) const;
 
     struct Snapshot {
+        uint64_t editMark = 0; // stream::Provider::LibraryEditMark when the refresh began
         bool accountVerified = false;
         uint64_t libraryMutationEpoch = 0;
         uint64_t artistPreferenceEpoch = 0;
@@ -146,6 +147,9 @@ class StreamProvider final : public stream::Provider {
     // The worker queues of m_exec: reads, library writes (one at a time, in order), playlist
     // details and the second stage of page enrichment.
     enum Queue : size_t { kTasks, kMutations, kDetails, kEnrich };
+    // Adds an album or a playlist to the library, or removes it (the two differ only in the
+    // resource, the checks before a removal and the lists a change touches).
+    void WriteLibraryItem(bool album, const stream::Id& id, bool saved, Done done);
     void RefreshAccountAsync(uint64_t generation, Done done, bool preservePlaylistDetails = false);
     void RefreshLibraryPreservingDetails(Done done = {});
     void RefreshLibraryAfterMutation(Done done = {});

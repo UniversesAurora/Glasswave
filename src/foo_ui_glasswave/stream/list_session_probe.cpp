@@ -448,9 +448,9 @@ class FakeProvider final : public Provider {
     }
 
     void WriteFavorite(const Id&, bool, Done) override {}
-    void SetFollowed(const Id&, bool, Done) override {}
-    void SetAlbumSaved(const Id&, bool, Done) override {}
-    void SetPlaylistSaved(const Id&, bool, Done) override {}
+    void WriteFollowed(const Id&, bool, Done) override {}
+    void WriteAlbumSaved(const Id&, bool, Done) override {}
+    void WritePlaylistSaved(const Id&, bool, Done) override {}
     void AddToPlaylist(const Id&, std::vector<Id>, Done) override {}
     void RemoveFromPlaylist(const Id&, std::vector<Id>, Done) override {}
     void CreatePlaylist(std::wstring, CreatedDone done) override {

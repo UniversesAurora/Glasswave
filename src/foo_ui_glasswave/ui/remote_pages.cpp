@@ -1129,11 +1129,14 @@ class PlaylistPage final : public TrackPagedPage {
         m_host.ChromeChanged();
         m_provider.SetPlaylistSaved(m_view.remoteId, next, Guard([this, next](std::wstring error) {
                                         m_busy = false;
-                                        if (!error.empty())
+                                        if (!error.empty()) {
+                                            // The change shown from the click on was taken back.
+                                            if (m_info) m_info->saved = !next;
                                             ShowProviderError(m_provider, error);
-                                        else if (m_info)
+                                        } else if (m_info) {
                                             m_info->saved =
                                                 m_provider.PlaylistSavedState(m_view.remoteId).value_or(next);
+                                        }
                                         m_host.ChromeChanged();
                                     }));
     }

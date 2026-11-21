@@ -44,11 +44,11 @@ class StreamProvider final : public stream::Provider {
     bool SameCover(std::wstring_view a, std::wstring_view b) const override;
 
     bool ReadFavorite(const stream::Id& track) const override;
+    bool ReadAlbumSaved(const stream::Id& album) const override;
     std::vector<stream::Playlist> Playlists(stream::Shelf shelf) const override;
     std::optional<stream::Shelf> ShelfOf(const stream::Id& playlist) const override;
     std::vector<stream::Artist> FollowedArtists() const override;
     std::vector<stream::Album> SavedAlbums() const override;
-    bool IsAlbumSaved(const stream::Id& album) const override;
     std::optional<stream::Playlist> FindPlaylist(const stream::Id& playlist) const override;
     std::optional<stream::Album> FindAlbum(const stream::Id& album) const override;
     void FetchArtist(const stream::Id& artist, ArtistDone done) override;
@@ -66,9 +66,9 @@ class StreamProvider final : public stream::Provider {
     void RestoreListRecords(const stream::ListPage& page) override;
 
     void WriteFavorite(const stream::Id& track, bool favorite, Done done) override;
-    void SetFollowed(const stream::Id& artist, bool follow, Done done) override;
-    void SetAlbumSaved(const stream::Id& album, bool saved, Done done) override;
-    void SetPlaylistSaved(const stream::Id& playlist, bool saved, Done done) override;
+    void WriteFollowed(const stream::Id& artist, bool follow, Done done) override;
+    void WriteAlbumSaved(const stream::Id& album, bool saved, Done done) override;
+    void WritePlaylistSaved(const stream::Id& playlist, bool saved, Done done) override;
     void AddToPlaylist(const stream::Id& playlist, std::vector<stream::Id> tracks, Done done) override;
     void RemoveFromPlaylist(const stream::Id& playlist, std::vector<stream::Id> tracks, Done done) override;
     void CreatePlaylist(std::wstring name, CreatedDone done) override;

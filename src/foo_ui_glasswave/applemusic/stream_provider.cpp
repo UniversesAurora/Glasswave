@@ -3371,6 +3371,7 @@ void StreamProvider::RefreshAccountAsync(uint64_t generation, Done done, bool pr
     uint64_t artistPreferenceEpoch = 0;
     uint64_t refreshToken = 0;
     uint64_t favoriteBindingEpoch = 0;
+    const uint64_t editMark = LibraryEditMark();
     {
         std::lock_guard lock(m_mutex);
         if (!m_started || generation != m_exec.Generation()) {
@@ -3405,9 +3406,10 @@ void StreamProvider::RefreshAccountAsync(uint64_t generation, Done done, bool pr
     for (auto& waiter : superseded)
         if (waiter) waiter(L"The Apple Music refresh was superseded.");
 
-    m_exec.Post(kTasks, generation, [this, generation, mutationEpoch, artistPreferenceEpoch, refreshToken,
-                      favoriteBindingEpoch]() mutable {
+    m_exec.Post(kTasks, generation, [this, generation, editMark, mutationEpoch, artistPreferenceEpoch,
+                                     refreshToken, favoriteBindingEpoch]() mutable {
         Snapshot snapshot;
+        snapshot.editMark = editMark;
         snapshot.libraryMutationEpoch = mutationEpoch;
         snapshot.artistPreferenceEpoch = artistPreferenceEpoch;
         snapshot.refreshToken = refreshToken;
@@ -3864,7 +3866,12 @@ void StreamProvider::CompleteRefresh(uint64_t generation, Snapshot snapshot, std
     if (accountChanged) NotifyAccountChanged();
     if (favoritesChanged) NotifyFavoritesChanged();
     NotifyLibraryChanged();
-    if (snapshotReady) m_snapshots.Queue();
+    if (snapshotReady) {
+        // The lists read are the account's now: what the user changed before the read began is
+        // in them (or Apple's own mutation records speak for it until they list it).
+        ConfirmLibraryEdits(snapshot.editMark);
+        m_snapshots.Queue();
+    }
     for (auto& waiter : waiters)
         if (waiter) waiter(error);
     if (snapshotReady) {
@@ -4204,7 +4211,7 @@ std::vector<stream::Album> StreamProvider::SavedAlbums() const {
     return DisplayAlbums(std::move(albums));
 }
 
-bool StreamProvider::IsAlbumSaved(const stream::Id& album) const {
+bool StreamProvider::ReadAlbumSaved(const stream::Id& album) const {
     const stream::Id canonical = CatalogIdForAlbum(album);
     const stream::Id key = canonical.empty() ? album : canonical;
     std::vector<stream::Album> saved;
@@ -4220,7 +4227,7 @@ bool StreamProvider::IsAlbumSaved(const stream::Id& album) const {
     });
 }
 
-std::optional<bool> StreamProvider::PlaylistSavedState(const stream::Id& playlist) const {
+std::optional<bool> StreamProvider::ReadPlaylistSavedState(const stream::Id& playlist) const {
     std::lock_guard lock(m_mutex);
     return PlaylistSavedStateLocked(playlist);
 }
@@ -4248,7 +4255,7 @@ std::optional<bool> StreamProvider::PlaylistSavedStateLocked(const stream::Id& p
                        });
 }
 
-std::optional<bool> StreamProvider::ArtistPreferenceState(const stream::Id& artist) const {
+std::optional<bool> StreamProvider::ReadArtistPreferenceState(const stream::Id& artist) const {
     {
         std::lock_guard lock(m_mutex);
         const auto mutation = std::find_if(m_artistPreferenceMutations.begin(),
@@ -4326,7 +4333,7 @@ bool StreamProvider::SongRemovedHereLocked(const Song& song) const {
     return false;
 }
 
-std::optional<bool> StreamProvider::SongsSavedState(const std::vector<stream::Id>& tracks) const {
+std::optional<bool> StreamProvider::ReadSongsSavedState(const std::vector<stream::Id>& tracks) const {
     if (tracks.empty()) return std::nullopt;
     std::vector<std::optional<Song>> songs;
     songs.reserve(tracks.size());
@@ -4364,7 +4371,7 @@ std::optional<bool> StreamProvider::SongsSavedState(const std::vector<stream::Id
     return true;
 }
 
-void StreamProvider::SetSongsSaved(std::vector<stream::Id> tracks, bool saved, Done done) {
+void StreamProvider::WriteSongsSaved(std::vector<stream::Id> tracks, bool saved, Done done) {
     done = stream::GuardDone(std::move(done), kRequestDropped);
     std::wstring signInError;
     if (!RequireSignedIn(signInError)) {
@@ -6382,7 +6389,7 @@ void StreamProvider::WriteFavorite(const stream::Id& track, bool favorite, Done 
     });
 }
 
-void StreamProvider::SetFollowed(const stream::Id& artist, bool follow, Done done) {
+void StreamProvider::WriteFollowed(const stream::Id& artist, bool follow, Done done) {
     done = stream::GuardDone(std::move(done), kRequestDropped);
     std::wstring signInError;
     if (!RequireSignedIn(signInError)) {
@@ -6509,167 +6516,75 @@ void StreamProvider::SetFollowed(const stream::Id& artist, bool follow, Done don
     });
 }
 
-void StreamProvider::SetAlbumSaved(const stream::Id& album, bool saved, Done done) {
-    done = stream::GuardDone(std::move(done), kRequestDropped);
-    std::wstring signInError;
-    if (!RequireSignedIn(signInError)) {
-        if (done) done(signInError);
-        return;
-    }
-    uint64_t generation = 0;
-    uint64_t mutationSequence = 0;
-    const std::wstring storefront = Storefront();
-    const stream::Id knownLibrary = KnownLibraryId(true, album);
-    stream::Id catalogId = CatalogIdForAlbum(album);
-    std::optional<stream::Album> albumInfo =
-        catalogId.empty() ? std::nullopt : Catalog::Get().FindAlbumRaw(catalogId);
-    if (!albumInfo) albumInfo = Catalog::Get().FindAlbumRaw(album);
-    {
-        std::lock_guard lock(m_mutex);
-        generation = m_exec.Generation();
-        mutationSequence = ++m_libraryMutationSequence;
-    }
-    m_exec.Post(kMutations, generation, [this, generation, mutationSequence, album, saved, storefront,
-                              done = std::move(done), knownLibrary, catalogId,
-                              albumInfo = std::move(albumInfo)]() mutable {
-        stream::Id libraryId = knownLibrary;
-        std::wstring error;
-        try {
-            if (saved) {
-                if (catalogId.empty())
-                    error = L"This album has no verified Apple Music catalog id.";
-                else
-                    Apple(L"/v1/me/library?ids[albums]=" + Encode(catalogId), m_exec.Abort(), L"POST");
-            } else {
-                if (libraryId.empty() && !catalogId.empty())
-                    libraryId = ResolveLibraryIdFromCatalog(L"albums", L'l', catalogId, storefront, m_exec.Abort());
-                if (libraryId.empty())
-                    error = L"This album has no verified Apple Music library id.";
-                else
-                    Apple(L"/v1/me/library/albums/" + Encode(libraryId), m_exec.Abort(), L"DELETE");
-            }
-        } catch (const exception_aborted&) {
-            return;
-        } catch (const std::exception& exception) {
-            error = Wide(exception.what());
-        }
-        m_exec.PostMain(generation, [this, mutationSequence, album, catalogId, libraryId, saved,
-                              albumInfo = std::move(albumInfo), done = std::move(done),
-                              error = std::move(error)]() mutable {
-            if (!error.empty()) {
-                if (done) done(std::move(error));
-                return;
-            }
-            const stream::Id key = catalogId.empty() ? libraryId : catalogId;
-            std::vector<Done> superseded;
-            bool apply = false;
-            {
-                std::lock_guard lock(m_mutex);
-                apply = mutationSequence >= m_appliedLibraryMutationSequence;
-                if (!apply) {
-                    // A newer operation for the same account already published. The server did
-                    // acknowledge this older request, but its late completion must not undo it.
-                } else {
-                    m_appliedLibraryMutationSequence = mutationSequence;
-                    ++m_libraryMutationEpoch;
-                    if (!catalogId.empty() && !libraryId.empty()) m_albumLibraryIds[catalogId] = libraryId;
-                    if (m_refreshInFlight) {
-                        superseded.swap(m_refreshWaiters);
-                        m_refreshInFlight = false;
-                        m_refreshGeneration = 0;
-                        m_refreshPreservePlaylistDetails = false;
-                        m_refreshInvalidatesLists = false;
-                    }
-                    AlbumMutation mutation;
-                    mutation.catalogId = catalogId;
-                    mutation.libraryId = libraryId;
-                    mutation.epoch = m_libraryMutationEpoch;
-                    mutation.saved = saved;
-                    mutation.pending = saved;
-                    if (albumInfo) mutation.album = *albumInfo;
-                    if (mutation.album.id.empty()) {
-                        mutation.album.id = catalogId.empty() ? libraryId : catalogId;
-                    }
-                    m_albumMutations[key] = std::move(mutation);
-                    if (!saved) {
-                        m_savedAlbumIds.erase(album);
-                        if (!catalogId.empty()) m_savedAlbumIds.erase(catalogId);
-                        if (!libraryId.empty()) m_savedAlbumIds.erase(libraryId);
-                        std::erase_if(m_savedAlbums, [&](const stream::Album& item) {
-                            if (item.id == album || (!libraryId.empty() && item.id == libraryId)) return true;
-                            if (catalogId.empty() || !IsLibraryId(item.id) || item.id.empty() ||
-                                item.id[0] != L'l')
-                                return false;
-                            const auto mapped =
-                                std::find_if(m_albumLibraryIds.begin(), m_albumLibraryIds.end(),
-                                             [&item](const auto& entry) { return entry.second == item.id; });
-                            return mapped != m_albumLibraryIds.end() && mapped->first == catalogId;
-                        });
-                    }
-                }
-            }
-            if (!apply) {
-                if (done) done({});
-                return;
-            }
-            if (!catalogId.empty() && !libraryId.empty())
-                Catalog::Get().PutAlbumLibraryId(catalogId, libraryId);
-            for (auto& waiter : superseded)
-                if (waiter) waiter(L"The Apple Music refresh was superseded by a library change.");
-            NotifyListChanged();
-            NotifyLibraryChanged();
-            if (done) done({});
-            RefreshLibraryAfterMutation({});
-        });
-    });
+void StreamProvider::WriteAlbumSaved(const stream::Id& album, bool saved, Done done) {
+    WriteLibraryItem(true, album, saved, std::move(done));
 }
 
-void StreamProvider::SetPlaylistSaved(const stream::Id& playlist, bool saved, Done done) {
+void StreamProvider::WritePlaylistSaved(const stream::Id& playlist, bool saved, Done done) {
+    WriteLibraryItem(false, playlist, saved, std::move(done));
+}
+
+void StreamProvider::WriteLibraryItem(bool album, const stream::Id& id, bool saved, Done done) {
     done = stream::GuardDone(std::move(done), kRequestDropped);
     std::wstring signInError;
     if (!RequireSignedIn(signInError)) {
         if (done) done(signInError);
         return;
     }
+    // What differs between the two: the library resource and the id prefix its entries carry,
+    // and the words of the errors.
+    const std::wstring resource = album ? L"albums" : L"playlists";
+    const wchar_t prefix = album ? L'l' : L'p';
+    const std::wstring noun = album ? L"album" : L"playlist";
     uint64_t generation = 0;
     uint64_t mutationSequence = 0;
     const std::wstring storefront = Storefront();
-    const stream::Id knownLibrary = KnownLibraryId(false, playlist);
-    stream::Id catalogId = CatalogIdForPlaylist(playlist);
-    std::optional<stream::Playlist> playlistInfo =
-        catalogId.empty() ? std::nullopt : Catalog::Get().FindPlaylistRaw(catalogId);
-    if (!playlistInfo) playlistInfo = Catalog::Get().FindPlaylistRaw(playlist);
+    const stream::Id knownLibrary = KnownLibraryId(album, id);
+    const stream::Id catalogId = album ? CatalogIdForAlbum(id) : CatalogIdForPlaylist(id);
+    // The record the lists keep for it while the change is not listed yet.
+    std::optional<stream::Album> albumInfo;
+    std::optional<stream::Playlist> playlistInfo;
+    if (album) {
+        if (!catalogId.empty()) albumInfo = Catalog::Get().FindAlbumRaw(catalogId);
+        if (!albumInfo) albumInfo = Catalog::Get().FindAlbumRaw(id);
+    } else {
+        if (!catalogId.empty()) playlistInfo = Catalog::Get().FindPlaylistRaw(catalogId);
+        if (!playlistInfo) playlistInfo = Catalog::Get().FindPlaylistRaw(id);
+    }
     {
         std::lock_guard lock(m_mutex);
         generation = m_exec.Generation();
         mutationSequence = ++m_libraryMutationSequence;
     }
-    m_exec.Post(kMutations, generation, [this, generation, mutationSequence, playlist, saved, storefront, knownLibrary,
-                              catalogId, playlistInfo = std::move(playlistInfo),
-                              done = std::move(done)]() mutable {
+    m_exec.Post(kMutations, generation, [this, generation, mutationSequence, album, id, saved, storefront,
+                                         resource, prefix, noun, knownLibrary, catalogId,
+                                         albumInfo = std::move(albumInfo),
+                                         playlistInfo = std::move(playlistInfo),
+                                         done = std::move(done)]() mutable {
         stream::Id libraryId = knownLibrary;
         std::wstring error;
         try {
             if (saved) {
                 if (catalogId.empty())
-                    error = L"This playlist has no verified Apple Music catalog id.";
+                    error = L"This " + noun + L" has no verified Apple Music catalog id.";
                 else
-                    Apple(L"/v1/me/library?ids[playlists]=" + Encode(catalogId), m_exec.Abort(), L"POST");
+                    Apple(L"/v1/me/library?ids[" + resource + L"]=" + Encode(catalogId), m_exec.Abort(), L"POST");
             } else {
                 if (libraryId.empty() && !catalogId.empty())
-                    libraryId =
-                        ResolveLibraryIdFromCatalog(L"playlists", L'p', catalogId, storefront, m_exec.Abort());
+                    libraryId = ResolveLibraryIdFromCatalog(resource.c_str(), prefix, catalogId, storefront, m_exec.Abort());
                 if (libraryId.empty()) {
-                    error = L"This playlist has no verified Apple Music library id.";
+                    error = L"This " + noun + L" has no verified Apple Music library id.";
                 } else {
-                    const PlaylistData data = LoadPlaylist(libraryId, storefront, true, m_exec.Abort(), false);
-                    if (data.favorite || IsFavoritePlaylist(libraryId))
-                        throw std::runtime_error("The Favorite Songs playlist cannot be changed.");
-                    if (data.info.own)
-                        throw std::runtime_error("Use Delete playlist for an owned Apple Music playlist.");
-                    if (!data.canDelete)
-                        throw std::runtime_error("Apple Music does not allow this playlist to be removed.");
-                    Apple(L"/v1/me/library/playlists/" + Encode(libraryId), m_exec.Abort(), L"DELETE");
+                    if (!album) {
+                        const PlaylistData data = LoadPlaylist(libraryId, storefront, true, m_exec.Abort(), false);
+                        if (data.favorite || IsFavoritePlaylist(libraryId))
+                            throw std::runtime_error("The Favorite Songs playlist cannot be changed.");
+                        if (data.info.own)
+                            throw std::runtime_error("Use Delete playlist for an owned Apple Music playlist.");
+                        if (!data.canDelete)
+                            throw std::runtime_error("Apple Music does not allow this playlist to be removed.");
+                    }
+                    Apple(L"/v1/me/library/" + resource + L"/" + Encode(libraryId), m_exec.Abort(), L"DELETE");
                 }
             }
         } catch (const exception_aborted&) {
@@ -6677,9 +6592,9 @@ void StreamProvider::SetPlaylistSaved(const stream::Id& playlist, bool saved, Do
         } catch (const std::exception& exception) {
             error = Wide(exception.what());
         }
-        m_exec.PostMain(generation, [this, mutationSequence, playlist, catalogId, libraryId, saved,
-                              playlistInfo = std::move(playlistInfo), done = std::move(done),
-                              error = std::move(error)]() mutable {
+        m_exec.PostMain(generation, [this, mutationSequence, album, id, catalogId, libraryId, saved,
+                                     albumInfo = std::move(albumInfo), playlistInfo = std::move(playlistInfo),
+                                     done = std::move(done), error = std::move(error)]() mutable {
             if (!error.empty()) {
                 if (done) done(std::move(error));
                 return;
@@ -6689,11 +6604,15 @@ void StreamProvider::SetPlaylistSaved(const stream::Id& playlist, bool saved, Do
             bool apply = false;
             {
                 std::lock_guard lock(m_mutex);
+                // A newer operation for the same account may already have published. The
+                // server did acknowledge this older request, but its late completion must not
+                // undo that one.
                 apply = mutationSequence >= m_appliedLibraryMutationSequence;
                 if (apply) {
                     m_appliedLibraryMutationSequence = mutationSequence;
                     ++m_libraryMutationEpoch;
-                    if (!catalogId.empty() && !libraryId.empty()) m_playlistLibraryIds[catalogId] = libraryId;
+                    if (!catalogId.empty() && !libraryId.empty())
+                        (album ? m_albumLibraryIds : m_playlistLibraryIds)[catalogId] = libraryId;
                     if (m_refreshInFlight) {
                         superseded.swap(m_refreshWaiters);
                         m_refreshInFlight = false;
@@ -6701,23 +6620,51 @@ void StreamProvider::SetPlaylistSaved(const stream::Id& playlist, bool saved, Do
                         m_refreshPreservePlaylistDetails = false;
                         m_refreshInvalidatesLists = false;
                     }
-                    PlaylistMutation mutation;
-                    mutation.catalogId = catalogId;
-                    mutation.libraryId = libraryId;
-                    mutation.epoch = m_libraryMutationEpoch;
-                    mutation.saved = saved;
-                    mutation.pending = true;
-                    if (playlistInfo) mutation.playlist = *playlistInfo;
-                    mutation.playlist.id = libraryId.empty() ? catalogId : libraryId;
-                    m_playlistMutations[key] = std::move(mutation);
-                    if (!saved) {
-                        std::erase_if(m_savedPlaylists, [&](const stream::Playlist& item) {
-                            if (item.id == playlist || (!libraryId.empty() && item.id == libraryId))
-                                return true;
-                            const auto mapped = m_playlistLibraryIds.find(catalogId);
-                            return !catalogId.empty() && mapped != m_playlistLibraryIds.end() &&
-                                   mapped->second == item.id;
-                        });
+                    if (album) {
+                        AlbumMutation mutation;
+                        mutation.catalogId = catalogId;
+                        mutation.libraryId = libraryId;
+                        mutation.epoch = m_libraryMutationEpoch;
+                        mutation.saved = saved;
+                        mutation.pending = saved;
+                        if (albumInfo) mutation.album = *albumInfo;
+                        if (mutation.album.id.empty()) {
+                            mutation.album.id = catalogId.empty() ? libraryId : catalogId;
+                        }
+                        m_albumMutations[key] = std::move(mutation);
+                        if (!saved) {
+                            m_savedAlbumIds.erase(id);
+                            if (!catalogId.empty()) m_savedAlbumIds.erase(catalogId);
+                            if (!libraryId.empty()) m_savedAlbumIds.erase(libraryId);
+                            std::erase_if(m_savedAlbums, [&](const stream::Album& item) {
+                                if (item.id == id || (!libraryId.empty() && item.id == libraryId)) return true;
+                                if (catalogId.empty() || !IsLibraryId(item.id) || item.id.empty() ||
+                                    item.id[0] != L'l')
+                                    return false;
+                                const auto mapped =
+                                    std::find_if(m_albumLibraryIds.begin(), m_albumLibraryIds.end(),
+                                                 [&item](const auto& entry) { return entry.second == item.id; });
+                                return mapped != m_albumLibraryIds.end() && mapped->first == catalogId;
+                            });
+                        }
+                    } else {
+                        PlaylistMutation mutation;
+                        mutation.catalogId = catalogId;
+                        mutation.libraryId = libraryId;
+                        mutation.epoch = m_libraryMutationEpoch;
+                        mutation.saved = saved;
+                        mutation.pending = true;
+                        if (playlistInfo) mutation.playlist = *playlistInfo;
+                        mutation.playlist.id = libraryId.empty() ? catalogId : libraryId;
+                        m_playlistMutations[key] = std::move(mutation);
+                        if (!saved) {
+                            std::erase_if(m_savedPlaylists, [&](const stream::Playlist& item) {
+                                if (item.id == id || (!libraryId.empty() && item.id == libraryId)) return true;
+                                const auto mapped = m_playlistLibraryIds.find(catalogId);
+                                return !catalogId.empty() && mapped != m_playlistLibraryIds.end() &&
+                                       mapped->second == item.id;
+                            });
+                        }
                     }
                 }
             }
@@ -6725,10 +6672,15 @@ void StreamProvider::SetPlaylistSaved(const stream::Id& playlist, bool saved, Do
                 if (done) done({});
                 return;
             }
-            stream::Playlist catalogPlaylist = playlistInfo ? *playlistInfo : stream::Playlist{};
-            catalogPlaylist.id = !catalogId.empty() ? catalogId : key;
-            catalogPlaylist.saved = saved && !catalogPlaylist.own;
-            Catalog::Get().Put(catalogPlaylist);
+            if (album) {
+                if (!catalogId.empty() && !libraryId.empty())
+                    Catalog::Get().PutAlbumLibraryId(catalogId, libraryId);
+            } else {
+                stream::Playlist catalogPlaylist = playlistInfo ? *playlistInfo : stream::Playlist{};
+                catalogPlaylist.id = !catalogId.empty() ? catalogId : key;
+                catalogPlaylist.saved = saved && !catalogPlaylist.own;
+                Catalog::Get().Put(catalogPlaylist);
+            }
             for (auto& waiter : superseded)
                 if (waiter) waiter(L"The Apple Music refresh was superseded by a library change.");
             NotifyListChanged();

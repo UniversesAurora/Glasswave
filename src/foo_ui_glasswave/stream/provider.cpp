@@ -74,26 +74,26 @@ std::wstring Provider::SignInRequiredMessage() const {
     return text;
 }
 
-bool Provider::IsAlbumSaved(const Id& album) const {
+bool Provider::ReadAlbumSaved(const Id& album) const {
     const auto albums = SavedAlbums();
     return std::any_of(albums.begin(), albums.end(),
                        [&album](const Album& item) { return item.id == album; });
 }
 
-std::optional<bool> Provider::SongsSavedState(const std::vector<Id>&) const {
+std::optional<bool> Provider::ReadSongsSavedState(const std::vector<Id>&) const {
     return std::nullopt;
 }
 
-void Provider::SetSongsSaved(std::vector<Id>, bool, Done done) {
+std::optional<bool> Provider::ReadPlaylistSavedState(const Id&) const {
+    return std::nullopt;
+}
+
+std::optional<bool> Provider::ReadArtistPreferenceState(const Id&) const {
+    return std::nullopt;
+}
+
+void Provider::WriteSongsSaved(std::vector<Id>, bool, Done done) {
     if (done) done(L"This source cannot add single songs to its library.");
-}
-
-std::optional<bool> Provider::PlaylistSavedState(const Id&) const {
-    return std::nullopt;
-}
-
-std::optional<bool> Provider::ArtistPreferenceState(const Id&) const {
-    return std::nullopt;
 }
 
 DownloadSource Provider::ResolveDownload(const Id&, abort_callback&) {
@@ -216,6 +216,145 @@ void Provider::FinishFavorite(const Id& track, uint64_t serial, std::wstring err
     // Success: the service's state is the new one now. Failure: it is the old one again.
     if (settled) NotifyFavoritesChanged();
     if (done) done(std::move(error));
+}
+
+namespace {
+// A change the service never answers, or one the source never confirms, stops overriding the
+// source's state after this long (as a favorite does).
+constexpr auto kEditTimeout = std::chrono::minutes(2);
+}  // namespace
+
+std::optional<bool> Provider::PendingEditState(EditKind kind, const Id& id) const {
+    std::lock_guard lock(m_editsMutex);
+    const auto it = m_pendingEdits.find({kind, id});
+    if (it == m_pendingEdits.end()) return std::nullopt;
+    if (std::chrono::steady_clock::now() - it->second.since >= kEditTimeout) {
+        m_pendingEdits.erase(it);
+        return std::nullopt;
+    }
+    return it->second.value;
+}
+
+bool Provider::IsAlbumSaved(const Id& album) const {
+    if (const auto pending = PendingEditState(EditKind::Album, album)) return *pending;
+    return ReadAlbumSaved(album);
+}
+
+std::optional<bool> Provider::PlaylistSavedState(const Id& playlist) const {
+    if (const auto pending = PendingEditState(EditKind::Playlist, playlist)) return pending;
+    return ReadPlaylistSavedState(playlist);
+}
+
+std::optional<bool> Provider::ArtistPreferenceState(const Id& artist) const {
+    if (const auto pending = PendingEditState(EditKind::Follow, artist)) return pending;
+    return ReadArtistPreferenceState(artist);
+}
+
+std::optional<bool> Provider::SongsSavedState(const std::vector<Id>& tracks) const {
+    // The songs with a pending change answer for themselves; the source answers for the rest.
+    std::vector<Id> rest;
+    bool removed = false;
+    for (const Id& track : tracks) {
+        if (const auto pending = PendingEditState(EditKind::Song, track))
+            removed |= !*pending;
+        else
+            rest.push_back(track);
+    }
+    if (rest.size() == tracks.size()) return ReadSongsSavedState(tracks);
+    if (removed) return false;
+    if (rest.empty()) return true;
+    return ReadSongsSavedState(rest);
+}
+
+// The new state shows at once and listeners hear OnLibraryChanged; `write` runs the service's
+// part with a completion that may come from any thread. Like a favorite, only the latest click
+// on an id decides what it shows: an earlier write's answer neither confirms nor rolls back a
+// later one. On failure the change is taken back (and listeners hear it); on success it stays
+// until the source's next library read shows it (ConfirmLibraryEdits) or it times out.
+void Provider::SetEdit(EditKind kind, std::vector<Id> ids, bool value, Done done,
+                       std::function<void(Done)> write) {
+    uint64_t serial = 0;
+    {
+        std::lock_guard lock(m_editsMutex);
+        serial = ++m_editSerial;
+        const auto now = std::chrono::steady_clock::now();
+        for (const Id& id : ids)
+            m_pendingEdits[{kind, id}] = {value, serial, 0, now};
+    }
+    NotifyLibraryChanged();
+    write([this, kind, ids = std::move(ids), serial, done = std::move(done)](std::wstring error) mutable {
+        if (core_api::is_main_thread()) {
+            FinishEdit(kind, ids, serial, std::move(error), std::move(done));
+            return;
+        }
+        fb2k::inMainThread([this, kind, ids = std::move(ids), serial, error = std::move(error),
+                            done = std::move(done)]() mutable {
+            FinishEdit(kind, ids, serial, std::move(error), std::move(done));
+        });
+    });
+}
+
+void Provider::FinishEdit(EditKind kind, const std::vector<Id>& ids, uint64_t serial, std::wstring error,
+                          Done done) {
+    bool tookBack = false;
+    {
+        std::lock_guard lock(m_editsMutex);
+        const uint64_t ackSerial = error.empty() ? ++m_editSerial : 0;
+        for (const Id& id : ids) {
+            const auto it = m_pendingEdits.find({kind, id});
+            if (it == m_pendingEdits.end() || it->second.serial != serial) continue;
+            if (error.empty()) {
+                it->second.ackSerial = ackSerial;
+            } else {
+                m_pendingEdits.erase(it);
+                tookBack = true;
+            }
+        }
+    }
+    if (!error.empty())
+        console::print("Glasswave: library change failed: ", pfc::stringcvt::string_utf8_from_wide(error.c_str()).get_ptr());
+    if (tookBack) NotifyLibraryChanged();
+    if (done) done(std::move(error));
+}
+
+uint64_t Provider::LibraryEditMark() const {
+    std::lock_guard lock(m_editsMutex);
+    return m_editSerial;
+}
+
+void Provider::ConfirmLibraryEdits(uint64_t mark) {
+    std::lock_guard lock(m_editsMutex);
+    std::erase_if(m_pendingEdits, [mark](const auto& entry) {
+        return entry.second.ackSerial != 0 && entry.second.ackSerial <= mark;
+    });
+}
+
+void Provider::SetFollowed(const Id& artist, bool follow, Done done) {
+    SetEdit(EditKind::Follow, {artist}, follow, std::move(done),
+            [this, artist, follow](Done write) { WriteFollowed(artist, follow, std::move(write)); });
+}
+
+void Provider::SetAlbumSaved(const Id& album, bool saved, Done done) {
+    SetEdit(EditKind::Album, {album}, saved, std::move(done),
+            [this, album, saved](Done write) { WriteAlbumSaved(album, saved, std::move(write)); });
+}
+
+void Provider::SetPlaylistSaved(const Id& playlist, bool saved, Done done) {
+    SetEdit(EditKind::Playlist, {playlist}, saved, std::move(done),
+            [this, playlist, saved](Done write) { WritePlaylistSaved(playlist, saved, std::move(write)); });
+}
+
+void Provider::SetSongsSaved(std::vector<Id> tracks, bool saved, Done done) {
+    if (!Can(Capability::SaveSongs)) {
+        if (done) done(L"This source cannot add single songs to its library.");
+        return;
+    }
+    if (tracks.empty()) {
+        if (done) done({});
+        return;
+    }
+    SetEdit(EditKind::Song, tracks, saved, std::move(done),
+            [this, tracks, saved](Done write) { WriteSongsSaved(tracks, saved, std::move(write)); });
 }
 
 void Provider::AddListener(Listener* listener) {
