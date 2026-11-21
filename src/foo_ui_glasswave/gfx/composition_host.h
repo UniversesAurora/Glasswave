@@ -130,6 +130,9 @@ class CompositionHost {
 public:
     static CompositionHost& Get();
     static void Shutdown();
+    ~CompositionHost();
+    CompositionHost(const CompositionHost&) = delete;
+    CompositionHost& operator=(const CompositionHost&) = delete;
 
     const wuc::Compositor& Compositor() const { return m_compositor; }
     ID2D1Factory1* D2DFactory() const { return m_d2dFactory.get(); }
@@ -184,6 +187,10 @@ private:
     CompositionHost();
     void CreateDevices();
     void CreateRenderingDevices(); // D3D11 and D2D devices
+    // The D3D device signals an event when it is removed (ID3D11Device4); a thread-pool wait on
+    // it queues the recovery, so a lost device is replaced at once, not only at the next draw.
+    void WatchDeviceRemoval();
+    void StopWatchingDeviceRemoval() noexcept;
     void NoteDeviceError(HRESULT hr);
     void QueueRecovery();
     void RecoverDevices();
@@ -206,7 +213,12 @@ private:
     bool m_deviceSuspect = false; // a draw failed the way a lost device does
     bool m_recoveryQueued = false;
     core::Signal<> m_deviceReplaced;
-    wuc::CompositionGraphicsDevice::RenderingDeviceReplaced_revoker m_replacedRevoker;
+    struct RemovalWatch {
+        winrt::com_ptr<ID3D11Device4> device;
+        HANDLE event = nullptr;
+        HANDLE wait = nullptr;
+        DWORD cookie = 0;
+    } m_removalWatch;
 
     winrt::Windows::System::DispatcherQueueController m_queueController{nullptr};
     wuc::Compositor m_compositor{nullptr};

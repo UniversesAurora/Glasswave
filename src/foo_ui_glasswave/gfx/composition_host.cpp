@@ -84,12 +84,46 @@ void CompositionHost::CreateDevices() {
     winrt::check_hresult(interop->CreateGraphicsDevice(
         m_d2dDevice.get(),
         reinterpret_cast<abi_comp::ICompositionGraphicsDevice**>(winrt::put_abi(m_graphics))));
-    // The compositor says when it has dropped its device (the one we gave it is gone).
-    m_replacedRevoker = m_graphics.RenderingDeviceReplaced(winrt::auto_revoke, [](auto&&, auto&&) {
+    WatchDeviceRemoval();
+}
+
+CompositionHost::~CompositionHost() {
+    StopWatchingDeviceRemoval();
+}
+
+void CompositionHost::WatchDeviceRemoval() {
+    StopWatchingDeviceRemoval();
+    auto device = m_d3d.try_as<ID3D11Device4>();
+    if (!device) return; // a failed draw still reports the loss
+    RemovalWatch watch;
+    watch.device = std::move(device);
+    watch.event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    if (!watch.event) return;
+    if (FAILED(watch.device->RegisterDeviceRemovedEvent(watch.event, &watch.cookie))) {
+        CloseHandle(watch.event);
+        return;
+    }
+    const auto removed = [](void*, BOOLEAN) {
         fb2k::inMainThread([] {
-            if (g_host) g_host->QueueRecovery();
+            if (!g_host) return;
+            g_host->m_deviceSuspect = true;
+            g_host->QueueRecovery();
         });
-    });
+    };
+    if (!RegisterWaitForSingleObject(&watch.wait, watch.event, removed, nullptr, INFINITE, WT_EXECUTEONLYONCE)) {
+        watch.device->UnregisterDeviceRemoved(watch.cookie);
+        CloseHandle(watch.event);
+        return;
+    }
+    m_removalWatch = std::move(watch);
+}
+
+void CompositionHost::StopWatchingDeviceRemoval() noexcept {
+    // INVALID_HANDLE_VALUE: returns only after a callback that is running has finished.
+    if (m_removalWatch.wait) UnregisterWaitEx(m_removalWatch.wait, INVALID_HANDLE_VALUE);
+    if (m_removalWatch.device) m_removalWatch.device->UnregisterDeviceRemoved(m_removalWatch.cookie);
+    if (m_removalWatch.event) CloseHandle(m_removalWatch.event);
+    m_removalWatch = {};
 }
 
 void CompositionHost::CreateRenderingDevices() {
@@ -125,9 +159,9 @@ void CompositionHost::QueueRecovery() {
     });
 }
 
-// A lost device: new D3D and D2D devices go to the compositor, which keeps its surfaces (now
-// empty), and everyone who drew with the old one is told to paint again. If the device turns
-// out to be healthy (the compositor replaced its own), only the listeners run.
+// A lost device (its removal event, or a draw that failed the way a lost device does): new D3D
+// and D2D devices go to the compositor, which keeps its surfaces (now empty), and everyone who
+// drew with the old one is told to paint again.
 void CompositionHost::RecoverDevices() {
     m_recoveryQueued = false;
     if (m_drawDepth > 0) { // inside a draw: later
@@ -135,20 +169,20 @@ void CompositionHost::RecoverDevices() {
         return;
     }
     const HRESULT removed = m_d3d ? m_d3d->GetDeviceRemovedReason() : DXGI_ERROR_DEVICE_REMOVED;
-    if (FAILED(removed) || m_deviceSuspect) {
-        m_deviceSuspect = false;
-        wchar_t line[96];
-        swprintf_s(line, L"device: lost (hr 0x%08X), creating a new one", static_cast<unsigned>(removed));
-        core::Log(line);
-        try {
-            CreateRenderingDevices();
-            auto interop = m_graphics.as<abi_comp::ICompositionGraphicsDeviceInterop>();
-            winrt::check_hresult(interop->SetRenderingDevice(m_d2dDevice.get()));
-        } catch (const winrt::hresult_error& e) {
-            ReportFailure("device recovery", e.code(), 0, 0);
-            return;
-        }
+    if (SUCCEEDED(removed) && !m_deviceSuspect) return;
+    m_deviceSuspect = false;
+    wchar_t line[96];
+    swprintf_s(line, L"device: lost (hr 0x%08X), creating a new one", static_cast<unsigned>(removed));
+    core::Log(line);
+    try {
+        CreateRenderingDevices();
+        auto interop = m_graphics.as<abi_comp::ICompositionGraphicsDeviceInterop>();
+        winrt::check_hresult(interop->SetRenderingDevice(m_d2dDevice.get()));
+    } catch (const winrt::hresult_error& e) {
+        ReportFailure("device recovery", e.code(), 0, 0);
+        return;
     }
+    WatchDeviceRemoval();
     m_unclean.clear(); // they belonged to the old device
     ++m_deviceGeneration;
     m_deviceReplaced.Emit();
