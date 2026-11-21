@@ -438,7 +438,7 @@ void NavPane::SetProviders(std::vector<ProviderSection> sections) {
         return std::equal(a.begin(), a.end(), b.begin(), b.end(),
                           [](const stream::NavigationSection& x, const stream::NavigationSection& y) {
                               return x.id == y.id && x.label == y.label && x.kind == y.kind &&
-                                     x.shelf == y.shelf && x.reorderChildren == y.reorderChildren;
+                                     x.shelf == y.shelf && x.facet == y.facet && x.reorderChildren == y.reorderChildren;
                           });
     };
     auto same = [&](const ProviderSection& a, const ProviderSection& b) {
