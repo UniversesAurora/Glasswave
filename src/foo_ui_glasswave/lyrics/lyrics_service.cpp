@@ -452,8 +452,8 @@ std::wstring CandidatesKey(const Query& query) {
 // Search concurrently, but automatic selection respects source order. A slow fallback
 // cannot delay a successful preferred source. All children are joined before returning.
 // Returns whether every source answered (false: stopped early, cancelled or timed out).
-bool SearchAll(const Query& query, const std::vector<std::shared_ptr<Searcher>>& searchers,
-               std::optional<Candidate> cached, abort_callback& abort, bool automatic,
+bool SearchAll(const Query& query, const std::vector<std::shared_ptr<Searcher>>& searchers, abort_callback& abort,
+               bool automatic,
                const std::function<void(std::vector<Candidate>, bool)>& update) {
     bool complete = false;
     struct Slot {
@@ -461,17 +461,12 @@ bool SearchAll(const Query& query, const std::vector<std::shared_ptr<Searcher>>&
         std::vector<Candidate> candidates;
     };
     std::vector<Slot> slots(searchers.size());
-    if (cached) {
-        for (size_t i = 0; i < searchers.size(); ++i)
-            if (searchers[i]->Cacheable() && cached->sourceKey == searchers[i]->Key())
-                slots[i].candidates.push_back(*cached);
-    }
     std::mutex mutex;
     std::condition_variable changed;
     abort_callback_impl childrenAbort;
     std::vector<std::thread> children;
     for (size_t i = 0; i < searchers.size(); ++i) {
-        children.emplace_back([&, i, cached] {
+        children.emplace_back([&, i] {
             std::vector<Candidate> candidates;
             std::mutex candidateMutex;
             try {
@@ -544,6 +539,45 @@ bool SearchAll(const Query& query, const std::vector<std::shared_ptr<Searcher>>&
         child.join();
     return complete;
 }
+
+// What is already known for `query`, answered without a search: the owner's own selection
+// (`manual`), or the lyrics found before or the recent answer that no source has any
+// (`automatic`). `candidate`: the automatic lyrics' candidate, for Select lyrics.
+struct KnownAnswer {
+    Result result;
+    std::optional<Candidate> candidate;
+};
+std::optional<KnownAnswer> Known(const Query& query, bool manual, bool automatic) {
+    std::optional<CacheEntry> selected, found;
+    {
+        std::lock_guard lock(g_cacheMutex);
+        if (manual) selected = ReadCache(query, true);
+        if (automatic && !(selected && !selected->notFound)) found = ReadCache(query);
+    }
+    if (selected && selected->none) return KnownAnswer{{Status::NotFound, nullptr}, std::nullopt};
+    if (selected && !selected->notFound) return KnownAnswer{{Status::Found, selected->lyrics}, std::nullopt};
+    if (found && found->notFound) return KnownAnswer{{Status::NotFound, nullptr}, std::nullopt};
+    if (found && found->candidate && CandidateCurrent(*found->candidate))
+        return KnownAnswer{{Status::Found, found->lyrics}, found->candidate};
+    return std::nullopt;
+}
+
+// The automatic search's choice is kept for the track when its source may be cached. Under
+// g_cacheMutex.
+void PersistAutomatic(const Query& query, const std::vector<std::shared_ptr<Searcher>>& searchers,
+                      const Candidate& best) {
+    if (std::any_of(searchers.begin(), searchers.end(), [&](const auto& searcher) {
+            return searcher->Key() == best.sourceKey && searcher->Cacheable();
+        }))
+        WriteFile(CacheFile(query), Utf8(CachedText(best)));
+}
+
+// Every source answered and none has lyrics: remembered for a while, so the track does not set
+// off the same fruitless searches each time it plays. A search that timed out is not.
+void PersistNotFound(const Query& query) {
+    std::lock_guard lock(g_cacheMutex);
+    WriteFile(CacheFile(query), Utf8(cache_format::kNotFoundTag + std::to_wstring(_time64(nullptr)) + L"]\n"));
+}
 } // namespace
 
 void Service::Start(const metadb_handle_ptr& track, bool useAutomaticCache,
@@ -577,30 +611,10 @@ void Service::Start(const metadb_handle_ptr& track, bool useAutomaticCache,
     // What is already known is answered at once, without a search and without passing
     // through "searching": the owner's own selection, the lyrics found before, or the
     // recent answer that no source has any. Searching again is the owner's explicit command.
-    {
-        std::optional<CacheEntry> selected, automatic;
-        {
-            std::lock_guard lock(g_cacheMutex);
-            if (cache_format::ManualSelectionApplies(useAutomaticCache)) selected = ReadCache(query, true);
-            if (useAutomaticCache && !(selected && !selected->notFound)) automatic = ReadCache(query);
-        }
-        if (selected && selected->none) {
-            done({Status::NotFound, nullptr});
-            return;
-        }
-        if (selected && !selected->notFound) {
-            done({Status::Found, selected->lyrics});
-            return;
-        }
-        if (automatic && automatic->notFound) {
-            done({Status::NotFound, nullptr});
-            return;
-        }
-        if (automatic && automatic->candidate && CandidateCurrent(*automatic->candidate)) {
-            Remember(query, {*automatic->candidate});
-            done({Status::Found, automatic->lyrics});
-            return;
-        }
+    if (const auto known = Known(query, cache_format::ManualSelectionApplies(useAutomaticCache), useAutomaticCache)) {
+        if (known->candidate) Remember(query, {*known->candidate});
+        done(known->result);
+        return;
     }
 
     const auto searchers = scripts::Ordered(query.provider);
@@ -630,7 +644,7 @@ void Service::Start(const metadb_handle_ptr& track, bool useAutomaticCache,
         try {
             bool nothing = false;
             const bool complete = SearchAll(
-                query, searchers, std::nullopt, *abort, true, [&](std::vector<Candidate> candidates, bool) {
+                query, searchers, *abort, true, [&](std::vector<Candidate> candidates, bool) {
                           if (abort->is_aborting()) return;
                           if (candidates.empty()) {
                               nothing = true;
@@ -640,26 +654,15 @@ void Service::Start(const metadb_handle_ptr& track, bool useAutomaticCache,
                           remember(candidates);
                           const auto& best = candidates.front();
                           if (!CandidateCurrent(best)) return;
-                          const auto source =
-                              std::find_if(searchers.begin(), searchers.end(), [&](const auto& searcher) {
-                                  return searcher->Key() == best.sourceKey && searcher->Cacheable();
-                              });
                           {
                               std::lock_guard lock(g_cacheMutex);
                               if (abort->is_aborting() || !CandidateCurrent(best)) return;
-                              if (source != searchers.end())
-                                  WriteFile(CacheFile(query), Utf8(CachedText(best)));
+                              PersistAutomatic(query, searchers, best);
                           }
                           if (!CandidateCurrent(best)) return;
                           deliver(FromCandidate(best), BindingFor(best));
                       });
-            // Every source answered and none has lyrics: remember that for a while, so the
-            // track does not set off the same fruitless searches each time it plays. A search
-            // that timed out is not remembered.
-            if (complete && nothing && !abort->is_aborting()) {
-                std::lock_guard lock(g_cacheMutex);
-                WriteFile(CacheFile(query), Utf8(cache_format::kNotFoundTag + std::to_wstring(_time64(nullptr)) + L"]\n"));
-            }
+            if (complete && nothing && !abort->is_aborting()) PersistNotFound(query);
         } catch (const exception_aborted&) {
         } catch (const std::exception& error) {
             console::printf("Glasswave lyrics: %s", error.what());
@@ -674,19 +677,7 @@ void Service::Lookup(const metadb_handle_ptr& track, std::function<void(const Re
         return;
     }
     const Query query = MakeQuery(track);
-    {
-        std::optional<CacheEntry> selected, automatic;
-        {
-            std::lock_guard lock(g_cacheMutex);
-            selected = ReadCache(query, true);
-            if (!(selected && !selected->notFound)) automatic = ReadCache(query);
-        }
-        if (selected && selected->none) return done({Status::NotFound, nullptr});
-        if (selected && !selected->notFound) return done({Status::Found, selected->lyrics});
-        if (automatic && automatic->notFound) return done({Status::NotFound, nullptr});
-        if (automatic && automatic->candidate && CandidateCurrent(*automatic->candidate))
-            return done({Status::Found, automatic->lyrics});
-    }
+    if (const auto known = Known(query, true, true)) return done(known->result);
     // Nothing known: the automatic search, as Start runs it, answered once at its end.
     const auto searchers = scripts::Ordered(query.provider);
     auto abort = std::make_shared<abort_callback_impl>();
@@ -695,27 +686,20 @@ void Service::Lookup(const metadb_handle_ptr& track, std::function<void(const Re
         try {
             bool nothing = false;
             const bool complete = SearchAll(
-                query, searchers, std::nullopt, *abort, true, [&](std::vector<Candidate> candidates, bool) {
+                query, searchers, *abort, true, [&](std::vector<Candidate> candidates, bool) {
                     if (candidates.empty()) {
                         nothing = true;
                         return;
                     }
                     const auto& top = candidates.front();
                     if (!CandidateCurrent(top)) return;
-                    const auto source = std::find_if(searchers.begin(), searchers.end(), [&](const auto& searcher) {
-                        return searcher->Key() == top.sourceKey && searcher->Cacheable();
-                    });
-                    if (source != searchers.end()) {
+                    {
                         std::lock_guard lock(g_cacheMutex);
-                        WriteFile(CacheFile(query), Utf8(CachedText(top)));
+                        PersistAutomatic(query, searchers, top);
                     }
                     best = FromCandidate(top);
                 });
-            if (complete && nothing && best.status != Status::Found) {
-                std::lock_guard lock(g_cacheMutex);
-                WriteFile(CacheFile(query),
-                          Utf8(cache_format::kNotFoundTag + std::to_wstring(_time64(nullptr)) + L"]\n"));
-            }
+            if (complete && nothing && best.status != Status::Found) PersistNotFound(query);
         } catch (const exception_aborted&) {
             return;
         } catch (const std::exception& error) {
@@ -735,7 +719,7 @@ void Service::FindCandidates(Query query, std::wstring source,
     if (!source.empty())
         std::erase_if(searchers, [&](const auto& searcher) { return searcher->Key() != source; });
     Run(abort, [this, query = std::move(query), searchers = std::move(searchers), abort, done, generation] {
-        SearchAll(query, searchers, std::nullopt, *abort, false,
+        SearchAll(query, searchers, *abort, false,
                   [&](std::vector<Candidate> candidates, bool finished) {
                       fb2k::inMainThread(
                           [this, generation, done, query, candidates = std::move(candidates), finished] {
