@@ -386,7 +386,12 @@ Object Request(std::wstring_view path, abort_callback& abort, std::wstring_view 
     if (!options.body.empty()) options.headers.emplace_back(L"Content-Type", L"application/json");
 
     const net::HttpResponse response = net::SendHttp(config.url + std::wstring(path), options, abort);
-    if (response.status == 0 || !response.error.empty()) Fail("Cannot reach the Apple Music bridge.");
+    if (response.status == 0 || !response.error.empty()) {
+        // The transport's reason (a WinHTTP code, a truncated body); it holds no token or header.
+        std::string message = "Cannot reach the Apple Music bridge.";
+        if (!response.error.empty()) message += " " + Utf8(response.error);
+        Fail(message.c_str());
+    }
     if (response.status < 200 || response.status >= 300)
         throw BridgeHttpError(response.status,
                               response.body.find("webPlayback refused the library item") != std::string::npos);

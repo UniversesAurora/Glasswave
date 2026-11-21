@@ -32,8 +32,10 @@ std::string BuildRequestBody(const Request& request) {
 std::vector<Result> ParseResponse(const core::json::Object& response) {
     const auto array = core::json::GetArray(response, L"results");
     if (!array) return {};
-    const auto objects = core::json::Objects(*array);
-    if (objects.size() > kMaxResults) throw std::runtime_error("Too many Apple Music lyric results.");
+    auto objects = core::json::Objects(*array);
+    // The bridge is asked for a handful; more than kMaxResults are cut rather than failing the
+    // whole search.
+    if (objects.size() > kMaxResults) objects.erase(objects.begin() + kMaxResults, objects.end());
 
     std::vector<Result> results;
     results.reserve(objects.size());
