@@ -2,7 +2,7 @@
 #include "ui/taskbar.h"
 #include "win7/win7_resources.h"
 #include "gfx/composition_host.h"
-#include "media/special_playlists.h"
+#include "media/transport.h"
 #include "ui/art_cache.h"
 #include "ui/i18n.h"
 
@@ -183,18 +183,13 @@ bool Taskbar::OnMessage(UINT msg, WPARAM wp, LPARAM lp) {
         return true;
     }
     if (msg == WM_COMMAND && HIWORD(wp) == THBN_CLICKED) {
-        auto pc = playback_control::get();
         switch (LOWORD(wp)) {
-        case kPrev: pc->previous(); break;
-        case kNext: pc->next(); break;
+        case kPrev: media::transport::Previous(); break;
+        case kNext: media::transport::Next(); break;
         case kFavorite:
             if (onFavorite) onFavorite();
             break;
-        case kPlayPause:
-            if (media::PendingPlay()) break; // a list asked to play is still read
-            if (pc->is_playing()) pc->play_or_pause();
-            else pc->start();
-            break;
+        case kPlayPause: media::transport::PlayPause(); break;
         default: return false;
         }
         return true;

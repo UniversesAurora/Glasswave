@@ -3,6 +3,7 @@
 #include "ui/player_window.h"
 #include "media/radio.h"
 #include "media/special_playlists.h"
+#include "media/transport.h"
 
 #include "aero/aero_atlas.h"
 #include "aero/aero_metrics.h"
@@ -1084,10 +1085,7 @@ void PlayerWindow::CreateWidgets() {
                 paint::IconButton(dc, s, l, TransportGlyph::Stop, m_playing, false);
         },
         {})
-        ->onClick = [] {
-        media::CancelPendingPlay(); // Stop also gives up a list still being read to play
-        playback_control::get()->stop();
-    };
+        ->onClick = [] { media::transport::Stop(); };
     add(kPrev, m_barLayer,
         [this](auto* dc, D2D1_SIZE_F s, Layer l) {
             const bool enabled = m_playing && media::radio::CanGoBack();
@@ -1099,7 +1097,7 @@ void PlayerWindow::CreateWidgets() {
                 paint::Segment(dc, s, true, l, TransportGlyph::Previous, enabled);
         },
         {})
-        ->onClick = [] { playback_control::get()->previous(); };
+        ->onClick = [] { media::transport::Previous(); };
     add(kNext, m_barLayer,
         [this](auto* dc, D2D1_SIZE_F s, Layer l) {
             if (Wmc())
@@ -1110,7 +1108,7 @@ void PlayerWindow::CreateWidgets() {
                 paint::Segment(dc, s, false, l, TransportGlyph::Next, true);
         },
         {})
-        ->onClick = [] { playback_control::get()->next(); };
+        ->onClick = [] { media::transport::Next(); };
     for (int id : {kStop, kNext}) WidgetById(id)->enabled = [this] { return m_playing; };
     WidgetById(kPrev)->enabled = [this] { return m_playing && media::radio::CanGoBack(); };
 
@@ -1136,14 +1134,7 @@ void PlayerWindow::CreateWidgets() {
                 paint::PlayOrb(dc, s.width, l, showPause ? TransportGlyph::Pause : TransportGlyph::Play);
         },
         orb)
-        ->onClick = [] {
-        if (media::PendingPlay()) return; // a list asked to play is still read: not the old queue
-        auto pc = playback_control::get();
-        if (pc->is_playing())
-            pc->play_or_pause();
-        else
-            pc->start();
-    };
+        ->onClick = [] { media::transport::PlayPause(); };
 
     // The speaker. In a narrow mini window it carries the arrow that opens the volume flyout.
     add(kMute, m_barLayer,
@@ -4284,7 +4275,7 @@ LRESULT PlayerWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
             Show(m_mode == Mode::Full ? Mode::Mini : Mode::Full);
             return 0;
         case VK_SPACE:
-            if (!media::PendingPlay()) playback_control::get()->play_or_pause();
+            media::transport::PlayPause();
             return 0;
         case VK_LEFT:
         case VK_RIGHT:

@@ -236,6 +236,7 @@
     <ClCompile Include="ui\home_page.cpp" />
     <ClCompile Include="ui\home_store.cpp" />
     <ClCompile Include="media\radio.cpp" />
+    <ClCompile Include="media\transport.cpp" />
     <ClCompile Include="ui\search_popup.cpp" />
     <ClCompile Include="ui\search_scope.cpp" />
     <ClCompile Include="ui\source_badge.cpp" />
@@ -379,6 +380,7 @@
     <ClInclude Include="ui\home_page.h" />
     <ClInclude Include="ui\home_store.h" />
     <ClInclude Include="media\radio.h" />
+    <ClInclude Include="media\transport.h" />
     <ClInclude Include="ui\search_popup.h" />
     <ClInclude Include="ui\search_scope.h" />
     <ClInclude Include="ui\source_badge.h" />

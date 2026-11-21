@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "media/playback_scheduler.h"
+#include "media/transport.h"
 #include "ui/i18n.h"
 #include "ui/main_menu.h"
 #include "ui/main_window.h"
@@ -8,6 +9,7 @@
 #include <cwctype>
 #include <map>
 #include <set>
+#include <string>
 #include <string_view>
 
 namespace glasswave::ui {
@@ -159,18 +161,37 @@ void EnhancePlaybackMenu(HMENU menu, CommandActions& commands) {
     };
 }
 
+// The description foobar2000 gives a main-menu command, found by the command's GUID. It tells the
+// command's item apart in a generated menu, whose labels are translated and carry the shortcut.
+std::string CommandDescription(const GUID& command) {
+    for (auto commands : mainmenu_commands::enumerate()) {
+        for (t_uint32 i = 0, n = commands->get_command_count(); i < n; ++i) {
+            if (commands->get_command(i) != command) continue;
+            pfc::string8 description;
+            return commands->get_description(i, description) ? std::string(description.get_ptr()) : std::string();
+        }
+    }
+    return {};
+}
+
 void SnapshotNativeCommands(HMENU menu, const service_ptr_t<mainmenu_manager>& manager, UINT base, UINT count,
-                            CommandActions& commands) {
+                            const std::string& stopDescription, CommandActions& commands) {
     for (int i = 0; i < GetMenuItemCount(menu); ++i) {
         MENUITEMINFOW info{sizeof(info)};
         info.fMask = MIIM_ID | MIIM_FTYPE | MIIM_SUBMENU;
         if (!GetMenuItemInfoW(menu, static_cast<UINT>(i), TRUE, &info) || (info.fType & MFT_SEPARATOR))
             continue;
         if (info.hSubMenu) {
-            SnapshotNativeCommands(info.hSubMenu, manager, base, count, commands);
+            SnapshotNativeCommands(info.hSubMenu, manager, base, count, stopDescription, commands);
         } else if (info.wID >= base && info.wID - base < count) {
             const UINT relative = info.wID - base;
-            commands[info.wID] = [manager, relative] { manager->execute_command(relative); };
+            // Playback > Stop is Glasswave's Stop, which also gives up a list still being read to play.
+            pfc::string8 description;
+            if (!stopDescription.empty() && manager->get_description(relative, description) &&
+                stopDescription == description.get_ptr())
+                commands[info.wID] = [] { media::transport::Stop(); };
+            else
+                commands[info.wID] = [manager, relative] { manager->execute_command(relative); };
         }
     }
 }
@@ -221,6 +242,7 @@ void ShowMainMenu(HWND owner, POINT pt, const std::vector<MenuAction>& actions) 
         if (flat[i]->run) commands[kActionBase + static_cast<UINT>(i)] = flat[i]->run;
     if (!actions.empty()) AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
 
+    const std::string stopDescription = CommandDescription(standard_commands::guid_main_stop);
     uint32_t base = 1;
     for (const auto& root : kRoots) {
         auto mgr = standard_api_create_t<mainmenu_manager>();
@@ -228,7 +250,7 @@ void ShowMainMenu(HWND owner, POINT pt, const std::vector<MenuAction>& actions) 
         HMENU sub = CreatePopupMenu();
         mgr->generate_menu_win32(sub, base, kIdsPerRoot, mainmenu_manager::flag_show_shortcuts);
         if (&mainmenu_groups::playback == root.guid) EnhancePlaybackMenu(sub, commands);
-        SnapshotNativeCommands(sub, mgr, base, kIdsPerRoot, commands);
+        SnapshotNativeCommands(sub, mgr, base, kIdsPerRoot, stopDescription, commands);
         AppendMenuW(menu, MF_POPUP | MF_STRING, reinterpret_cast<UINT_PTR>(sub), root.label);
         base += kIdsPerRoot;
     }

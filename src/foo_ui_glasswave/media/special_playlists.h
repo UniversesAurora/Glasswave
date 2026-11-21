@@ -51,7 +51,8 @@ bool PlayQueue(const metadb_handle_list& items, size_t start);
 // Playing a list that must be read first (a service's playlist or album from its card or page).
 // Asking stops what plays at once; until the list is read, Play does not bring the old queue
 // back (owner, 2026-11-20: the old song went on for 15 s after a card's play was pressed). A
-// newer request, Stop, or any queue that starts playing (PlayQueue) supersedes it.
+// newer request, Stop (media::transport::Stop), or any playback that starts meanwhile supersedes
+// it. foobar2000's own Stop pressed while nothing plays reports no event and cannot give it up.
 uint64_t BeginPendingPlay();
 bool TakePendingPlay(uint64_t token); // true when this request is still the one to play; clears it
 void DropPendingPlay(uint64_t token); // its read failed

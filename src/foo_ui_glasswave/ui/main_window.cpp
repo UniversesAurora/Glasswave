@@ -14,6 +14,7 @@
 #include "ui/downloads_page.h"
 #include "ui/home_page.h"
 #include "media/radio.h"
+#include "media/transport.h"
 #include "core/log.h"
 #include "core/text.h"
 #include "aero/aero_atlas.h"
@@ -1424,10 +1425,7 @@ void MainWindow::CreateWidgets() {
                 paint::IconButton(dc, s, l, TransportGlyph::Stop, m_playing, false);
         },
         {})
-        ->onClick = [] {
-        media::CancelPendingPlay(); // Stop also gives up a list still being read to play
-        playback_control::get()->stop();
-    };
+        ->onClick = [] { media::transport::Stop(); };
     // Like WMP 12, stop / previous / next are disabled while nothing plays: no hover, no click.
     add(kPrev,
         [this](auto* dc, D2D1_SIZE_F s, Layer l) {
@@ -1438,7 +1436,7 @@ void MainWindow::CreateWidgets() {
                 paint::Segment(dc, s, true, l, TransportGlyph::Previous, enabled);
         },
         {})
-        ->onClick = [] { playback_control::get()->previous(); };
+        ->onClick = [] { media::transport::Previous(); };
     add(kNext,
         [this](auto* dc, D2D1_SIZE_F s, Layer l) {
             if (m_win7Art)
@@ -1447,7 +1445,7 @@ void MainWindow::CreateWidgets() {
                 paint::Segment(dc, s, false, l, TransportGlyph::Next, true);
         },
         {})
-        ->onClick = [] { playback_control::get()->next(); };
+        ->onClick = [] { media::transport::Next(); };
     for (int id : {kStop, kNext})
         WidgetById(id)->enabled = [this] { return m_playing; };
     WidgetById(kPrev)->enabled = [this] { return m_playing && media::radio::CanGoBack(); };
@@ -1474,16 +1472,12 @@ void MainWindow::CreateWidgets() {
         },
         orb)
         ->onClick = [this] {
-        if (media::PendingPlay()) return; // a list asked to play is still read: not the old queue
-        auto pc = playback_control::get();
-        if (pc->is_playing()) {
-            pc->play_or_pause();
-        } else if (m_list && m_source && m_source->Focus() != SIZE_MAX &&
-                   m_source->Focus() < m_source->Count()) {
+        media::transport::PlayPause([this] {
+            if (!m_list || !m_source || m_source->Focus() == SIZE_MAX || m_source->Focus() >= m_source->Count())
+                return false;
             m_source->Activate(m_source->Focus()); // like WMP: play what is selected
-        } else {
-            pc->start();
-        }
+            return true;
+        });
     };
 
     add(kMute,
@@ -7763,7 +7757,7 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
                 return 0;
             }
             if (wp == VK_SPACE && !m_search->Focused()) { // WMP's play / pause
-                if (!media::PendingPlay()) playback_control::get()->play_or_pause();
+                media::transport::PlayPause();
                 return 0;
             }
             if (wp == VK_BACK && !m_search->Focused()) {

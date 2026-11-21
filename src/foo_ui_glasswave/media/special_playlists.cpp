@@ -165,6 +165,27 @@ bool PendingPlay() { return g_pendingPlay != 0; }
 
 void CancelPendingPlay() { g_pendingPlay = 0; }
 
+namespace {
+// Playback that starts while a list is still being read to play was asked for after it (a media
+// key, foobar2000's own Play or Next, a double click in another view): it supersedes the list.
+// PlayQueue, which plays the list itself, has given up the request before it starts.
+class PendingPlaySupersede : public play_callback_static {
+  public:
+    unsigned get_flags() override { return flag_on_playback_starting; }
+    void on_playback_starting(play_control::t_track_command, bool) override { CancelPendingPlay(); }
+    void on_playback_new_track(metadb_handle_ptr) override {}
+    void on_playback_stop(play_control::t_stop_reason) override {}
+    void on_playback_seek(double) override {}
+    void on_playback_pause(bool) override {}
+    void on_playback_edited(metadb_handle_ptr) override {}
+    void on_playback_dynamic_info(const file_info&) override {}
+    void on_playback_dynamic_info_track(const file_info&) override {}
+    void on_playback_time(double) override {}
+    void on_volume_change(float) override {}
+};
+play_callback_static_factory_t<PendingPlaySupersede> g_pendingPlaySupersede;
+} // namespace
+
 bool PlayQueue(const metadb_handle_list& items, size_t start) {
     if (items.get_count() == 0) return false;
     g_pendingPlay = 0; // whatever was being read to play, this is what plays now
