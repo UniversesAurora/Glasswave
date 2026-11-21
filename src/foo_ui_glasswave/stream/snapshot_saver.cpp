@@ -52,54 +52,48 @@ void SnapshotSaver::Reset() {
     m_dirty = false;
 }
 
+// Held by a queued write: when the write has run, and also when the executor dropped it unrun
+// (a generation bump that is not a Reset, such as a language change), the saver is free for the
+// next one. A change that arrived meanwhile queues that next write.
+struct SnapshotSaver::Flight {
+    SnapshotSaver& saver;
+    uint64_t epoch;
+    ~Flight() { saver.Release(epoch); }
+};
+
 void SnapshotSaver::Queue() {
     if (!m_hooks.eligible()) return;
-    uint64_t epoch = 0;
     uint64_t generation = 0;
+    std::shared_ptr<Flight> flight;
     {
         std::lock_guard lock(m_mutex);
         m_dirty = true;
         if (m_posted) return;
         m_posted = true;
         m_dirty = false;
-        epoch = m_epoch;
+        flight = std::make_shared<Flight>(Flight{*this, m_epoch});
         generation = m_executor.Generation();
     }
-
-    const auto abandon = [this, epoch] {
-        std::lock_guard lock(m_mutex);
-        if (epoch == m_epoch) m_posted = false;
-    };
     auto draft = std::make_shared<Draft>();
     try {
-        if (!Prepare(*draft)) return abandon();
+        if (!Prepare(*draft)) return;
     } catch (...) {
-        return abandon();
+        return;
     }
-
-    const bool queued = m_executor.Post(m_queue, generation, [this, epoch, generation, draft] {
+    m_executor.Post(m_queue, generation, [this, draft, flight = std::move(flight)] {
         if (m_hooks.eligible()) Commit(*draft);
-        m_executor.PostMain(generation, [this, epoch] { Complete(epoch); });
     });
-    if (!queued) abandon();
 }
 
-void SnapshotSaver::Complete(uint64_t epoch) {
-    bool dirty = false;
+void SnapshotSaver::Release(uint64_t epoch) {
     {
         std::lock_guard lock(m_mutex);
         if (epoch != m_epoch) return;
         m_posted = false;
-        dirty = m_dirty;
+        if (!std::exchange(m_dirty, false)) return;
     }
-    if (!dirty) return;
-    // Changes arrived while the write ran: write once more when it still makes sense.
-    if (m_hooks.eligible()) {
-        Queue();
-        return;
-    }
-    std::lock_guard lock(m_mutex);
-    if (epoch == m_epoch) m_dirty = false;
+    // Changes arrived while the write ran: write once more (Queue asks whether it still may).
+    fb2k::inMainThread([this] { Queue(); });
 }
 
 } // namespace glasswave::stream

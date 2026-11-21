@@ -59,8 +59,10 @@ class SnapshotSaver {
     void Commit(const Draft& draft) const;
 
   private:
+    struct Flight;
     bool Prepare(Draft& draft) const;
-    void Complete(uint64_t epoch);
+    // The write of `epoch` has ended, run or dropped (any thread).
+    void Release(uint64_t epoch);
 
     std::string m_key;
     Executor& m_executor;
