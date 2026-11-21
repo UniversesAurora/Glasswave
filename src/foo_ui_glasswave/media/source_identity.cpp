@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "media/source_identity.h"
+#include "core/file.h"
 #include "core/text.h"
 #include "media/cue_encoding.h"
 #include "media/library_model.h"
@@ -113,20 +114,10 @@ CueCatalog::CueInfo& CueCatalog::Cue(const std::wstring& nativePath) {
     if (!inserted) return info;
     info.stem = Lower(StemOf(StemOf(FileNameOf(nativePath))));  // "X.ape.cue" -> "x"
 
-    std::string bytes;
-    {
-        HANDLE f = CreateFileW(nativePath.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
-                               OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-        if (f == INVALID_HANDLE_VALUE) return info;
-        LARGE_INTEGER size{};
-        if (GetFileSizeEx(f, &size) && size.QuadPart > 0 && size.QuadPart < (1 << 20)) {
-            bytes.resize(static_cast<size_t>(size.QuadPart));
-            DWORD read = 0;
-            ReadFile(f, bytes.data(), static_cast<DWORD>(bytes.size()), &read, nullptr);
-            bytes.resize(read);
-        }
-        CloseHandle(f);
-    }
+    // A cue sheet is small; an unreadable or oversized one keeps its (empty) entry.
+    auto read = core::ReadFileLimited(nativePath, (1 << 20) - 1);
+    if (!read) return info;
+    std::string bytes = std::move(*read);
     info.utf8Bom = bytes.size() >= 3 && static_cast<unsigned char>(bytes[0]) == 0xEF &&
                    static_cast<unsigned char>(bytes[1]) == 0xBB && static_cast<unsigned char>(bytes[2]) == 0xBF;
     if (info.utf8Bom) bytes.erase(0, 3);

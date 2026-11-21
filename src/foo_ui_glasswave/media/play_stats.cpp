@@ -1,5 +1,7 @@
 #include "pch.h"
 #include "media/play_stats.h"
+#include "core/log.h"
+#include "core/file.h"
 #include "core/text.h"
 #include "core/paths.h"
 #include "stream/provider.h"
@@ -151,13 +153,7 @@ void PlayStats::Load() {
 void PlayStats::Save() const {
     const auto file = StatsFile();
     if (file.empty()) return;
-    std::error_code ec;
-    std::filesystem::create_directories(file.parent_path(), ec);
-    if (ec) return;
-    auto temp = file;
-    temp += L".tmp";
-    std::ofstream out(temp, std::ios::binary | std::ios::trunc);
-    if (!out) return;
+    std::ostringstream out;
     auto text = [](const std::wstring& value) { return Escape(Utf8(value)); };
     out << kHeader << '\n';
     for (const auto& record : m_records) {
@@ -167,12 +163,11 @@ void PlayStats::Save() const {
             << Escape(record.path) << '\t' << Escape(record.title) << '\t' << Escape(record.artist) << '\t'
             << Escape(record.album) << '\n';
     }
-    out.close();
-    if (!out) {  // disk full or similar: keep the previous file
-        DeleteFileW(temp.c_str());
-        return;
+    try {
+        core::WriteFileAtomic(file, out.str());
+    } catch (const std::exception& e) {  // disk full or similar: the previous file stays
+        core::Log(L"play stats: cannot save: " + core::Wide(e.what()));
     }
-    MoveFileExW(temp.c_str(), file.c_str(), MOVEFILE_REPLACE_EXISTING);
 }
 
 void PlayStats::Prune() {

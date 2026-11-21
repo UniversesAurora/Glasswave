@@ -253,6 +253,7 @@
     <ClCompile Include="netease\handle.cpp" />
     <ClCompile Include="net\http.cpp" />
     <ClCompile Include="netease\input_ncm.cpp" />
+    <ClCompile Include="core\file.cpp" />
     <ClCompile Include="core\json.cpp" />
     <ClCompile Include="core\log.cpp" />
     <ClCompile Include="core\paths.cpp" />
@@ -383,6 +384,7 @@
     <ClInclude Include="netease\handle.h" />
     <ClInclude Include="net\http.h" />
     <ClInclude Include="net\http_request.h" />
+    <ClInclude Include="core\file.h" />
     <ClInclude Include="core\json.h" />
     <ClInclude Include="core\log.h" />
     <ClInclude Include="core\paths.h" />

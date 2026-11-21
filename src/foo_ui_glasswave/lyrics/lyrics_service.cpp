@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "core/text.h"
+#include "core/file.h"
 
 #include "lyrics/lyrics_service.h"
 #include "core/paths.h"
@@ -31,25 +32,16 @@ using core::Wide;
 using core::Utf8;
 
 std::optional<std::string> ReadFile(const std::filesystem::path& path) {
-    std::error_code ec;
-    if (std::filesystem::file_size(path, ec) > 4 * 1024 * 1024 || ec) return std::nullopt;
-    std::ifstream in(path, std::ios::binary);
-    if (!in) return std::nullopt;
-    return std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    return core::ReadFileLimited(path, 4 * 1024 * 1024);
 }
 
 bool WriteFile(const std::filesystem::path& path, std::string_view bytes) {
-    std::error_code ec;
-    std::filesystem::create_directories(path.parent_path(), ec);
-    const auto part = std::filesystem::path(path).concat(L".part");
-    {
-        std::ofstream out(part, std::ios::binary | std::ios::trunc);
-        if (!out) return false;
-        out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
-        if (!out) return false;
+    try {
+        core::WriteFileAtomic(path, bytes);
+        return true;
+    } catch (const std::exception&) {
+        return false;
     }
-    return MoveFileExW(part.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) !=
-           FALSE;
 }
 
 std::wstring EmbeddedLyrics(const metadb_handle_ptr& track) {

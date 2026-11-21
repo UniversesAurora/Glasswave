@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "lyrics/native_sources.h"
+#include "core/file.h"
 #include "core/text.h"
 
 #include "cache/store.h"
@@ -87,18 +88,13 @@ class SidecarSearcher final : public Searcher {
         path.replace_extension(L".lrc");
         std::error_code error;
         if (!std::filesystem::is_regular_file(path, error)) return;
-        if (error || std::filesystem::file_size(path, error) > 4ull * 1024 * 1024 || error) {
+        const auto bytes = error ? std::nullopt : core::ReadFileLimited(path, 4 * 1024 * 1024);
+        if (!bytes) {
             console::printf("Glasswave lyrics [sidecar]: cannot read the companion lyric file");
             return;
         }
-        std::ifstream input(path, std::ios::binary);
-        if (!input) {
-            console::printf("Glasswave lyrics [sidecar]: cannot open the companion lyric file");
-            return;
-        }
-        std::string bytes((std::istreambuf_iterator<char>(input)), {});
-        if (input.bad() || abort.is_aborting()) return;
-        std::wstring text = DecodeText(bytes);
+        if (abort.is_aborting()) return;
+        std::wstring text = DecodeText(*bytes);
         if (ParseLrc(text).lines.empty()) return;
         Candidate candidate;
         candidate.title = query.title;

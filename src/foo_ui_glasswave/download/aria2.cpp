@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "download/aria2.h"
+#include "core/file.h"
 #include "core/hex.h"
 #include "core/text.h"
 #include "core/paths.h"
@@ -105,17 +106,14 @@ bool Install(abort_callback& abort, std::wstring& error) {
         error = L"The aria2 archive has no aria2c.exe.";
         return false;
     }
-    auto temp = exe;
-    temp += L".part";
-    bool written = false;
-    {
-        std::ofstream out(temp, std::ios::binary | std::ios::trunc);
-        out.write(static_cast<const char*>(data), static_cast<std::streamsize>(size));
-        written = static_cast<bool>(out);
+    bool written = true;
+    try {
+        core::WriteFileAtomic(exe, std::string_view(static_cast<const char*>(data), size));
+    } catch (const std::exception&) {
+        written = false;
     }
     mz_free(data);
-    if (!written || !MoveFileExW(temp.c_str(), exe.c_str(), MOVEFILE_REPLACE_EXISTING)) {
-        std::filesystem::remove(temp, ec);
+    if (!written) {
         error = L"Cannot install aria2.";
         return false;
     }

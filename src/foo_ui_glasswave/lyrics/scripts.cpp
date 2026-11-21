@@ -1,5 +1,7 @@
 #include "pch.h"
 #include "lyrics/scripts.h"
+#include "core/log.h"
+#include "core/file.h"
 #include "core/text.h"
 #include "lyrics/script_host.h"
 #include "applemusic/lyrics_source.h"
@@ -68,21 +70,16 @@ bool Enabled(std::wstring_view key) {
 
 std::string ReadData(const std::filesystem::path& path) {
     std::lock_guard lock(g_dataMutex);
-    std::ifstream file(path, std::ios::binary);
-    return file ? std::string((std::istreambuf_iterator<char>(file)), {}) : std::string();
+    return core::ReadFileLimited(path, 16 * 1024 * 1024).value_or(std::string());
 }
 
 void WriteData(const std::filesystem::path& path, const std::string& text) {
     std::lock_guard lock(g_dataMutex);
-    std::error_code ec;
-    std::filesystem::create_directories(path.parent_path(), ec);
-    auto part = path;
-    part += L".part";
-    {
-        std::ofstream file(part, std::ios::binary | std::ios::trunc);
-        if (!file || !file.write(text.data(), static_cast<std::streamsize>(text.size()))) return;
+    try {
+        core::WriteFileAtomic(path, text);
+    } catch (const std::exception& e) {
+        core::Log(L"lyrics: cannot save script data: " + Wide(e.what()));
     }
-    MoveFileExW(part.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
 }
 
 std::filesystem::path DataFile(const std::string& script, const std::string& key) {

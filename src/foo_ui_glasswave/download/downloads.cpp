@@ -1,5 +1,7 @@
 #include "pch.h"
 #include "download/downloads.h"
+#include "core/log.h"
+#include "core/file.h"
 #include "core/text.h"
 #include "core/paths.h"
 
@@ -171,16 +173,11 @@ void Save() {
     }
     const auto file = ListFile();
     if (file.empty()) return;
-    std::error_code ec;
-    std::filesystem::create_directories(file.parent_path(), ec);
-    const auto temp = std::filesystem::path(file).concat(L".tmp");
-    {
-        std::ofstream out(temp, std::ios::binary | std::ios::trunc);
-        if (!out) return;
-        out.write(text.data(), static_cast<std::streamsize>(text.size()));
-        if (!out) return;
+    try {
+        core::WriteFileAtomic(file, text);
+    } catch (const std::exception& e) {  // the previous list stays
+        core::Log(L"downloads: cannot save the list: " + Wide(e.what()));
     }
-    MoveFileExW(temp.c_str(), file.c_str(), MOVEFILE_REPLACE_EXISTING);
 }
 
 void Load() {
@@ -433,12 +430,11 @@ void WriteLyrics(const std::wstring& path, const std::wstring& text) {
     const std::wstring lrc = LrcPath(path);
     if (sidecar && !text.empty()) {
         const std::string bytes = "\xEF\xBB\xBF" + Utf8(text); // UTF-8 with a BOM, as players expect
-        const std::wstring temp = lrc + L".tmp";
-        {
-            std::ofstream out(std::filesystem::path(temp), std::ios::binary | std::ios::trunc);
-            out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+        try {
+            core::WriteFileAtomic(lrc, bytes);  // a failed write leaves an existing .lrc as it was
+        } catch (const std::exception& e) {
+            core::Log(L"downloads: cannot write the lyrics file: " + Wide(e.what()));
         }
-        MoveFileExW(temp.c_str(), lrc.c_str(), MOVEFILE_REPLACE_EXISTING);
     } else if (Exists(lrc)) {
         DeleteFileW(lrc.c_str()); // ours: the song's own name beside it
     }
