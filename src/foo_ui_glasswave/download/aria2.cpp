@@ -14,6 +14,8 @@
 #include <winrt/Windows.Foundation.Collections.h>
 #include <winsock2.h>
 
+#include <chrono>
+#include <condition_variable>
 #include <filesystem>
 #include <fstream>
 #include <mutex>
@@ -36,7 +38,13 @@ constexpr wchar_t kZipUrl[] =
     L"https://github.com/aria2/aria2/releases/download/release-1.37.0/aria2-1.37.0-win-64bit-build1.zip";
 constexpr char kExeInZip[] = "aria2-1.37.0-win-64bit-build1/aria2c.exe";
 
+// g_mutex guards the state below and is held only for short reads and writes, never across the
+// install (a 16 MB download) or the engine's start (up to ten seconds): Version() and
+// RetryAfterFailure() are called on the main thread. One Ensure installs and starts; the others
+// wait on g_started.
 std::mutex g_mutex;
+std::condition_variable g_started;
+bool g_starting = false;
 HANDLE g_process = nullptr, g_job = nullptr;
 std::wstring g_base; // http://127.0.0.1:<port>/jsonrpc
 std::wstring g_secret;
@@ -164,18 +172,23 @@ JsonValue Call(const std::wstring& base, const std::wstring& secret, const wchar
     return answer.GetNamedValue(L"result");
 }
 
-bool StartLocked(std::wstring& error) {
-    StopLocked();
+// Starts aria2 and waits until it answers. Not under g_mutex: the lock is taken only to publish
+// the process and to read it back while polling.
+bool StartEngine(std::wstring& error) {
+    {
+        std::lock_guard lock(g_mutex);
+        StopLocked();
+    }
     const int port = PickLoopbackPort();
     if (!port) {
         error = L"Cannot find a free loopback port for aria2.";
         return false;
     }
-    g_secret = RandomSecret();
+    const std::wstring secret = RandomSecret();
     const auto exe = ExePath();
     const auto folder = exe.parent_path();
     std::wstring command = L"\"" + exe.wstring() + L"\" --no-conf=true --enable-rpc=true --rpc-listen-all=false" +
-                           L" --rpc-listen-port=" + std::to_wstring(port) + L" --rpc-secret=" + g_secret +
+                           L" --rpc-listen-port=" + std::to_wstring(port) + L" --rpc-secret=" + secret +
                            L" --stop-with-process=" + std::to_wstring(GetCurrentProcessId()) +
                            L" --max-concurrent-downloads=16 --continue=true --file-allocation=none" +
                            L" --auto-file-renaming=false --allow-overwrite=true --max-tries=5 --retry-wait=2" +
@@ -198,23 +211,39 @@ bool StartLocked(std::wstring& error) {
     }
     ResumeThread(process.hThread);
     CloseHandle(process.hThread);
-    g_process = process.hProcess;
-    g_job = job;
-    g_base = L"http://127.0.0.1:" + std::to_wstring(port) + L"/jsonrpc";
+    const std::wstring base = L"http://127.0.0.1:" + std::to_wstring(port) + L"/jsonrpc";
+    {
+        std::lock_guard lock(g_mutex);
+        g_process = process.hProcess;
+        g_job = job;
+        g_secret = secret;
+        g_base = base;
+    }
 
     for (int attempt = 0; attempt < 40; ++attempt) { // up to ten seconds
-        if (!RunningLocked()) break;
+        {
+            std::lock_guard lock(g_mutex);
+            if (g_process != process.hProcess || !RunningLocked()) break; // exited, or shut down
+        }
         try {
             abort_callback_impl local;
-            const auto result = Call(g_base, g_secret, L"aria2.getVersion", JsonArray(), local);
-            g_version = result.GetObject().GetNamedString(L"version", L"").c_str();
-            FB2K_console_formatter() << "Glasswave: aria2 " << Utf8(g_version).c_str() << " ready";
+            const auto result = Call(base, secret, L"aria2.getVersion", JsonArray(), local);
+            const std::wstring version = result.GetObject().GetNamedString(L"version", L"").c_str();
+            {
+                std::lock_guard lock(g_mutex);
+                if (g_process != process.hProcess) break;
+                g_version = version;
+            }
+            FB2K_console_formatter() << "Glasswave: aria2 " << Utf8(version).c_str() << " ready";
             return true;
         } catch (const std::exception&) {
         }
         Sleep(250);
     }
-    StopLocked();
+    {
+        std::lock_guard lock(g_mutex);
+        if (g_process == process.hProcess) StopLocked();
+    }
     error = L"aria2 did not start.";
     return false;
 }
@@ -224,22 +253,45 @@ JsonValue Str(const std::wstring& text) { return JsonValue::CreateStringValue(te
 } // namespace
 
 bool Ensure(abort_callback& abort, std::wstring* error) {
-    std::lock_guard lock(g_mutex);
-    if (RunningLocked() && !g_base.empty()) return true;
-    if (g_failed) {
-        if (error) *error = g_lastError;
-        return false;
+    {
+        std::unique_lock lock(g_mutex);
+        for (;;) {
+            if (RunningLocked() && !g_base.empty()) return true;
+            if (g_failed) {
+                if (error) *error = g_lastError;
+                return false;
+            }
+            if (!g_starting) break;
+            // Another worker is installing or starting the engine: wait for it, still abortable.
+            g_started.wait_for(lock, std::chrono::milliseconds(200));
+            abort.check();
+        }
+        g_starting = true;
     }
+    struct Done {
+        ~Done() {
+            {
+                std::lock_guard lock(g_mutex);
+                g_starting = false;
+            }
+            g_started.notify_all();
+        }
+    } done;
+
     std::wstring why;
-    const bool ok = (std::filesystem::exists(ExePath()) || Install(abort, why)) && StartLocked(why);
+    const bool ok = (std::filesystem::exists(ExePath()) || Install(abort, why)) && StartEngine(why);
     if (ok) {
+        std::lock_guard lock(g_mutex);
         g_failed = false;
         g_lastError.clear();
         return true;
     }
     abort.check(); // a pause or exit is not a failure of the engine
-    g_failed = true;
-    g_lastError = why;
+    {
+        std::lock_guard lock(g_mutex);
+        g_failed = true;
+        g_lastError = why;
+    }
     FB2K_console_formatter() << "Glasswave: aria2 unavailable: " << Utf8(why).c_str();
     if (error) *error = why;
     return false;
