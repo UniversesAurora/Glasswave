@@ -64,7 +64,15 @@ class SessionCleanupQueue : public initquit {
         std::lock_guard lock(state.mutex);
         if (state.stopped) return;
         if (!state.queue) state.queue = std::make_unique<core::TaskQueue>(1);
-        state.queue->Post(std::move(task));
+        // A queue that stops still runs what it holds: a DELETE still waiting at quit is skipped
+        // rather than delaying it by up to a second each.
+        state.queue->Post([&state, task = std::move(task)] {
+            {
+                std::lock_guard lock(state.mutex);
+                if (state.stopped) return;
+            }
+            task();
+        });
     }
 
     void on_quit() override {
