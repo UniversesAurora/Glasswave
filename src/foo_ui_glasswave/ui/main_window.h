@@ -151,26 +151,19 @@ class MainWindow : public PageHost, public PlayerHost {
         POINT cluster{};                   // origin of the WMP 12 transport cluster bitmap
     };
 
-    // Breadcrumb (WMP 12 address bar): each level is a name that navigates there and, if
-    // the level has children, an arrow after it that lists them.
-    struct Crumb {
-        std::wstring text;                                 // empty: the leading root arrow
-        std::function<void()> open;                        // click on the name
-        std::function<std::vector<MenuAction>()> children; // arrow menu; empty = no arrow
-        bool literal = false;                              // a user's name: shown untranslated
-        float x0 = 0, split = 0, x1 = 0;                   // DIP: name [x0, split), arrow [split, x1)
-    };
-    std::vector<Crumb> m_crumbs;
-    int m_crumbHot = -1, m_crumbHotPart = 0; // part 0 = name, 1 = arrow
-    int m_crumbOpen = -1;                    // crumb whose arrow menu is open
+    // Breadcrumb (WMP 12 address bar): the window gives it the path; its look and behaviour
+    // are the component's (ui/breadcrumb.h).
+    using Crumb = Breadcrumb::Level;
+    std::unique_ptr<Breadcrumb> m_crumbBar;
+    std::wstring m_loggedPath; // the path last written to the log
     // One navigation model for every library: a path of levels, each with its own children
     // menu. Structural levels always get a menu (the arrow also separates the crumbs).
-    std::vector<Crumb> BuildCrumbPath();
-    void BuildCrumbs();
-    void LayoutCrumbs();
+    std::vector<Crumb> BuildCrumbPath(const View& view); // its opener's path, then its own level
+    std::vector<Crumb> PlacePath(const View& view);      // a page's own place, from the root
     std::vector<MenuAction> LibraryMenu();
     std::vector<MenuAction> AllSectionsMenu();
     std::vector<MenuAction> LocalSectionsMenu();
+    bool LocalPlayShown() const;
     std::vector<MenuAction> ProviderSectionsMenu(stream::Provider& provider);
     std::vector<MenuAction> PlaylistListMenu(bool smart);
     std::vector<MenuAction> GroupListMenu(media::GroupKind kind);

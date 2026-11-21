@@ -964,6 +964,8 @@ void MainWindow::InitComposition() {
                     &m_cluster, &m_divider, &m_clientGlow, &m_title, &m_nowPlaying, &m_breadcrumb,
                     &m_navGroove, &m_time, &m_streamVisual})
         *v = comp.CreateSpriteVisual();
+    m_crumbBar = std::make_unique<Breadcrumb>([this] { StartScrollAnimation(); });
+    m_crumbBar->SetVisual(m_breadcrumb);
     for (auto& v : m_sideHighlight) {
         v = comp.CreateSpriteVisual();
         children.InsertAtTop(v);
@@ -2060,6 +2062,7 @@ void MainWindow::UpdateLayout() {
         RECT t = L.breadcrumb;
         t.right = std::min<LONG>(t.right, t.left + PxI(900));
         Place(m_breadcrumb, t);
+        m_crumbBar->SetBounds(t, m_scale);
     }
     m_nav->SetBounds(L.navPane, m_scale);
     m_list->SetBounds(L.list, m_scale);
@@ -3535,42 +3538,25 @@ void MainWindow::ShowDeviceMenu() {
         popup_message::g_show(e.what(), "Output device");
         return;
     }
-    const RECT d = DeviceRect();
-    POINT pt{d.left, d.bottom};
-    ClientToScreen(m_hwnd, &pt);
-    ShowActionMenu(m_hwnd, pt, actions, current);
+    RECT d = DeviceRect();
+    MapWindowPoints(m_hwnd, nullptr, reinterpret_cast<POINT*>(&d), 2);
+    ShowActionMenu(m_hwnd, d, actions, current);
 }
 
 void MainWindow::RepaintBreadcrumb() {
-    BuildCrumbs();
-    PaintBreadcrumb();
+    auto path = BuildCrumbPath(m_view);
+    // The path in the log as it changes, so every page's place can be read back.
+    std::wstring text = L"path:";
+    for (const auto& level : path)
+        if (!level.text.empty()) text += L" > " + (level.literal ? level.text : Tr(level.text));
+    if (text != m_loggedPath) {
+        m_loggedPath = text;
+        netease::Log(text);
+    }
+    m_crumbBar->SetPath(std::move(path));
     UpdateLayout();
     // The view options glyph follows the current source, which asynchronous loads replace.
     if (auto* w = WidgetById(kViewOptions)) w->Invalidate();
-}
-
-void MainWindow::BuildCrumbs() {
-    m_crumbs = BuildCrumbPath();
-    LayoutCrumbs();
-}
-
-void MainWindow::LayoutCrumbs() {
-    float x = 0;
-    for (size_t i = 0; i < m_crumbs.size(); ++i) {
-        Crumb& c = m_crumbs[i];
-        c.x0 = x;
-        if (!c.text.empty()) {
-            auto t = MakeText(c.literal ? c.text : Tr(c.text), 12.0f, DWRITE_FONT_WEIGHT_NORMAL, 400, 20);
-            DWRITE_TEXT_METRICS tm{};
-            t->GetMetrics(&tm);
-            x += std::ceil(tm.widthIncludingTrailingWhitespace) + 8;
-        }
-        c.split = x;
-        // Every level is separated by an arrow; only levels with children open a menu from it.
-        if (c.children || i + 1 < m_crumbs.size()) x += 12;
-        c.x1 = x;
-    }
-    if (m_crumbHot >= static_cast<int>(m_crumbs.size())) m_crumbHot = -1;
 }
 
 std::vector<MenuAction> MainWindow::LibraryMenu() {
@@ -3714,7 +3700,7 @@ std::vector<MenuAction> MainWindow::SavedAlbumsMenu(stream::Provider& provider, 
 }
 
 // A provider's levels: the library, then its section and the page's subject.
-void MainWindow::AddRemoteCrumbs(std::vector<Crumb>& path, stream::Provider& provider) {
+void MainWindow::AddRemoteCrumbs(std::vector<Crumb>& path, stream::Provider& provider, const View& view) {
     auto go = [this](View v) { return [this, v] { Navigate(v, true); }; };
     stream::Provider* p = &provider;
     // A user's name is shown as is; an unnamed page gets a translated fallback.
@@ -3829,7 +3815,9 @@ std::vector<MenuAction> MainWindow::GroupListMenu(media::GroupKind kind) {
     return out;
 }
 
-std::vector<MainWindow::Crumb> MainWindow::BuildCrumbPath() {
+
+// A page's own place: its library or section from the root, as the navigation pane has it.
+std::vector<MainWindow::Crumb> MainWindow::PlacePath(const View& view) {
     auto go = [this](View v) { return [this, v] { Navigate(v, true); }; };
     std::vector<Crumb> path;
     path.push_back({L"", {}, [this] { return LibraryMenu(); }});
@@ -7176,7 +7164,11 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         }
         if (PtInRect(&m_layout.breadcrumb, pt)) {
-            OnCrumbClick(pt);
+            m_crumbBar->OnClick(m_hwnd, pt);
+            return 0;
+        }
+        if (PtInRect(&m_layout.tabs, pt)) {
+            OnTabClick(pt);
             return 0;
         }
         if (const int part = NowPlayingPartAt(pt)) {
