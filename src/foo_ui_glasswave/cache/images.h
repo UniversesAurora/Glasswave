@@ -68,6 +68,14 @@ struct ImageEvent {
 
 // Provider-format identity used by UI caches: "<provider>:<art-kind>:<id>".
 std::string ImageArtKey(const ImageIdentity& identity);
+// True when `artKey` ("<provider>:<kind>:<id>") is `prefix` or lies under it, counting whole
+// segments: "apple:album:12" matches "apple:album:12" but not "apple:album:123"; a prefix that
+// ends in ':' ("apple:album:") matches everything below it.
+inline bool ArtKeyHasPrefix(std::string_view artKey, std::string_view prefix) {
+    if (!artKey.starts_with(prefix)) return false;
+    return prefix.empty() || prefix.back() == ':' || artKey.size() == prefix.size() ||
+           artKey[prefix.size()] == ':';
+}
 
 // {Kind::Image, provider, AccountScope(provider), artKind/id, renditionVersion}.
 // AccountScope performs the Store lookup, so call this only from a worker.
@@ -127,7 +135,8 @@ public:
     void Unsubscribe(int token);
 
     // Forces the next demand under this stable art-key prefix to revalidate even when the
-    // persisted entry is still fresh. No timer is created.
+    // persisted entry is still fresh. No timer is created. The prefix covers whole key segments
+    // ("apple:album:12" is that album, not "apple:album:123"; "apple:album:" is every album).
     void Invalidate(std::string_view artKeyPrefix);
 
 private:

@@ -22,7 +22,9 @@ constexpr unsigned kMaxSourceAttempts = 2;
 constexpr size_t kWorkerCount = 4;
 constexpr size_t kPolicyEntries = 4096;
 constexpr size_t kInvalidationEntries = 128;
-constexpr uint64_t kMaxCachedBytes = 20u * 1024u * 1024u;
+// The ceiling over any request's ImageLimits::maxBodyBytes. It is the largest limit a source sets
+// (64 MiB, for an original picture); a lower clamp made that limit unreachable.
+constexpr uint64_t kMaxCachedBytes = 64u * 1024u * 1024u;
 constexpr uint64_t kMaxDecodedPixels = 64u * 1024u * 1024u;
 constexpr UINT kMaxDecodedDimension = 32u * 1024u;
 
@@ -308,8 +310,7 @@ struct Images::Impl {
     uint64_t InvalidationLocked(std::string_view artKey) const {
         uint64_t version = 0;
         for (const auto& item : m_invalidations)
-            if (artKey.compare(0, item.prefix.size(), item.prefix) == 0)
-                version = std::max(version, item.version);
+            if (ArtKeyHasPrefix(artKey, item.prefix)) version = std::max(version, item.version);
         return version;
     }
 
@@ -801,7 +802,7 @@ struct Images::Impl {
         m_invalidations.push_back({std::string(prefix), ++m_invalidation});
         for (auto& [digest, flight] : m_flights) {
             (void)digest;
-            if (flight->pending && flight->pending->artKey.compare(0, prefix.size(), prefix) == 0)
+            if (flight->pending && ArtKeyHasPrefix(flight->pending->artKey, prefix))
                 flight->dirty = true;
         }
         if (m_invalidations.size() > kInvalidationEntries)
