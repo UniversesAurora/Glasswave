@@ -2,7 +2,26 @@
 
 Updated: 2026-11-21
 
-## Single songs in the Apple Music library; a cut transfer continues (2026-11-21, latest)
+## Shared core module (2026-11-21, latest)
+
+- New `src/foo_ui_glasswave/core/` (namespace `glasswave::core`) holds the plumbing no source
+  owns: `json`, `log` (now `<profile>\glasswave\glasswave.log`, was
+  `glasswave\netease\glasswave-netease.log`; the old file in the dev profile was in use and
+  is left to rename by hand), `paths` (`ProfileRoot`, `ProfileDir(name)`, `EnsureDir`),
+  `task_queue`, `text` (`Utf8`, `Wide`, `Utf8Strict`, `WideStrict`, `LowerAscii`), `url`
+  (`UrlEncode`), `hex`, `file` (`WriteFileAtomic`, `ReadFileLimited`) and `signal`
+  (`Signal<Args...>` for main-thread listeners). On-disk locations are unchanged.
+- About thirty private Utf8 / Wide / Lower copies, the hand-written hex loops, six hand-written
+  atomic writes and five listener registries use them. A failed write of the download's `.lrc`
+  sidecar no longer replaces the existing file; a listener removed during an emission is no
+  longer called.
+- Still in netease/: `config.h` (used by `cache/prefetch_host.cpp` and `app/settings.h`). The
+  `*_probe.cpp` files keep their own profile lookup, which validates the dev profile.
+- Not run in the dev instance; owner check of the whole app pending. Standalone tests
+  (`test-lyrics`, `test-apple-lyrics-protocol`) pass; `test-list-cache` and
+  `test-provider-snapshot` fail to run, as they did before this change.
+
+## Single songs in the Apple Music library; a cut transfer continues (2026-11-21)
 
 - Everything since 2026-11-14 is committed (27 commits by feature and fix; the owner had checked
   it). From now on each change is committed once built.
