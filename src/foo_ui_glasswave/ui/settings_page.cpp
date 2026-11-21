@@ -67,6 +67,20 @@ std::vector<Section> BuildSections() {
     sections.push_back({L"General",
                         {std::move(language), Number(L"Volume bubble delay", L"ms", settings::kVolumeTipDelay,
                                                      settings::VolumeTipDelayMs, settings::SetVolumeTipDelayMs)}});
+    {
+        // Windows 7's "Window Color and Appearance": its sixteen colours, or the playing cover's,
+        // and its colour intensity slider.
+        Field tint;
+        tint.kind = Field::Kind::Choice;
+        tint.label = L"Window color";
+        for (const auto& preset : aero::kWin7Tints) tint.choices.push_back(preset.name);
+        tint.choices.push_back(L"Follow the album cover"); // settings::kTintFromCover
+        tint.get = [] { return settings::Tint(); };
+        tint.set = [](int value) { settings::SetTint(value); };
+        sections.push_back({L"Window color",
+                            {std::move(tint), Number(L"Color intensity", L"%", settings::kTintIntensity,
+                                                     settings::TintIntensity, settings::SetTintIntensity)}});
+    }
     sections.push_back(
         {L"Covers",
          {Number(L"Covers kept in memory", L"covers", settings::kThumbnailCache, settings::ThumbnailCacheEntries,

@@ -80,7 +80,9 @@ class MainWindow : public PageHost, public PlayerHost {
     bool PlayerFavorite() const override { return m_npFavorite; }
     void TogglePlayerFavorite() override;
     void ShowPlayerLyricsMenu(POINT screen) override { ShowLyricsMenu(screen); }
+    void ShowPlayerSongMenu(POINT screen) override { ShowNowPlayingSongMenu(screen); }
     void AdoptPlayerWindow(HWND window) override;
+    aero::Colorization PlayerColorization() const override;
     bool PlayerWindowMessage(UINT msg, WPARAM wp, LPARAM lp) override;
 
     // Forwarded from the core callbacks.
@@ -192,6 +194,9 @@ class MainWindow : public PageHost, public PlayerHost {
     void RepaintScaleDependent();
     void RepaintTitle();
     void RefreshNowPlayingArt(bool refreshText = false);
+    // The glass's colour from Preferences (a Win7 colour, or the playing cover's) and intensity.
+    aero::Colorization WindowColorization() const;
+    void ApplyTint(bool fade);
     void RepaintNowPlaying();
     bool PlaybackPaintAllowed() const;
     void FlushPlaybackPaints();
@@ -450,10 +455,14 @@ class MainWindow : public PageHost, public PlayerHost {
     // Composition visual tree
     winrt::Windows::UI::Composition::Desktop::DesktopWindowTarget m_target{nullptr};
     winrt::Windows::UI::Composition::ContainerVisual m_windowRoot{nullptr}; // unclipped: root + frame outline
+    bool m_closing = false; // the closing animation runs; foobar2000 exits after it
+    static bool WindowAnimations(); // Windows' animation effects are on
+    void AnimateWindow(bool open);
     winrt::Windows::UI::Composition::ContainerVisual m_root{nullptr};       // clipped to the rounded window
     winrt::Windows::UI::Composition::ContainerVisual m_contentLayer{nullptr};
     winrt::Windows::UI::Composition::CompositionRoundedRectangleGeometry m_clipGeometry{nullptr};
     std::unique_ptr<aero::GlassMaterial> m_glass;
+    std::optional<uint32_t> m_windowCoverRgb; // the last cover's colour (tint following the cover)
     winrt::Windows::UI::Composition::SpriteVisual m_frameOutline{nullptr};
     std::array<winrt::Windows::UI::Composition::SpriteVisual, 2> m_sideHighlight{nullptr,
                                                                                  nullptr}; // left, right

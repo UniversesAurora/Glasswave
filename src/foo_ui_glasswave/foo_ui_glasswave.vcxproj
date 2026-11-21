@@ -179,6 +179,8 @@
       <SDLCheck>false</SDLCheck>
       <PreprocessorDefinitions>_CRT_SECURE_NO_WARNINGS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
     </ClCompile>
+    <ClCompile Include="ui\artist_overview.cpp" />
+    <ClCompile Include="ui\cover_tint.cpp" />
     <ClCompile Include="ui\lyrics_view.cpp" />
     <ClCompile Include="ui\lyrics_search.cpp" />
     <ClCompile Include="ui\lyrics_tools.cpp" />
@@ -275,6 +277,8 @@
     <ClInclude Include="lyrics\source_order.h" />
     <ClInclude Include="lyrics\scripts.h" />
     <ClInclude Include="lyrics\script_host.h" />
+    <ClInclude Include="ui\artist_overview.h" />
+    <ClInclude Include="ui\cover_tint.h" />
     <ClInclude Include="ui\lyrics_view.h" />
     <ClInclude Include="ui\lyrics_search.h" />
     <ClInclude Include="ui\lyrics_tools.h" />

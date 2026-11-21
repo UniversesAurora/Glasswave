@@ -80,6 +80,12 @@ NowPlayingPane::NowPlayingPane(const wuc::ContainerVisual& parent)
     m_tint.Brush(comp.CreateColorBrush(winrt::Windows::UI::ColorHelper::FromArgb(
         static_cast<uint8_t>(std::lround(pane::kPaneTint * 255)), 0, 0, 0)));
     m_root.Children().InsertAtBottom(m_tint);
+    // Under the shade, the playing song's cover colour over the window's glass (clear while
+    // there is no cover: the window's own tint shows).
+    m_coverBrush = comp.CreateColorBrush(winrt::Windows::UI::ColorHelper::FromArgb(0, 0, 0, 0));
+    m_coverTint = comp.CreateSpriteVisual();
+    m_coverTint.Brush(m_coverBrush);
+    m_root.Children().InsertAtBottom(m_coverTint);
     m_light = std::make_unique<AeroLight>(m_root, AeroLight::Kind::Veil, false);
     m_root.Children().Remove(m_light->Root());
     m_root.Children().InsertAbove(m_light->Root(), m_tint);
@@ -88,6 +94,13 @@ NowPlayingPane::NowPlayingPane(const wuc::ContainerVisual& parent)
     m_root.Children().InsertAtTop(m_header);
     m_bar = comp.CreateContainerVisual();
     m_root.Children().InsertAtTop(m_bar);
+    // Names for /glasswave:visuals.
+    m_root.Comment(L"pane");
+    m_tint.Comment(L"pane tint");
+    m_coverTint.Comment(L"pane cover tint");
+    m_light->Root().Comment(L"pane light");
+    m_header.Comment(L"pane header");
+    m_bar.Comment(L"pane switch");
     for (auto* visual : {&m_track, &m_thumb}) {
         *visual = comp.CreateSpriteVisual();
         m_bar.Children().InsertAtTop(*visual);
@@ -119,6 +132,25 @@ void NowPlayingPane::Reparent(const wuc::ContainerVisual& parent) {
     parent.Children().InsertAtTop(m_root);
 }
 
+void NowPlayingPane::SetCoverTint(std::optional<uint32_t> rgb) {
+    if (rgb == m_coverRgb) return;
+    // To clear, the colour keeps its hue and loses its alpha: the fade never passes through grey.
+    const uint32_t to = rgb ? *rgb : m_coverRgb.value_or(0);
+    m_coverRgb = rgb;
+    const auto color = winrt::Windows::UI::ColorHelper::FromArgb(
+        rgb ? static_cast<uint8_t>(std::lround(kCoverTintAlpha * 255)) : 0, static_cast<uint8_t>(to >> 16),
+        static_cast<uint8_t>(to >> 8), static_cast<uint8_t>(to));
+    auto fade = m_coverBrush.Compositor().CreateColorKeyFrameAnimation();
+    fade.InsertKeyFrame(1.0f, color);
+    fade.Duration(std::chrono::milliseconds(700));
+    m_coverBrush.StartAnimation(L"Color", fade);
+}
+
+void NowPlayingPane::SetActive(bool active) {
+    // An inactive window's glass is clear in Windows 7: the cover's colour goes with it.
+    gfx::CompositionHost::Get().AnimateOpacity(m_coverTint, active ? 1.0f : 0.0f, 200);
+}
+
 void NowPlayingPane::StartFrames() {
     if (onFrames) onFrames();
 }
@@ -129,6 +161,7 @@ void NowPlayingPane::SetEmbedded(bool embedded, bool bare) {
     m_embedded = embedded;
     m_bare = bare;
     m_tint.IsVisible(!embedded);
+    m_coverTint.IsVisible(!embedded);
     m_bar.IsVisible(!embedded);
     UpdateLight();
     m_header.IsVisible(!bare);
@@ -182,6 +215,8 @@ void NowPlayingPane::LayoutGeometry() {
     const float h = static_cast<float>(std::max<LONG>(0, m_bounds.bottom - m_bounds.top));
     m_tint.Offset(float3{static_cast<float>(m_bounds.left), static_cast<float>(m_bounds.top), 0});
     m_tint.Size(float2{w, h});
+    m_coverTint.Offset(m_tint.Offset());
+    m_coverTint.Size(float2{w, h});
     m_light->Root().Offset(float3{static_cast<float>(m_bounds.left), static_cast<float>(m_bounds.top), 0});
     m_light->SetSize({static_cast<LONG>(w), static_cast<LONG>(h)});
     // Mirrored left to right (owner, 2026-11-13): the shafts lean the other way here.

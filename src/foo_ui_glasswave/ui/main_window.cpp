@@ -35,6 +35,7 @@
 #include "stream/playback_source.h"
 #include "stream/provider.h"
 #include "ui/art_cache.h"
+#include "ui/cover_tint.h"
 #include "ui/pane_common.h"
 #include "ui/text_prompt.h"
 #include "ui/lyrics_search.h"
@@ -948,7 +949,7 @@ void MainWindow::InitComposition() {
     m_clipGeometry = comp.CreateRoundedRectangleGeometry();
     m_root.Clip(comp.CreateGeometricClip(m_clipGeometry));
 
-    m_glass = std::make_unique<aero::GlassMaterial>(aero::kWin7Sky, aero::atlas::Available());
+    m_glass = std::make_unique<aero::GlassMaterial>(WindowColorization(), aero::atlas::Available());
     auto children = m_root.Children();
     children.InsertAtTop(m_glass->Root());
     // The content base stops at the library boundary. The shared edge also surrounds
@@ -2745,6 +2746,27 @@ void MainWindow::StepPaneReveal() {
         RepaintNowPlaying();
     }
 }
+
+// ---- Window colour ----------------------------------------------------------------------
+
+aero::Colorization MainWindow::WindowColorization() const {
+    const int tint = settings::Tint();
+    uint32_t rgb = aero::kWin7Tints[0].rgb; // following the cover before any: Sky
+    if (tint < static_cast<int>(aero::kWin7Tints.size()))
+        rgb = aero::kWin7Tints[static_cast<size_t>(tint)].rgb;
+    else if (m_windowCoverRgb)
+        rgb = *m_windowCoverRgb;
+    return aero::Win7Colorization(rgb, settings::TintIntensity());
+}
+
+void MainWindow::ApplyTint(bool fade) {
+    const aero::Colorization c = WindowColorization();
+    const int ms = fade ? 600 : 0;
+    if (m_glass) m_glass->SetColorization(c, ms);
+    if (m_player) m_player->SetColorization(c, ms);
+}
+
+aero::Colorization MainWindow::PlayerColorization() const { return WindowColorization(); }
 
 // ---- Player window ----------------------------------------------------------------------
 
@@ -6774,6 +6796,7 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
 
     case settings::kChangedMessage: // Preferences > Display > Glasswave applied something
         ApplyLanguage(CurrentLanguageSetting());
+        ApplyTint(true);
         if (m_pane) m_pane->RestyleLyrics(); // sizes, fonts, where translations stand
         if (std::wstring signature = LyricsSettingsSignature(); signature != m_lyricsSettingsSignature) {
             m_lyricsSettingsSignature = std::move(signature);

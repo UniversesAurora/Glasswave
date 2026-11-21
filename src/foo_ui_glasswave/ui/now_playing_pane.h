@@ -47,6 +47,9 @@ class NowPlayingPane {
 
     void SetTrack(const std::wstring& title, const std::wstring& artist,
                   const winrt::com_ptr<IWICBitmapSource>& art);
+    // The playing cover's colour (ui/cover_tint.h) under the lyrics; none: the window's tint.
+    void SetCoverTint(std::optional<uint32_t> rgb);
+    void SetActive(bool active); // the window's focus: an inactive one shows no colour
     void SetResult(const lyrics::Result& result) { m_lyrics.SetResult(result); }
     void SetPlaying(bool playing, bool paused) { m_lyrics.SetPlaying(playing, paused); }
     QueueView& Queue() { return m_queue; }
@@ -89,6 +92,10 @@ class NowPlayingPane {
 
     winrt::Windows::UI::Composition::ContainerVisual m_root{nullptr};
     winrt::Windows::UI::Composition::SpriteVisual m_tint{nullptr}, m_header{nullptr};
+    winrt::Windows::UI::Composition::SpriteVisual m_coverTint{nullptr};
+    winrt::Windows::UI::Composition::CompositionColorBrush m_coverBrush{nullptr};
+    std::optional<uint32_t> m_coverRgb;
+    static constexpr float kCoverTintAlpha = 0.34f;
     // In the library window's sidebar: Media Center's moving light over the tint, as behind the
     // mini player and the full screen (owner, 2026-11-13). Lent to the player, the pane has none.
     std::unique_ptr<AeroLight> m_light;

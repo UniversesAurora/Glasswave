@@ -19,7 +19,9 @@ public:
     const winrt::Windows::UI::Composition::ContainerVisual& Root() const { return m_root; }
 
     void SetActive(bool active);
-    void SetColorization(const Colorization& colorization);
+    // fadeMs > 0: the old glass fades out over the new (a cover-coloured tint changing songs).
+    void SetColorization(const Colorization& colorization, int fadeMs = 0);
+    const Colorization& Current() const { return m_colorization; }
     // Call when the system "Transparency effects" setting may have changed.
     void RefreshTransparencyPolicy();
     // Streaks are fixed to screen coordinates: moving the window only shifts an offset.
@@ -41,7 +43,7 @@ private:
     RECT m_reflectionMonitor{};
 
     winrt::Windows::UI::Composition::ContainerVisual m_root{nullptr};
-    winrt::Windows::UI::Composition::SpriteVisual m_glass{nullptr};
+    winrt::Windows::UI::Composition::SpriteVisual m_glass{nullptr}, m_glassOld{nullptr};
     winrt::Windows::UI::Composition::SpriteVisual m_reflection{nullptr};
     winrt::Windows::UI::Composition::SpriteVisual m_glare{nullptr}, m_glareInactive{nullptr};
     winrt::Windows::UI::Composition::CompositionBrush m_activeBrush{nullptr};

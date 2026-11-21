@@ -17,9 +17,29 @@ struct Range {
 bool LyricLineShown();
 void SetLyricLineShown(bool shown);
 
+// The tags a source gives a song (NetEase's 原唱), drawn before its artist in every view.
+bool SongTagsShown();
+void SetSongTagsShown(bool shown);
+
 // The player's time counter counts down (the time left) instead of up; a click switches it.
 bool PlayerTimeRemaining();
 void SetPlayerTimeRemaining(bool remaining);
+
+// Where the mini player was left (window rectangle, screen px), kept across restarts (owner,
+// 2026-11-20: it came back small in the corner every start). Nothing until it has been shown.
+std::optional<RECT> MiniPlayerRect();
+void SetMiniPlayerRect(const RECT& rect);
+
+// The glass's colour: one of Windows 7's sixteen (0 Sky ... 15 Frost, aero::kWin7Tints) or
+// kTintFromCover, the playing song's cover; and Win7's "Color intensity" slider, 0..100
+// (43: the Sky theme's alpha 0x6B).
+inline constexpr int kTintFromCover = 16;
+inline constexpr Range kTint{0, kTintFromCover, 0};
+inline constexpr Range kTintIntensity{0, 100, 43};
+int Tint();
+void SetTint(int tint);
+int TintIntensity();
+void SetTintIntensity(int slider);
 
 // Decoded cover thumbnails kept in memory (all lists, grids and headers).
 inline constexpr Range kThumbnailCache{100, 5000, 600};

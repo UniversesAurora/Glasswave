@@ -45,8 +45,12 @@ class PlayerHost {
     virtual void TogglePlayerFavorite() = 0;
     // The lyrics menu of the library window's lyric line (search, sources, file, hide / show).
     virtual void ShowPlayerLyricsMenu(POINT screen) = 0;
+    // The playing song's menu, as on its row in a list (on the cover and the title).
+    virtual void ShowPlayerSongMenu(POINT screen) = 0;
     // The player window was created: give it the application's icon and taskbar buttons.
     virtual void AdoptPlayerWindow(HWND window) = 0;
+    // The glass's colour, as the library window has it (Preferences, or the cover's).
+    virtual aero::Colorization PlayerColorization() const = 0;
     // Every message of the player window; true when the taskbar integration handled it.
     virtual bool PlayerWindowMessage(UINT msg, WPARAM wp, LPARAM lp) = 0;
 

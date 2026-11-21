@@ -903,7 +903,7 @@ void PlayerWindow::InitVisuals() {
     m_frameOutline.RelativeSizeAdjustment(float2{1, 1});
     m_windowRoot.Children().InsertAtTop(m_frameOutline);
 
-    m_glass = std::make_unique<aero::GlassMaterial>(aero::kWin7Sky, m_aeroArt);
+    m_glass = std::make_unique<aero::GlassMaterial>(m_host.PlayerColorization(), m_aeroArt);
     m_root.Children().InsertAtTop(m_glass->Root());
     // DWM's highlights down the upper left and right frame, as on the library window.
     for (auto& v : m_sideHighlight) {

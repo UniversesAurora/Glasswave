@@ -45,6 +45,10 @@ GlassMaterial::GlassMaterial(const Colorization& colorization, bool dwmArt)
     m_glass = comp.CreateSpriteVisual();
     m_glass.RelativeSizeAdjustment(float2{1, 1});
     m_root.Children().InsertAtTop(m_glass);
+    m_glassOld = comp.CreateSpriteVisual(); // the glass before a faded change
+    m_glassOld.RelativeSizeAdjustment(float2{1, 1});
+    m_glassOld.Opacity(0.0f);
+    m_root.Children().InsertAtTop(m_glassOld);
 
     m_reflection = comp.CreateSpriteVisual();
     m_root.Children().InsertAtTop(m_reflection);
@@ -114,7 +118,18 @@ void GlassMaterial::SetActive(bool active) {
     ApplyBrush();
 }
 
-void GlassMaterial::SetColorization(const Colorization& colorization) {
+void GlassMaterial::SetColorization(const Colorization& colorization, int fadeMs) {
+    const auto same = [](const Colorization& a, const Colorization& b) {
+        return a.color == b.color && a.afterglow == b.afterglow && a.colorBalance == b.colorBalance &&
+               a.afterglowBalance == b.afterglowBalance && a.blurBalance == b.blurBalance &&
+               a.reflectionIntensity == b.reflectionIntensity;
+    };
+    if (same(colorization, m_colorization)) return;
+    if (fadeMs > 0 && m_glass.Brush()) {
+        m_glassOld.Brush(m_glass.Brush());
+        m_glassOld.Opacity(1.0f);
+        gfx::CompositionHost::Get().AnimateOpacity(m_glassOld, 0.0f, fadeMs);
+    }
     m_colorization = colorization;
     RebuildBrushes();
     ApplyBrush();
