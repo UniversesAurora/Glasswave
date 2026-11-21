@@ -306,6 +306,8 @@
     <ClCompile Include="ui\remote_pages_song.cpp" />
     <ClCompile Include="ui\remote_pages_favorites.cpp" />
     <ClCompile Include="ui\record_menu.cpp" />
+    <ClCompile Include="media\playback_checkpoint.cpp" />
+    <ClCompile Include="media\playback_core_queue.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="cd\disc.h" />
@@ -460,6 +462,7 @@
     <ClInclude Include="ui\player_window_parts.h" />
     <ClInclude Include="ui\list_view_parts.h" />
     <ClInclude Include="ui\remote_pages_parts.h" />
+    <ClInclude Include="media\playback_scheduler_impl.h" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="$(SdkRoot)pfc\pfc.vcxproj">
