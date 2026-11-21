@@ -2,7 +2,7 @@
 
 #include "applemusic/catalog.h"
 #include "applemusic/client.h"
-#include "core/task_queue.h"
+#include "stream/executor.h"
 #include "stream/provider.h"
 
 #include <chrono>
@@ -141,10 +141,9 @@ class StreamProvider final : public stream::Provider {
         bool favoriteSongsLoaded = false;
     };
 
-    void Post(uint64_t generation, std::function<void()> callback);
-    void PostMutation(uint64_t generation, std::function<void()> callback);
-    bool PostDetail(uint64_t generation, std::function<void()> callback);
-    void PostMain(uint64_t generation, std::function<void()> callback);
+    // The worker queues of m_exec: reads, library writes (one at a time, in order), playlist
+    // details and the second stage of page enrichment.
+    enum Queue : size_t { kTasks, kMutations, kDetails, kEnrich };
     void RefreshAccountAsync(uint64_t generation, Done done, bool preservePlaylistDetails = false);
     void RefreshLibraryPreservingDetails(Done done = {});
     void RefreshLibraryAfterMutation(Done done = {});
@@ -249,7 +248,6 @@ class StreamProvider final : public stream::Provider {
     bool m_cachedAccountBound = false;
     bool m_snapshotSavePosted = false;
     bool m_snapshotSaveDirty = false;
-    uint64_t m_generation = 0;
     bool m_refreshInFlight = false;
     uint64_t m_refreshGeneration = 0;
     uint64_t m_refreshSequence = 0;
@@ -260,11 +258,7 @@ class StreamProvider final : public stream::Provider {
     bool m_artistCountsInFlight = false;
     bool m_librarySnapshotLoaded = false;
     std::chrono::steady_clock::time_point m_librarySnapshotValidUntil{};
-    std::unique_ptr<core::TaskQueue> m_tasks;
-    std::unique_ptr<core::TaskQueue> m_mutationTasks;
-    std::unique_ptr<core::TaskQueue> m_detailTasks;
-    std::unique_ptr<core::TaskQueue> m_enrichTasks;
-    std::unique_ptr<abort_callback_impl> m_abort;
+    stream::Executor m_exec;
     AccountState m_account;
     std::wstring m_cachedAccountId;
     std::wstring m_cachedAccountName;

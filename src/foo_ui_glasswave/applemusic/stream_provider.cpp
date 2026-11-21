@@ -2132,58 +2132,6 @@ constexpr wchar_t kRequestDropped[] = L"Apple Music stopped or changed accounts 
 
 } // namespace
 
-void StreamProvider::Post(uint64_t generation, std::function<void()> callback) {
-    // Posted under the lock: Shutdown resets the queue under it, so a late post from another
-    // thread either lands before the reset (the queue drops it with its pending tasks) or sees
-    // no queue. Dropping destroys the callback, which completes a Done it captured with an error
-    // (stream::GuardDone).
-    std::lock_guard lock(m_mutex);
-    if (!m_started || generation != m_generation || !m_tasks || !m_abort) return;
-    m_tasks->Post([this, generation, callback = std::move(callback)] {
-        {
-            std::lock_guard lock(m_mutex);
-            if (!m_started || generation != m_generation || !m_abort) return;
-        }
-        callback();
-    });
-}
-
-void StreamProvider::PostMutation(uint64_t generation, std::function<void()> callback) {
-    std::lock_guard lock(m_mutex);
-    if (!m_started || generation != m_generation || !m_mutationTasks || !m_abort) return;
-    m_mutationTasks->Post([this, generation, callback = std::move(callback)] {
-        {
-            std::lock_guard lock(m_mutex);
-            if (!m_started || generation != m_generation || !m_abort) return;
-        }
-        callback();
-    });
-}
-
-bool StreamProvider::PostDetail(uint64_t generation, std::function<void()> callback) {
-    std::lock_guard lock(m_mutex);
-    if (!m_started || generation != m_generation || !m_detailTasks || !m_abort) return false;
-    m_detailTasks->Post([this, generation, callback = std::move(callback)] {
-        {
-            std::lock_guard lock(m_mutex);
-            if (!m_started || generation != m_generation || !m_abort) return;
-        }
-        callback();
-    });
-    return true;
-}
-
-void StreamProvider::PostMain(uint64_t generation, std::function<void()> callback) {
-    if (!callback) return;
-    fb2k::inMainThread([this, generation, callback = std::move(callback)] {
-        {
-            std::lock_guard lock(m_mutex);
-            if (!m_started || generation != m_generation) return;
-        }
-        callback();
-    });
-}
-
 void StreamProvider::ClearLibraryLocked() {
     m_createdPlaylists.clear();
     m_savedPlaylists.clear();
@@ -2223,7 +2171,7 @@ bool StreamProvider::VerifyCatalogArtist(uint64_t generation, std::wstring_view 
     std::unique_lock lock(m_mutex);
     for (;;) {
         abort.check();
-        if (!m_started || generation != m_generation) throw exception_aborted();
+        if (!m_started || generation != m_exec.Generation()) throw exception_aborted();
         const auto found = m_artistExistence.find(key);
         if (found == m_artistExistence.end()) {
             if (m_artistExistence.size() >= kMaximumExistenceEntries) {
@@ -2274,7 +2222,7 @@ bool StreamProvider::VerifyCatalogArtist(uint64_t generation, std::wstring_view 
     }
 
     lock.lock();
-    const bool current = m_started && generation == m_generation;
+    const bool current = m_started && generation == m_exec.Generation();
     if (current) {
         if (failure) {
             m_artistExistence.erase(key);
@@ -2303,7 +2251,7 @@ void StreamProvider::ClearPlaylistDetailsLocked() {
 bool StreamProvider::PutIfCurrent(uint64_t generation, const Song& song) {
     {
         std::lock_guard lock(m_mutex);
-        if (!m_started || generation != m_generation) return false;
+        if (!m_started || generation != m_exec.Generation()) return false;
     }
     // Outside the lock: the catalog writes files and the UI takes this lock.
     Catalog::Get().Put(song);
@@ -2313,7 +2261,7 @@ bool StreamProvider::PutIfCurrent(uint64_t generation, const Song& song) {
 bool StreamProvider::PutIfCurrent(uint64_t generation, const std::vector<Song>& songs) {
     {
         std::lock_guard lock(m_mutex);
-        if (!m_started || generation != m_generation) return false;
+        if (!m_started || generation != m_exec.Generation()) return false;
     }
     // Outside the lock: the catalog writes files and the UI takes this lock.
     Catalog::Get().Put(songs);
@@ -2323,7 +2271,7 @@ bool StreamProvider::PutIfCurrent(uint64_t generation, const std::vector<Song>& 
 bool StreamProvider::PutIfCurrent(uint64_t generation, const stream::Playlist& playlist) {
     {
         std::lock_guard lock(m_mutex);
-        if (!m_started || generation != m_generation) return false;
+        if (!m_started || generation != m_exec.Generation()) return false;
     }
     // Outside the lock: the catalog writes files and the UI takes this lock.
     Catalog::Get().Put(playlist);
@@ -2333,7 +2281,7 @@ bool StreamProvider::PutIfCurrent(uint64_t generation, const stream::Playlist& p
 bool StreamProvider::PutIfCurrent(uint64_t generation, const stream::Album& album) {
     {
         std::lock_guard lock(m_mutex);
-        if (!m_started || generation != m_generation) return false;
+        if (!m_started || generation != m_exec.Generation()) return false;
     }
     // Outside the lock: the catalog writes files and the UI takes this lock.
     Catalog::Get().Put(album);
@@ -2343,7 +2291,7 @@ bool StreamProvider::PutIfCurrent(uint64_t generation, const stream::Album& albu
 bool StreamProvider::PutIfCurrent(uint64_t generation, const std::vector<stream::Album>& albums) {
     {
         std::lock_guard lock(m_mutex);
-        if (!m_started || generation != m_generation) return false;
+        if (!m_started || generation != m_exec.Generation()) return false;
     }
     // Outside the lock: the catalog writes files and the UI takes this lock.
     Catalog::Get().Put(albums);
@@ -2353,7 +2301,7 @@ bool StreamProvider::PutIfCurrent(uint64_t generation, const std::vector<stream:
 bool StreamProvider::PutIfCurrent(uint64_t generation, const stream::Artist& artist) {
     {
         std::lock_guard lock(m_mutex);
-        if (!m_started || generation != m_generation) return false;
+        if (!m_started || generation != m_exec.Generation()) return false;
     }
     // Outside the lock: the catalog writes files and the UI takes this lock.
     Catalog::Get().Put(artist);
@@ -2363,7 +2311,7 @@ bool StreamProvider::PutIfCurrent(uint64_t generation, const stream::Artist& art
 bool StreamProvider::PutIfCurrent(uint64_t generation, const std::vector<stream::Artist>& artists) {
     {
         std::lock_guard lock(m_mutex);
-        if (!m_started || generation != m_generation) return false;
+        if (!m_started || generation != m_exec.Generation()) return false;
     }
     // Outside the lock: the catalog writes files and the UI takes this lock.
     Catalog::Get().Put(artists);
@@ -2376,13 +2324,7 @@ void StreamProvider::Start() {
         std::lock_guard lock(m_mutex);
         if (m_started) return;
         m_started = true;
-        ++m_generation;
-        generation = m_generation;
-        m_tasks = std::make_unique<core::TaskQueue>(3);
-        m_mutationTasks = std::make_unique<core::TaskQueue>(1);
-        m_detailTasks = std::make_unique<core::TaskQueue>(2);
-        m_enrichTasks = std::make_unique<core::TaskQueue>(1);
-        m_abort = std::make_unique<abort_callback_impl>();
+        generation = m_exec.Start({3, 1, 2, 1});
         m_locale = CurrentLocale();
         m_account = {};
         m_accountVerified = false;
@@ -2442,7 +2384,7 @@ void StreamProvider::Start() {
         std::lock_guard lock(m_unknownMutex);
         unknown = !m_unknownSongs.empty();
     }
-    if (unknown) Post(generation, [this] { ReadUnknownSongs(); });
+    if (unknown) m_exec.Post(kTasks, generation, [this] { ReadUnknownSongs(); });
 }
 
 void StreamProvider::Shutdown() {
@@ -2485,17 +2427,11 @@ void StreamProvider::Shutdown() {
         }
     }
 
-    core::TaskQueue* tasks = nullptr;
-    core::TaskQueue* mutations = nullptr;
-    core::TaskQueue* details = nullptr;
-    core::TaskQueue* enrichment = nullptr;
     {
         std::lock_guard lock(m_mutex);
-        if (!m_started && !m_tasks && !m_mutationTasks && !m_detailTasks && !m_enrichTasks && !m_abort)
-            return;
+        if (!m_started && !m_exec.Running()) return;
         m_started = false;
-        ++m_generation;
-        if (m_abort) m_abort->abort();
+        m_exec.Stop();
         m_account = {};
         m_accountVerified = false;
         m_authPending = false;
@@ -2532,23 +2468,11 @@ void StreamProvider::Shutdown() {
         ++m_favoriteBindingEpoch;
         m_favoriteBindingReadInFlight = false;
         m_favoritePageWaiters.clear();
-        tasks = m_tasks.get();
-        mutations = m_mutationTasks.get();
-        details = m_detailTasks.get();
-        enrichment = m_enrichTasks.get();
     }
     m_artistVerificationCondition.notify_all();
-    if (tasks) tasks->Stop();
-    if (mutations) mutations->Stop();
-    if (details) details->Stop();
-    if (enrichment) enrichment->Stop();
+    m_exec.Join();
     {
         std::lock_guard lock(m_mutex);
-        m_enrichTasks.reset();
-        m_detailTasks.reset();
-        m_tasks.reset();
-        m_mutationTasks.reset();
-        m_abort.reset();
         m_artistExistence.clear();
     }
     if (finalSnapshot) {
@@ -2618,12 +2542,12 @@ void StreamProvider::SaveFavoriteIdsAsync() {
     {
         std::lock_guard lock(m_mutex);
         if (!m_started || !m_accountVerified) return;
-        generation = m_generation;
+        generation = m_exec.Generation();
         ids = m_favoriteIds;
         checkedAt = m_favoriteIdsCheckedAt;
     }
     const uint64_t accountRevision = cache::AccountRevision("apple");
-    Post(generation, [ids = std::move(ids), checkedAt, accountRevision] {
+    m_exec.Post(kTasks, generation, [ids = std::move(ids), checkedAt, accountRevision] {
         try {
             const std::string scope = cache::AccountScope("apple");
             if (cache::AccountRevision("apple") == accountRevision) SaveFavoriteIds(scope, ids, checkedAt);
@@ -2642,7 +2566,7 @@ void StreamProvider::LoadBootstrapSnapshot(uint64_t generation) {
         std::wstring locale;
         {
             std::lock_guard lock(m_mutex);
-            if (!m_started || generation != m_generation || m_accountVerified) return;
+            if (!m_started || generation != m_exec.Generation() || m_accountVerified) return;
             locale = m_locale;
         }
         context = SnapshotContext(GetAppleMusicDisplayRegion(), locale);
@@ -2675,7 +2599,7 @@ void StreamProvider::LoadBootstrapSnapshot(uint64_t generation) {
     std::wstring sourceStorefront;
     {
         std::lock_guard lock(m_mutex);
-        if (!m_started || generation != m_generation || m_accountVerified) return;
+        if (!m_started || generation != m_exec.Generation() || m_accountVerified) return;
         m_favoriteIds = std::move(favoriteIds);
         m_favoriteIdsCheckedAt = favoriteIdsCheckedAt;
         m_cachedAccountId = std::move(accountId);
@@ -2716,7 +2640,7 @@ void StreamProvider::QueueSnapshotSave() {
         if (m_snapshotSavePosted) return;
         m_snapshotSavePosted = true;
         m_snapshotSaveDirty = false;
-        generation = m_generation;
+        generation = m_exec.Generation();
         locale = m_locale;
         region = GetAppleMusicDisplayRegion();
         payload.provider = "apple";
@@ -2735,19 +2659,19 @@ void StreamProvider::QueueSnapshotSave() {
         payload.sourceOrigin = BridgeSourceIdentity();
     } catch (...) {
         std::lock_guard lock(m_mutex);
-        if (generation == m_generation) m_snapshotSavePosted = false;
+        if (generation == m_exec.Generation()) m_snapshotSavePosted = false;
         return;
     }
     payload.context = SnapshotContext(region, locale);
     payload.created = RawPlaylists(stream::Shelf::Created);
     payload.saved = RawPlaylists(stream::Shelf::Saved);
 
-    Post(generation, [this, generation, accountRevision, accountScope = std::move(accountScope),
+    m_exec.Post(kTasks, generation, [this, generation, accountRevision, accountScope = std::move(accountScope),
                       payload = std::move(payload)]() mutable {
         bool allowed = false;
         {
             std::lock_guard lock(m_mutex);
-            allowed = m_started && generation == m_generation && m_accountVerified && m_account.signedIn &&
+            allowed = m_started && generation == m_exec.Generation() && m_accountVerified && m_account.signedIn &&
                       !m_sessionRestoring && cache::AccountRevision("apple") == accountRevision;
         }
         if (allowed) {
@@ -2765,7 +2689,7 @@ void StreamProvider::CompleteSnapshotSave(uint64_t generation) {
     bool rerun = false;
     {
         std::lock_guard lock(m_mutex);
-        if (generation != m_generation) return;
+        if (generation != m_exec.Generation()) return;
         m_snapshotSavePosted = false;
         rerun = m_snapshotSaveDirty && m_started && m_accountVerified && m_account.signedIn &&
                 !m_sessionRestoring;
@@ -2775,7 +2699,7 @@ void StreamProvider::CompleteSnapshotSave(uint64_t generation) {
 }
 
 void StreamProvider::StartFavoriteBindingRead(uint64_t generation, uint64_t bindingEpoch) {
-    Post(generation, [this, generation, bindingEpoch] {
+    m_exec.Post(kTasks, generation, [this, generation, bindingEpoch] {
         std::vector<Object> playlists;
         std::wstring error;
         try {
@@ -2783,7 +2707,7 @@ void StreamProvider::StartFavoriteBindingRead(uint64_t generation, uint64_t bind
                                    L"&extend[library-playlists]=tags&fields[library-playlists]=name,artwork,"
                                    L"editorialArtwork,tags,canEdit,canDelete,canRename,trackCount,playParams"
                                    L"&platform=web",
-                                   *m_abort);
+                                   m_exec.Abort());
         } catch (const exception_aborted&) {
             return;
         } catch (const std::exception& exception) {
@@ -2812,7 +2736,7 @@ void StreamProvider::CompleteFavoriteBinding(uint64_t generation, uint64_t bindi
     stream::Id favorite;
     {
         std::lock_guard lock(m_mutex);
-        if (!m_started || generation != m_generation || bindingEpoch != m_favoriteBindingEpoch) return;
+        if (!m_started || generation != m_exec.Generation() || bindingEpoch != m_favoriteBindingEpoch) return;
         m_favoriteBindingReadInFlight = false;
         if (!complete) {
             const bool knownBinding =
@@ -2837,7 +2761,7 @@ void StreamProvider::CompleteFavoriteBinding(uint64_t generation, uint64_t bindi
     for (auto& waiter : waiters) {
         {
             std::lock_guard lock(m_mutex);
-            if (!m_started || waiter.generation != m_generation) continue;
+            if (!m_started || waiter.generation != m_exec.Generation()) continue;
         }
         if (ListCancelled(waiter.query.cancelled) || !waiter.done) continue;
         if (!error.empty()) {
@@ -2934,8 +2858,7 @@ void StreamProvider::OnLanguageChanged() {
         if (locale == m_locale) return;
         m_locale = locale;
         if (!m_started) return;
-        ++m_generation;
-        generation = m_generation;
+        generation = m_exec.Bump();
         m_refreshInvalidatesLists = false;
         m_artistVerificationCondition.notify_all();
     }
@@ -3093,8 +3016,8 @@ bool StreamProvider::RetrySessionRestore(Done done) {
     bool started = false;
     {
         std::lock_guard lock(m_mutex);
-        started = m_started && m_abort;
-        generation = m_generation;
+        started = m_started;
+        generation = m_exec.Generation();
     }
     if (!started) {
         if (done) done(L"Apple Music is not running.");
@@ -3173,7 +3096,7 @@ void StreamProvider::ResolveSongDisplayNames(std::vector<Song>& songs, uint64_t 
     const std::wstring sourceStorefront = DisplayMetadata::Get().SourceStorefront();
     const auto canCommit = [this, generation, region] {
         std::lock_guard lock(m_mutex);
-        return m_started && generation == m_generation && GetAppleMusicDisplayRegion() == region;
+        return m_started && generation == m_exec.Generation() && GetAppleMusicDisplayRegion() == region;
     };
 
     struct Pending {
@@ -3249,7 +3172,7 @@ void StreamProvider::ResolveAlbumDisplayNames(std::vector<stream::Album>& albums
     const std::wstring sourceStorefront = DisplayMetadata::Get().SourceStorefront();
     const auto canCommit = [this, generation, region] {
         std::lock_guard lock(m_mutex);
-        return m_started && generation == m_generation && GetAppleMusicDisplayRegion() == region;
+        return m_started && generation == m_exec.Generation() && GetAppleMusicDisplayRegion() == region;
     };
 
     struct Pending {
@@ -3324,7 +3247,7 @@ void StreamProvider::ResolveArtistDisplayNames(std::vector<stream::Artist>& arti
     const std::wstring sourceStorefront = DisplayMetadata::Get().SourceStorefront();
     const auto canCommit = [this, generation, region] {
         std::lock_guard lock(m_mutex);
-        return m_started && generation == m_generation && GetAppleMusicDisplayRegion() == region;
+        return m_started && generation == m_exec.Generation() && GetAppleMusicDisplayRegion() == region;
     };
 
     struct Pending {
@@ -3401,7 +3324,7 @@ void StreamProvider::ResolvePlaylistDisplayNames(std::vector<stream::Playlist>& 
     const std::wstring sourceStorefront = DisplayMetadata::Get().SourceStorefront();
     const auto canCommit = [this, generation, region] {
         std::lock_guard lock(m_mutex);
-        return m_started && generation == m_generation && GetAppleMusicDisplayRegion() == region;
+        return m_started && generation == m_exec.Generation() && GetAppleMusicDisplayRegion() == region;
     };
 
     struct Pending {
@@ -3519,7 +3442,7 @@ void StreamProvider::SignIn(HWND owner) {
         {
             std::lock_guard lock(m_mutex);
             if (!m_started) return;
-            generation = m_generation;
+            generation = m_exec.Generation();
             m_authPending = true;
             m_lastAuthError.clear();
             ++m_libraryMutationEpoch;
@@ -3543,8 +3466,7 @@ void StreamProvider::SignOut() {
     {
         std::lock_guard lock(m_mutex);
         if (!m_started) return;
-        ++m_generation;
-        generation = m_generation;
+        generation = m_exec.Bump();
         m_account = {};
         m_accountVerified = false;
         m_authPending = false;
@@ -3576,14 +3498,14 @@ void StreamProvider::SignOut() {
     DisplayMetadata::Get().Clear();
     NotifyAccountChanged();
     NotifyLibraryChanged();
-    Post(generation, [this, generation] {
+    m_exec.Post(kTasks, generation, [this, generation] {
         try {
-            abort_callback& abort = *m_abort;
+            abort_callback& abort = m_exec.Abort();
             Request(L"/api/v1/drm/logout", abort, L"POST", "{}");
         } catch (const exception_aborted&) {
         } catch (...) {
         }
-        PostMain(generation, [] {});
+        m_exec.PostMain(generation, [] {});
     });
 }
 
@@ -3597,7 +3519,7 @@ void StreamProvider::RefreshAccountAsync(uint64_t generation, Done done, bool pr
     uint64_t favoriteBindingEpoch = 0;
     {
         std::lock_guard lock(m_mutex);
-        if (!m_started || generation != m_generation || !m_abort) {
+        if (!m_started || generation != m_exec.Generation()) {
             startError = L"Apple Music is not running.";
         } else if (m_refreshInFlight) {
             if (m_refreshGeneration == generation) {
@@ -3629,7 +3551,7 @@ void StreamProvider::RefreshAccountAsync(uint64_t generation, Done done, bool pr
     for (auto& waiter : superseded)
         if (waiter) waiter(L"The Apple Music refresh was superseded.");
 
-    Post(generation, [this, generation, mutationEpoch, artistPreferenceEpoch, refreshToken,
+    m_exec.Post(kTasks, generation, [this, generation, mutationEpoch, artistPreferenceEpoch, refreshToken,
                       favoriteBindingEpoch]() mutable {
         Snapshot snapshot;
         snapshot.libraryMutationEpoch = mutationEpoch;
@@ -3638,7 +3560,7 @@ void StreamProvider::RefreshAccountAsync(uint64_t generation, Done done, bool pr
         std::wstring error;
         bool favoriteBindingPublished = false;
         try {
-            abort_callback& abort = *m_abort;
+            abort_callback& abort = m_exec.Abort();
             snapshot.account = GetAccount(abort);
             snapshot.accountVerified = true;
 
@@ -3783,7 +3705,7 @@ uint64_t StreamProvider::ApplyVerifiedAccount(uint64_t generation, uint64_t refr
     uint64_t currentGeneration = 0;
     {
         std::lock_guard lock(m_mutex);
-        if (!m_started || generation != m_generation || !m_refreshInFlight ||
+        if (!m_started || generation != m_exec.Generation() || !m_refreshInFlight ||
             m_refreshGeneration != generation || refreshToken != m_refreshSequence)
             return 0;
 
@@ -3814,7 +3736,7 @@ uint64_t StreamProvider::ApplyVerifiedAccount(uint64_t generation, uint64_t refr
             m_snapshotSaveDirty = false;
             m_albumMutations.clear();
             m_playlistMutations.clear();
-            currentGeneration = ++m_generation;
+            currentGeneration = m_exec.Bump();
             m_refreshGeneration = currentGeneration;
             ClearLibraryLocked();
             m_favoritePageWaiters.clear();
@@ -3848,7 +3770,7 @@ uint64_t StreamProvider::ApplyVerifiedAccount(uint64_t generation, uint64_t refr
         fb2k::inMainThread([this, observedGeneration = currentGeneration, accountChanged, accountObserved] {
             {
                 std::lock_guard lock(m_mutex);
-                if (!m_started || observedGeneration != m_generation) return;
+                if (!m_started || observedGeneration != m_exec.Generation()) return;
             }
             if (accountChanged)
                 NotifyAccountChanged();
@@ -3871,7 +3793,7 @@ void StreamProvider::CompleteRefresh(uint64_t generation, Snapshot snapshot, std
     std::vector<Done> waiters;
     {
         std::lock_guard lock(m_mutex);
-        if (!m_started || generation != m_generation || !m_refreshInFlight ||
+        if (!m_started || generation != m_exec.Generation() || !m_refreshInFlight ||
             m_refreshGeneration != generation || snapshot.refreshToken != m_refreshSequence)
             return;
         m_refreshInFlight = false;
@@ -3916,7 +3838,7 @@ void StreamProvider::CompleteRefresh(uint64_t generation, Snapshot snapshot, std
             m_snapshotSaveDirty = false;
             m_albumMutations.clear();
             m_playlistMutations.clear();
-            ++m_generation;
+            m_exec.Bump();
             m_artistVerificationCondition.notify_all();
         }
         snapshotReady =
@@ -4109,7 +4031,7 @@ void StreamProvider::CompleteRefresh(uint64_t generation, Snapshot snapshot, std
         bool favoritesKnown = false;
         {
             std::lock_guard lock(m_mutex);
-            current = m_generation;
+            current = m_exec.Generation();
             // The stars need the favorite ids. They are read from the service when they are
             // not known or were last confirmed long ago, not at every start and refresh.
             favoritesKnown = m_favoriteSongsLoaded ||
@@ -4127,7 +4049,7 @@ void StreamProvider::RefreshLibraryPreservingDetails(Done done) {
     {
         std::lock_guard lock(m_mutex);
         started = m_started;
-        generation = m_generation;
+        generation = m_exec.Generation();
     }
     if (!started) {
         if (done) done(L"Apple Music is not running.");
@@ -4142,7 +4064,7 @@ void StreamProvider::RefreshLibraryAfterMutation(Done done) {
     {
         std::lock_guard lock(m_mutex);
         started = m_started;
-        generation = m_generation;
+        generation = m_exec.Generation();
         if (started) m_refreshInvalidatesLists = true;
     }
     if (!started) {
@@ -4160,7 +4082,7 @@ void StreamProvider::RefreshLibrary(Done done) {
     {
         std::lock_guard lock(m_mutex);
         started = m_started;
-        generation = m_generation;
+        generation = m_exec.Generation();
         // An explicit library refresh invalidates detail snapshots, while background snapshot
         // refreshes use RefreshLibraryPreservingDetails().
         if (started) ClearPlaylistDetailsLocked();
@@ -4238,9 +4160,9 @@ void StreamProvider::RequestUnknownSong(const stream::Id& track) const {
         {
             std::lock_guard lock(self->m_mutex);
             if (!self->m_started) return;
-            generation = self->m_generation;
+            generation = self->m_exec.Generation();
         }
-        self->Post(generation, [self] { self->ReadUnknownSongs(); });
+        self->m_exec.Post(kTasks, generation, [self] { self->ReadUnknownSongs(); });
     });
 }
 
@@ -4275,7 +4197,7 @@ void StreamProvider::ReadUnknownSongs() const {
                                 L"&include=catalog,albums,artists&include[songs]=albums"
                           : L"/v1/catalog/" + storefront + L"/songs?ids=" + Encode(joined) + L"&include=albums,artists";
             try {
-                const Object response = Apple(path, *m_abort);
+                const Object response = Apple(path, m_exec.Abort());
                 if (const auto data = json::GetArray(response, L"data")) {
                     auto parsed = ParseSongs(json::Objects(*data));
                     songs.insert(songs.end(), std::make_move_iterator(parsed.begin()),
@@ -4545,7 +4467,7 @@ std::vector<Song> StreamProvider::RecentLibrarySongs(uint64_t generation, abort_
     }
     std::vector<Song> songs = LoadLibrarySongs(abort);
     std::lock_guard lock(m_mutex);
-    if (generation == m_generation) {
+    if (generation == m_exec.Generation()) {
         m_librarySongs = songs;
         m_librarySongsLoaded = true;
         m_librarySongsAt = std::chrono::steady_clock::now();
@@ -4628,10 +4550,10 @@ void StreamProvider::SetSongsSaved(std::vector<stream::Id> tracks, bool saved, D
     uint64_t generation = 0;
     {
         std::lock_guard lock(m_mutex);
-        generation = m_generation;
+        generation = m_exec.Generation();
     }
     const std::wstring storefront = Storefront();
-    PostMutation(generation, [this, generation, targets = std::move(targets), saved, storefront,
+    m_exec.Post(kMutations, generation, [this, generation, targets = std::move(targets), saved, storefront,
                               done = std::move(done)]() mutable {
         std::wstring error;
         try {
@@ -4641,13 +4563,13 @@ void StreamProvider::SetSongsSaved(std::vector<stream::Id> tracks, bool saved, D
                 for (const auto& target : targets)
                     if (!target.catalogId.empty()) catalogIds.push_back(target.catalogId);
                 if (!catalogIds.empty())
-                    Apple(L"/v1/me/library?ids[songs]=" + Encode(JoinedIds(catalogIds)), *m_abort, L"POST");
+                    Apple(L"/v1/me/library?ids[songs]=" + Encode(JoinedIds(catalogIds)), m_exec.Abort(), L"POST");
             } else {
                 for (auto& target : targets) {
                     if (target.libraryId.empty())
                         target.libraryId =
-                            ResolveLibraryIdFromCatalog(L"songs", L'i', target.catalogId, storefront, *m_abort);
-                    Apple(L"/v1/me/library/songs/" + Encode(target.libraryId), *m_abort, L"DELETE");
+                            ResolveLibraryIdFromCatalog(L"songs", L'i', target.catalogId, storefront, m_exec.Abort());
+                    Apple(L"/v1/me/library/songs/" + Encode(target.libraryId), m_exec.Abort(), L"DELETE");
                 }
             }
         } catch (const exception_aborted&) {
@@ -4655,7 +4577,7 @@ void StreamProvider::SetSongsSaved(std::vector<stream::Id> tracks, bool saved, D
         } catch (const std::exception& exception) {
             error = Wide(exception.what());
         }
-        PostMain(generation, [this, targets = std::move(targets), saved, done = std::move(done),
+        m_exec.PostMain(generation, [this, targets = std::move(targets), saved, done = std::move(done),
                               error = std::move(error)]() mutable {
             if (!error.empty()) {
                 if (done) done(std::move(error));
@@ -4678,25 +4600,25 @@ void StreamProvider::SetSongsSaved(std::vector<stream::Id> tracks, bool saved, D
 
 void StreamProvider::RefreshLibrarySongsAsync(uint64_t generation, TracksDone done) {
     done = stream::GuardDone(std::move(done), kRequestDropped);
-    Post(generation, [this, generation, done = std::move(done)]() mutable {
+    m_exec.Post(kTasks, generation, [this, generation, done = std::move(done)]() mutable {
         std::vector<Song> songs;
         std::wstring error;
         try {
-            songs = LoadLibrarySongs(*m_abort);
+            songs = LoadLibrarySongs(m_exec.Abort());
             if (!PutIfCurrent(generation, songs)) return;
-            ResolveSongDisplayNames(songs, generation, *m_abort);
+            ResolveSongDisplayNames(songs, generation, m_exec.Abort());
         } catch (const exception_aborted&) {
             return;
         } catch (const std::exception& exception) {
             error = Wide(exception.what());
         }
-        PostMain(generation, [this, generation, done = std::move(done), songs = std::move(songs),
+        m_exec.PostMain(generation, [this, generation, done = std::move(done), songs = std::move(songs),
                               error = std::move(error)]() mutable {
             if (error.empty()) {
                 Catalog::Get().PutAndHint(songs);
                 {
                     std::lock_guard lock(m_mutex);
-                    if (generation == m_generation) {
+                    if (generation == m_exec.Generation()) {
                         m_librarySongs = songs;
                         m_librarySongsLoaded = true;
                         m_librarySongsAt = std::chrono::steady_clock::now();
@@ -4717,31 +4639,31 @@ void StreamProvider::RefreshFavoriteSongs() {
     const std::wstring storefront = Storefront();
     {
         std::lock_guard lock(m_mutex);
-        generation = m_generation;
+        generation = m_exec.Generation();
         favoritePlaylist = m_favoritePlaylistId;
     }
     if (favoritePlaylist.empty()) return;
 
-    Post(generation,
+    m_exec.Post(kTasks, generation,
          [this, generation, favoritePlaylist, storefront]() mutable {
              PlaylistData data;
              std::wstring error;
              try {
-                 data = LoadPlaylist(favoritePlaylist, storefront, true, *m_abort);
+                 data = LoadPlaylist(favoritePlaylist, storefront, true, m_exec.Abort());
                  if (!PutIfCurrent(generation, data.songs)) return;
-                 ResolveSongDisplayNames(data.songs, generation, *m_abort);
+                 ResolveSongDisplayNames(data.songs, generation, m_exec.Abort());
              } catch (const exception_aborted&) {
                  return;
              } catch (const std::exception& exception) {
                  error = Wide(exception.what());
              }
-             PostMain(generation, [this, generation, songs = std::move(data.songs),
+             m_exec.PostMain(generation, [this, generation, songs = std::move(data.songs),
                                    error = std::move(error)]() mutable {
                  if (error.empty()) {
                      Catalog::Get().PutAndHint(songs);
                      {
                          std::lock_guard lock(m_mutex);
-                         if (generation == m_generation) {
+                         if (generation == m_exec.Generation()) {
                              m_favoriteSongs = songs;
                              m_favoriteSongsLoaded = true;
                              m_favoriteIds.clear();
@@ -4793,20 +4715,20 @@ void StreamProvider::FetchArtist(const stream::Id& artist, ArtistDone done) {
     stream::Id catalogId = ArtistCatalogId(artist);
     {
         std::lock_guard lock(m_mutex);
-        generation = m_generation;
+        generation = m_exec.Generation();
     }
-    Post(generation, [this, generation, preferenceEpoch, artist, storefront, library, catalogId,
+    m_exec.Post(kTasks, generation, [this, generation, preferenceEpoch, artist, storefront, library, catalogId,
                       done = std::move(done)]() mutable {
         stream::Artist info;
         std::wstring error;
         try {
-            if (auto loaded = LoadArtist(artist, storefront, library, *m_abort)) {
+            if (auto loaded = LoadArtist(artist, storefront, library, m_exec.Abort())) {
                 info = std::move(loaded->info);
                 ApplyArtistPreferenceOverlay(info, preferenceEpoch);
                 if (catalogId.empty()) catalogId = loaded->catalogId;
                 if (info.albumCount == stream::kUnknownCount) {
                     try {
-                        info.albumCount = CountArtistAlbums(artist, catalogId, storefront, library, *m_abort);
+                        info.albumCount = CountArtistAlbums(artist, catalogId, storefront, library, m_exec.Abort());
                     } catch (const exception_aborted&) {
                         throw;
                     } catch (...) {
@@ -4814,7 +4736,7 @@ void StreamProvider::FetchArtist(const stream::Id& artist, ArtistDone done) {
                 }
                 if (!PutIfCurrent(generation, info)) return;
                 std::vector<stream::Artist> displayArtist{info};
-                ResolveArtistDisplayNames(displayArtist, generation, *m_abort);
+                ResolveArtistDisplayNames(displayArtist, generation, m_exec.Abort());
                 if (!displayArtist.empty()) {
                     DisplayMetadata::Get().Apply(displayArtist.front(),
                                                  DisplayMetadata::Get().SourceStorefront());
@@ -4828,7 +4750,7 @@ void StreamProvider::FetchArtist(const stream::Id& artist, ArtistDone done) {
         } catch (const std::exception& exception) {
             error = Wide(exception.what());
         }
-        PostMain(generation, [this, generation, artist, catalogId, done = std::move(done),
+        m_exec.PostMain(generation, [this, generation, artist, catalogId, done = std::move(done),
                               info = std::move(info), error = std::move(error)]() mutable {
             bool changed = false;
             if (error.empty() && !catalogId.empty()) {
@@ -4837,7 +4759,7 @@ void StreamProvider::FetchArtist(const stream::Id& artist, ArtistDone done) {
             }
             if (error.empty()) {
                 std::lock_guard lock(m_mutex);
-                if (generation == m_generation) {
+                if (generation == m_exec.Generation()) {
                     for (auto& item : m_libraryArtists) {
                         if (item.id != artist || item.albumCount == info.albumCount) continue;
                         item.albumCount = info.albumCount;
@@ -4870,19 +4792,19 @@ void StreamProvider::FetchArtistBio(const stream::Id& artist, TextDone done) {
     bool library = IsLibraryId(artist) && artist[0] == L'r';
     {
         std::lock_guard lock(m_mutex);
-        generation = m_generation;
+        generation = m_exec.Generation();
         preferenceEpoch = m_artistPreferenceEpoch;
     }
-    Post(generation,
+    m_exec.Post(kTasks, generation,
          [this, generation, preferenceEpoch, artist, storefront, library, done = std::move(done)]() mutable {
              std::wstring text;
              std::wstring error;
              try {
-                 if (auto loaded = LoadArtist(artist, storefront, library, *m_abort)) {
+                 if (auto loaded = LoadArtist(artist, storefront, library, m_exec.Abort())) {
                      ApplyArtistPreferenceOverlay(loaded->info, preferenceEpoch);
                      if (!PutIfCurrent(generation, loaded->info)) return;
                      std::vector<stream::Artist> displayArtist{loaded->info};
-                     ResolveArtistDisplayNames(displayArtist, generation, *m_abort);
+                     ResolveArtistDisplayNames(displayArtist, generation, m_exec.Abort());
                      if (!displayArtist.empty()) {
                          DisplayMetadata::Get().Apply(displayArtist.front(),
                                                       DisplayMetadata::Get().SourceStorefront());
@@ -4896,7 +4818,7 @@ void StreamProvider::FetchArtistBio(const stream::Id& artist, TextDone done) {
              } catch (const std::exception& exception) {
                  error = Wide(exception.what());
              }
-             PostMain(generation,
+             m_exec.PostMain(generation,
                       [done = std::move(done), text = std::move(text), error = std::move(error)]() mutable {
                           if (done) done(std::move(text), std::move(error));
                       });
@@ -5042,10 +4964,10 @@ void StreamProvider::FetchHome(HomeDone done) {
     std::wstring locale;
     {
         std::lock_guard lock(m_mutex);
-        generation = m_generation;
+        generation = m_exec.Generation();
         locale = m_locale;
     }
-    Post(generation, [this, generation, locale, done = std::move(done)]() mutable {
+    m_exec.Post(kTasks, generation, [this, generation, locale, done = std::move(done)]() mutable {
         stream::Home home;
         std::wstring error;
         try {
@@ -5053,7 +4975,7 @@ void StreamProvider::FetchHome(HomeDone done) {
                 Apple(L"/v1/me/recommendations?name=listen-now&platform=web&timezone=" + Encode(UtcOffset()) +
                           L"&with=friendsMix,library,social&extend=editorialVideo,editorialArtwork" +
                           (locale.empty() ? std::wstring() : L"&l=" + locale),
-                      *m_abort);
+                      m_exec.Abort());
             std::vector<stream::Album> albums;
             std::vector<stream::Playlist> playlists;
             const auto shelves = json::GetArray(response, L"data");
@@ -5129,7 +5051,7 @@ void StreamProvider::FetchHome(HomeDone done) {
         } catch (const std::exception& exception) {
             error = Wide(exception.what());
         }
-        PostMain(generation, [done = std::move(done), home = std::move(home), error = std::move(error)]() mutable {
+        m_exec.PostMain(generation, [done = std::move(done), home = std::move(home), error = std::move(error)]() mutable {
             if (done) done(std::move(home), std::move(error));
         });
     });
@@ -5141,14 +5063,14 @@ void StreamProvider::FetchStationTracks(const stream::Id& station, TracksDone do
     uint64_t generation = 0;
     {
         std::lock_guard lock(m_mutex);
-        generation = m_generation;
+        generation = m_exec.Generation();
     }
-    Post(generation, [this, generation, station, done = std::move(done)]() mutable {
+    m_exec.Post(kTasks, generation, [this, generation, station, done = std::move(done)]() mutable {
         std::vector<Song> songs;
         std::wstring error;
         try {
             const Object response =
-                Apple(L"/v1/me/stations/next-tracks/" + Encode(station) + L"?limit=5", *m_abort, L"POST");
+                Apple(L"/v1/me/stations/next-tracks/" + Encode(station) + L"?limit=5", m_exec.Abort(), L"POST");
             if (const auto data = json::GetArray(response, L"data"))
                 for (const auto& item : json::Objects(*data))
                     if (auto song = ParseSong(item)) songs.push_back(std::move(*song));
@@ -5160,7 +5082,7 @@ void StreamProvider::FetchStationTracks(const stream::Id& station, TracksDone do
         }
         std::vector<stream::Track> tracks;
         for (const auto& song : songs) tracks.push_back(song.track);
-        PostMain(generation, [done = std::move(done), songs = std::move(songs), tracks = std::move(tracks),
+        m_exec.PostMain(generation, [done = std::move(done), songs = std::move(songs), tracks = std::move(tracks),
                               error = std::move(error)]() mutable {
             // Their titles reach foobar2000 before they are queued, or the queue shows addresses.
             if (!songs.empty()) Catalog::Get().PutAndHint(songs);
@@ -5175,9 +5097,9 @@ void StreamProvider::FetchSongDetails(const stream::Id& track, SongDetailsDone d
     const std::wstring storefront = Storefront();
     {
         std::lock_guard lock(m_mutex);
-        generation = m_generation;
+        generation = m_exec.Generation();
     }
-    Post(generation, [this, generation, track, storefront, done = std::move(done)]() mutable {
+    m_exec.Post(kTasks, generation, [this, generation, track, storefront, done = std::move(done)]() mutable {
         stream::SongDetails details;
         std::wstring error;
         try {
@@ -5189,7 +5111,7 @@ void StreamProvider::FetchSongDetails(const stream::Id& track, SongDetailsDone d
             } else {
                 const Object response = Apple(L"/v1/catalog/" + storefront + L"/songs/" + Encode(catalogId) +
                                                   L"?include=albums,artists&extend=inFavorites,audioTraits",
-                                              *m_abort);
+                                              m_exec.Abort());
                 const auto item = FirstData(response);
                 const auto attributes = item ? json::GetObject(*item, L"attributes") : std::nullopt;
                 if (!item || !attributes) throw std::runtime_error("Apple Music returned no song.");
@@ -5220,7 +5142,7 @@ void StreamProvider::FetchSongDetails(const stream::Id& track, SongDetailsDone d
                 try {
                     const Object credits = Apple(L"/v1/catalog/" + storefront + L"/songs/" + Encode(catalogId) +
                                                      L"/credits?extend=inFavorites",
-                                                 *m_abort);
+                                                 m_exec.Abort());
                     if (const auto groups = json::GetArray(credits, L"data")) {
                         for (const auto& group : json::Objects(*groups)) {
                             stream::CreditGroup out;
@@ -5250,7 +5172,7 @@ void StreamProvider::FetchSongDetails(const stream::Id& track, SongDetailsDone d
         } catch (const std::exception& exception) {
             error = Wide(exception.what());
         }
-        PostMain(generation, [done = std::move(done), details = std::move(details), error = std::move(error)]() mutable {
+        m_exec.PostMain(generation, [done = std::move(done), details = std::move(details), error = std::move(error)]() mutable {
             if (done) done(std::move(details), std::move(error));
         });
     });
@@ -5621,7 +5543,7 @@ bool StreamProvider::HoldForFavoritePlaylist(const stream::ListQuery& query, con
     uint64_t bindingEpoch = 0;
     {
         std::lock_guard lock(m_mutex);
-        if (!m_started || generation != m_generation) return true;
+        if (!m_started || generation != m_exec.Generation()) return true;
         favoritePlaylist = m_favoritePlaylistId;
         favoriteBindingState = m_favoriteBindingState;
         if (favoritePlaylist.empty() && favoriteBindingState != FavoriteBindingState::Empty) {
@@ -5678,7 +5600,7 @@ void StreamProvider::FetchListPage(const stream::ListQuery& sourceQuery, const s
     stream::Id favoritePlaylist;
     {
         std::lock_guard lock(m_mutex);
-        generation = m_generation;
+        generation = m_exec.Generation();
         storefront = m_account.signedIn && m_account.storefront.size() == 2 ? m_account.storefront
                                                                             : std::wstring(L"US");
         locale = m_locale;
@@ -5712,11 +5634,11 @@ void StreamProvider::FetchListPage(const stream::ListQuery& sourceQuery, const s
 
     const size_t pageLimit = std::clamp<size_t>(limit, 1, 100);
     const bool derivedGroupsPage = query.kind == stream::ListKind::Groups;
-    Post(generation, [this, query = std::move(query), cursorState, fingerprint, storefront, generation,
+    m_exec.Post(kTasks, generation, [this, query = std::move(query), cursorState, fingerprint, storefront, generation,
                       preferenceEpoch, pageLimit, derivedGroupsPage, done = std::move(done)]() mutable {
         if (query.cancelled && query.cancelled->load(std::memory_order_acquire)) return;
         std::wstring error;
-        ListLoad load(query, cursorState, fingerprint, storefront, generation, pageLimit, *m_abort);
+        ListLoad load(query, cursorState, fingerprint, storefront, generation, pageLimit, m_exec.Abort());
         try {
             ReadListPage(load);
         } catch (const exception_aborted&) {
@@ -5726,7 +5648,7 @@ void StreamProvider::FetchListPage(const stream::ListQuery& sourceQuery, const s
         }
 
         if (query.cancelled && query.cancelled->load(std::memory_order_acquire)) return;
-        PostMain(generation, [this, generation, preferenceEpoch, page = std::move(load.page),
+        m_exec.PostMain(generation, [this, generation, preferenceEpoch, page = std::move(load.page),
                               songs = std::move(load.songs), trackRows = load.trackRows,
                               catalogItemRows = load.catalogItemRows, derivedGroupsPage,
                               error = std::move(error), done = std::move(done)]() mutable {
@@ -6254,7 +6176,7 @@ void StreamProvider::FinishListPage(uint64_t generation, uint64_t preferenceEpoc
     if (error.empty() && derivedGroupsPage) {
         Catalog::Get().PutAndHint(songs);
         std::lock_guard lock(m_mutex);
-        if (generation == m_generation) {
+        if (generation == m_exec.Generation()) {
             m_librarySongs = songs;
             m_librarySongsLoaded = true;
             m_librarySongsAt = std::chrono::steady_clock::now();
@@ -6407,28 +6329,21 @@ bool StreamProvider::EnrichListPage(const stream::ListQuery& query, const stream
     const auto cancelled = query.cancelled;
     {
         std::lock_guard lock(m_mutex);
-        if (!m_started || !m_enrichTasks || !m_abort || ListCancelled(cancelled)) return false;
-        const uint64_t generation = m_generation;
+        if (!m_started || ListCancelled(cancelled)) return false;
+        const uint64_t generation = m_exec.Generation();
         const std::wstring storefront = m_account.signedIn && m_account.storefront.size() == 2
                                             ? m_account.storefront
                                             : std::wstring(L"US");
-        // Post under the provider lock so Shutdown cannot stop and release this queue
-        // between the lifetime check and enqueue.
-        m_enrichTasks->Post([this, generation, storefront, cancelled, songs = std::move(songs),
+        m_exec.Post(kEnrich, generation, [this, generation, storefront, cancelled, songs = std::move(songs),
                              albums = std::move(albums), artists = std::move(artists),
                              playlists = std::move(playlists), catalogItems = std::move(catalogItems),
                              groupSongs = std::move(groupSongs), derivedGroupsPage, derivedGenres,
                              enrichedPage = std::move(enrichedPage),
                              done = stream::GuardDone(std::move(done), kRequestDropped, cancelled)]() mutable {
-            abort_callback* providerAbort = nullptr;
-            {
-                std::lock_guard lock(m_mutex);
-                if (!m_started || generation != m_generation || !m_abort || ListCancelled(cancelled)) return;
-                providerAbort = m_abort.get();
-            }
+            if (ListCancelled(cancelled)) return;
 
             try {
-                ListHydrationAbort abort(*providerAbort, cancelled);
+                ListHydrationAbort abort(m_exec.Abort(), cancelled);
                 if (HasSongAlbumHydrationWork(songs)) HydrateSongAlbums(songs, storefront, abort);
                 ResolveSongDisplayNames(songs, generation, abort);
                 ResolveAlbumDisplayNames(albums, generation, abort);
@@ -6445,7 +6360,7 @@ bool StreamProvider::EnrichListPage(const stream::ListQuery& query, const stream
             }
             if (ListCancelled(cancelled)) return;
 
-            PostMain(generation, [this, generation, cancelled, songs = std::move(songs),
+            m_exec.PostMain(generation, [this, generation, cancelled, songs = std::move(songs),
                                   albums = std::move(albums), artists = std::move(artists),
                                   playlists = std::move(playlists), catalogItems = std::move(catalogItems),
                                   groupSongs = std::move(groupSongs), derivedGroupsPage, derivedGenres,
@@ -6453,7 +6368,7 @@ bool StreamProvider::EnrichListPage(const stream::ListQuery& query, const stream
                 if (ListCancelled(cancelled)) return;
                 {
                     std::lock_guard lock(m_mutex);
-                    if (!m_started || generation != m_generation) return;
+                    if (!m_started || generation != m_exec.Generation()) return;
                 }
                 try {
                     if (auto* pageRows = std::get_if<std::vector<stream::Track>>(&enrichedPage.rows)) {
@@ -6572,24 +6487,24 @@ void StreamProvider::WriteFavorite(const stream::Id& track, bool favorite, Done 
     uint64_t generation = 0;
     {
         std::lock_guard lock(m_mutex);
-        generation = m_generation;
+        generation = m_exec.Generation();
     }
     const stream::Id libraryId = song ? song->libraryId : stream::Id();
     const stream::Id catalogId = song ? song->catalogId : stream::Id();
     // On the write queue, so a favorite never waits behind page reads.
-    PostMutation(generation, [this, generation, track, requestId, resourceType, favorite, libraryId, catalogId,
+    m_exec.Post(kMutations, generation, [this, generation, track, requestId, resourceType, favorite, libraryId, catalogId,
                               done = std::move(done)]() mutable {
         std::wstring error;
         const auto request = [&](const stream::Id& id, const std::wstring& type) {
             const std::wstring path = L"/v1/me/favorites?ids[" + type + L"]=" + Encode(id) + L"&platform=web";
-            Apple(path, *m_abort, favorite ? L"POST" : L"DELETE");
+            Apple(path, m_exec.Abort(), favorite ? L"POST" : L"DELETE");
         };
         try {
             try {
                 request(requestId, resourceType);
             } catch (const BridgeHttpError& exception) {
                 if (exception.status() != 404 || libraryId.empty() || catalogId.empty()) throw;
-                const auto mapping = ResolveLibraryPlaybackMapping(libraryId, catalogId, *m_abort);
+                const auto mapping = ResolveLibraryPlaybackMapping(libraryId, catalogId, m_exec.Abort());
                 if (!mapping || mapping->reportingId.empty()) throw;
                 request(mapping->reportingId, L"songs");
             }
@@ -6598,7 +6513,7 @@ void StreamProvider::WriteFavorite(const stream::Id& track, bool favorite, Done 
         } catch (const std::exception& exception) {
             error = Wide(exception.what());
         }
-        PostMain(generation,
+        m_exec.PostMain(generation,
                  [this, track, favorite, done = std::move(done), error = std::move(error)]() mutable {
                      if (!error.empty()) {
                          if (done) done(std::move(error));
@@ -6640,16 +6555,16 @@ void StreamProvider::SetFollowed(const stream::Id& artist, bool follow, Done don
     const stream::Id catalogHint = ArtistCatalogId(artist);
     {
         std::lock_guard lock(m_mutex);
-        generation = m_generation;
+        generation = m_exec.Generation();
         mutationSequence = ++m_artistPreferenceSequence;
     }
-    PostMutation(generation, [this, generation, mutationSequence, artist, storefront, library, catalogHint,
+    m_exec.Post(kMutations, generation, [this, generation, mutationSequence, artist, storefront, library, catalogHint,
                               follow, done = std::move(done)]() mutable {
         stream::Id catalogId;
         std::wstring error;
         try {
             const auto verified =
-                ResolveVerifiedArtistCatalogId(artist, catalogHint, storefront, library, *m_abort);
+                ResolveVerifiedArtistCatalogId(artist, catalogHint, storefront, library, m_exec.Abort());
             if (!verified) {
                 error = L"Apple Music did not provide a verified catalog artist id.";
             } else {
@@ -6660,7 +6575,7 @@ void StreamProvider::SetFollowed(const stream::Id& artist, bool follow, Done don
                     error = L"The Apple Music artist preference request is invalid.";
                 } else {
                     catalogId = verified->Value();
-                    Apple(request->path, *m_abort, request->method);
+                    Apple(request->path, m_exec.Abort(), request->method);
                 }
             }
         } catch (const exception_aborted&) {
@@ -6668,7 +6583,7 @@ void StreamProvider::SetFollowed(const stream::Id& artist, bool follow, Done don
         } catch (const std::exception& exception) {
             error = Wide(exception.what());
         }
-        PostMain(generation, [this, generation, mutationSequence, artist, storefront, catalogId, follow,
+        m_exec.PostMain(generation, [this, generation, mutationSequence, artist, storefront, catalogId, follow,
                               done = std::move(done), error = std::move(error)]() mutable {
             if (!error.empty()) {
                 if (done) done(std::move(error));
@@ -6717,11 +6632,11 @@ void StreamProvider::SetFollowed(const stream::Id& artist, bool follow, Done don
             update(catalogId);
             NotifyLibraryChanged();
             if (done) done({});
-            Post(generation, [this, generation, mutationSequence, preferenceEpoch, storefront, catalogId,
+            m_exec.Post(kTasks, generation, [this, generation, mutationSequence, preferenceEpoch, storefront, catalogId,
                               follow] {
                 std::optional<ArtistPreference> observed;
                 try {
-                    const auto response = Apple(ArtistPath(catalogId, storefront, false), *m_abort);
+                    const auto response = Apple(ArtistPath(catalogId, storefront, false), m_exec.Abort());
                     if (const auto item = FirstData(response);
                         item && VerifiedArtistCatalogId(*item, catalogId))
                         observed = ParseArtistPreference(*item);
@@ -6730,7 +6645,7 @@ void StreamProvider::SetFollowed(const stream::Id& artist, bool follow, Done don
                 } catch (...) {
                     return;
                 }
-                PostMain(generation, [this, mutationSequence, preferenceEpoch, catalogId, follow, observed] {
+                m_exec.PostMain(generation, [this, mutationSequence, preferenceEpoch, catalogId, follow, observed] {
                     if (!observed || *observed == ArtistPreference::Unknown) return;
                     const bool matches = (*observed == ArtistPreference::Favorite) == follow;
                     std::lock_guard lock(m_mutex);
@@ -6770,10 +6685,10 @@ void StreamProvider::SetAlbumSaved(const stream::Id& album, bool saved, Done don
     if (!albumInfo) albumInfo = Catalog::Get().FindAlbumRaw(album);
     {
         std::lock_guard lock(m_mutex);
-        generation = m_generation;
+        generation = m_exec.Generation();
         mutationSequence = ++m_libraryMutationSequence;
     }
-    PostMutation(generation, [this, generation, mutationSequence, album, saved, storefront,
+    m_exec.Post(kMutations, generation, [this, generation, mutationSequence, album, saved, storefront,
                               done = std::move(done), knownLibrary, catalogId,
                               albumInfo = std::move(albumInfo)]() mutable {
         stream::Id libraryId = knownLibrary;
@@ -6783,21 +6698,21 @@ void StreamProvider::SetAlbumSaved(const stream::Id& album, bool saved, Done don
                 if (catalogId.empty())
                     error = L"This album has no verified Apple Music catalog id.";
                 else
-                    Apple(L"/v1/me/library?ids[albums]=" + Encode(catalogId), *m_abort, L"POST");
+                    Apple(L"/v1/me/library?ids[albums]=" + Encode(catalogId), m_exec.Abort(), L"POST");
             } else {
                 if (libraryId.empty() && !catalogId.empty())
-                    libraryId = ResolveLibraryIdFromCatalog(L"albums", L'l', catalogId, storefront, *m_abort);
+                    libraryId = ResolveLibraryIdFromCatalog(L"albums", L'l', catalogId, storefront, m_exec.Abort());
                 if (libraryId.empty())
                     error = L"This album has no verified Apple Music library id.";
                 else
-                    Apple(L"/v1/me/library/albums/" + Encode(libraryId), *m_abort, L"DELETE");
+                    Apple(L"/v1/me/library/albums/" + Encode(libraryId), m_exec.Abort(), L"DELETE");
             }
         } catch (const exception_aborted&) {
             return;
         } catch (const std::exception& exception) {
             error = Wide(exception.what());
         }
-        PostMain(generation, [this, mutationSequence, album, catalogId, libraryId, saved,
+        m_exec.PostMain(generation, [this, mutationSequence, album, catalogId, libraryId, saved,
                               albumInfo = std::move(albumInfo), done = std::move(done),
                               error = std::move(error)]() mutable {
             if (!error.empty()) {
@@ -6885,10 +6800,10 @@ void StreamProvider::SetPlaylistSaved(const stream::Id& playlist, bool saved, Do
     if (!playlistInfo) playlistInfo = Catalog::Get().FindPlaylistRaw(playlist);
     {
         std::lock_guard lock(m_mutex);
-        generation = m_generation;
+        generation = m_exec.Generation();
         mutationSequence = ++m_libraryMutationSequence;
     }
-    PostMutation(generation, [this, generation, mutationSequence, playlist, saved, storefront, knownLibrary,
+    m_exec.Post(kMutations, generation, [this, generation, mutationSequence, playlist, saved, storefront, knownLibrary,
                               catalogId, playlistInfo = std::move(playlistInfo),
                               done = std::move(done)]() mutable {
         stream::Id libraryId = knownLibrary;
@@ -6898,22 +6813,22 @@ void StreamProvider::SetPlaylistSaved(const stream::Id& playlist, bool saved, Do
                 if (catalogId.empty())
                     error = L"This playlist has no verified Apple Music catalog id.";
                 else
-                    Apple(L"/v1/me/library?ids[playlists]=" + Encode(catalogId), *m_abort, L"POST");
+                    Apple(L"/v1/me/library?ids[playlists]=" + Encode(catalogId), m_exec.Abort(), L"POST");
             } else {
                 if (libraryId.empty() && !catalogId.empty())
                     libraryId =
-                        ResolveLibraryIdFromCatalog(L"playlists", L'p', catalogId, storefront, *m_abort);
+                        ResolveLibraryIdFromCatalog(L"playlists", L'p', catalogId, storefront, m_exec.Abort());
                 if (libraryId.empty()) {
                     error = L"This playlist has no verified Apple Music library id.";
                 } else {
-                    const PlaylistData data = LoadPlaylist(libraryId, storefront, true, *m_abort, false);
+                    const PlaylistData data = LoadPlaylist(libraryId, storefront, true, m_exec.Abort(), false);
                     if (data.favorite || IsFavoritePlaylist(libraryId))
                         throw std::runtime_error("The Favorite Songs playlist cannot be changed.");
                     if (data.info.own)
                         throw std::runtime_error("Use Delete playlist for an owned Apple Music playlist.");
                     if (!data.canDelete)
                         throw std::runtime_error("Apple Music does not allow this playlist to be removed.");
-                    Apple(L"/v1/me/library/playlists/" + Encode(libraryId), *m_abort, L"DELETE");
+                    Apple(L"/v1/me/library/playlists/" + Encode(libraryId), m_exec.Abort(), L"DELETE");
                 }
             }
         } catch (const exception_aborted&) {
@@ -6921,7 +6836,7 @@ void StreamProvider::SetPlaylistSaved(const stream::Id& playlist, bool saved, Do
         } catch (const std::exception& exception) {
             error = Wide(exception.what());
         }
-        PostMain(generation, [this, mutationSequence, playlist, catalogId, libraryId, saved,
+        m_exec.PostMain(generation, [this, mutationSequence, playlist, catalogId, libraryId, saved,
                               playlistInfo = std::move(playlistInfo), done = std::move(done),
                               error = std::move(error)]() mutable {
             if (!error.empty()) {
@@ -7070,7 +6985,7 @@ void StreamProvider::EnrichArtistCountsAsync(uint64_t generation) {
     std::vector<std::pair<stream::Id, stream::Id>> artists;
     {
         std::lock_guard lock(m_mutex);
-        if (!m_started || generation != m_generation || !m_enrichTasks || m_artistCountsInFlight) return;
+        if (!m_started || generation != m_exec.Generation() || m_artistCountsInFlight) return;
         // Only artists whose count is not known yet. A count costs one or two requests per
         // artist; the ones already counted (also restored from the snapshot) keep theirs
         // until the artist's page reads the albums again.
@@ -7084,7 +6999,7 @@ void StreamProvider::EnrichArtistCountsAsync(uint64_t generation) {
     }
 
     const std::wstring storefront = Storefront();
-    m_enrichTasks->Post([this, generation, storefront, artists = std::move(artists)]() mutable {
+    m_exec.Post(kEnrich, generation, [this, generation, storefront, artists = std::move(artists)]() mutable {
         std::unordered_map<stream::Id, int> counts;
         std::unordered_map<stream::Id, int> remembered = LoadArtistCounts();
         // The first count of a recount period dates the record, so the whole set ages together.
@@ -7096,7 +7011,7 @@ void StreamProvider::EnrichArtistCountsAsync(uint64_t generation) {
         }
         bool counted = false;
         try {
-            abort_callback& abort = *m_abort;
+            abort_callback& abort = m_exec.Abort();
             for (const auto& [libraryId, catalogId] : artists) {
                 if (const auto known = remembered.find(libraryId); known != remembered.end()) {
                     if (known->second != kNoAlbumCount) counts[libraryId] = known->second;
@@ -7148,9 +7063,9 @@ void StreamProvider::EnrichArtistCountsAsync(uint64_t generation) {
                     return;
                 }
                 m_artistCountsInFlight = false;
-                if (generation != m_generation) {
+                if (generation != m_exec.Generation()) {
                     rerun = true;
-                    current = m_generation;
+                    current = m_exec.Generation();
                 } else if (!counts.empty()) {
                     for (auto& artist : m_libraryArtists) {
                         const auto found = counts.find(artist.id);
@@ -7185,28 +7100,28 @@ void StreamProvider::AddToPlaylist(const stream::Id& playlist, std::vector<strea
     const std::set<stream::Id> requested(tracks.begin(), tracks.end());
     {
         std::lock_guard lock(m_mutex);
-        generation = m_generation;
+        generation = m_exec.Generation();
     }
-    Post(generation, [this, generation, playlist, tracks = std::move(tracks), requested, storefront,
+    m_exec.Post(kTasks, generation, [this, generation, playlist, tracks = std::move(tracks), requested, storefront,
                       knownLibrary, done = std::move(done)]() mutable {
         std::wstring error;
         stream::Id libraryId = knownLibrary;
         try {
             if (libraryId.empty())
-                libraryId = ResolveLibraryIdFromCatalog(L"playlists", L'p', playlist, storefront, *m_abort);
-            const PlaylistData data = LoadPlaylist(libraryId, storefront, true, *m_abort, false);
+                libraryId = ResolveLibraryIdFromCatalog(L"playlists", L'p', playlist, storefront, m_exec.Abort());
+            const PlaylistData data = LoadPlaylist(libraryId, storefront, true, m_exec.Abort(), false);
             if (data.favorite || IsFavoritePlaylist(libraryId))
                 throw std::runtime_error("The Favorite Songs playlist cannot be changed.");
             if (!data.info.own)
                 throw std::runtime_error("Apple Music can only append to an editable library playlist.");
             const Object body = AppendTracksBody(tracks);
-            Apple(L"/v1/me/library/playlists/" + Encode(libraryId) + L"/tracks", *m_abort, L"POST", &body);
+            Apple(L"/v1/me/library/playlists/" + Encode(libraryId) + L"/tracks", m_exec.Abort(), L"POST", &body);
         } catch (const exception_aborted&) {
             return;
         } catch (const std::exception& exception) {
             error = Wide(exception.what());
         }
-        PostMain(generation, [this, libraryId, requested, done = std::move(done),
+        m_exec.PostMain(generation, [this, libraryId, requested, done = std::move(done),
                               error = std::move(error)]() mutable {
             if (error.empty()) {
                 RefreshKnownPlaylist(
@@ -7256,17 +7171,17 @@ void StreamProvider::RemoveFromPlaylist(const stream::Id& playlist, std::vector<
     const std::set<stream::Id> requestedTracks(tracks.begin(), tracks.end());
     {
         std::lock_guard lock(m_mutex);
-        generation = m_generation;
+        generation = m_exec.Generation();
     }
-    Post(generation, [this, generation, playlist, tracks = std::move(tracks), requestedTracks, storefront,
+    m_exec.Post(kTasks, generation, [this, generation, playlist, tracks = std::move(tracks), requestedTracks, storefront,
                       knownLibrary, done = std::move(done)]() mutable {
         stream::Id libraryId = knownLibrary;
         std::wstring error;
         bool mutationAttempted = false;
         try {
             if (libraryId.empty())
-                libraryId = ResolveLibraryIdFromCatalog(L"playlists", L'p', playlist, storefront, *m_abort);
-            PlaylistData data = LoadPlaylist(libraryId, storefront, true, *m_abort);
+                libraryId = ResolveLibraryIdFromCatalog(L"playlists", L'p', playlist, storefront, m_exec.Abort());
+            PlaylistData data = LoadPlaylist(libraryId, storefront, true, m_exec.Abort());
             if (data.favorite || IsFavoritePlaylist(libraryId))
                 throw std::runtime_error("The Favorite Songs playlist cannot be changed.");
             if (!data.info.own)
@@ -7291,14 +7206,14 @@ void StreamProvider::RemoveFromPlaylist(const stream::Id& playlist, std::vector<
                 mutationAttempted = true;
                 Apple(L"/v1/me/library/playlists/" + Encode(libraryId) + L"/tracks?ids[library-songs]=" +
                           Encode(librarySongId) + L"&mode=all",
-                      *m_abort, L"DELETE");
+                      m_exec.Abort(), L"DELETE");
             }
         } catch (const exception_aborted&) {
             return;
         } catch (const std::exception& exception) {
             error = Wide(exception.what());
         }
-        PostMain(generation, [this, libraryId, requestedTracks, mutationAttempted, done = std::move(done),
+        m_exec.PostMain(generation, [this, libraryId, requestedTracks, mutationAttempted, done = std::move(done),
                               error = std::move(error)]() mutable {
             if (!mutationAttempted) {
                 if (done) done(std::move(error));
@@ -7345,14 +7260,14 @@ void StreamProvider::CreatePlaylist(std::wstring name, CreatedDone done) {
     uint64_t generation = 0;
     {
         std::lock_guard lock(m_mutex);
-        generation = m_generation;
+        generation = m_exec.Generation();
     }
-    Post(generation, [this, generation, name = std::move(name), done = std::move(done)]() mutable {
+    m_exec.Post(kTasks, generation, [this, generation, name = std::move(name), done = std::move(done)]() mutable {
         stream::Id id;
         std::wstring error;
         try {
             const Object body = CreatePlaylistBody(name);
-            const Object response = Apple(L"/v1/me/library/playlists", *m_abort, L"POST", &body);
+            const Object response = Apple(L"/v1/me/library/playlists", m_exec.Abort(), L"POST", &body);
             if (const auto item = FirstData(response)) id = json::GetString(*item, L"id");
             if (id.empty()) error = L"Apple Music did not return the new playlist id.";
         } catch (const exception_aborted&) {
@@ -7360,7 +7275,7 @@ void StreamProvider::CreatePlaylist(std::wstring name, CreatedDone done) {
         } catch (const std::exception& exception) {
             error = Wide(exception.what());
         }
-        PostMain(generation, [this, id, done = std::move(done), error = std::move(error)]() mutable {
+        m_exec.PostMain(generation, [this, id, done = std::move(done), error = std::move(error)]() mutable {
             if (!error.empty()) {
                 if (done) done(id, std::move(error));
                 return;
@@ -7395,29 +7310,29 @@ void StreamProvider::RenamePlaylist(const stream::Id& playlist, std::wstring nam
     const stream::Id knownLibrary = KnownLibraryId(false, playlist);
     {
         std::lock_guard lock(m_mutex);
-        generation = m_generation;
+        generation = m_exec.Generation();
     }
-    Post(generation, [this, generation, playlist, name = std::move(name), storefront, knownLibrary,
+    m_exec.Post(kTasks, generation, [this, generation, playlist, name = std::move(name), storefront, knownLibrary,
                       done = std::move(done)]() mutable {
         stream::Id libraryId = knownLibrary;
         std::wstring error;
         try {
             if (libraryId.empty())
-                libraryId = ResolveLibraryIdFromCatalog(L"playlists", L'p', playlist, storefront, *m_abort);
-            const PlaylistData data = LoadPlaylist(libraryId, storefront, true, *m_abort, false);
+                libraryId = ResolveLibraryIdFromCatalog(L"playlists", L'p', playlist, storefront, m_exec.Abort());
+            const PlaylistData data = LoadPlaylist(libraryId, storefront, true, m_exec.Abort(), false);
             if (data.favorite || IsFavoritePlaylist(libraryId))
                 throw std::runtime_error("The Favorite Songs playlist cannot be changed.");
             if (!data.info.own || !data.canRename)
                 throw std::runtime_error("Apple Music does not allow this playlist to be renamed.");
             const Object body = RenamePlaylistBody(name);
-            Apple(L"/v1/me/library/playlists/" + Encode(libraryId) + L"?platform=web", *m_abort, L"PATCH",
+            Apple(L"/v1/me/library/playlists/" + Encode(libraryId) + L"?platform=web", m_exec.Abort(), L"PATCH",
                   &body);
         } catch (const exception_aborted&) {
             return;
         } catch (const std::exception& exception) {
             error = Wide(exception.what());
         }
-        PostMain(generation,
+        m_exec.PostMain(generation,
                  [this, libraryId, name, done = std::move(done), error = std::move(error)]() mutable {
                      if (!error.empty()) {
                          if (done) done(std::move(error));
@@ -7450,27 +7365,27 @@ void StreamProvider::DeletePlaylist(const stream::Id& playlist, Done done) {
     const stream::Id knownLibrary = KnownLibraryId(false, playlist);
     {
         std::lock_guard lock(m_mutex);
-        generation = m_generation;
+        generation = m_exec.Generation();
     }
-    Post(generation, [this, generation, playlist, storefront, knownLibrary,
+    m_exec.Post(kTasks, generation, [this, generation, playlist, storefront, knownLibrary,
                       done = std::move(done)]() mutable {
         stream::Id libraryId = knownLibrary;
         std::wstring error;
         try {
             if (libraryId.empty())
-                libraryId = ResolveLibraryIdFromCatalog(L"playlists", L'p', playlist, storefront, *m_abort);
-            const PlaylistData data = LoadPlaylist(libraryId, storefront, true, *m_abort, false);
+                libraryId = ResolveLibraryIdFromCatalog(L"playlists", L'p', playlist, storefront, m_exec.Abort());
+            const PlaylistData data = LoadPlaylist(libraryId, storefront, true, m_exec.Abort(), false);
             if (data.favorite || IsFavoritePlaylist(libraryId))
                 throw std::runtime_error("The Favorite Songs playlist cannot be changed.");
             if (!data.canDelete)
                 throw std::runtime_error("Apple Music does not allow this playlist to be deleted.");
-            Apple(L"/v1/me/library/playlists/" + Encode(libraryId), *m_abort, L"DELETE");
+            Apple(L"/v1/me/library/playlists/" + Encode(libraryId), m_exec.Abort(), L"DELETE");
         } catch (const exception_aborted&) {
             return;
         } catch (const std::exception& exception) {
             error = Wide(exception.what());
         }
-        PostMain(generation, [this, libraryId, done = std::move(done), error = std::move(error)]() mutable {
+        m_exec.PostMain(generation, [this, libraryId, done = std::move(done), error = std::move(error)]() mutable {
             if (!error.empty()) {
                 if (done) done(std::move(error));
                 return;
@@ -7521,10 +7436,10 @@ void StreamProvider::FetchCatalogSearchSuggestions(CatalogSearchSuggestionQuery 
     std::wstring locale;
     {
         std::lock_guard lock(m_mutex);
-        generation = m_generation;
+        generation = m_exec.Generation();
         locale = m_locale;
     }
-    Post(generation, [this, generation, storefront, displayRegion, displayEpoch, locale,
+    m_exec.Post(kTasks, generation, [this, generation, storefront, displayRegion, displayEpoch, locale,
                       query = std::move(query), done = std::move(done)]() mutable {
         if (ListCancelled(query.cancelled)) return;
         CatalogSearchSuggestions suggestions;
@@ -7533,7 +7448,7 @@ void StreamProvider::FetchCatalogSearchSuggestions(CatalogSearchSuggestionQuery 
             const std::wstring path =
                 L"/v1/catalog/" + storefront + L"/search/suggestions?term=" + Encode(query.term) +
                 L"&kinds=terms,topResults&types=songs,artists,albums,playlists&l=" + locale;
-            const Object response = Apple(path, *m_abort);
+            const Object response = Apple(path, m_exec.Abort());
             const auto results = json::GetObject(response, L"results");
             if (!results) throw std::runtime_error("Apple Music returned invalid search suggestions.");
             if (const auto rows = json::GetArray(*results, L"suggestions")) {
@@ -7578,14 +7493,14 @@ void StreamProvider::FetchCatalogSearchSuggestions(CatalogSearchSuggestionQuery 
         if (ListCancelled(query.cancelled) || displayEpoch != DisplayMetadata::Get().Epoch() ||
             displayRegion != GetAppleMusicDisplayRegion())
             return;
-        PostMain(generation, [this, generation, cancelled = query.cancelled, storefront, displayRegion,
+        m_exec.PostMain(generation, [this, generation, cancelled = query.cancelled, storefront, displayRegion,
                               displayEpoch, locale, done = std::move(done),
                               suggestions = std::move(suggestions), error = std::move(error)]() mutable {
             bool currentGeneration = false;
             bool currentLocale = false;
             {
                 std::lock_guard lock(m_mutex);
-                currentGeneration = m_started && generation == m_generation;
+                currentGeneration = m_started && generation == m_exec.Generation();
                 currentLocale = locale == m_locale;
             }
             if (!currentGeneration || !currentLocale || ListCancelled(cancelled) ||
@@ -7604,7 +7519,7 @@ void StreamProvider::RefreshKnownPlaylist(const stream::Id& id, Done done, bool 
     const std::wstring storefront = Storefront();
     {
         std::lock_guard lock(m_mutex);
-        generation = m_generation;
+        generation = m_exec.Generation();
         if (invalidateLists) {
             // The mutation made the old full-list snapshot unsafe even if the confirming
             // detail refresh below fails.
@@ -7614,25 +7529,25 @@ void StreamProvider::RefreshKnownPlaylist(const stream::Id& id, Done done, bool 
         }
         epoch = m_playlistDetailEpoch;
     }
-    PostDetail(generation,
+    m_exec.Post(kDetails, generation,
                [this, generation, epoch, id, storefront, invalidateLists, done = std::move(done)]() mutable {
                    PlaylistData data;
                    std::wstring error;
                    try {
-                       data = LoadPlaylist(id, storefront, true, *m_abort);
+                       data = LoadPlaylist(id, storefront, true, m_exec.Abort());
                        if (!PutIfCurrent(generation, data.info)) return;
                    } catch (const exception_aborted&) {
                        return;
                    } catch (const std::exception& exception) {
                        error = Wide(exception.what());
                    }
-                   PostMain(generation, [this, generation, epoch, id, invalidateLists, data = std::move(data),
+                   m_exec.PostMain(generation, [this, generation, epoch, id, invalidateLists, data = std::move(data),
                                          error = std::move(error), done = std::move(done)]() mutable {
                        bool applied = false;
                        if (error.empty()) {
                            {
                                std::lock_guard lock(m_mutex);
-                               applied = generation == m_generation && epoch == m_playlistDetailEpoch;
+                               applied = generation == m_exec.Generation() && epoch == m_playlistDetailEpoch;
                            }
                            if (!applied) {
                                if (done) done(std::move(error));
@@ -7679,19 +7594,19 @@ void StreamProvider::RefreshKnownAlbum(const stream::Id& id) {
     const AlbumRequest request = ResolveAlbumRequest(id);
     {
         std::lock_guard lock(m_mutex);
-        generation = m_generation;
+        generation = m_exec.Generation();
     }
-    Post(generation, [this, generation, id, request, storefront] {
+    m_exec.Post(kTasks, generation, [this, generation, id, request, storefront] {
         AlbumData data;
         try {
-            data = LoadAlbum(request.id, storefront, request.library, *m_abort);
+            data = LoadAlbum(request.id, storefront, request.library, m_exec.Abort());
             if (!PutIfCurrent(generation, data.info)) return;
         } catch (const exception_aborted&) {
             return;
         } catch (...) {
             return;
         }
-        PostMain(generation, [this, id, data = std::move(data)]() mutable {
+        m_exec.PostMain(generation, [this, id, data = std::move(data)]() mutable {
             Catalog::Get().PutAndHint(data.songs);
             {
                 std::lock_guard lock(m_mutex);

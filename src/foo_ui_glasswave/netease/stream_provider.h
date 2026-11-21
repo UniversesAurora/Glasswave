@@ -1,6 +1,6 @@
 #pragma once
 
-#include "core/task_queue.h"
+#include "stream/executor.h"
 #include "netease/types.h"
 #include "stream/provider.h"
 
@@ -87,7 +87,6 @@ class StreamProvider final : public stream::Provider {
     void FinishListWrite(bool ok, std::wstring error, Done done);
     void ClearIdSnapshots();
 
-    bool m_started = false;
     bool m_signedIn = false;
     bool m_accountVerified = false;
     bool m_authPending = false;
@@ -100,8 +99,7 @@ class StreamProvider final : public stream::Provider {
     std::wstring m_cachedAccountId;
     std::vector<stream::Playlist> m_cachedCreated;
     std::vector<stream::Playlist> m_cachedSaved;
-    std::unique_ptr<core::TaskQueue> m_listTasks;
-    std::unique_ptr<abort_callback_impl> m_abort;
+    stream::Executor m_exec; // one queue: every blocking read and the snapshot save
     std::shared_ptr<IdSnapshotStore> m_idSnapshots;
     std::atomic<int64_t> m_heartbeatSeed{0}; // heartbeat mode's next seed: the last song it sent
 };
