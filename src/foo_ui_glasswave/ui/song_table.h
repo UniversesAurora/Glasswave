@@ -65,7 +65,7 @@ public:
     size_t SortColumn() const override { return m_sortColumn; }
     bool SortDescending() const override { return m_sortDescending; }
     bool IsSelected(size_t row) const override {
-        return row < m_visible.size() && m_selected[m_visible[row]] != 0;
+        return m_selection.IsSelected(m_visible, row);
     }
     void SelectOnly(size_t row) override;
     void Toggle(size_t row) override;
@@ -156,7 +156,7 @@ private:
     std::unordered_map<std::wstring, std::unordered_set<std::wstring>> m_remoteAlbumIdsByName;
     std::unordered_set<std::wstring> m_resolvedMissingAlbumNames;
     std::vector<media::RowGroup> m_groups;
-    std::vector<uint8_t> m_selected;  // per m_all
+    media::RowSelection m_selection;  // per m_all
     size_t m_focus = SIZE_MAX;
     std::wstring m_emptyText;
     std::wstring m_filter;

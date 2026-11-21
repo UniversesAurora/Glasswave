@@ -545,8 +545,8 @@ SongTableSource::PresentationState SongTableSource::CapturePresentation() const 
     PresentationState state;
     state.focus = FocusIdentity();
     const auto identities = RowIdentities();
-    for (size_t index = 0; index < m_selected.size() && index < identities.size(); ++index)
-        if (m_selected[index]) state.selected.push_back(identities[index]);
+    for (size_t index = 0; index < m_selection.Size() && index < identities.size(); ++index)
+        if (m_selection.Item(index)) state.selected.push_back(identities[index]);
     return state;
 }
 
@@ -561,9 +561,9 @@ size_t SongTableSource::FindVisibleByIdentity(const std::wstring& identity) cons
 void SongTableSource::RestorePresentation(const PresentationState& state) {
     const std::unordered_set<std::wstring> selected(state.selected.begin(), state.selected.end());
     const auto identities = RowIdentities();
-    m_selected.assign(m_all.size(), 0);
+    m_selection.Reset(m_all.size());
     for (size_t index = 0; index < identities.size(); ++index)
-        if (selected.count(identities[index])) m_selected[index] = 1;
+        if (selected.count(identities[index])) m_selection.SetItem(index, true);
     m_focus = FindVisibleByIdentity(state.focus);
 }
 
@@ -589,7 +589,7 @@ void SongTableSource::Append(std::vector<SongTableRow> rows) {
         AddUnresolvedRemoteAlbums(rows, m_unresolvedAlbumNames);
     }
     m_all.insert(m_all.end(), std::make_move_iterator(rows.begin()), std::make_move_iterator(rows.end()));
-    m_selected.resize(m_all.size(), 0);
+    m_selection.Resize(m_all.size());
 
     bool reordered = false;
     if (needsFullAlbumRefresh) {
@@ -847,30 +847,25 @@ bool SongTableSource::IsPlaying(size_t row) const {
 }
 
 void SongTableSource::SelectOnly(size_t row) {
-    std::fill(m_selected.begin(), m_selected.end(), uint8_t{0});
-    if (row < m_visible.size()) m_selected[m_visible[row]] = 1;
+    m_selection.SelectOnly(m_visible, row);
     m_focus = row;
 }
 
 void SongTableSource::Toggle(size_t row) {
-    if (row < m_visible.size()) m_selected[m_visible[row]] ^= 1;
+    m_selection.Toggle(m_visible, row);
     m_focus = row;
 }
 
 void SongTableSource::SelectRange(size_t a, size_t b, bool keepOthers) {
-    if (!keepOthers) std::fill(m_selected.begin(), m_selected.end(), uint8_t{0});
-    if (a > b) std::swap(a, b);
-    for (size_t r = a; r <= b && r < m_visible.size(); ++r) m_selected[m_visible[r]] = 1;
+    m_selection.SelectRange(m_visible, a, b, keepOthers);
 }
 
 void SongTableSource::SelectAll() {
-    for (size_t index : m_visible) m_selected[index] = 1;
+    m_selection.SelectAll(m_visible);
 }
 
 void SongTableSource::SetSelection(const std::vector<size_t>& rows) {
-    std::fill(m_selected.begin(), m_selected.end(), uint8_t{0});
-    for (size_t row : rows)
-        if (row < m_visible.size()) m_selected[m_visible[row]] = 1;
+    m_selection.SetSelection(m_visible, rows);
 }
 
 metadb_handle_ptr SongTableSource::Item(size_t row) const {
@@ -928,7 +923,7 @@ void SongTableSource::ContextMenu(HWND owner, POINT screen) {
 metadb_handle_list SongTableSource::SelectedItems() const {
     metadb_handle_list items;
     for (size_t index : m_visible)
-        if (m_selected[index]) items.add_item(m_all[index].handle);
+        if (m_selection.Item(index)) items.add_item(m_all[index].handle);
     return items;
 }
 

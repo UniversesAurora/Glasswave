@@ -79,15 +79,6 @@ bool RateTrack(const metadb_handle_ptr& track, int stars) {
     return true;
 }
 
-template <class IsSel, class SetSel>
-void RangeSelect(size_t count, size_t a, size_t b, bool keepOthers, IsSel, SetSel set) {
-    if (a > b) std::swap(a, b);
-    for (size_t i = 0; i < count; ++i) {
-        const bool in = i >= a && i <= b;
-        if (in || !keepOthers) set(i, in);
-    }
-}
-
 }  // namespace
 
 void PlayItems(const metadb_handle_list& items, size_t start) { PlayQueue(items, start); }
@@ -189,29 +180,6 @@ TileInfo PlaylistsSource::Tile(size_t row) const {
     return info;
 }
 
-void PlaylistsSource::SelectOnly(size_t row) {
-    std::fill(m_selected.begin(), m_selected.end(), uint8_t{0});
-    if (row < m_selected.size()) m_selected[row] = 1;
-}
-
-void PlaylistsSource::Toggle(size_t row) {
-    if (row < m_selected.size()) m_selected[row] ^= 1;
-}
-
-void PlaylistsSource::SelectRange(size_t a, size_t b, bool keepOthers) {
-    if (!keepOthers) std::fill(m_selected.begin(), m_selected.end(), uint8_t{0});
-    if (a > b) std::swap(a, b);
-    for (size_t r = a; r <= b && r < m_selected.size(); ++r) m_selected[r] = 1;
-}
-
-void PlaylistsSource::SelectAll() { std::fill(m_selected.begin(), m_selected.end(), uint8_t{1}); }
-
-void PlaylistsSource::SetSelection(const std::vector<size_t>& rows) {
-    std::fill(m_selected.begin(), m_selected.end(), uint8_t{0});
-    for (size_t r : rows)
-        if (r < m_selected.size()) m_selected[r] = 1;
-}
-
 void PlaylistsSource::Activate(size_t row) {
     if (row < m_rows.size() && m_open) m_open(m_rows[row]);
 }
@@ -237,7 +205,7 @@ metadb_handle_list PlaylistsSource::SelectedItems() const {
     metadb_handle_list out;
     auto pm = playlist_manager::get();
     for (size_t r = 0; r < m_rows.size(); ++r)
-        if (m_selected[r]) {
+        if (m_selection.IsSelected(m_rows, r)) {
             metadb_handle_list items;
             pm->playlist_get_all_items(m_rows[r], items);
             out.add_items(items);
@@ -257,7 +225,7 @@ void PlaylistsSource::SetFilter(std::wstring_view filterLower) {
         if (!filterLower.empty() && Lower(core::Wide(name)).find(filterLower) == std::wstring::npos) continue;
         m_rows.push_back(p);
     }
-    m_selected.assign(m_rows.size(), 0);
+    m_selection.Reset(pm->get_playlist_count()); // by playlist index; a new filter starts unselected
     if (m_focus >= m_rows.size()) m_focus = SIZE_MAX;
 }
 
@@ -747,7 +715,7 @@ TrackSource::TrackSource(const LibraryModel& model, std::vector<size_t> tracks, 
         return m_model.AlbumRank(m_model.Tracks()[a].albumIndex) < m_model.AlbumRank(m_model.Tracks()[b].albumIndex);
     });
     m_libraryOrder = m_all;
-    m_selected.assign(m_all.size(), 0);
+    m_selection.Reset(m_all.size());
     SetFilter({});
 }
 
@@ -939,7 +907,7 @@ void TrackSource::ApplySort() {
             return desc ? c > 0 : c < 0;
         });
     }
-    m_selected.assign(m_all.size(), 0);
+    m_selection.Reset(m_all.size());
     SetFilter(m_filter);
 }
 
@@ -970,23 +938,6 @@ bool TrackSource::IsPlaying(size_t row) const {
     return playback_control::get()->get_now_playing(now) && now == m_model.Tracks()[m_all[m_rows[row]]].handle;
 }
 
-void TrackSource::SelectOnly(size_t row) {
-    std::fill(m_selected.begin(), m_selected.end(), uint8_t{0});
-    m_selected[m_rows[row]] = 1;
-}
-
-void TrackSource::Toggle(size_t row) { m_selected[m_rows[row]] ^= 1; }
-
-void TrackSource::SelectRange(size_t a, size_t b, bool keepOthers) {
-    if (!keepOthers) std::fill(m_selected.begin(), m_selected.end(), uint8_t{0});
-    if (a > b) std::swap(a, b);
-    for (size_t r = a; r <= b && r < m_rows.size(); ++r) m_selected[m_rows[r]] = 1;
-}
-
-void TrackSource::SelectAll() {
-    for (size_t r : m_rows) m_selected[r] = 1;
-}
-
 metadb_handle_ptr TrackSource::Item(size_t row) const {
     return row < m_rows.size() ? m_model.Tracks()[m_all[m_rows[row]]].handle : metadb_handle_ptr{};
 }
@@ -1005,12 +956,6 @@ size_t TrackSource::FindRow(const metadb_handle_ptr& track) const {
     return SIZE_MAX;
 }
 
-void TrackSource::SetSelection(const std::vector<size_t>& rows) {
-    std::fill(m_selected.begin(), m_selected.end(), uint8_t{0});
-    for (size_t r : rows)
-        if (r < m_rows.size()) m_selected[m_rows[r]] = 1;
-}
-
 void TrackSource::Activate(size_t row) {
     if (row >= m_rows.size()) return;
     // The search box only filters the view: play every song in display order from this one.
@@ -1027,7 +972,7 @@ void TrackSource::ContextMenu(HWND owner, POINT screen) {
 metadb_handle_list TrackSource::SelectedItems() const {
     metadb_handle_list out;
     for (size_t r : m_rows)
-        if (m_selected[r]) out.add_item(m_model.Tracks()[m_all[r]].handle);
+        if (m_selection.Item(r)) out.add_item(m_model.Tracks()[m_all[r]].handle);
     return out;
 }
 
@@ -1104,7 +1049,7 @@ GroupSource::GroupSource(const LibraryModel& model, GroupKind kind, DrillDown on
         break;
     }
     }
-    m_selected.assign(m_model.Groups(kind).size(), 0);
+    m_selection.Reset(m_model.Groups(kind).size());
     SetFilter({});
 }
 
@@ -1188,29 +1133,6 @@ std::wstring GroupSource::ArtKey(size_t row) const {
     return album < albums.size() ? L"lib:" + albums[album].key : std::wstring{};
 }
 
-void GroupSource::SelectOnly(size_t row) {
-    std::fill(m_selected.begin(), m_selected.end(), uint8_t{0});
-    m_selected[m_rows[row]] = 1;
-}
-
-void GroupSource::Toggle(size_t row) { m_selected[m_rows[row]] ^= 1; }
-
-void GroupSource::SelectRange(size_t a, size_t b, bool keepOthers) {
-    if (!keepOthers) std::fill(m_selected.begin(), m_selected.end(), uint8_t{0});
-    if (a > b) std::swap(a, b);
-    for (size_t r = a; r <= b && r < m_rows.size(); ++r) m_selected[m_rows[r]] = 1;
-}
-
-void GroupSource::SelectAll() {
-    for (size_t r : m_rows) m_selected[r] = 1;
-}
-
-void GroupSource::SetSelection(const std::vector<size_t>& rows) {
-    std::fill(m_selected.begin(), m_selected.end(), uint8_t{0});
-    for (size_t r : rows)
-        if (r < m_rows.size()) m_selected[m_rows[r]] = 1;
-}
-
 void GroupSource::Activate(size_t row) {
     if (m_onOpen) m_onOpen(At(row));
 }
@@ -1231,7 +1153,7 @@ metadb_handle_list GroupSource::SelectedItems() const {
     metadb_handle_list out;
     const auto& groups = m_model.Groups(m_kind);
     for (size_t r : m_rows)
-        if (m_selected[r])
+        if (m_selection.Item(r))
             for (size_t t : groups[r].tracks) out.add_item(m_model.Tracks()[t].handle);
     return out;
 }

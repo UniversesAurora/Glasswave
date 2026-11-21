@@ -3,6 +3,7 @@
 #include "media/library_model.h"
 
 #include <functional>
+#include <span>
 #include <string_view>
 
 // Data sources behind the content list. The ListView only knows this interface.
@@ -133,6 +134,46 @@ struct CardInfo {
     bool colors = false;    // background / inks known; else taken from the picture
     uint32_t background = 0, titleInk = 0, textInk = 0;
     bool playable = false;  // its play orb shows (ListSource::CanPlayTile)
+};
+
+// The selection of a source whose rows show some of its items (filtered, sorted): one flag per
+// item, `rows` mapping each row to its item, so a selected item stays selected while a filter
+// hides it. Rows past the end are ignored.
+class RowSelection {
+  public:
+    void Reset(size_t items) { m_flags.assign(items, 0); } // nothing selected
+    void Resize(size_t items) { m_flags.resize(items, 0); } // new items unselected
+    size_t Size() const { return m_flags.size(); }
+    bool Item(size_t item) const { return item < m_flags.size() && m_flags[item]; }
+    void SetItem(size_t item, bool selected) {
+        if (item < m_flags.size()) m_flags[item] = selected ? 1 : 0;
+    }
+
+    bool IsSelected(std::span<const size_t> rows, size_t row) const { return row < rows.size() && Item(rows[row]); }
+    void SelectOnly(std::span<const size_t> rows, size_t row) {
+        Clear();
+        if (row < rows.size()) SetItem(rows[row], true);
+    }
+    void Toggle(std::span<const size_t> rows, size_t row) {
+        if (row < rows.size()) SetItem(rows[row], !Item(rows[row]));
+    }
+    void SelectRange(std::span<const size_t> rows, size_t a, size_t b, bool keepOthers) {
+        if (!keepOthers) Clear();
+        if (a > b) std::swap(a, b);
+        for (size_t r = a; r <= b && r < rows.size(); ++r) SetItem(rows[r], true);
+    }
+    void SelectAll(std::span<const size_t> rows) {
+        for (size_t item : rows) SetItem(item, true);
+    }
+    void SetSelection(std::span<const size_t> rows, const std::vector<size_t>& selected) {
+        Clear();
+        for (size_t r : selected)
+            if (r < rows.size()) SetItem(rows[r], true);
+    }
+
+  private:
+    void Clear() { std::fill(m_flags.begin(), m_flags.end(), uint8_t{0}); }
+    std::vector<uint8_t> m_flags;
 };
 
 class ListSource {
@@ -333,12 +374,12 @@ public:
     void Sort(size_t column, bool descending) override;
     size_t SortColumn() const override { return m_sortColumn; }
     bool SortDescending() const override { return m_sortDescending; }
-    bool IsSelected(size_t row) const override { return m_selected[m_rows[row]] != 0; }
-    void SelectOnly(size_t row) override;
-    void Toggle(size_t row) override;
-    void SelectRange(size_t a, size_t b, bool keepOthers) override;
-    void SelectAll() override;
-    void SetSelection(const std::vector<size_t>& rows) override;
+    bool IsSelected(size_t row) const override { return m_selection.IsSelected(m_rows, row); }
+    void SelectOnly(size_t row) override { m_selection.SelectOnly(m_rows, row); }
+    void Toggle(size_t row) override { m_selection.Toggle(m_rows, row); }
+    void SelectRange(size_t a, size_t b, bool keepOthers) override { m_selection.SelectRange(m_rows, a, b, keepOthers); }
+    void SelectAll() override { m_selection.SelectAll(m_rows); }
+    void SetSelection(const std::vector<size_t>& rows) override { m_selection.SetSelection(m_rows, rows); }
     size_t FindRow(const metadb_handle_ptr& track) const override;
     metadb_handle_ptr Item(size_t row) const override;
     std::wstring ArtKey(size_t row) const override;
@@ -353,7 +394,7 @@ private:
     const LibraryModel& m_model;
     std::vector<size_t> m_all;   // track indices in this view
     std::vector<size_t> m_rows;  // positions in m_all that pass the filter
-    std::vector<uint8_t> m_selected;  // per position in m_all
+    RowSelection m_selection;  // per position in m_all
     size_t m_focus = SIZE_MAX;
     std::wstring m_emptyText;
     std::vector<Column> m_columns;
@@ -396,12 +437,12 @@ public:
     size_t SortColumn() const override { return m_sortColumn; }
     bool SortDescending() const override { return m_sortDescending; }
     TileInfo Tile(size_t row) const override;
-    bool IsSelected(size_t row) const override { return m_selected[m_rows[row]] != 0; }
-    void SelectOnly(size_t row) override;
-    void Toggle(size_t row) override;
-    void SelectRange(size_t a, size_t b, bool keepOthers) override;
-    void SelectAll() override;
-    void SetSelection(const std::vector<size_t>& rows) override;
+    bool IsSelected(size_t row) const override { return m_selection.IsSelected(m_rows, row); }
+    void SelectOnly(size_t row) override { m_selection.SelectOnly(m_rows, row); }
+    void Toggle(size_t row) override { m_selection.Toggle(m_rows, row); }
+    void SelectRange(size_t a, size_t b, bool keepOthers) override { m_selection.SelectRange(m_rows, a, b, keepOthers); }
+    void SelectAll() override { m_selection.SelectAll(m_rows); }
+    void SetSelection(const std::vector<size_t>& rows) override { m_selection.SetSelection(m_rows, rows); }
     size_t Focus() const override { return m_focus; }
     void SetFocus(size_t row) override { m_focus = row; }
     std::wstring RowKey(size_t row) const override;
@@ -423,7 +464,7 @@ private:
     GroupKind m_kind;
     DrillDown m_onOpen;
     std::vector<size_t> m_rows;
-    std::vector<uint8_t> m_selected;
+    RowSelection m_selection;
     size_t m_focus = SIZE_MAX;
     std::vector<Column> m_columns;
     std::wstring m_filter;
@@ -450,12 +491,12 @@ public:
     bool SupportsViewStyle(ViewStyle s) const override { return s != ViewStyle::Tiles; }
     ViewStyle GetViewStyle() const override { return m_style; }
     void SetViewStyle(ViewStyle style) override { m_style = style; }
-    bool IsSelected(size_t row) const override { return row < m_selected.size() && m_selected[row]; }
-    void SelectOnly(size_t row) override;
-    void Toggle(size_t row) override;
-    void SelectRange(size_t a, size_t b, bool keepOthers) override;
-    void SelectAll() override;
-    void SetSelection(const std::vector<size_t>& rows) override;
+    bool IsSelected(size_t row) const override { return m_selection.IsSelected(m_rows, row); }
+    void SelectOnly(size_t row) override { m_selection.SelectOnly(m_rows, row); }
+    void Toggle(size_t row) override { m_selection.Toggle(m_rows, row); }
+    void SelectRange(size_t a, size_t b, bool keepOthers) override { m_selection.SelectRange(m_rows, a, b, keepOthers); }
+    void SelectAll() override { m_selection.SelectAll(m_rows); }
+    void SetSelection(const std::vector<size_t>& rows) override { m_selection.SetSelection(m_rows, rows); }
     size_t Focus() const override { return m_focus; }
     void SetFocus(size_t row) override { m_focus = row; }
     std::wstring RowKey(size_t row) const override;
@@ -472,7 +513,7 @@ private:
     Menu m_menu;
     std::vector<Column> m_columns;
     std::vector<size_t> m_rows;  // playlist indices
-    std::vector<uint8_t> m_selected;
+    RowSelection m_selection;
     size_t m_focus = SIZE_MAX;
     ViewStyle m_style = ViewStyle::Icons;
 };
