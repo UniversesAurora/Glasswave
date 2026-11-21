@@ -231,6 +231,7 @@ void ShowLogin(HWND owner, std::function<void()> onChanged) {
     wc.lpszClassName = kClass;
     static const ATOM registered = RegisterClassW(&wc); // once; the class outlives the dialog
     (void)registered;
+    const UINT dpi = ui::DpiOf(owner);
     RECT rect{0, 0, 460, 330};
     rect.right = Dip(owner, rect.right);
     rect.bottom = Dip(owner, rect.bottom);
