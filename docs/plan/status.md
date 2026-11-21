@@ -2,7 +2,30 @@
 
 Updated: 2026-11-21
 
-## One catalog for every provider (2026-11-21, latest)
+## Playback plumbing shared by the sources (2026-11-21, latest)
+
+- `net::FetchResumable` (`net/resumable_fetch.*`) is Apple's Range-resuming fetcher made
+  source-neutral and used by both inputs. NetEase now resumes with Range requests (and renews its
+  signed URL mid-song) instead of `seek()` on the reply; a cut without a stated length is an
+  error there. Constants are named (`kMinUrlLifetimeSeconds`, `kUrlRenewMarginMs`); the dead
+  `position = sink.Size()` is gone (the cache flight calls a fetcher once, on an empty file).
+- `stream::EncodedInputBase` (`stream/encoded_input.*`) carries the skeleton of both inputs:
+  Apple's input went from 904 to 461 lines, NetEase's from 555 to 285. The Atmos renderer moved
+  to `stream/atmos_renderer.*` and is hosted by the base. Apple's session DELETE runs on a
+  worker (`SessionCleanupQueue`, stopped at quit).
+- `stream::ArtExtractor<Traits>` replaces the two art extractors; both sources log a cover
+  that failed (once per picture in five minutes); an account change no longer throws
+  `exception_aborted` (`cache::AccountChanged`).
+- Cache: the remembered source (`audio-source/2`) is length-prefixed; memos of schema
+  `audio-source/1` are ignored, so each song asks its service once more. Nothing needs
+  deleting; the owner can drop the old memos with the audio cache if wanted.
+- Differences for NetEase noted in the commits: `decode_initialize` on an open input starts
+  it over, seeks are range-checked, the info is published again after a seek reopen.
+- Not run in the dev instance; owner check pending: playback and seeking of each source
+  (streamed, cached, NetEase downloaded file, trial), a cut transfer, Apple Atmos, covers of
+  songs, albums, artists and playlists, a sign-out during cover loading.
+
+## One catalog for every provider (2026-11-21)
 
 - `stream::Catalog` (`stream/catalog.{h,cpp}`) replaces the two private catalogs: records as
   `stream::` types, merge-on-restore, the batched metadb hint queue, `<scheme>://` handles from

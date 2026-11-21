@@ -84,6 +84,27 @@ foobar2000.exe (core: decoding, playlists, library, DSP, output, components)
   `Provider::Records()` exposes it, and `TrackItem`, `FindTrack`, `ArtItem`, `FindPlaylist` and
   `FindAlbum` default to it. The HTTP client's own types (`netease::Song`...) end at
   `netease/convert.h`, which turns them into `stream::` records once.
+- A source's playback plumbing is a few hooks over shared code. `net::FetchResumable`
+  (`net/resumable_fetch.h`) reads a song's encoded bytes into the cache and continues a cut
+  transfer with a Range request: the source gives a URL and headers (`FetchTarget`) and, when
+  its signed URL expires, `renew()`. It checks the first reply's length, a 206's Content-Range or
+  a 200's length, waits on 503 (Retry-After, 90 s in all), stops after three resumes in a row
+  without a byte or twenty in all, and lets only a failed read count as a cut. The foobar2000
+  input of a source with encoded files is `stream::EncodedInputBase` (`stream/encoded_input.h`):
+  the source's `BeginOpen` (settings, the request kind), `Recall` (a remembered memo),
+  `Resolve` (ask the service; nullopt skips an unavailable song) and `CodecMatches` give an
+  `EncodedSource` (cache-entry name, decode path, delivered length, E-AC-3 or not, declared
+  rate and depth, memo, fetcher), and the base names the cache entry
+  (`cache::audio::NameSource`), opens or joins the shared transfer, remembers the source,
+  opens the core decoder (or `stream::atmos::Renderer` for E-AC-3), validates it against what
+  was promised, reopens the finished cache file to seek, and runs every call under one
+  `Guarded` ladder that invalidates the cache entry on a failure. Each source keeps its
+  skip policy (Apple's `AdmitSkip`, NetEase's `SkipUnavailableSource`), the prefetch-thread
+  rule and its tags. `stream::ArtExtractor<Traits>` (`stream/art_extractor.h`) is the album art
+  extractor and fallback of a source: its Traits give the paths, a song's album, the
+  rendition, the known and the resolved cover URL and the headers; a failed cover is logged
+  once per picture in five minutes, and an account change drops the request
+  (`cache::AccountChanged`) instead of aborting it.
 - Downloads (`download/downloads.h`, `ui/downloads_page.h`): sources with
   `Capability::Download` describe a song's file (`Provider::ResolveDownload`: an HTTP link and
   its tags); the service queues, names, tags and remembers files and fetches them with aria2 (a
@@ -184,7 +205,8 @@ See `docs/plan/shared-cache.md` for current acceptance status.
   old bitmap stays visible while its replacement loads; a failed provider picture is asked
   for again only after a growing pause (30 s up to 10 min), driven by painting.
 - **Audio.** `cache::audio::RememberSource` keeps, per song and requested quality, what the
-  service delivered last time (the fields that name the cache entry). An input first tries
+  service delivered last time (the fields that name the cache entry, each stored
+  length-prefixed; `cache::audio::NameSource` builds the entry's key and metadata). An input first tries
   that entry with `Request::cachedOnly`; only a miss asks the service (NetEase: the song URL,
   Apple Music: a playback session). Trial clips are never remembered, and a source whose
   bytes the decoder rejects is forgotten.
@@ -289,7 +311,8 @@ duplicate occurrences. See `docs/plan/paged-lists-and-scheduler.md` for acceptan
   and transports MP3/AAC/ALAC without conversion. Library album/artist browsing does not
   require an online catalog identity.
 - Optional Atmos uses byte-preserving EC-3 remux in the helper and a Cavern NativeAOT
-  object renderer loaded inside the input component. Rendered PCM enters foobar2000's
+  object renderer (`stream/atmos_renderer.h`, hosted by `EncodedInputBase` for any source that
+  delivers E-AC-3) loaded inside the input component. Rendered PCM enters foobar2000's
   ordinary DSP/output chain. Settings distinguish stereo speakers, headphones, 5.1 and
   7.1. See `docs/adr/0013-atmos-object-rendering.md` for module/context lifetime and scope.
 
