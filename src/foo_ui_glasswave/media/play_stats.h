@@ -42,10 +42,15 @@ public:
     // Lists leave out the tracks of a CD that is not in a drive (cd::DiscPresent); their counts stay.
     std::vector<PlayRecord> Recent(size_t limit);
     std::vector<PlayRecord> MostPlayed(size_t limit);
+    // Writes pending changes now (quitting); a no-op when nothing changed.
+    static void Flush();
 
 private:
     void Load();
     void Save() const;
+    // Marks the file out of date; one write follows a few seconds later whatever the number of
+    // changes in between (a track start used to rewrite the whole file at once).
+    void QueueSave();
     void Prune();
     void RebuildIndex();
 

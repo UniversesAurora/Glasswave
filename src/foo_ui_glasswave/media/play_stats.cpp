@@ -170,6 +170,36 @@ void PlayStats::Save() const {
     }
 }
 
+namespace {
+constexpr double kSaveDelaySeconds = 5.0;
+bool g_saveDirty = false;  // main thread
+bool g_savePosted = false;
+}  // namespace
+
+void PlayStats::QueueSave() {
+    g_saveDirty = true;
+    if (g_savePosted) return;
+    g_savePosted = true;
+    fb2k::callLater(kSaveDelaySeconds, [] {
+        g_savePosted = false;
+        Flush();
+    });
+}
+
+void PlayStats::Flush() {
+    if (!g_saveDirty) return;
+    g_saveDirty = false;
+    Get().Save();
+}
+
+namespace {
+class SaveAtQuit : public initquit {
+public:
+    void on_quit() override { PlayStats::Flush(); }
+};
+FB2K_SERVICE_FACTORY(SaveAtQuit);
+}  // namespace
+
 void PlayStats::Prune() {
     const size_t limit = MaxRecords();
     if (m_records.size() <= limit) return;
@@ -228,7 +258,7 @@ void PlayStats::Record(const metadb_handle_ptr& track) {
     const size_t before = m_records.size();
     Prune();
     if (m_records.size() != before) RebuildIndex();
-    Save();
+    QueueSave();
 }
 
 uint32_t PlayStats::CountFor(const metadb_handle_ptr& track) const {
@@ -255,7 +285,7 @@ void PlayStats::ForgetRecent(metadb_handle_list_cref items) {
             changed = true;
         }
     }
-    if (changed) Save();
+    if (changed) QueueSave();
 }
 
 void PlayStats::ClearCounts(metadb_handle_list_cref items) {
@@ -274,7 +304,7 @@ void PlayStats::ClearCounts(metadb_handle_list_cref items) {
             changed = true;
         }
     }
-    if (changed) Save();
+    if (changed) QueueSave();
 }
 
 void PlayStats::ForgetAllRecent() {
@@ -285,7 +315,7 @@ void PlayStats::ForgetAllRecent() {
             record.lastPlayed = 0;
             changed = true;
         }
-    if (changed) Save();
+    if (changed) QueueSave();
 }
 
 void PlayStats::ClearAllCounts() {
@@ -296,7 +326,7 @@ void PlayStats::ClearAllCounts() {
             record.count = 0;
             changed = true;
         }
-    if (changed) Save();
+    if (changed) QueueSave();
 }
 
 void PlayStats::Refresh(metadb_handle_list_cref items) {
@@ -318,7 +348,7 @@ void PlayStats::Refresh(metadb_handle_list_cref items) {
         record.album = std::move(album);
         changed = true;
     }
-    if (changed) Save();
+    if (changed) QueueSave();
 }
 
 namespace {
