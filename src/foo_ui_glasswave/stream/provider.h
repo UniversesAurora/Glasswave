@@ -282,10 +282,9 @@ class Provider {
         const Catalog* records = Records();
         return records ? records->Handle(track) : metadb_handle_ptr();
     }
-    virtual std::optional<Track> FindTrack(const Id& track) const {
-        const Catalog* records = Records();
-        return records ? records->FindTrack(track) : std::nullopt;
-    }
+    // A song the records lack or hold without its links is read from the service meanwhile
+    // (Catalog::Want), so a later ask finds it whole.
+    virtual std::optional<Track> FindTrack(const Id& track) const;
     // An item whose album art is the cover of the given object (fed to ArtCache).
     virtual metadb_handle_ptr ArtItem(ArtKind kind, const Id& id) const {
         const Catalog* records = Records();

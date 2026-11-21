@@ -57,6 +57,14 @@ std::wstring Provider::ArtKeyOf(const metadb_handle_ptr& item) const {
     return !album.empty() ? ArtKey(ArtKind::Album, album) : ArtKey(ArtKind::Track, id);
 }
 
+std::optional<Track> Provider::FindTrack(const Id& track) const {
+    Catalog* records = Records();
+    if (!records) return std::nullopt;
+    auto found = records->FindTrack(track);
+    if (!found || LacksLinks(*found)) records->Want(track);
+    return found;
+}
+
 Id Provider::AlbumOfTrack(const Id& track) const {
     const auto found = FindTrack(track);
     return found ? found->albumId : Id();

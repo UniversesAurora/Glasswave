@@ -24,6 +24,8 @@ constexpr size_t kCacheFileLimit = 64u * 1024u * 1024u;
 constexpr size_t kCacheLineLimit = 200'000;
 constexpr size_t kCacheFields = 12;
 constexpr char kListSeparator = '\x1f';
+// A song whose read failed or is still running is asked for again after this.
+constexpr auto kAskAgain = std::chrono::minutes(2);
 
 std::string Clean(std::wstring_view text) {
     std::wstring copy(text);
@@ -208,6 +210,12 @@ Artist MergeArtist(const Artist& primary, const Artist& fallback, bool mergeFoll
         }
     }
     return merged;
+}
+
+bool LacksLinks(const Track& track) {
+    return track.albumId.empty() || track.artists.empty() ||
+           std::any_of(track.artists.begin(), track.artists.end(),
+                       [](const ArtistRef& artist) { return artist.id.empty(); });
 }
 
 Catalog::Catalog(CatalogTraits traits) : m_traits(std::move(traits)) {}
@@ -654,12 +662,88 @@ void Catalog::FlushPendingSave() {
     if (m_saveDirty.exchange(false)) SaveLocked();
 }
 
+// ---- reading from the service --------------------------------------------------------------
+
+void Catalog::Want(const Id& song) {
+    if (song.empty()) return;
+    const auto now = std::chrono::steady_clock::now();
+    {
+        std::lock_guard lock(m_readMutex);
+        if (m_settled.contains(song)) return;
+        if (const auto asked = m_asked.find(song); asked != m_asked.end() && now - asked->second < kAskAgain)
+            return;
+        m_asked[song] = now;
+        m_wanted.push_back(song);
+        // Gathered until the main thread is free: a list asks for its rows one by one in a paint.
+        if (!m_reader || std::exchange(m_wantedPosted, true)) return;
+    }
+    fb2k::inMainThread([this] { FlushWanted(); });
+}
+
+void Catalog::FlushWanted() {
+    Reader read;
+    std::vector<Id> wanted;
+    {
+        std::lock_guard lock(m_readMutex);
+        m_wantedPosted = false;
+        if (!m_reader) return; // the asks wait for the next reader
+        read = m_reader;
+        wanted.swap(m_wanted);
+    }
+    // A list or a page's enrichment may have brought a song in meanwhile.
+    std::vector<Id> batch;
+    {
+        std::lock_guard lock(m_mutex);
+        std::unordered_set<Id> seen;
+        for (auto& id : wanted) {
+            if (!seen.insert(id).second) continue;
+            const auto found = m_tracks.find(id);
+            if (found == m_tracks.end() || LacksLinks(found->second.track)) batch.push_back(std::move(id));
+        }
+    }
+    if (!batch.empty()) read(std::move(batch));
+}
+
+void Catalog::Settle(const std::vector<Id>& songs) {
+    std::lock_guard lock(m_readMutex);
+    for (const auto& id : songs) {
+        m_settled.insert(id);
+        m_asked.erase(id);
+    }
+}
+
+void Catalog::StartReading(Reader read) {
+    {
+        std::lock_guard lock(m_readMutex);
+        m_reader = std::move(read);
+        if (m_wanted.empty() || std::exchange(m_wantedPosted, true)) return;
+    }
+    fb2k::inMainThread([this] { FlushWanted(); });
+}
+
+void Catalog::StopReading() {
+    std::lock_guard lock(m_readMutex);
+    m_reader = nullptr;
+}
+
+void Catalog::ForgetReads() {
+    std::lock_guard lock(m_readMutex);
+    m_wanted.clear();
+    m_asked.clear();
+    m_settled.clear();
+}
+
+// ---- forgetting ----------------------------------------------------------------------------
+
 void Catalog::ClearMemory() {
-    std::lock_guard lock(m_mutex);
-    m_tracks.clear();
-    m_albums.clear();
-    m_artists.clear();
-    m_playlists.clear();
+    {
+        std::lock_guard lock(m_mutex);
+        m_tracks.clear();
+        m_albums.clear();
+        m_artists.clear();
+        m_playlists.clear();
+    }
+    ForgetReads(); // what was read is gone with the records
 }
 
 void Catalog::Clear() {

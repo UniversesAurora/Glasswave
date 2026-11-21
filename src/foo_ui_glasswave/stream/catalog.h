@@ -5,6 +5,7 @@
 #include <SDK/foobar2000.h>
 
 #include <atomic>
+#include <chrono>
 #include <filesystem>
 #include <functional>
 #include <mutex>
@@ -12,6 +13,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 // What a provider has seen of its service, kept as stream:: records: the records the lists
@@ -60,6 +62,10 @@ struct CachedTrack {
 
 // Title, artist, album, album artist (the first credit) and length: the tags every provider writes.
 void WriteTrackTags(const Track& track, file_info& info);
+
+// A song stored without what its service links it to: its album, or an artist's id. A list
+// row or a station's song can arrive so; the catalog reads it again when it is asked for.
+bool LacksLinks(const Track& track);
 
 // Merge-on-restore: `primary` stays, `fallback` only fills what `primary` lacks. A sparse record
 // (a row of a list cache, a search summary) never overwrites a richer one.
@@ -135,6 +141,22 @@ class Catalog {
     void Hint(const std::vector<Id>& ids) const;
     void HintAll() const;
 
+    // ---- reading from the service ------------------------------------------------------------
+    // A song something asked for that the records lack, or hold without its links (LacksLinks),
+    // is read from the service. Want gathers the asks until the main thread is free and hands
+    // them to the provider's reader in one batch. A song is asked for again only after a pause,
+    // and not at all once a read answered for it (Settle), even when the service had no more to
+    // give. Asks made while no reader is set (before the provider starts) wait for one.
+    // Want and Settle are for any thread, StartReading and StopReading for the main thread.
+    using Reader = std::function<void(std::vector<Id> songs)>;
+    void Want(const Id& song);
+    // The provider read these songs and put what the service returned.
+    void Settle(const std::vector<Id>& songs);
+    // `read` runs on the main thread with each batch. The provider puts what it read and settles
+    // the songs it got an answer for; a failed read settles nothing.
+    void StartReading(Reader read);
+    void StopReading();
+
     // ---- restart cache -----------------------------------------------------------------------
     // ReadCache is worker-safe and has no side effects. InstallMissing stores the songs not
     // already known and returns their ids; the caller hints them once its side tables hold them.
@@ -146,7 +168,8 @@ class Catalog {
     // pending, and starts no deferred write after it.
     void FlushPendingSave();
 
-    // A language change: drops the records, keeps the restart cache. Stations stay.
+    // A language change: drops the records and what was read, keeps the restart cache. Stations
+    // stay.
     void ClearMemory();
     // Sign-out or account switch: drops every record and the restart cache.
     void Clear();
@@ -164,6 +187,9 @@ class Catalog {
     void SaveLocked() const;
     void PostHints();
     void Hint(const std::vector<Track>& tracks) const;
+    // Main thread: hands the songs asked for to the reader, but those found meanwhile.
+    void FlushWanted();
+    void ForgetReads();
     std::filesystem::path CacheFile() const;
     static std::wstring PreferredKey(ArtKind kind, const Id& id);
 
@@ -181,6 +207,13 @@ class Catalog {
     std::unordered_map<Id, Playlist> m_playlists;
     std::unordered_map<Id, Station> m_stations;
     std::unordered_map<std::wstring, std::wstring> m_preferred;
+
+    mutable std::mutex m_readMutex; // the reading state below
+    Reader m_reader;
+    std::vector<Id> m_wanted;
+    bool m_wantedPosted = false;
+    std::unordered_map<Id, std::chrono::steady_clock::time_point> m_asked;
+    std::unordered_set<Id> m_settled;
 };
 
 } // namespace glasswave::stream
