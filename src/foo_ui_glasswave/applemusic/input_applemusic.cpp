@@ -202,34 +202,19 @@ struct DeliveredSource {
         if (!mime.empty() && mime.starts_with(L"audio/")) return Utf8(mime);
         return codec == L"atmos" ? "audio/eac3" : codec == L"mp3" ? "audio/mpeg" : "audio/mp4";
     }
-    std::string Memo() const {
-        std::string out;
-        for (const std::string& field :
-             {Utf8(asset), Utf8(codec), Utf8(extension), Utf8(spatial), Utf8(mime), sourceVersion,
-              std::to_string(durationMs), std::to_string(sampleRate), std::to_string(bitDepth),
-              std::to_string(bitRate), std::to_string(channels)}) {
-            out += field;
-            out += '\n';
-        }
-        return out;
+    std::vector<std::string> Memo() const {
+        return {Utf8(asset),      Utf8(codec),       Utf8(extension),
+                Utf8(spatial),    Utf8(mime),        sourceVersion,
+                std::to_string(durationMs), std::to_string(sampleRate), std::to_string(bitDepth),
+                std::to_string(bitRate),    std::to_string(channels)};
     }
-    bool Parse(const std::string& memo) {
-        std::vector<std::string> fields;
-        for (size_t start = 0; start < memo.size();) {
-            const size_t end = memo.find('\n', start);
-            if (end == std::string::npos) return false;
-            fields.push_back(memo.substr(start, end - start));
-            start = end + 1;
-        }
+    bool Parse(const std::vector<std::string>& fields) {
         if (fields.size() != 11) return false;
-        const auto wide = [](const std::string& text) {
-            return std::wstring(pfc::stringcvt::string_wide_from_utf8(text.c_str()).get_ptr());
-        };
-        asset = wide(fields[0]);
-        codec = wide(fields[1]);
-        extension = wide(fields[2]);
-        spatial = wide(fields[3]);
-        mime = wide(fields[4]);
+        asset = Wide(fields[0]);
+        codec = Wide(fields[1]);
+        extension = Wide(fields[2]);
+        spatial = Wide(fields[3]);
+        mime = Wide(fields[4]);
         sourceVersion = fields[5];
         durationMs = std::atoi(fields[6].c_str());
         sampleRate = std::atoi(fields[7].c_str());
@@ -381,38 +366,28 @@ class AppleInput : public input_stubs {
             // Names the cache entry of one delivered source and opens it: from the cache, by
             // joining its running transfer, or (with a fetcher) by starting the download.
             const auto openSource = [&](const DeliveredSource& delivered, cache::audio::Fetcher fetch) {
-                cache::audio::Source source;
-                source.provider = "apple";
-                persistent = true;
-                try {
-                    source.accountScope = cache::AccountScope(source.provider);
-                } catch (...) {
-                    persistent = false;
-                    source.accountScope = "ephemeral-" + std::to_string(GetCurrentProcessId());
-                }
                 const std::string quality =
                     AppleQuality(delivered.codec, delivered.sampleRate, delivered.bitDepth, delivered.bitRate,
                                  delivered.channels, delivered.spatial);
-                source.identity = Utf8(delivered.asset);
-                source.quality = quality;
-                source.codec = Lower(delivered.codec);
-                source.sourceVersion = delivered.sourceVersion;
-                const cache::Key key = cache::audio::MakeKey(std::move(source));
-
-                cache::Metadata metadata;
-                metadata.contentType = delivered.ContentType();
-                metadata.validatedAt = cache::Store::Now();
-                metadata.extra = "schema=audio-v1;producer=" + std::string(cache::audio::kProducerSalt) +
-                                 ";codec=" + Lower(delivered.codec) + ";quality=" + quality;
+                cache::audio::SourceName name;
+                name.provider = "apple";
+                name.identity = Utf8(delivered.asset);
+                name.quality = quality;
+                name.codec = Lower(delivered.codec);
+                name.sourceVersion = delivered.sourceVersion;
+                name.contentType = delivered.ContentType();
+                name.extra = "codec=" + Lower(delivered.codec) + ";quality=" + quality;
+                cache::audio::NamedSource named = cache::audio::NameSource(std::move(name));
+                persistent = named.persistent;
                 cache::audio::Request transfer;
-                transfer.key = key;
-                transfer.metadata = std::move(metadata);
+                transfer.key = named.key;
+                transfer.metadata = std::move(named.metadata);
                 transfer.cachedOnly = !fetch;
                 transfer.fetch = std::move(fetch);
                 transfer.persistent = persistent;
                 auto opened = cache::audio::OpenOrStart(std::move(transfer), abort);
                 if (!opened.admitted || !opened.stream.is_valid()) return false;
-                m_cacheKey = key;
+                m_cacheKey = named.key;
                 m_source = std::move(opened.stream);
                 m_flight = std::move(opened.flight);
                 return true;

@@ -58,18 +58,16 @@ std::string ActualCodec(file_info& info) {
 }
 
 // What cache::audio::RememberSource keeps for a song: the fields that name its cache entry.
-std::string SourceMemo(const SongUrl& url) {
-    return Utf8(LowerAscii(url.level)) + '\t' + Utf8(LowerAscii(url.type)) + '\t' + std::to_string(url.bitrate);
+std::vector<std::string> SourceMemo(const SongUrl& url) {
+    return {Utf8(LowerAscii(url.level)), Utf8(LowerAscii(url.type)), std::to_string(url.bitrate)};
 }
 
-bool ParseSourceMemo(const std::string& memo, SongUrl& url) {
-    const size_t first = memo.find('\t');
-    const size_t second = first == std::string::npos ? first : memo.find('\t', first + 1);
-    if (second == std::string::npos) return false;
+bool ParseSourceMemo(const std::vector<std::string>& fields, SongUrl& url) {
+    if (fields.size() != 3) return false;
     url = {};
-    url.level = Wide(memo.substr(0, first).c_str());
-    url.type = Wide(memo.substr(first + 1, second - first - 1).c_str());
-    url.bitrate = std::atoi(memo.c_str() + second + 1);
+    url.level = Wide(fields[0]);
+    url.type = Wide(fields[1]);
+    url.bitrate = std::atoi(fields[2].c_str());
     return !url.level.empty() && url.bitrate > 0;
 }
 
@@ -207,34 +205,24 @@ public:
             // joining its running transfer, or (unless cachedOnly) by starting the download.
             const auto openSource = [&](const SongUrl& url, bool cachedOnly) {
                 const std::string extension = ExtensionFor(url);
-                cache::audio::Source source;
-                source.provider = "ncm";
-                persistent = true;
-                try {
-                    source.accountScope = cache::AccountScope(source.provider);
-                } catch (...) {
-                    persistent = false;
-                    source.accountScope = "ephemeral-" + std::to_string(GetCurrentProcessId());
-                }
-                source.identity = identity;
-                source.quality = Utf8(LowerAscii(url.level) + L":" + LowerAscii(url.type) + L":" +
-                                      std::to_wstring(url.bitrate) + (url.trial ? L":trial" : L":full"));
-                source.codec = Utf8(LowerAscii(url.type));
-                source.sourceVersion = std::string(cache::audio::kProducerSalt) + ":" + source.codec + ":" +
-                                       std::to_string(url.bitrate) + (url.trial ? ":trial" : ":full");
-                const cache::Key key = cache::audio::MakeKey(std::move(source));
-
-                cache::Metadata metadata;
-                metadata.contentType =
+                cache::audio::SourceName name;
+                name.provider = "ncm";
+                name.identity = identity;
+                name.quality = Utf8(LowerAscii(url.level) + L":" + LowerAscii(url.type) + L":" +
+                                    std::to_wstring(url.bitrate) + (url.trial ? L":trial" : L":full"));
+                name.codec = Utf8(LowerAscii(url.type));
+                name.sourceVersion = std::string(cache::audio::kProducerSalt) + ":" + name.codec + ":" +
+                                     std::to_string(url.bitrate) + (url.trial ? ":trial" : ":full");
+                name.contentType =
                     extension == "flac" ? "audio/flac" : extension == "m4a" ? "audio/mp4" : "audio/mpeg";
-                metadata.validatedAt = cache::Store::Now();
-                metadata.extra = "schema=audio-v1;producer=" + std::string(cache::audio::kProducerSalt) +
-                                 ";level=" + Utf8(url.level) + ";type=" + Utf8(url.type) +
-                                 ";bitrate=" + std::to_string(url.bitrate) +
-                                 (url.trial ? ";trial=1" : ";trial=0");
+                name.extra = "level=" + Utf8(url.level) + ";type=" + Utf8(url.type) +
+                             ";bitrate=" + std::to_string(url.bitrate) + (url.trial ? ";trial=1" : ";trial=0");
+                cache::audio::NamedSource named = cache::audio::NameSource(std::move(name));
+                persistent = named.persistent;
+                const cache::Key key = named.key;
                 cache::audio::Request transfer;
                 transfer.key = key;
-                transfer.metadata = std::move(metadata);
+                transfer.metadata = std::move(named.metadata);
                 if (!cachedOnly) transfer.fetch = NcmEncodedFetch(m_id, url);
                 transfer.persistent = persistent;
                 transfer.cachedOnly = cachedOnly;

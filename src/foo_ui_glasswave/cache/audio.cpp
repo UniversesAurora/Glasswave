@@ -970,29 +970,80 @@ Opened OpenOrStart(Request request, abort_callback& abort) {
     return SharedManager().Open(std::move(request), abort);
 }
 
+NamedSource NameSource(SourceName name) {
+    NamedSource named;
+    Source source;
+    source.provider = name.provider;
+    try {
+        source.accountScope = AccountScope(source.provider);
+    } catch (...) {
+        named.persistent = false;
+        source.accountScope = "ephemeral-" + std::to_string(GetCurrentProcessId());
+    }
+    source.identity = std::move(name.identity);
+    source.quality = std::move(name.quality);
+    source.codec = std::move(name.codec);
+    source.sourceVersion = std::move(name.sourceVersion);
+    named.key = MakeKey(std::move(source));
+    named.metadata.contentType = std::move(name.contentType);
+    named.metadata.validatedAt = Store::Now();
+    named.metadata.extra = "schema=audio-v1;producer=" + std::string(kProducerSalt);
+    if (!name.extra.empty()) named.metadata.extra += ";" + name.extra;
+    return named;
+}
+
 namespace {
-constexpr char kSourceMemoSchema[] = "audio-source/1";
+// Version 2: fields as "<length>:<bytes>" (version 1 separated them with a newline or a tab).
+constexpr char kSourceMemoSchema[] = "audio-source/2";
 
 Key SourceMemoKey(const std::string& provider, const std::string& identity, const std::string& request) {
     return {Kind::Data, provider, AccountScope(provider), "audio-source/" + identity, request};
 }
+
+std::string PackFields(const std::vector<std::string>& fields) {
+    std::string packed;
+    for (const std::string& field : fields)
+        packed += std::to_string(field.size()) + ":" + field;
+    return packed;
+}
+
+bool UnpackFields(std::string_view packed, std::vector<std::string>& fields) {
+    fields.clear();
+    while (!packed.empty()) {
+        const size_t colon = packed.find(':');
+        if (colon == std::string_view::npos || colon == 0 || colon > 9) return false;
+        size_t size = 0;
+        for (const char c : packed.substr(0, colon)) {
+            if (c < '0' || c > '9') return false;
+            size = size * 10 + static_cast<size_t>(c - '0');
+        }
+        packed.remove_prefix(colon + 1);
+        if (size > packed.size()) return false;
+        fields.emplace_back(packed.substr(0, size));
+        packed.remove_prefix(size);
+    }
+    return !fields.empty();
+}
 } // namespace
 
-std::optional<std::string> RecallSource(const std::string& provider, const std::string& identity,
-                                        const std::string& request) {
+std::optional<std::vector<std::string>> RecallSource(const std::string& provider, const std::string& identity,
+                                                     const std::string& request) {
     try {
         const auto record = GetStore().Lookup(SourceMemoKey(provider, identity, request));
-        if (!record || record->Info().contentType != kSourceMemoSchema || record->Info().extra.empty())
-            return std::nullopt;
-        return record->Info().extra;
+        if (!record || record->Info().contentType != kSourceMemoSchema) return std::nullopt;
+        std::vector<std::string> fields;
+        if (!UnpackFields(record->Info().extra, fields)) return std::nullopt;
+        return fields;
     } catch (...) {
         return std::nullopt;
     }
 }
 
 void RememberSource(const std::string& provider, const std::string& identity, const std::string& request,
-                    std::string description) {
+                    const std::vector<std::string>& fields) {
     try {
+        std::string description = PackFields(fields);
+        if (description.empty()) return;
         const Key key = SourceMemoKey(provider, identity, request);
         if (const auto record = GetStore().Lookup(key);
             record && record->Info().contentType == kSourceMemoSchema && record->Info().extra == description)

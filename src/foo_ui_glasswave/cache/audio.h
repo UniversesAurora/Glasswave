@@ -9,6 +9,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace glasswave::cache::audio {
 
@@ -50,6 +51,28 @@ struct Source {
 
 Key MakeKey(Source source);
 
+// What a source says about the bytes it delivers: everything that names the song's cache entry
+// and describes it. NameSource turns it into the key and metadata of OpenOrStart's Request,
+// scoped to the current account (a process-local "ephemeral-<pid>" scope, with `persistent`
+// false, when no account is known).
+struct SourceName {
+    std::string provider;
+    std::string identity;
+    std::string quality;
+    std::string codec;
+    std::string sourceVersion;
+    std::string contentType;
+    // Appended to the entry's metadata after "schema=audio-v1;producer=...": ";codec=..." fields
+    // for whatever else the producer wants to tell about the bytes.
+    std::string extra;
+};
+struct NamedSource {
+    Key key;
+    Metadata metadata;
+    bool persistent = true;
+};
+NamedSource NameSource(SourceName name);
+
 class Sink {
   public:
     virtual ~Sink() = default;
@@ -78,10 +101,12 @@ struct Request {
 // deliver, so cached music starts at once and plays without a connection. `request` is what
 // was asked for (the quality setting), so another setting resolves afresh. Scoped to the
 // current account; never contains a URL or a credential. Call from a decode worker.
-std::optional<std::string> RecallSource(const std::string& provider, const std::string& identity,
-                                        const std::string& request);
+// The description is a list of text fields, stored length-prefixed: a field may hold any byte.
+std::optional<std::vector<std::string>> RecallSource(const std::string& provider,
+                                                     const std::string& identity,
+                                                     const std::string& request);
 void RememberSource(const std::string& provider, const std::string& identity, const std::string& request,
-                    std::string description);
+                    const std::vector<std::string>& description);
 void ForgetSource(const std::string& provider, const std::string& identity,
                   const std::string& request) noexcept;
 
