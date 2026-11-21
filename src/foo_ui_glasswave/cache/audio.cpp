@@ -408,7 +408,8 @@ struct Flight::Impl {
         if (!Available()) throw exception_io_data("Audio source returned no encoded bytes");
         // The one flush of the file, before any lock that others wait on: Store::Commit skips its
         // own (it would run under the store-wide lock every cache lookup shares).
-        NoThrow([this] { FlushFileBuffers(writeHandle.get()); });
+        bool flushed = false; // a failed flush is tried again by Commit, which then refuses to publish
+        NoThrow([this, &flushed] { flushed = FlushFileBuffers(writeHandle.get()) != FALSE; });
         std::lock_guard publishLock(commitMutex);
         {
             std::lock_guard lock(mutex);
@@ -420,7 +421,7 @@ struct Flight::Impl {
         if (writer) {
             try {
                 if (!metadata.validatedAt) metadata.validatedAt = Store::Now();
-                published = writer->Commit(metadata, true);
+                published = writer->Commit(metadata, flushed);
             } catch (...) {
                 // Cache publication is optional. The open staging handle remains usable.
             }
