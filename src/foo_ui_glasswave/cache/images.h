@@ -6,6 +6,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <exception>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -25,6 +26,13 @@ struct ImageIdentity {
     std::string artKind;
     std::string id;
     std::string renditionVersion;
+};
+
+// Thrown by a resolver when the account its request was made for is gone. The request is dropped
+// (it is no longer wanted), which is neither an abort of the caller nor a failure of the service.
+class AccountChanged : public std::exception {
+  public:
+    const char* what() const noexcept override { return "The account changed"; }
 };
 
 struct HttpSource {

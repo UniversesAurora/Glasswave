@@ -4,7 +4,7 @@
 #include "applemusic/catalog.h"
 #include "applemusic/client.h"
 #include "cache/images.h"
-#include "cache/art_absence.h"
+#include "stream/art_extractor.h"
 
 #include <SDK/album_art_helpers.h>
 
@@ -30,32 +30,16 @@ struct Artwork {
     const wchar_t* size;
     const wchar_t* format;
     const char* version;
-    bool original;
+    size_t maxBodyBytes;
 };
 Artwork ArtworkFor(int sizePx) {
-    if (sizePx == cache::kOriginalSize) return {L"9999", L"png", "original-png-v1", true};
-    if (sizePx > 1200) return {L"9999", L"jpg", "original-jpg-bb-v1", true};
-    return {L"1200", L"jpg", "1200-jpg-bb-v1", false};
+    if (sizePx == cache::kOriginalSize) return {L"9999", L"png", "original-png-v1", kMaxOriginalBytes};
+    if (sizePx > 1200) return {L"9999", L"jpg", "original-jpg-bb-v1", kMaxOriginalBytes};
+    return {L"1200", L"jpg", "1200-jpg-bb-v1", kMaxArtworkBytes};
 }
 
 using core::Wide;
 using core::Utf8;
-
-const char* ArtKindName(stream::ArtKind kind) {
-    switch (kind) {
-    case stream::ArtKind::Track:
-        return "song";
-    case stream::ArtKind::Album:
-        return "album";
-    case stream::ArtKind::Artist:
-        return "artist";
-    case stream::ArtKind::Playlist:
-        return "playlist";
-    case stream::ArtKind::Station:
-        return "station";
-    }
-    return "";
-}
 
 std::optional<Object> FirstObject(const Object& response, const wchar_t* key) {
     const auto array = json::GetArray(response, key);
@@ -179,139 +163,36 @@ std::wstring ResizeArtwork(std::wstring url, const Artwork& artwork) {
     return url;
 }
 
-class EmptyArtPaths : public album_art_path_list {
-  public:
-    const char* get_path(t_size) const override { return ""; }
-    t_size get_count() const override { return 0; }
-};
+// Apple Music's cover traits for stream::ArtExtractor.
+struct AppleArt {
+    static constexpr const char* kProvider = "apple";
+    using Rendition = Artwork;
 
-class AppleArtInstance : public album_art_extractor_instance_v2 {
-  public:
-    explicit AppleArtInstance(std::string path) : m_path(std::move(path)) {}
-
-    album_art_path_list::ptr query_paths(const GUID&, abort_callback&) override {
-        album_art_path_list::ptr paths;
-        paths ^= fb2k::service_new<EmptyArtPaths>();
-        return paths;
+    static GUID ExtractorGuid() {
+        return {0xc4a7dba2, 0x5f52, 0x4ac7, {0x9f, 0x72, 0x6d, 0xea, 0x21, 0xf4, 0x88, 0x63}};
     }
+    static const stream::Catalog& Records() { return Catalog::Get().Records(); }
+    static stream::Id AlbumOf(const stream::Id& song) { return Catalog::Get().SongAlbum(song); }
+    static Rendition RenditionFor(int sizePx) { return ArtworkFor(sizePx); }
 
-    album_art_data_ptr query(const GUID& what, abort_callback& abort) override {
-        if (what != album_art_ids::cover_front) throw exception_album_art_not_found();
-        stream::ArtKind artKind = stream::ArtKind::Track;
-        std::wstring id;
-        const stream::Catalog& records = Catalog::Get().Records();
-        if (!records.ParseCoverPath(m_path.c_str(), artKind, id) && !records.ParseSongPath(m_path.c_str(), id)) {
-            throw exception_album_art_not_found();
-        }
-
-        // A song shows its album's cover. Storing it under the album makes every song of the
-        // album, the album page and the grids share one download (stream::Provider::ArtKeyOf
-        // names the same identity for the UI). The URL is still resolved through the song.
-        stream::Id albumOfSong;
-        if (artKind == stream::ArtKind::Track) albumOfSong = Catalog::Get().SongAlbum(id);
-        std::wstring catalogUrl = Catalog::Get().CoverUrl(artKind, id);
-        if (catalogUrl.empty() && !albumOfSong.empty())
-            catalogUrl = Catalog::Get().CoverUrl(stream::ArtKind::Album, albumOfSong);
-
-        const Artwork artwork = ArtworkFor(cache::SizeHint());
-        cache::ImageRequest request;
-        request.identity = albumOfSong.empty()
-                               ? cache::ImageIdentity{"apple", ArtKindName(artKind), Utf8(id), artwork.version}
-                               : cache::ImageIdentity{"apple", ArtKindName(stream::ArtKind::Album),
-                                                      Utf8(albumOfSong), artwork.version};
-        if (!albumOfSong.empty())
-            request.alternates.push_back({"apple", ArtKindName(artKind), Utf8(id), artwork.version});
-        request.limits.maxBodyBytes = artwork.original ? kMaxOriginalBytes : kMaxArtworkBytes;
-        request.resolve = [artKind, id, artwork, identity = request.identity, epoch = cache::art_absence::Epoch(),
-                           account = cache::AccountRevision("apple"),
-                           catalogUrl = ResizeArtwork(std::move(catalogUrl), artwork)](
-                              abort_callback& workerAbort, unsigned attempt) mutable {
-            std::wstring url = attempt == 0 ? catalogUrl : std::wstring();
-            if (cache::AccountRevision("apple") != account) throw exception_aborted();
-            if (attempt == 0 && url.empty() && cache::art_absence::KnownMissing(identity))
-                return std::optional<cache::HttpSource>();
-            if (attempt != 0 || !IsAllowedAppleArtworkUrl(url)) {
-                try {
-                    url = ResizeArtwork(FetchCoverUrl(artKind, id, workerAbort), artwork);
-                    if (url.empty()) cache::art_absence::StoreMissing(identity, account, epoch);
-                } catch (const exception_aborted&) {
-                    throw;
-                } catch (...) {
-                    return std::optional<cache::HttpSource>();
-                }
-            }
-            if (!IsAllowedAppleArtworkUrl(url)) return std::optional<cache::HttpSource>();
-            cache::art_absence::Clear(identity, account, epoch);
-            cache::HttpSource source;
-            source.url = std::move(url);
-            source.headers.emplace_back(L"User-Agent", L"Glasswave/0.1 Apple Music artwork");
-            return std::optional<cache::HttpSource>(std::move(source));
-        };
-
-        try {
-            if (auto result = cache::Images::Get().Open(std::move(request), abort))
-                return album_art_data_impl::g_create(result->bytes.data(), result->bytes.size());
-        } catch (const exception_aborted&) {
-            throw;
-        } catch (...) {
-        }
-        throw exception_album_art_not_found();
+    static std::wstring KnownUrl(const stream::ArtRef& ref, const stream::Id& album, const Rendition& artwork) {
+        std::wstring url = Catalog::Get().CoverUrl(ref.kind, ref.id);
+        if (url.empty() && !album.empty()) url = Catalog::Get().CoverUrl(stream::ArtKind::Album, album);
+        return ResizeArtwork(std::move(url), artwork);
     }
-
-  private:
-    std::string m_path;
-};
-
-class AppleArtExtractor : public album_art_extractor_v2 {
-  public:
-    bool is_our_path(const char* path, const char* extension) override {
-        (void)extension;
-        stream::ArtKind kind = stream::ArtKind::Track;
-        stream::Id id;
-        const stream::Catalog& records = Catalog::Get().Records();
-        if (records.ParseCoverPath(path, kind, id)) return true;
-        return records.ParseSongPath(path, id);
+    static bool Usable(const std::wstring& url) { return IsAllowedAppleArtworkUrl(url); }
+    static stream::ArtUrl ResolveUrl(const stream::ArtRef& ref, const stream::Id&, const std::wstring&,
+                                     const Rendition& artwork, unsigned, abort_callback& abort) {
+        std::wstring url = ResizeArtwork(FetchCoverUrl(ref.kind, ref.id, abort), artwork);
+        return {url, url.empty()};
     }
-
-    album_art_extractor_instance_ptr open(file_ptr filehint, const char* path,
-                                          abort_callback& abort) override {
-        (void)filehint;
-        (void)abort;
-        return fb2k::service_new<AppleArtInstance>(std::string(path ? path : ""));
-    }
-
-    GUID get_guid() override {
-        static const GUID guid = {
-            0xc4a7dba2, 0x5f52, 0x4ac7, {0x9f, 0x72, 0x6d, 0xea, 0x21, 0xf4, 0x88, 0x63}};
-        return guid;
+    static std::vector<cache::HttpHeader> Headers() {
+        return {{L"User-Agent", L"Glasswave/0.1 Apple Music artwork"}};
     }
 };
 
-static service_factory_single_t<AppleArtExtractor> g_apple_art;
-
-class AppleArtFallback : public album_art_fallback {
-  public:
-    album_art_extractor_instance_v2::ptr open(metadb_handle_list_cref items,
-                                              pfc::list_base_const_t<GUID> const& ids,
-                                              abort_callback& abort) override {
-        (void)ids;
-        (void)abort;
-        for (t_size i = 0; i < items.get_count(); ++i) {
-            const char* path = items[i].is_valid() ? items[i]->get_path() : nullptr;
-            stream::ArtKind kind = stream::ArtKind::Track;
-            stream::Id id;
-            const stream::Catalog& records = Catalog::Get().Records();
-            if (records.ParseCoverPath(path, kind, id) || records.ParseSongPath(path, id)) {
-                album_art_extractor_instance_v2::ptr instance;
-                instance ^= fb2k::service_new<AppleArtInstance>(std::string(path ? path : ""));
-                return instance;
-            }
-        }
-        throw exception_album_art_not_found();
-    }
-};
-
-static service_factory_single_t<AppleArtFallback> g_apple_art_fallback;
+static service_factory_single_t<stream::ArtExtractor<AppleArt>> g_apple_art;
+static service_factory_single_t<stream::ArtFallback<AppleArt>> g_apple_art_fallback;
 
 } // namespace
 

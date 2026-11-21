@@ -505,6 +505,8 @@ struct Images::Impl {
                     source = job.request.resolve(m_abort, attempt);
                 } catch (const exception_aborted&) {
                     throw;
+                } catch (const AccountChanged&) {
+                    return fail(RunFailureReason::account_revision_changed, responseStatus);
                 } catch (...) {
                     return fail(RunFailureReason::resolver_failed, responseStatus);
                 }

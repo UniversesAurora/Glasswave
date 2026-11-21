@@ -145,6 +145,7 @@
     </ClCompile>
     <ClCompile Include="applemusic\album_art_applemusic.cpp" />
     <ClCompile Include="applemusic\input_applemusic.cpp" />
+    <ClCompile Include="stream\art_extractor.cpp" />
     <ClCompile Include="stream\atmos_renderer.cpp" />
     <ClCompile Include="stream\encoded_input.cpp" />
     <ClCompile Include="applemusic\login.cpp" />
@@ -350,6 +351,7 @@
     <ClInclude Include="applemusic\stream_provider.h" />
     <ClInclude Include="applemusic\login.h" />
     <ClInclude Include="stream\provider.h" />
+    <ClInclude Include="stream\art_extractor.h" />
     <ClInclude Include="stream\catalog.h" />
     <ClInclude Include="stream\encoded_input.h" />
     <ClInclude Include="stream\executor.h" />
