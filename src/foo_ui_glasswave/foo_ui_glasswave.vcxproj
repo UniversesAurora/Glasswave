@@ -145,7 +145,7 @@
     </ClCompile>
     <ClCompile Include="applemusic\album_art_applemusic.cpp" />
     <ClCompile Include="applemusic\input_applemusic.cpp" />
-    <ClCompile Include="applemusic\atmos_renderer.cpp" />
+    <ClCompile Include="stream\atmos_renderer.cpp" />
     <ClCompile Include="applemusic\login.cpp" />
     <ClCompile Include="applemusic\probe.cpp" />
     <ClCompile Include="applemusic\library_probe.cpp" />

@@ -6,7 +6,7 @@
 
 #include <SDK/foobar2000.h>
 
-namespace glasswave::applemusic::atmos {
+namespace glasswave::stream::atmos {
 
 enum class OutputTarget : uint32_t {
     StereoSpeakers = 0, // FL, FR; mask 0x00003
@@ -14,6 +14,9 @@ enum class OutputTarget : uint32_t {
     Speakers5_1 = 2,    // FL, FR, FC, LFE, SL, SR; mask 0x0060F
     Speakers7_1 = 3,    // FL, FR, FC, LFE, BL, BR, SL, SR; mask 0x0063F
 };
+
+// Frames the renderer produces per call; consumers read in chunks of this size.
+inline constexpr size_t kFramesPerRead = 1024;
 
 struct RenderInfo {
     uint32_t sampleRate = 0;
@@ -52,4 +55,4 @@ class Renderer {
     std::unique_ptr<Impl> m_impl;
 };
 
-} // namespace glasswave::applemusic::atmos
+} // namespace glasswave::stream::atmos

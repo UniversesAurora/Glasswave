@@ -1,7 +1,7 @@
 #include "pch.h"
 #include "applemusic/catalog.h"
 #include "core/text.h"
-#include "applemusic/atmos_renderer.h"
+#include "stream/atmos_renderer.h"
 #include "applemusic/client.h"
 #include "applemusic/config.h"
 #include "applemusic/playback_log.h"
@@ -25,6 +25,7 @@ namespace glasswave::applemusic {
 namespace {
 
 namespace json = core::json;
+namespace atmos = stream::atmos;
 
 constexpr double kFullSongDurationToleranceSeconds = 2.0;
 
@@ -560,7 +561,7 @@ class AppleInput : public input_stubs {
         try {
             bool decoded = false;
             if (m_atmos) {
-                constexpr size_t framesPerChunk = 1024;
+                constexpr size_t framesPerChunk = atmos::kFramesPerRead;
                 m_atmosBuffer.resize(framesPerChunk * m_atmosInfo.channels);
                 const size_t frames = m_atmos->Read(m_atmosBuffer.data(), framesPerChunk, abort);
                 if (frames) {
@@ -730,10 +731,10 @@ class AppleInput : public input_stubs {
             info.channels != m_atmosInfo.channels || info.channelMask != m_atmosInfo.channelMask)
             throw exception_io_data("The Atmos renderer changed format during seeking");
         uint64_t remaining = static_cast<uint64_t>(std::llround(seconds * info.sampleRate));
-        std::vector<audio_sample> scratch(1024 * info.channels);
+        std::vector<audio_sample> scratch(atmos::kFramesPerRead * info.channels);
         while (remaining) {
             abort.check();
-            const size_t wanted = static_cast<size_t>(std::min<uint64_t>(remaining, 1024));
+            const size_t wanted = static_cast<size_t>(std::min<uint64_t>(remaining, atmos::kFramesPerRead));
             const size_t received = replacement->Read(scratch.data(), wanted, abort);
             if (!received) throw exception_io_seek_out_of_range();
             remaining -= received;

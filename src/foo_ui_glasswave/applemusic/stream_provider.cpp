@@ -2,7 +2,7 @@
 #include "applemusic/stream_provider.h"
 #include "core/text.h"
 #include "applemusic/artist_preference.h"
-#include "applemusic/atmos_renderer.h"
+#include "stream/atmos_renderer.h"
 #include "applemusic/config.h"
 #include "applemusic/display_metadata.h"
 #include "applemusic/lyrics_protocol.h"
@@ -2659,7 +2659,7 @@ void StreamProvider::OnLanguageChanged() {
 
 std::vector<settings::Field> StreamProvider::SettingFields() {
     using Field = settings::Field;
-    SetAtmosRendererReady(atmos::Renderer::Available());
+    SetAtmosRendererReady(stream::atmos::Renderer::Available());
     std::vector<Field> fields;
 
     Field account;
