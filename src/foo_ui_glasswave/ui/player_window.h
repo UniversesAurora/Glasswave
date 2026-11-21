@@ -5,6 +5,7 @@
 #include "aero/shadow_frame.h"
 #include "gfx/frame_clock.h"
 #include "lyrics/lyrics.h"
+#include "media/transport.h"
 #include "ui/aero_light.h"
 #include "ui/album_wall.h"
 #include "ui/now_playing_pane.h"
@@ -158,7 +159,7 @@ class PlayerWindow {
     void PlaceWall();
     void PaintPaneCard();
     void MenuPressed(int index);
-    static int NextRepeat(int repeat);
+    void ApplyModes(media::transport::Modes modes);
     std::wstring MenuText(int index) const;
     void AnimateWindowTo(const RECT& target);
     int CurrentLyricLine(int* ms) const;

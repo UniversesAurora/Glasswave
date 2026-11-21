@@ -1388,10 +1388,8 @@ void MainWindow::CreateWidgets() {
         },
         {});
     shuffle->onClick = [this] {
-        if (media::radio::Active())
-            media::radio::DislikeCurrent();
-        else
-            SetShuffleRepeat(!m_shuffle, m_repeat);
+        const auto modes = media::transport::ShufflePressed({m_shuffle, static_cast<int>(m_repeat)});
+        if (modes.shuffle != m_shuffle) SetShuffleRepeat(modes.shuffle, static_cast<Repeat>(modes.repeat));
     };
     shuffle->enabled = [] { return !media::radio::Active() || media::radio::CanDislike(); };
     // Repeat cycles off -> all -> one; "one" is the original icon with a small "1".
@@ -6571,13 +6569,8 @@ void MainWindow::OnRadioChanged() {
 }
 
 void MainWindow::CycleRepeat() {
-    if (media::radio::Active()) { // a station repeats one song or none
-        SetShuffleRepeat(false, m_repeat == Repeat::Off ? Repeat::One : Repeat::Off);
-        return;
-    }
-    SetShuffleRepeat(m_shuffle, m_repeat == Repeat::Off   ? Repeat::All
-                                : m_repeat == Repeat::All ? Repeat::One
-                                                          : Repeat::Off);
+    const auto modes = media::transport::RepeatPressed({m_shuffle, static_cast<int>(m_repeat)});
+    SetShuffleRepeat(modes.shuffle, static_cast<Repeat>(modes.repeat));
 }
 
 void MainWindow::SelectPlaybackMode(bool shuffle, int repeat) {

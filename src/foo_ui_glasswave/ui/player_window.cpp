@@ -1340,19 +1340,11 @@ void PlayerWindow::CreateWidgets() {
     // three: off, all, one) and the press's ink all show the state the press set.
     add(kMenuShuffle, m_menuLayer, menuItem(2), {})->onClick = [this] {
         MenuPressed(2);
-        if (media::radio::Active()) {
-            media::radio::DislikeCurrent();
-            return;
-        }
-        m_shuffle = !m_shuffle;
-        m_host.SetPlayerMode(m_shuffle, m_repeat);
-        if (auto* w = WidgetById(kMenuShuffle)) w->Invalidate();
+        ApplyModes(media::transport::ShufflePressed({m_shuffle, m_repeat}));
     };
     WidgetById(kMenuShuffle)->enabled = [] { return !media::radio::Active() || media::radio::CanDislike(); };
     add(kMenuRepeat, m_menuLayer, menuItem(3), {})->onClick = [this] {
-        m_repeat = NextRepeat(m_repeat);
-        m_host.SetPlayerMode(m_shuffle, m_repeat);
-        if (auto* w = WidgetById(kMenuRepeat)) w->Invalidate();
+        ApplyModes(media::transport::RepeatPressed({m_shuffle, m_repeat}));
         MenuPressed(3);
     };
     // Media Center's focus light: a glow that breathes over the focused button, and on a press
@@ -1437,16 +1429,7 @@ void PlayerWindow::CreateWidgets() {
             PlateButton(dc, s, l, m_shuffle, [&] { InBox(dc, s, 38, 31, [&] { PlayModeGlyph(dc, true, 0); }); });
         },
         {})
-        ->onClick = [this] {
-        if (media::radio::Active()) {
-            media::radio::DislikeCurrent();
-            return;
-        }
-        m_shuffle = !m_shuffle;
-        m_host.SetPlayerMode(m_shuffle, m_repeat);
-        for (int id : {kShuffle, kMenuShuffle})
-            if (auto* w = WidgetById(id)) w->Invalidate();
-    };
+        ->onClick = [this] { ApplyModes(media::transport::ShufflePressed({m_shuffle, m_repeat})); };
     WidgetById(kShuffle)->enabled = [] { return !media::radio::Active() || media::radio::CanDislike(); };
     add(kRepeat, m_barLayer,
         [this](auto* dc, D2D1_SIZE_F s, Layer l) {
@@ -1456,12 +1439,7 @@ void PlayerWindow::CreateWidgets() {
             });
         },
         {})
-        ->onClick = [this] {
-        m_repeat = NextRepeat(m_repeat);
-        m_host.SetPlayerMode(m_shuffle, m_repeat);
-        for (int id : {kRepeat, kMenuRepeat})
-            if (auto* w = WidgetById(id)) w->Invalidate();
-    };
+        ->onClick = [this] { ApplyModes(media::transport::RepeatPressed({m_shuffle, m_repeat})); };
 
     // The mini window's Win7 caption buttons (the library window's, same artwork).
     const bool dwmArt = m_aeroArt;
@@ -1754,10 +1732,15 @@ void PlayerWindow::MenuPressed(int index) {
     m_menuAfter.StartAnimation(L"Opacity", after);
 }
 
-// Off -> all -> one; a station repeats one song or none.
-int PlayerWindow::NextRepeat(int repeat) {
-    if (media::radio::Active()) return repeat == 0 ? 2 : 0;
-    return (repeat + 1) % 3;
+// The modes a shuffle or repeat press set (media::transport): shown at once by both forms'
+// buttons, and handed to the library window, which owns them.
+void PlayerWindow::ApplyModes(media::transport::Modes modes) {
+    if (modes.shuffle == m_shuffle && modes.repeat == m_repeat) return; // a station's dislike
+    m_shuffle = modes.shuffle;
+    m_repeat = modes.repeat;
+    m_host.SetPlayerMode(m_shuffle, m_repeat);
+    for (int id : {kShuffle, kMenuShuffle, kRepeat, kMenuRepeat})
+        if (auto* w = WidgetById(id)) w->Invalidate();
 }
 
 void PlayerWindow::WallAlbumsChanged() {

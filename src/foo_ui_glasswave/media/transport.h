@@ -20,4 +20,16 @@ void Stop();
 void Previous();
 void Next();
 
+// The play modes the shuffle and repeat buttons set: repeat 0 off, 1 all (the list), 2 one.
+struct Modes {
+    bool shuffle = false;
+    int repeat = 0;
+};
+// The shuffle button. On a station it is "recommend less like this" (radio::DislikeCurrent) and
+// the modes stay; otherwise shuffle turns over.
+Modes ShufflePressed(Modes current);
+// The repeat button: off, all, one in turn. A station has no list to repeat and no shuffle: one
+// song or none.
+Modes RepeatPressed(Modes current);
+
 } // namespace glasswave::media::transport

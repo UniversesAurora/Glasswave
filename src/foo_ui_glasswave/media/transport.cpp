@@ -2,6 +2,7 @@
 #include "media/transport.h"
 
 #include "media/playback_scheduler.h"
+#include "media/radio.h"
 #include "media/special_playlists.h"
 
 namespace glasswave::media::transport {
@@ -29,6 +30,20 @@ void Previous() {
 
 void Next() {
     playback_control::get()->next();
+}
+
+Modes ShufflePressed(Modes current) {
+    if (radio::Active()) {
+        radio::DislikeCurrent();
+        return current;
+    }
+    current.shuffle = !current.shuffle;
+    return current;
+}
+
+Modes RepeatPressed(Modes current) {
+    if (radio::Active()) return {false, current.repeat == 0 ? 2 : 0};
+    return {current.shuffle, (current.repeat + 1) % 3};
 }
 
 } // namespace glasswave::media::transport
