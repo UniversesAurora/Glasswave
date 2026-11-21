@@ -1,6 +1,7 @@
 #include "pch.h"
 #include "ui/list_view.h"
 #include "gfx/d2d_util.h"
+#include "gfx/motion.h"
 #include "core/text.h"
 #include "gfx/composition_host.h"
 #include "ui/art_cache.h"
@@ -59,18 +60,8 @@ constexpr D2D1_SIZE_F kCardTile{CardLayer::kCard.width + 2 * kCardInset.x, CardL
 // A shelf's page slides on the compositor with Windows 8.1's fast-out curve.
 constexpr int kShelfSlideMs = 500;
 constexpr int kShelfWheelMs = 220; // a horizontal wheel's step
-constexpr D2D1_POINT_2F kShelfP1{0.1f, 0.9f}, kShelfP2{0.2f, 1.0f};
-// A cubic-bezier easing's value at time t (x(u) = t solved by halving).
-float BezierAt(D2D1_POINT_2F p1, D2D1_POINT_2F p2, float t) {
-    const auto bez = [](float a, float b, float u) { return 3 * a * u * (1 - u) * (1 - u) + 3 * b * u * u * (1 - u) + u * u * u; };
-    float lo = 0, hi = 1, u = t;
-    for (int i = 0; i < 24; ++i) {
-        u = (lo + hi) / 2;
-        (bez(p1.x, p2.x, u) < t ? lo : hi) = u;
-    }
-    return bez(p1.y, p2.y, u);
-}
-float ShelfEase(float t) { return BezierAt(kShelfP1, kShelfP2, t); }
+constexpr gfx::Curve kShelfCurve = gfx::curve::kFastOut;
+float ShelfEase(float t) { return gfx::Ease(kShelfCurve, t); }
 
 constexpr uint32_t kInk = 0x1E1E1E, kSecondaryInk = 0x4A4A4A, kGreyInk = 0x7A7A7A, kPlayingInk = 0x1E5BA8;
 constexpr uint32_t kGroupInk = 0x2E64B4, kGroupRule = 0xC9D7E8, kLinkInk = 0x0066CC;
@@ -777,7 +768,7 @@ void ListView::SlideShelf(size_t group, float to, int ms) {
     const auto& comp = host.Compositor();
     auto slide = comp.CreateVector3KeyFrameAnimation();
     slide.InsertKeyFrame(1.0f, offsetOf(to),
-                         comp.CreateCubicBezierEasingFunction({kShelfP1.x, kShelfP1.y}, {kShelfP2.x, kShelfP2.y}));
+                         gfx::Easing(kShelfCurve));
     slide.Duration(std::chrono::milliseconds(ms));
     m_slide.StartAnimation(L"Offset", slide);
     m_slideKey = g.key;
@@ -1054,9 +1045,9 @@ void ListView::SetScrollDip(float top) {
 
 namespace {
 // The glide's curve: ease-out cubic, cubic-bezier(0.33, 1, 0.68, 1), as browsers scroll.
-constexpr D2D1_POINT_2F kGlideP1{0.33f, 1.0f}, kGlideP2{0.68f, 1.0f};
+constexpr gfx::Curve kGlideCurve{0.33f, 1.0f, 0.68f, 1.0f};
 constexpr int kGlideMs = 220;
-float GlideAt(float t) { return BezierAt(kGlideP1, kGlideP2, t); }
+float GlideAt(float t) { return gfx::Ease(kGlideCurve, t); }
 } // namespace
 
 bool ListView::Gliding() const {
@@ -1107,7 +1098,7 @@ void ListView::GlideTo(float top) {
     else
         glide.InsertExpressionKeyFrame(0.0f, L"this.StartingValue");
     glide.InsertKeyFrame(1.0f, float3{0, -std::round(top * m_scale), 0},
-                         comp.CreateCubicBezierEasingFunction({kGlideP1.x, kGlideP1.y}, {kGlideP2.x, kGlideP2.y}));
+                         gfx::Easing(kGlideCurve));
     glide.Duration(std::chrono::milliseconds(kGlideMs));
     m_content.StartAnimation(L"Offset", glide);
     PaintScrollBar();

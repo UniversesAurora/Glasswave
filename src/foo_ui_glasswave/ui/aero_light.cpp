@@ -1,6 +1,7 @@
 #include "pch.h"
 
 #include "ui/aero_light.h"
+#include "gfx/motion.h"
 
 #include "win7/win7_resources.h"
 
@@ -140,7 +141,7 @@ void AeroLight::Animate(Piece& p) {
     const auto& comp = gfx::CompositionHost::Get().Compositor();
     const float W = static_cast<float>(m_size.cx), H = static_cast<float>(m_size.cy);
     // Slow in, slow out: the light eases through its turning points like a swell.
-    const auto ease = comp.CreateCubicBezierEasingFunction({0.37f, 0.0f}, {0.63f, 1.0f});
+    const auto ease = gfx::Easing({0.37f, 0.0f, 0.63f, 1.0f});
     if (p.breathSeconds > 0) {
         auto breath = comp.CreateScalarKeyFrameAnimation();
         breath.InsertKeyFrame(0.0f, p.low);

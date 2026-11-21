@@ -1,6 +1,7 @@
 #include "pch.h"
 
 #include "ui/album_wall.h"
+#include "gfx/motion.h"
 
 #include "ui/art_cache.h"
 #include "win7/win7_resources.h"
@@ -350,7 +351,7 @@ void AlbumWall::ShowOnTile(Tile& tile, size_t slot) {
     auto batch = comp.CreateScopedBatch(wuc::CompositionBatchTypes::Animation);
     auto fade = comp.CreateScalarKeyFrameAnimation();
     fade.InsertKeyFrame(0.0f, 1.0f);
-    fade.InsertKeyFrame(1.0f, 0.0f, comp.CreateCubicBezierEasingFunction({0.4f, 0.0f}, {0.2f, 1.0f}));
+    fade.InsertKeyFrame(1.0f, 0.0f, gfx::Easing(gfx::curve::kExit));
     fade.Duration(std::chrono::milliseconds(kArriveMs));
     tile.previous.StartAnimation(L"Opacity", fade);
     batch.End();
@@ -547,7 +548,7 @@ void AlbumWall::CrossFade(size_t slot, const wuc::CompositionDrawingSurface& bef
             auto batch = comp.CreateScopedBatch(wuc::CompositionBatchTypes::Animation);
             auto fade = comp.CreateScalarKeyFrameAnimation();
             fade.InsertKeyFrame(0.0f, 1.0f);
-            fade.InsertKeyFrame(1.0f, 0.0f, comp.CreateCubicBezierEasingFunction({0.4f, 0.0f}, {0.2f, 1.0f}));
+            fade.InsertKeyFrame(1.0f, 0.0f, gfx::Easing(gfx::curve::kExit));
             fade.Duration(std::chrono::milliseconds(sharpening ? kSharpenMs : kArriveMs));
             t.previous.StartAnimation(L"Opacity", fade);
             batch.End();
@@ -638,9 +639,9 @@ void AlbumWall::Drop(Tile& tile, float delaySeconds, int durationMs) {
     m_drift.Children().Remove(tile.holder);
     m_drift.Children().InsertAtTop(tile.holder);
     const float side = static_cast<float>(m_tile);
-    const auto fall = comp.CreateCubicBezierEasingFunction({0.38f, 0.0f}, {0.22f, 1.0f});
-    const auto settle = comp.CreateCubicBezierEasingFunction({0.33f, 0.0f}, {0.67f, 1.0f});
-    const auto soft = comp.CreateCubicBezierEasingFunction({0.45f, 0.0f}, {0.55f, 1.0f});
+    const auto fall = gfx::Easing({0.38f, 0.0f, 0.22f, 1.0f});
+    const auto settle = gfx::Easing({0.33f, 0.0f, 0.67f, 1.0f});
+    const auto soft = gfx::Easing(gfx::curve::kInOut);
     const auto start = [&](const wuc::Visual& v, const wchar_t* property, const wuc::KeyFrameAnimation& a) {
         a.Duration(std::chrono::milliseconds(durationMs));
         a.DelayTime(Seconds(delaySeconds));
@@ -658,7 +659,7 @@ void AlbumWall::Drop(Tile& tile, float delaySeconds, int durationMs) {
     auto fade = comp.CreateScalarKeyFrameAnimation();
     fade.InsertKeyFrame(0.0f, 0.0f);
     fade.InsertKeyFrame(0.05f, 0.16f);
-    fade.InsertKeyFrame(0.6f, 1.0f, comp.CreateCubicBezierEasingFunction({0.3f, 0.0f}, {0.5f, 1.0f}));
+    fade.InsertKeyFrame(0.6f, 1.0f, gfx::Easing({0.3f, 0.0f, 0.5f, 1.0f}));
     fade.InsertKeyFrame(1.0f, 1.0f);
     start(tile.holder, L"Opacity", fade);
     // The higher it starts, the farther its shadow lies from it.
@@ -730,7 +731,7 @@ void AlbumWall::AttachSwell(Tile& tile, size_t row, size_t col) {
 void AlbumWall::RaiseSwell(float delaySeconds) {
     const auto& comp = gfx::CompositionHost::Get().Compositor();
     auto raise = comp.CreateScalarKeyFrameAnimation();
-    raise.InsertKeyFrame(1.0f, 1.0f, comp.CreateCubicBezierEasingFunction({0.4f, 0.0f}, {0.6f, 1.0f}));
+    raise.InsertKeyFrame(1.0f, 1.0f, gfx::Easing(gfx::curve::kStandard));
     raise.Duration(Seconds(5.0f));
     raise.DelayTime(Seconds(delaySeconds));
     m_clock.StartAnimation(L"amp", raise);

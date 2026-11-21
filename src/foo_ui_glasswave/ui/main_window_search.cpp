@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "ui/main_window.h"
+#include "gfx/motion.h"
 #include "gfx/d2d_util.h"
 
 #include "gfx/composition_host.h"
@@ -512,7 +513,7 @@ void MainWindow::PlaceTabBar(float left, float right) {
         return;
     }
     const auto& comp = gfx::CompositionHost::Get().Compositor();
-    const auto ease = comp.CreateCubicBezierEasingFunction({0.1f, 0.9f}, {0.2f, 1.0f});
+    const auto ease = gfx::Easing(gfx::curve::kFastOut);
     auto move = comp.CreateVector3KeyFrameAnimation();
     move.InsertExpressionKeyFrame(0.0f, L"this.StartingValue");
     move.InsertKeyFrame(1.0f, offset, ease);

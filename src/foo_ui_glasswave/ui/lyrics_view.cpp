@@ -55,19 +55,7 @@ float Clamp01(float v) { return std::clamp(v, 0.0f, 1.0f); }
 float Mix(float a, float b, float t) { return a + (b - a) * t; }
 
 // Unit cubic Bezier easing (CSS cubic-bezier).
-float Bezier(float x1, float y1, float x2, float y2, float x) {
-    auto bx = [&](float t) { return 3 * (1 - t) * (1 - t) * t * x1 + 3 * (1 - t) * t * t * x2 + t * t * t; };
-    auto by = [&](float t) { return 3 * (1 - t) * (1 - t) * t * y1 + 3 * (1 - t) * t * t * y2 + t * t * t; };
-    float lo = 0, hi = 1, t = x;
-    for (int i = 0; i < 24; ++i) {
-        const float v = bx(t);
-        if (std::abs(v - x) < 1e-4f) break;
-        if (v < x) lo = t;
-        else hi = t;
-        t = (lo + hi) / 2;
-    }
-    return by(t);
-}
+float Bezier(float x1, float y1, float x2, float y2, float x) { return gfx::Ease({x1, y1, x2, y2}, x); }
 float EaseOut(float x) { return Bezier(0, 0, 0.58f, 1, Clamp01(x)); }
 
 // Rise and fall used by the long-word emphasis.

@@ -1,6 +1,7 @@
 #include "pch.h"
 
 #include "ui/wmc_volume.h"
+#include "gfx/motion.h"
 
 #include "aero/aero_atlas.h"
 #include "gfx/effects.h"
@@ -161,8 +162,8 @@ void WmcVolume::Show(bool show) {
     auto batch = comp.CreateScopedBatch(wuc::CompositionBatchTypes::Animation);
     auto fade = comp.CreateScalarKeyFrameAnimation();
     fade.InsertKeyFrame(1.0f, show ? 1.0f : 0.0f,
-                        show ? comp.CreateCubicBezierEasingFunction({0.25f, 0.1f}, {0.25f, 1.0f})
-                             : comp.CreateCubicBezierEasingFunction({0.4f, 0.0f}, {0.6f, 1.0f}));
+                        show ? gfx::Easing(gfx::curve::kEase)
+                             : gfx::Easing(gfx::curve::kStandard));
     fade.Duration(std::chrono::milliseconds(show ? (bubble ? 140 : kInMs) : (bubble ? 220 : kOutMs)));
     m_root.StartAnimation(L"Opacity", fade);
     batch.End();

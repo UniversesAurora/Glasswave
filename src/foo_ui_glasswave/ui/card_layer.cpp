@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "ui/card_layer.h"
+#include "gfx/motion.h"
 #include "gfx/d2d_util.h"
 #include "core/text.h"
 
@@ -375,7 +376,7 @@ void CardLayer::Layout(const media::ListSource& source, const std::vector<Shelf>
             strip.scroller.Offset(float3{-std::round(*shelf.slideFrom * m_scale), 0, 0});
             auto slide = comp.CreateVector3KeyFrameAnimation();
             slide.InsertKeyFrame(1.0f, float3{target, 0, 0},
-                                 comp.CreateCubicBezierEasingFunction({0.1f, 0.9f}, {0.2f, 1.0f}));
+                                 gfx::Easing(gfx::curve::kFastOut));
             slide.Duration(std::chrono::milliseconds(slideMs));
             strip.scroller.StartAnimation(L"Offset", slide);
             strip.slideEnd = now + static_cast<ULONGLONG>(slideMs);
@@ -503,7 +504,7 @@ void CardLayer::ApplyState(Card& card, bool animate) {
     }
     const auto& comp = gfx::CompositionHost::Get().Compositor();
     // Material's standard curve: out of rest quickly, settling softly.
-    const auto ease = comp.CreateCubicBezierEasingFunction({0.4f, 0.0f}, {0.2f, 1.0f});
+    const auto ease = gfx::Easing(gfx::curve::kExit);
     const auto vector = [&](const auto& target, const wchar_t* property, float3 value) {
         auto a = comp.CreateVector3KeyFrameAnimation();
         a.InsertKeyFrame(1.0f, value, ease);

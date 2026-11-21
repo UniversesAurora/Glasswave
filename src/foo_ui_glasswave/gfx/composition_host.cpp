@@ -62,8 +62,6 @@ CompositionHost::CompositionHost() {
             options, reinterpret_cast<PDISPATCHERQUEUECONTROLLER*>(winrt::put_abi(m_queueController))));
     }
     m_compositor = wuc::Compositor();
-    m_easeOut = m_compositor.CreateCubicBezierEasingFunction(float2{0.1f, 0.9f}, float2{0.2f, 1.0f});
-    m_easeInOut = m_compositor.CreateCubicBezierEasingFunction(float2{0.45f, 0.0f}, float2{0.55f, 1.0f});
 
     D2D1_FACTORY_OPTIONS opts{};
 #ifdef _DEBUG
@@ -474,16 +472,20 @@ void CompositionHost::Repaint(const wuc::SpriteVisual& visual, RetainedSurface& 
     visual.Size(float2{static_cast<float>(widthPx), static_cast<float>(heightPx)});
 }
 
+wuc::CubicBezierEasingFunction CompositionHost::Easing(const Curve& c) {
+    if (const auto found = m_easings.find(c); found != m_easings.end()) return found->second;
+    auto easing = m_compositor.CreateCubicBezierEasingFunction(float2{c.x1, c.y1}, float2{c.x2, c.y2});
+    m_easings.emplace(c, easing);
+    return easing;
+}
+
 void CompositionHost::AnimateOpacity(const wuc::Visual& v, float to, int durationMs) {
-    auto anim = m_compositor.CreateScalarKeyFrameAnimation();
-    anim.InsertKeyFrame(1.0f, to, m_easeOut);
-    anim.Duration(Ms(std::max(durationMs, 1)));
-    v.StartAnimation(L"Opacity", anim);
+    FadeTo(v, to, std::max(durationMs, 1), curve::kFastOut);
 }
 
 void CompositionHost::AnimateScale(const wuc::Visual& v, float to, int durationMs) {
     auto anim = m_compositor.CreateVector3KeyFrameAnimation();
-    anim.InsertKeyFrame(1.0f, float3{to, to, 1.0f}, m_easeOut);
+    anim.InsertKeyFrame(1.0f, float3{to, to, 1.0f}, Easing(curve::kFastOut));
     anim.Duration(Ms(std::max(durationMs, 1)));
     v.StartAnimation(L"Scale", anim);
 }
@@ -491,8 +493,8 @@ void CompositionHost::AnimateScale(const wuc::Visual& v, float to, int durationM
 void CompositionHost::StartPulse(const wuc::Visual& v, float low, float high, int periodMs) {
     auto anim = m_compositor.CreateScalarKeyFrameAnimation();
     anim.InsertKeyFrame(0.0f, low);
-    anim.InsertKeyFrame(0.5f, high, m_easeInOut);
-    anim.InsertKeyFrame(1.0f, low, m_easeInOut);
+    anim.InsertKeyFrame(0.5f, high, Easing(curve::kInOut));
+    anim.InsertKeyFrame(1.0f, low, Easing(curve::kInOut));
     anim.Duration(Ms(periodMs));
     anim.IterationBehavior(wuc::AnimationIterationBehavior::Forever);
     v.StartAnimation(L"Opacity", anim);

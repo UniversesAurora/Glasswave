@@ -283,6 +283,7 @@
     </ClCompile>
     <ClCompile Include="core\url.cpp" />
     <ClCompile Include="ui\page.cpp" />
+    <ClCompile Include="gfx\motion.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="cd\disc.h" />
@@ -429,6 +430,7 @@
     <ClInclude Include="core\hex.h" />
     <ClInclude Include="netease\types.h" />
     <ClInclude Include="gfx\d2d_util.h" />
+    <ClInclude Include="gfx\motion.h" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="$(SdkRoot)pfc\pfc.vcxproj">

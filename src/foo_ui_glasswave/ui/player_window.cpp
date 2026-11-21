@@ -1,6 +1,7 @@
 #include "pch.h"
 
 #include "ui/player_window.h"
+#include "gfx/motion.h"
 #include "media/radio.h"
 #include "media/special_playlists.h"
 #include "media/transport.h"
@@ -170,14 +171,7 @@ bool Empty(const RECT& r) {
     return r.right <= r.left || r.bottom <= r.top;
 }
 
-// Eases a visual's opacity from where it is to `to`.
-void FadeTo(const wuc::Visual& v, float to, int ms) {
-    const auto comp = v.Compositor();
-    auto fade = comp.CreateScalarKeyFrameAnimation();
-    fade.InsertKeyFrame(1.0f, to, comp.CreateCubicBezierEasingFunction({0.25f, 0.1f}, {0.25f, 1.0f}));
-    fade.Duration(std::chrono::milliseconds(ms));
-    v.StartAnimation(L"Opacity", fade);
-}
+using gfx::FadeTo;
 
 // The split volume button's plate and arrow and the row gradients are WMP's transport art,
 // shared with the library window (wmp/wmp_transport.h). The arrow baked into the plate
@@ -768,7 +762,7 @@ void Place(const wuc::Visual& v, const RECT& r, bool animate = false) {
                       static_cast<float>(std::max<LONG>(0, r.bottom - r.top))};
     if (animate) {
         const auto comp = v.Compositor();
-        const auto ease = comp.CreateCubicBezierEasingFunction({0.16f, 0.9f}, {0.2f, 1.0f});
+        const auto ease = gfx::Easing(gfx::curve::kPlace);
         auto move = comp.CreateVector3KeyFrameAnimation();
         move.InsertKeyFrame(1.0f, offset, ease);
         move.Duration(std::chrono::milliseconds(kMoveMs));
@@ -790,7 +784,7 @@ void Place(const wuc::Visual& v, const RECT& r, bool animate = false) {
 // step with a neighbour that Place animates.
 void Morph(const wuc::Visual& v, const RECT& from, float scale) {
     const auto comp = v.Compositor();
-    const auto ease = comp.CreateCubicBezierEasingFunction({0.16f, 0.9f}, {0.2f, 1.0f});
+    const auto ease = gfx::Easing(gfx::curve::kPlace);
     const float3 to = v.Offset();
     v.StopAnimation(L"Opacity");
     v.Opacity(1.0f);
@@ -1510,7 +1504,7 @@ void PlayerWindow::MenuPressed(int index) {
     const float w = static_cast<float>(r.right - r.left), h = static_cast<float>(r.bottom - r.top);
     m_menuFx.Offset(float3{static_cast<float>(r.left), static_cast<float>(r.top), 0});
     m_menuFx.Size(float2{w, h});
-    const auto out = comp.CreateCubicBezierEasingFunction({0.2f, 0.7f}, {0.2f, 1.0f});
+    const auto out = gfx::Easing({0.2f, 0.7f, 0.2f, 1.0f});
     const auto linear = comp.CreateLinearEasingFunction();
     // Measured frame by frame on the owner's recording (button.mp4, 30 fps, five presses), time
     // from the first changed frame, fronts as the 50 % point of a ramp 44 units wide (about a
@@ -1729,13 +1723,7 @@ void PlayerWindow::Show(Mode mode) {
         // The stage and the controls follow the first tiles.
         for (const wuc::Visual& v : {wuc::Visual(m_stage), wuc::Visual(m_barLayer)}) {
             v.Opacity(0.0f);
-            auto fade = v.Compositor().CreateScalarKeyFrameAnimation();
-            fade.InsertKeyFrame(0.0f, 0.0f);
-            fade.InsertKeyFrame(1.0f, 1.0f);
-            fade.Duration(std::chrono::milliseconds(420));
-            fade.DelayTime(std::chrono::milliseconds(260));
-            fade.DelayBehavior(wuc::AnimationDelayBehavior::SetInitialValueBeforeDelay);
-            v.StartAnimation(L"Opacity", fade);
+            gfx::FadeIn(v, 420, 260);
         }
         if (m_pane) m_pane->SetVisible(m_paneShown);
         if (m_paneShown && m_mode == Mode::Mini) {
@@ -1935,16 +1923,11 @@ void PlayerWindow::SetPaneShown(bool shown, NowPlayingPane::Mode mode) {
             const float3 from = mini ? float3{0, Px(28), 0} : float3{Px(56), 0, 0};
             auto move = comp.CreateVector3KeyFrameAnimation();
             move.InsertKeyFrame(0.0f, from);
-            move.InsertKeyFrame(1.0f, float3{0, 0, 0}, comp.CreateCubicBezierEasingFunction({0.16f, 1.0f}, {0.3f, 1.0f}));
+            move.InsertKeyFrame(1.0f, float3{0, 0, 0}, gfx::Easing(gfx::curve::kSlideIn));
             move.Duration(Ms(560));
             m_paneHost.StartAnimation(L"Offset", move);
-            auto fade = comp.CreateScalarKeyFrameAnimation();
-            fade.InsertKeyFrame(0.0f, 0.0f);
-            fade.InsertKeyFrame(1.0f, 1.0f, comp.CreateCubicBezierEasingFunction({0.3f, 0.0f}, {0.3f, 1.0f}));
-            fade.Duration(Ms(460));
-            fade.DelayTime(Ms(mini ? 60 : 120));
-            fade.DelayBehavior(wuc::AnimationDelayBehavior::SetInitialValueBeforeDelay);
-            m_paneHost.StartAnimation(L"Opacity", fade);
+            constexpr gfx::Curve kPaneFade{0.3f, 0.0f, 0.3f, 1.0f};
+            gfx::FadeIn(m_paneHost, 460, mini ? 60 : 120, &kPaneFade);
         }
     }
     if (changed && mini && !IsIconic(m_hwnd)) {
@@ -1995,8 +1978,8 @@ void PlayerWindow::SlideBack(bool animate) {
         return;
     }
     const auto& comp = gfx::CompositionHost::Get().Compositor();
-    const auto ease = in ? comp.CreateCubicBezierEasingFunction({0.16f, 1.0f}, {0.3f, 1.0f})
-                         : comp.CreateCubicBezierEasingFunction({0.5f, 0.0f}, {0.85f, 0.35f});
+    const auto ease = in ? gfx::Easing(gfx::curve::kSlideIn)
+                         : gfx::Easing({0.5f, 0.0f, 0.85f, 0.35f});
     auto move = comp.CreateVector3KeyFrameAnimation();
     move.InsertKeyFrame(0.0f, in ? above : at);
     move.InsertKeyFrame(1.0f, in ? at : above, ease);
@@ -2062,9 +2045,9 @@ void PlayerWindow::ShowChrome(bool show) {
     // ahead of the move, so a layer is mostly gone before it reaches the edge (owner,
     // 2026-11-14: the shades slid away whole instead of fading on the way).
     const auto slide = [&](const wuc::Visual& v, float dx, float dy, int delayMs) {
-        const auto moveEase = show ? comp.CreateCubicBezierEasingFunction({0.16f, 1.0f}, {0.3f, 1.0f})
-                                    : comp.CreateCubicBezierEasingFunction({0.4f, 0.0f}, {0.6f, 1.0f});
-        const auto fadeEase = comp.CreateCubicBezierEasingFunction({0.25f, 0.1f}, {0.25f, 1.0f});
+        const auto moveEase = show ? gfx::Easing(gfx::curve::kSlideIn)
+                                    : gfx::Easing(gfx::curve::kStandard);
+        const auto fadeEase = gfx::Easing(gfx::curve::kEase);
         auto move = comp.CreateVector3KeyFrameAnimation();
         move.InsertKeyFrame(1.0f, show ? float3{0, 0, 0} : float3{dx * 0.6f, dy * 0.6f, 0}, moveEase);
         move.Duration(Ms(show ? 480 : 600));
@@ -2651,13 +2634,7 @@ void PlayerWindow::UpdateLayout(bool animate) {
             Morph(m_info, oldInfo, morphFrom);
         } else if (infoChanged && animate) {
             m_info.Opacity(0.0f);
-            auto fade = m_info.Compositor().CreateScalarKeyFrameAnimation();
-            fade.InsertKeyFrame(0.0f, 0.0f);
-            fade.InsertKeyFrame(1.0f, 1.0f);
-            fade.Duration(std::chrono::milliseconds(320));
-            fade.DelayTime(std::chrono::milliseconds(180));
-            fade.DelayBehavior(wuc::AnimationDelayBehavior::SetInitialValueBeforeDelay);
-            m_info.StartAnimation(L"Opacity", fade);
+            gfx::FadeIn(m_info, 320, 180); // with the song's other lines
         }
         PaintInfo();
     }
@@ -2671,13 +2648,7 @@ void PlayerWindow::UpdateLayout(bool animate) {
     if (morph && !lyricMoved && !Empty(L.lyric) && !Empty(oldLyric)) {
         Morph(m_lyric, oldLyric, morphFrom);
     } else if (lyricMoved && animate && !Empty(L.lyric)) {
-        auto fade = m_lyric.Compositor().CreateScalarKeyFrameAnimation();
-        fade.InsertKeyFrame(0.0f, 0.0f);
-        fade.InsertKeyFrame(1.0f, 1.0f);
-        fade.Duration(std::chrono::milliseconds(320));
-        fade.DelayTime(std::chrono::milliseconds(180));
-        fade.DelayBehavior(wuc::AnimationDelayBehavior::SetInitialValueBeforeDelay);
-        m_lyric.StartAnimation(L"Opacity", fade);
+        gfx::FadeIn(m_lyric, 320, 180);
     }
     m_lyricLine = -2;
     PaintLyric();
@@ -3468,7 +3439,7 @@ void PlayerWindow::PaintLyric() {
     // Both move by a line's height on one curve: off quickly, then settling softly; the old line
     // fades as it goes, the new one comes up clear.
     const auto& comp = gfx::CompositionHost::Get().Compositor();
-    const auto curve = comp.CreateCubicBezierEasingFunction({0.3f, 0.0f}, {0.1f, 1.0f});
+    const auto curve = gfx::Easing({0.3f, 0.0f, 0.1f, 1.0f});
     const float rise = static_cast<float>(h);
     const auto slide = [&](const wuc::Visual& v, float fromY, float toY, float fromA, float toA) {
         auto move = comp.CreateVector3KeyFrameAnimation();

@@ -10,6 +10,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include "ui/main_window.h"
+#include "gfx/motion.h"
 #include "download/downloads.h"
 #include "ui/downloads_page.h"
 #include "ui/home_page.h"
@@ -885,8 +886,8 @@ void MainWindow::AnimateWindow(bool open) {
     GetClientRect(m_hwnd, &client);
     const auto& comp = gfx::CompositionHost::Get().Compositor();
     m_windowRoot.CenterPoint(float3{client.right / 2.0f, client.bottom / 2.0f, 0});
-    const auto ease = open ? comp.CreateCubicBezierEasingFunction({0.1f, 0.9f}, {0.2f, 1.0f})
-                           : comp.CreateCubicBezierEasingFunction({0.4f, 0.0f}, {1.0f, 1.0f});
+    const auto ease = open ? gfx::Easing(gfx::curve::kFastOut)
+                           : gfx::Easing({0.4f, 0.0f, 1.0f, 1.0f});
     const auto duration = std::chrono::milliseconds(open ? kOpenMs : kCloseMs);
     auto scale = comp.CreateVector3KeyFrameAnimation();
     const float from = open ? kOpenFrom : 1.0f, to = open ? 1.0f : kCloseTo;

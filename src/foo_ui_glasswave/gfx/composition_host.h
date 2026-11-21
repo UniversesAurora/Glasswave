@@ -7,6 +7,7 @@
 // Main thread only.
 
 #include "core/signal.h"
+#include "gfx/motion.h"
 
 #include <algorithm>
 #include <functional>
@@ -182,6 +183,8 @@ public:
                  float scale, const std::function<void(ID2D1DeviceContext*)>& paint);
 
     // Animations
+    // The easing function for a curve (gfx/motion.h), made once per compositor.
+    wuc::CubicBezierEasingFunction Easing(const Curve& c);
     void AnimateOpacity(const wuc::Visual& v, float to, int durationMs);
     void AnimateScale(const wuc::Visual& v, float to, int durationMs);
     void StartPulse(const wuc::Visual& v, float low, float high, int periodMs);
@@ -227,8 +230,7 @@ private:
     winrt::Windows::System::DispatcherQueueController m_queueController{nullptr};
     wuc::Compositor m_compositor{nullptr};
     wuc::CompositionGraphicsDevice m_graphics{nullptr};
-    wuc::CompositionEasingFunction m_easeOut{nullptr};
-    wuc::CompositionEasingFunction m_easeInOut{nullptr};
+    std::map<Curve, wuc::CubicBezierEasingFunction> m_easings;
 
     winrt::com_ptr<ID3D11Device> m_d3d;
     winrt::com_ptr<ID2D1Factory1> m_d2dFactory;
