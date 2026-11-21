@@ -422,6 +422,7 @@ void PlaybackScheduler::Impl::Start() {
     PFC_ASSERT(core_api::is_main_thread());
     if (started) return;
     started = true;
+    lifetime = std::make_shared<int>(0); // Shutdown ended the previous one's posts
     const int repeat = std::clamp<int>(static_cast<int>(cfg_repeat.get()), 0, 2);
     schedule.SetMode(cfg_shuffle.get() != 0, static_cast<PlaybackRepeatMode>(repeat));
     playlistEvents = std::make_unique<PlaylistEvents>(*this);
@@ -1105,9 +1106,18 @@ bool PlaybackScheduler::Impl::RebuildCoreQueue(const std::vector<t_playback_queu
         if (!CanReplayQueueItem(item)) return false;
 
     auto manager = playlist_manager::get();
-    try {
+    // The queue as it is now, to put back if the rebuild fails half way.
+    std::vector<t_playback_queue_item> before;
+    {
+        pfc::list_t<t_playback_queue_item> current;
+        manager->queue_get_contents(current);
+        before.reserve(current.get_count());
+        for (const auto& item : current)
+            before.push_back(item);
+    }
+    const auto replace = [&](const std::vector<t_playback_queue_item>& list) {
         manager->queue_remove_mask(pfc::bit_array_true());
-        for (const auto& item : items) {
+        for (const auto& item : list) {
             if (item.m_playlist < manager->get_playlist_count() &&
                 item.m_item < manager->playlist_get_item_count(item.m_playlist)) {
                 metadb_handle_ptr handle;
@@ -1119,22 +1129,13 @@ bool PlaybackScheduler::Impl::RebuildCoreQueue(const std::vector<t_playback_queu
             }
             manager->queue_add_item(item.m_handle);
         }
+    };
+    try {
+        replace(items);
         return true;
     } catch (...) {
         try {
-            manager->queue_remove_mask(pfc::bit_array_true());
-            for (const auto& item : items) {
-                if (item.m_playlist < manager->get_playlist_count() &&
-                    item.m_item < manager->playlist_get_item_count(item.m_playlist)) {
-                    metadb_handle_ptr handle;
-                    if (manager->playlist_get_item_handle(handle, item.m_playlist, item.m_item) &&
-                        handle == item.m_handle) {
-                        manager->queue_add_item_playlist(item.m_playlist, item.m_item);
-                        continue;
-                    }
-                }
-                manager->queue_add_item(item.m_handle);
-            }
+            replace(before);
         } catch (...) {
         }
         return false;
@@ -1385,6 +1386,11 @@ void PlaybackScheduler::Impl::HandleStop(play_control::t_stop_reason reason) {
         return;
     }
 
+    // Unverified (review 2026-11-21): every reason but the two above counts as a failed start
+    // here, including stop_reason_user. If foobar2000 reports a user Stop pressed while the
+    // explicit start is still opening (a slow stream) with that reason, the next song plays. It
+    // needs a run with a slow source to tell; what a failed open reports is not documented, so
+    // the branch is left as it is.
     if (exactStart) {
         exactStart.reset();
         ++failureBurst;
@@ -1546,7 +1552,6 @@ void PlaybackScheduler::Impl::ScheduleSynchronize() {
 void PlaybackScheduler::Impl::CancelSynchronize() {
     ++syncGeneration;
     syncQueued = false;
-    timeQueued = false;
     reorderDirty = false;
 }
 
@@ -1713,6 +1718,7 @@ void PlaybackScheduler::Impl::InvalidatePosted() {
     ++sourceGeneration;
     ++syncGeneration;
     syncQueued = false;
+    timeQueued = false; // its post is dropped by the generation: a later tick must queue again
     coreQueueSyncQueued = false;
     listenerNotifyQueued = false;
     reorderDirty = false;
