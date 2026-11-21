@@ -391,6 +391,10 @@ class Provider {
         (void)query;
         return {};
     }
+    // How long a list's pages are kept: the query's own choice when it makes one, nothing for a
+    // catalog search, else on disk, so every list that was read once shows at once at the next
+    // visit and after a restart and is re-read behind its rows. A source overrides this only for a
+    // list of its own that must not outlive the run.
     virtual ListCachePolicy ListPolicy(const ListQuery& query) const;
     // Rehydrate metadata required by TrackItem/FindTrack and artwork on a disk cache hit.
     virtual void RestoreListRecords(const ListPage& page) { (void)page; }

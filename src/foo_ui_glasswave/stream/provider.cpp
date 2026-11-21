@@ -427,8 +427,6 @@ void Provider::NotifyListChanged() {
 ListCachePolicy Provider::ListPolicy(const ListQuery& query) const {
     if (query.cache) return *query.cache;
     if (IsCatalogSearch(query.kind)) return ListCachePolicy::None;
-    if (query.kind == ListKind::Playlists && query.shelf == Shelf::Recommended)
-        return ListCachePolicy::Memory;
     return ListCachePolicy::Persistent;
 }
 
