@@ -1,6 +1,7 @@
 #include "pch.h"
 #include "ui/win7_menu.h"
 #include "ui/i18n.h"
+#include "ui/shell_glue.h"
 #include "gfx/composition_host.h"
 #include "win7/win7_resources.h"
 #include "media/special_playlists.h"
@@ -355,9 +356,13 @@ LRESULT CALLBACK HookProc(int code, WPARAM wp, LPARAM lp) {
 
 }  // namespace
 
-UINT TrackWin7Menu(HMENU menu, UINT flags, int x, int y, HWND owner, const std::map<UINT, int>* icons) {
+UINT TrackWin7Menu(HMENU menu, UINT flags, int x, int y, HWND owner, const std::map<UINT, int>* icons,
+                   const RECT* exclude) {
+    TPMPARAMS params{sizeof(params)};
+    if (exclude) params.rcExclude = *exclude;
+    TPMPARAMS* const keepOut = exclude ? &params : nullptr;
     const bool art = Image(kItem) && Image(kGutter);
-    if (!art || g_menu) return TrackPopupMenuEx(menu, flags, x, y, owner, nullptr);
+    if (!art || g_menu) return TrackPopupMenuEx(menu, flags, x, y, owner, keepOut);
     MenuState state;
     state.dpi = GetDpiForWindow(owner);
     NONCLIENTMETRICSW ncm{sizeof(ncm)};
@@ -372,7 +377,7 @@ UINT TrackWin7Menu(HMENU menu, UINT flags, int x, int y, HWND owner, const std::
     g_menu = &state;
     SetWindowSubclass(owner, OwnerProc, 0x67770001, 0);
     g_hook = SetWindowsHookExW(WH_CALLWNDPROC, HookProc, nullptr, GetCurrentThreadId());
-    const UINT result = TrackPopupMenuEx(menu, flags, x, y, owner, nullptr);
+    const UINT result = TrackPopupMenuEx(menu, flags, x, y, owner, keepOut);
     if (g_hook) UnhookWindowsHookEx(g_hook);
     g_hook = nullptr;
     RemoveWindowSubclass(owner, OwnerProc, 0x67770001);
@@ -386,7 +391,7 @@ UINT TrackWin7Menu(HMENU menu, UINT flags, int x, int y, HWND owner, const std::
 namespace {
 
 // Queue and Favorites commands above foobar2000's own context menu (ids past its range).
-enum : UINT { kPlay = 0x8001, kPlayNext, kAddToQueue, kClearQueue };
+enum : UINT { kPlay = 0x8001, kPlayNext, kAddToQueue, kClearQueue, kSaveArt };
 
 std::function<std::vector<ContextAction>(metadb_handle_list_cref)> g_contextActions;
 
@@ -449,17 +454,20 @@ void RunContextMenu(HWND owner, metadb_handle_list_cref items, POINT pt, bool no
     constexpr int kBase = 1;
     constexpr UINT kActionBase = 0x8200;
     HMENU menu = CreatePopupMenu();
-    AppendQueueCommands(menu, false);
+    AppendQueueCommands(menu, nowPlaying);
     const auto actions = ContextActionsFor(items);
     UINT nextAction = kActionBase;
     std::vector<std::function<void()>> flat;
-    if (!actions.empty()) {
-        AppendContextActions(menu, actions, nextAction, flat);
-        AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-    }
+    if (!actions.empty()) AppendContextActions(menu, actions, nextAction, flat);
+    if (items.get_count() == 1) AppendMenuW(menu, MF_STRING, kSaveArt, TrC(L"Save album art..."));
+    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     cm->win32_build_menu(menu, kBase, 0x7FFF);
     const UINT cmd = TrackWin7Menu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_NONOTIFY, pt.x, pt.y, owner);
     DestroyMenu(menu);
+    if (cmd == kSaveArt) {
+        SaveAlbumArt(owner, items[0]);
+        return;
+    }
     if (RunContextAction(cmd, kActionBase, nextAction, flat)) return;
     if (RunQueueCommand(cmd, items)) return;
     if (cmd >= kBase) cm->execute_by_id(cmd - kBase);

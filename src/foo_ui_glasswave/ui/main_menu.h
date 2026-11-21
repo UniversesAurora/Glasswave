@@ -18,5 +18,10 @@ void ShowMainMenu(HWND owner, POINT screenPt, const std::vector<MenuAction>& act
 
 // A plain popup of `actions` at screen point pt (top-left aligned); `checked` gets a check.
 void ShowActionMenu(HWND owner, POINT screenPt, const std::vector<MenuAction>& actions, size_t checked = SIZE_MAX);
+// The same popup for what was clicked (`anchor`, screen px): below it, or above it where there is
+// no room, never over it. A menu opened on the button's press that came up over the pointer took
+// the release as a choice (owner, 2026-11-21: the output device menu picked a device by itself).
+void ShowActionMenu(HWND owner, const RECT& anchor, const std::vector<MenuAction>& actions,
+                    size_t checked = SIZE_MAX);
 
 }  // namespace glasswave::ui

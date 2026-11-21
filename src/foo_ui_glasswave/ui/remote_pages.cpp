@@ -1534,13 +1534,11 @@ class ArtistsPage final : public PagedPage {
                 m_host.Open(ArtistView(m_provider, a.id, a.name, m_view.sectionId));
             },
             [this](POINT screen, const stream::Artist& a) {
-                std::vector<MenuAction> actions{
-                    {L"View",
-                     [this, a] { m_host.Open(ArtistView(m_provider, a.id, a.name, m_view.sectionId)); }}};
-                if (SupportsArtistPreference(m_provider))
-                    actions.push_back(
-                        FollowAction(m_provider, a.id, Guard([this](bool) { m_host.Reload(); })));
-                ShowActionMenu(m_host.Owner(), screen, actions);
+                RecordMenuContext context;
+                context.sectionId = m_view.sectionId;
+                context.removed = Guard([this](const stream::Id&) { m_host.Reload(); }); // unfollowed
+                context.page.push_back({L"Refresh", [this] { m_host.Refresh(); }});
+                ShowRecordMenu(m_host, m_provider, a, screen, context);
             });
     }
 };
@@ -1894,7 +1892,65 @@ class ArtistPage final : public AlbumBrowsePage {
         }
     }
 
+    std::unique_ptr<media::ListSource> IconsSource() override {
+        const auto sections = m_provider.ArtistSections(m_view.remoteId);
+        ArtistOverviewSource::Actions actions;
+        actions.openAlbum = Guard([this](const stream::Album& album) { OpenTile(&album); });
+        actions.openPlaylist = Guard([this](const stream::Playlist& playlist) {
+            m_host.Open(PlaylistView(m_provider, playlist.id, playlist.name, std::nullopt, m_view.sectionId));
+        });
+        actions.openArtist = Guard([this](const stream::Artist& artist) {
+            m_host.Open(ArtistView(m_provider, artist.id, artist.name, m_view.sectionId));
+        });
+        actions.menu = Guard([this](POINT screen, const ArtistOverviewSource::Value& value) { OverviewMenu(screen, value); });
+        actions.showAll = Guard([this](size_t section, bool open) {
+            // Opened, a section reads the rest of its pages; either way the lines change.
+            if (open && section < m_sectionSessions.size() && m_sectionSessions[section]) {
+                auto& session = m_sectionSessions[section];
+                session->SetMode(stream::ListLoadMode::All);
+                if (!session->View().loading && !session->View().complete) session->RequestNext();
+            }
+            UpdateLoadingText();
+            m_host.ListChanged();
+        });
+        auto source = std::make_unique<ArtistOverviewSource>(m_provider, sections, std::move(actions));
+        m_overview = source.get();
+        // One session per section, its first page only; a section the page's own album list
+        // also is (the same query) shares that list's session.
+        m_sectionSessions.assign(sections.size(), nullptr);
+        for (size_t i = 0; i < sections.size(); ++i) {
+            auto changed = Guard([this, i](const stream::ListState& state) {
+                if (!m_overview) return;
+                const bool shown = m_source == m_overview;
+                if (shown) m_host.BeforeListChange();
+                m_overview->SetSection(i, state);
+                if (!shown) return;
+                UpdateLoadingText();
+                m_host.ListChanged();
+            });
+            m_sectionSessions[i] = stream::ListSession::Open(
+                m_provider, PreparedQuery(m_provider, stream::ArtistSectionQuery(m_view.remoteId, sections[i])),
+                std::move(changed));
+            m_overview->SetSection(i, m_sectionSessions[i]->View());
+        }
+        return source;
+    }
+
   private:
+    void OverviewMenu(POINT screen, const ArtistOverviewSource::Value& value) {
+        if (const auto* album = std::get_if<stream::Album>(&value)) {
+            TileMenu(screen, album);
+        } else if (const auto* playlist = std::get_if<stream::Playlist>(&value)) {
+            ShowRemotePlaylistMenu(m_host, m_provider, playlist->id, playlist->name, std::nullopt, m_view.sectionId,
+                                   screen);
+        } else if (const auto* artist = std::get_if<stream::Artist>(&value)) {
+            const stream::Artist a = *artist;
+            std::vector<MenuAction> actions{
+                {L"View", [this, a] { m_host.Open(ArtistView(m_provider, a.id, a.name, m_view.sectionId)); }}};
+            ShowActionMenu(m_host.Owner(), screen, actions);
+        }
+    }
+
     void LoadProfile() {
         m_provider.FetchArtist(
             m_view.remoteId, Guard([this](stream::Artist artist, std::wstring) {
@@ -1921,31 +1977,32 @@ class ArtistPage final : public AlbumBrowsePage {
         if (!album)
             m_host.Open(TopTracksView(m_provider, m_view.remoteId, artistName, m_view.sectionId));
         else
-            m_host.Open(
-                AlbumView(m_provider, album->id, album->name, m_view.remoteId, artistName, m_view.sectionId));
+            m_host.Open(AlbumView(m_provider, album->id, album->name, m_view.sectionId)); // under the artist
     }
 
     void TileMenu(POINT screen, const stream::Album* album) {
-        std::vector<MenuAction> actions;
+        RecordMenuContext context;
+        context.sectionId = m_view.sectionId;
+        AddPageActions(context.page);
+        context.page.push_back({});
+        context.page.push_back({L"Refresh", [this] { m_host.Refresh(); }});
         if (album) {
-            const stream::Album copy = *album;
-            actions.push_back({L"View", [this, copy] { OpenTile(&copy); }});
-            actions.push_back({});
-            AddBulkActions(actions, FetchAlbumSongs(m_provider, copy.id, &m_host), &m_provider);
-            if (m_provider.AccountVerified() && m_provider.Can(stream::Capability::SaveAlbums)) {
-                actions.push_back({});
-                actions.push_back(SaveAlbumAction(m_provider, copy.id, {}));
-            }
-        } else {
-            actions.push_back({L"View", [this] { OpenTile(nullptr); }});
+            ShowRecordMenu(m_host, m_provider, *album, screen, context);
+            return;
         }
-        if (!actions.empty()) actions.push_back({});
-        AddPageActions(actions);
-        actions.insert(actions.end(), {{}, {L"Refresh", [this] { m_host.Refresh(); }}});
+        // The artist's songs tile: the artist's own menu, View opening its songs.
+        stream::Artist artist;
+        artist.id = m_view.remoteId;
+        artist.name = m_artist ? m_artist->name : m_view.name;
+        auto actions = RecordActions(m_host, m_provider, artist, context);
+        if (!actions.empty() && actions.front().label == L"View")
+            actions.front() = {L"View", [this] { OpenTile(nullptr); }};
         ShowActionMenu(m_host.Owner(), screen, actions);
     }
 
     bool m_busy = false;
+    ArtistOverviewSource* m_overview = nullptr; // the icon view's source (owned by the host)
+    std::vector<std::shared_ptr<stream::ListSession>> m_sectionSessions;
 };
 
 class SavedAlbumsPage final : public AlbumBrowsePage {
@@ -1968,26 +2025,18 @@ class SavedAlbumsPage final : public AlbumBrowsePage {
 
   private:
     void TileMenu(POINT screen, const stream::Album& album) {
-        std::vector<MenuAction> actions{
-            {L"View", [this, album] {
-                 m_host.Open(AlbumView(m_provider, album.id, album.name, {}, {}, m_view.sectionId));
-             }}};
-        AddGoToArtist(actions, m_host, m_provider, album.artists, m_view.sectionId);
-        actions.push_back({});
-        AddBulkActions(actions, FetchAlbumSongs(m_provider, album.id, &m_host), &m_provider);
-        if (m_provider.AccountVerified() && m_provider.Can(stream::Capability::SaveAlbums)) {
-            actions.push_back({});
-            actions.push_back(SaveAlbumAction(m_provider, album.id, Guard([this, id = album.id](bool saved) {
-                                                  if (saved) return;
-                                                  ForgetAlbum(id);
-                                                  if (auto* grid = dynamic_cast<AlbumGridSource*>(m_source)) {
-                                                      m_host.BeforeListChange();
-                                                      grid->RemoveAlbum(id);
-                                                      m_host.ListChanged();
-                                                  }
-                                              })));
-        }
-        ShowActionMenu(m_host.Owner(), screen, actions);
+        RecordMenuContext context;
+        context.sectionId = m_view.sectionId;
+        context.removed = Guard([this](const stream::Id& id) { // uncollected: the tile goes at once
+            ForgetAlbum(id);
+            if (auto* grid = dynamic_cast<AlbumGridSource*>(m_source)) {
+                m_host.BeforeListChange();
+                grid->RemoveAlbum(id);
+                m_host.ListChanged();
+            }
+        });
+        context.page.push_back({L"Refresh", [this] { m_host.Refresh(); }});
+        ShowRecordMenu(m_host, m_provider, album, screen, context);
     }
 };
 

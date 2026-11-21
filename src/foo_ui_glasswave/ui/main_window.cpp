@@ -395,16 +395,14 @@ View ProviderLandingView(const stream::Provider& provider) {
     return RemoteView(provider, View::Kind::RemoteFavorites);
 }
 
+// A section's own pages need it; an album, an artist or a playlist stands without one (right
+// under its source when it is not in the library, SectionForView).
 bool SectionBackedView(View::Kind kind) {
     switch (kind) {
     case View::Kind::RemoteFavorites:
     case View::Kind::RemoteShelf:
-    case View::Kind::RemotePlaylist:
     case View::Kind::RemoteArtists:
     case View::Kind::RemoteAlbums:
-    case View::Kind::RemoteArtist:
-    case View::Kind::RemoteAlbum:
-    case View::Kind::RemoteTopTracks:
     case View::Kind::RemoteSectionTracks:
     case View::Kind::RemoteGroups:
     case View::Kind::RemoteGroupTracks:
@@ -2550,6 +2548,10 @@ void MainWindow::RepaintNowPlaying() {
             if (artistW > 0)
                 m_npArtistRect = toClient(text(m_trackArtist, x, top + kInfoRow, artistW, grey.get(), m_npHot == 2));
         }
+        // Cut short (or left out for the title): the tooltip shows it whole (UpdateDetailTip).
+        if (titleW + 0.5f < fullTitleW && m_npTitleRect.right > m_npTitleRect.left)
+            m_npCut.push_back({m_npTitleRect, m_trackTitle});
+        if (artistW > 0 && artistW + 0.5f < fullArtistW) m_npCut.push_back({m_npArtistRect, m_trackArtist});
         // WMP's stars: gold (5530) in Favorites, gold outline (5531) on hover, empty (5533).
         const float sx = std::round((end + 6) * m_scale) / m_scale;
         const float sy = std::round((top + (kInfoRow - 14) / 2) * m_scale) / m_scale;
@@ -3534,9 +3536,9 @@ void MainWindow::OnNowPlayingClick(int part) {
         if (links.size() == 1) {
             links.front().run();
         } else if (links.size() > 1) {
-            POINT pt{m_npArtistRect.left, m_npArtistRect.bottom};
-            ClientToScreen(m_hwnd, &pt);
-            ShowActionMenu(m_hwnd, pt, links);
+            RECT anchor = m_npArtistRect;
+            MapWindowPoints(m_hwnd, nullptr, reinterpret_cast<POINT*>(&anchor), 2);
+            ShowActionMenu(m_hwnd, anchor, links);
         }
         break;
     }
@@ -3781,10 +3783,10 @@ void MainWindow::AddRemoteCrumbs(std::vector<Crumb>& path, stream::Provider& pro
             children = [this, p, id = section.id] { return SavedAlbumsMenu(*p, id); };
         path.push_back({section.label, go(SectionView(provider, section)), std::move(children)});
     };
-    const auto section = SectionForView(provider, m_view);
+    const auto section = SectionForView(provider, view);
     path.push_back(
         {provider.Name(), go(ProviderLandingView(provider)), [this, p] { return ProviderSectionsMenu(*p); }});
-    switch (m_view.kind) {
+    switch (view.kind) {
     case View::Kind::RemoteFavorites:
     case View::Kind::RemoteSectionTracks:
     case View::Kind::RemoteGroups:
@@ -7428,6 +7430,13 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
     }
     case WM_RBUTTONUP: {
         POINT pt{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
+        // The playing song's cover and title: the song's own menu, as on its row in a list.
+        if (PtInRect(&m_npArtRect, pt) || PtInRect(&m_npTitleRect, pt)) {
+            POINT screen = pt;
+            ClientToScreen(hwnd, &screen);
+            ShowNowPlayingSongMenu(screen);
+            return 0;
+        }
         // The song's lines and the lyric line under them (the menu turns a hidden line back on).
         const RECT lyricRect{m_layout.nowPlaying.left + PxI(m_npTextX), m_layout.nowPlaying.top,
                              m_layout.nowPlaying.right, m_layout.nowPlaying.bottom};

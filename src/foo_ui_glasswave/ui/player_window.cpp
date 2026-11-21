@@ -4071,9 +4071,11 @@ LRESULT PlayerWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
         ClientToScreen(hwnd, &screen);
         if (m_pane && m_paneShown && m_pane->HitTest(pt)) {
             m_pane->OnRButtonUp(pt, screen);
-        } else if (PtInRect(&m_layout.lyric, pt) || PtInRect(&m_layout.info, pt)) {
-            // The library window's lyrics menu, on the sung line and the song's lines (so a
-            // hidden line can be shown again).
+        } else if (!PtInRect(&m_timeHit, pt) && (PtInRect(&m_layout.cover, pt) || PtInRect(&m_songHit, pt))) {
+            m_host.ShowPlayerSongMenu(screen); // cover, title, artist, album
+        } else if (PtInRect(&m_layout.lyric, pt) || PtInRect(&m_layout.info, pt) || PtInRect(&m_timeHit, pt)) {
+            // The library window's lyrics menu, on the sung line, the time and the rest of the
+            // song's lines (so a hidden line can be shown again).
             m_host.ShowPlayerLyricsMenu(screen);
         }
         return 0;

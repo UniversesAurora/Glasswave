@@ -241,7 +241,9 @@ void ShowMainMenu(HWND owner, POINT pt, const std::vector<MenuAction>& actions) 
     if (command != commands.end() && command->second) command->second();
 }
 
-void ShowActionMenu(HWND owner, POINT pt, const std::vector<MenuAction>& actions, size_t checked) {
+namespace {
+
+void ShowActions(HWND owner, POINT pt, const RECT* anchor, const std::vector<MenuAction>& actions, size_t checked) {
     if (actions.empty()) return;
     std::vector<MenuAction> copy = actions;
     if (checked < copy.size()) copy[checked].checked = true;
@@ -251,11 +253,21 @@ void ShowActionMenu(HWND owner, POINT pt, const std::vector<MenuAction>& actions
     CommandActions commands;
     for (size_t i = 0; i < flat.size(); ++i)
         if (flat[i]->run) commands[1 + static_cast<UINT>(i)] = flat[i]->run;
-    const UINT cmd =
-        TrackWin7Menu(menu, TPM_RETURNCMD | TPM_NONOTIFY | TPM_LEFTALIGN | TPM_TOPALIGN, pt.x, pt.y, owner);
+    const UINT cmd = TrackWin7Menu(menu, TPM_RETURNCMD | TPM_NONOTIFY | TPM_LEFTALIGN | TPM_TOPALIGN | TPM_VERTICAL,
+                                   pt.x, pt.y, owner, nullptr, anchor);
     DestroyMenu(menu);
     const auto command = commands.find(cmd);
     if (command != commands.end() && command->second) command->second();
+}
+
+} // namespace
+
+void ShowActionMenu(HWND owner, POINT pt, const std::vector<MenuAction>& actions, size_t checked) {
+    ShowActions(owner, pt, nullptr, actions, checked);
+}
+
+void ShowActionMenu(HWND owner, const RECT& anchor, const std::vector<MenuAction>& actions, size_t checked) {
+    ShowActions(owner, {anchor.left, anchor.bottom}, &anchor, actions, checked);
 }
 
 } // namespace glasswave::ui

@@ -373,6 +373,7 @@ class MainWindow : public PageHost, public PlayerHost {
     void StartSeekFrames(); // while playing: the seek bar's head on the compositor's frames
     bool TickSeek();        // per frame; returns whether frames are still needed
     void ShowLyricsMenu(POINT screen);
+    void ShowNowPlayingSongMenu(POINT screen);
     void AddLyricsDocumentActions(std::vector<MenuAction>& actions, HWND owner, const metadb_handle_ptr& now);
     void SetLyricLineShown(bool shown);
     void RefreshPaneQueue(bool playbackChanged = false);
