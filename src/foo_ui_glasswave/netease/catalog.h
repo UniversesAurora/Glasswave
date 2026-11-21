@@ -2,6 +2,7 @@
 
 #include "netease/types.h"
 
+#include <atomic>
 #include <mutex>
 #include <optional>
 #include <unordered_map>
@@ -49,8 +50,10 @@ public:
     void PreferCover(int64_t playlistId, std::wstring coverUrl);
     void ClearPreferredCovers();
 
-    // Main thread: store and feed file_info to metadb in one batch.
-    void PutAndHint(const std::vector<Song>& songs);
+    // Main thread: store and feed file_info to metadb in one batch. `persist` queues the restart
+    // cache for a deferred write on a worker; list pages pass false because the generic list
+    // cache already owns their persistence.
+    void PutAndHint(const std::vector<Song>& songs, bool persist = true);
     // Main thread: merge cached list metadata into richer records, then feed the result to
     // metadb without rewriting the legacy NetEase TSV cache.
     void RestoreAndHint(const std::vector<Song>& songs);
@@ -59,6 +62,8 @@ public:
     // cached tags into metadb so persisted ncm:// playlist entries format correctly.
     void Load();
     void Save() const;
+    // Main thread, at quit: writes the restart cache now when a deferred write is still pending.
+    void FlushPendingSave();
 
 private:
     Catalog() = default;
@@ -66,8 +71,12 @@ private:
     // Under m_mutex: stores a record; true when a flush of queued metadb hints must be posted.
     bool StoreLocked(const Song& song);
     void FlushHints(); // main thread
+    void QueueSave();  // main thread: one deferred write for a burst of puts
 
     mutable std::mutex m_mutex;
+    mutable std::mutex m_saveMutex; // one writer of songs.tsv at a time
+    std::atomic_bool m_saveDirty = false;
+    bool m_savePosted = false; // main thread
     std::vector<int64_t> m_hintQueue; // records new or shown differently, for metadb
     bool m_hintPosted = false;
     std::unordered_map<int64_t, Song> m_songs;

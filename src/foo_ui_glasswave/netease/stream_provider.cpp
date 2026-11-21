@@ -631,6 +631,7 @@ void StreamProvider::Shutdown() {
     }
 
     m_started = false;
+    Catalog::Get().FlushPendingSave();
     ClearIdSnapshots();
     if (m_abort) m_abort->abort();
     if (m_listTasks) {
@@ -1597,7 +1598,7 @@ void StreamProvider::PostListPage(stream::ListPageDone done, stream::ListPage pa
     fb2k::inMainThread([this, done = std::move(done), page = std::move(page), songs = std::move(songs),
                         error = std::move(error), cancelled = std::move(cancelled)]() mutable {
         if (!m_started || ListCancelled(cancelled)) return;
-        if (error.empty() && !songs.empty()) Catalog::Get().PutAndHint(songs);
+        if (error.empty() && !songs.empty()) Catalog::Get().PutAndHint(songs, false);
         if (ListCancelled(cancelled)) return;
         if (done) done(std::move(page), std::move(error));
     });

@@ -289,10 +289,30 @@ std::wstring Catalog::AlbumCover(int64_t albumId) const {
     return {};
 }
 
-void Catalog::PutAndHint(const std::vector<Song>& songs) {
+void Catalog::PutAndHint(const std::vector<Song>& songs, bool persist) {
     Put(songs);
     FlushHints(); // at once (main thread), with whatever else was waiting
-    Save();
+    if (persist) QueueSave();
+}
+
+void Catalog::QueueSave() {
+    m_saveDirty = true;
+    if (m_savePosted) return;
+    m_savePosted = true;
+    // Every page of a long playlist puts songs; the whole file is written once, off the main
+    // thread, after the burst.
+    fb2k::callLater(2.0, [] {
+        Catalog& self = Catalog::Get();
+        self.m_savePosted = false;
+        fb2k::splitTask([] {
+            Catalog& catalog = Catalog::Get();
+            if (catalog.m_saveDirty.exchange(false)) catalog.Save();
+        });
+    });
+}
+
+void Catalog::FlushPendingSave() {
+    if (m_saveDirty.exchange(false)) Save();
 }
 
 void Catalog::RestoreAndHint(const std::vector<Song>& songs) {
@@ -416,6 +436,7 @@ void Catalog::Load() {
 void Catalog::Save() const {
     const auto path = CacheFile();
     if (path.empty() || !core::EnsureDir(path.parent_path())) return;
+    std::lock_guard saving(m_saveMutex);
     std::vector<Song> songs;
     {
         std::lock_guard lock(m_mutex);
