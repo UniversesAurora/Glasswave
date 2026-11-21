@@ -23,8 +23,11 @@ param(
     # anything, so the growth itself is recorded before the stop threshold is reached.
     [double]$RiseBytes = 4GB,
     [int]$RiseWindowSeconds = 10,
-    # The stop threshold and the repository processes it stops (tests point both elsewhere).
-    [double]$CommitPercentLimit = 85,
+    # The stop thresholds and the repository processes they stop (tests point them elsewhere).
+    # This machine idles at 81-85 % commit with the player using under 1 GB, so a level alone
+    # stops only near exhaustion; earlier, a level is a stop only while commit is rising fast.
+    [double]$CommitPercentLimit = 95,
+    [double]$RisingCommitPercentLimit = 88,
     [string]$TargetPattern = 'foobar|engine|audio.service|glasswave|cavern|renderer|hybris|ffmpeg'
 )
 $ErrorActionPreference = 'Stop'
@@ -156,7 +159,9 @@ if ($Supervisor -and -not $DumpProcessId) {
                     '-EvidenceDirectory', ('"' + $EvidenceDirectory + '"'),
                     '-IntervalSeconds', $IntervalSeconds, '-MaxHours', $MaxHours,
                     '-RiseBytes', $RiseBytes, '-RiseWindowSeconds', $RiseWindowSeconds,
-                    '-CommitPercentLimit', $CommitPercentLimit, '-TargetPattern', ('"' + $TargetPattern + '"'),
+                    '-CommitPercentLimit', $CommitPercentLimit,
+                    '-RisingCommitPercentLimit', $RisingCommitPercentLimit,
+                    '-TargetPattern', ('"' + $TargetPattern + '"'),
                     '-SupervisorPid', $PID)
             $claimed = $true
             Write-WatchPointer $child.Id $PID ([DateTime]::UtcNow.ToString('o')) 'starting'
@@ -663,6 +668,7 @@ Write-JsonOutput (Join-Path $EvidenceDirectory 'watcher.json') ([ordered]@{
     outputSchema=2; dumpMask='0x1824'; elevated=$elevated;
     riseBytes=$RiseBytes; riseWindowSeconds=$RiseWindowSeconds;
     intervalSeconds=$IntervalSeconds; durationHours=$MaxHours; commitLimitPercent=$CommitPercentLimit;
+    risingCommitLimitPercent=$RisingCommitPercentLimit;
     targetPattern=$TargetPattern; minimumAvailableBytes=$minimumAvailable;
     processPrivateLimitBytes=8GB; processSharedCommitLimitBytes=8GB;
     kernelPoolGrowthLimitBytes=1GB
@@ -685,8 +691,16 @@ while ($MaxHours -le 0 -or ([DateTime]::UtcNow - $started).TotalHours -lt $MaxHo
         $availableBytes = $info.PhysicalAvailable.ToUInt64() * $pageBytes
         $kernelPaged = $info.KernelPaged.ToUInt64() * $pageBytes
         $kernelNonpaged = $info.KernelNonpaged.ToUInt64() * $pageBytes
+        # Commit growth within the rise window, for the rising-pressure stop and the rise capture.
+        $recent.Enqueue([pscustomobject]@{ t = [DateTime]::UtcNow; commit = $commitBytes })
+        while ($recent.Count -and ([DateTime]::UtcNow - $recent.Peek().t).TotalSeconds -gt $RiseWindowSeconds) {
+            [void]$recent.Dequeue()
+        }
+        $windowLow = ($recent | Measure-Object commit -Minimum).Minimum
+        $rising = $commitBytes - $windowLow -ge $RiseBytes
         $reason = @()
         if ($commitPercent -ge $CommitPercentLimit) { $reason += 'system_commit_pressure' }
+        if ($rising -and $commitPercent -ge $RisingCommitPercentLimit) { $reason += 'system_commit_rising' }
         if ($availableBytes -le $minimumAvailable) { $reason += 'physical_memory_pressure' }
         if (@($records | Where-Object { $null -ne $_.privateBytes -and $_.privateBytes -ge 8GB }).Count) {
             $reason += 'audio_process_private_limit'
@@ -722,13 +736,7 @@ while ($MaxHours -le 0 -or ([DateTime]::UtcNow - $started).TotalHours -lt $MaxHo
         })
         Add-RotatedCsvRows -Path $csv -Rows @($row) -Category 'samples_csv'
         # A fast rise is recorded while it happens, without stopping anything (once a minute).
-        $recent.Enqueue([pscustomobject]@{ t = [DateTime]::UtcNow; commit = $commitBytes })
-        while ($recent.Count -and ([DateTime]::UtcNow - $recent.Peek().t).TotalSeconds -gt $RiseWindowSeconds) {
-            [void]$recent.Dequeue()
-        }
-        $windowLow = ($recent | Measure-Object commit -Minimum).Minimum
-        if ($commitBytes - $windowLow -ge $RiseBytes -and
-            ([DateTime]::UtcNow - $lastRiseCapture).TotalSeconds -ge 60) {
+        if ($rising -and ([DateTime]::UtcNow - $lastRiseCapture).TotalSeconds -ge 60) {
             $lastRiseCapture = [DateTime]::UtcNow
             try {
                 $riseDirectory = New-IncidentDirectory $EvidenceDirectory $row.utc '-rise'
