@@ -54,6 +54,25 @@ foobar2000.exe (core: decoding, playlists, library, DSP, output, components)
   state and notifies again, so whatever still shows that song shows the service's (old) state;
   it is reported on the console, not in a dialog. An answer that never comes stops counting
   after two minutes.
+- Downloads (`download/downloads.h`, `ui/downloads_page.h`): sources with
+  `Capability::Download` describe a song's file (`Provider::ResolveDownload`: an HTTP link and
+  its tags); the service queues, names, tags and remembers files and fetches them with aria2 (a
+  managed child process over JSON-RPC, `download/aria2.h`; one built-in connection when it cannot
+  run); a provider's input plays the file while it exists.
+- Search (`ui/search_scope.h`, `ui/search_popup.h`, `ui/search_page.h`, `ui/main_window_search.cpp`):
+  the box searches the list on screen or a catalog scope (every source, the library, one
+  provider); a catalog search opens `View::Kind::Search`, whose page reads one `ListSession`
+  per source and kind and mixes them by rank. Providers declare `CatalogSearchKinds()`.
+- An artist page is the same for every provider (`ui/artist_overview.h`): the provider lists
+  its artist sections (`Provider::ArtistSections`: id, label, row kind - songs, albums,
+  playlists or artists - and whether an album list is mixed) without touching the network,
+  and answers each with an ordinary list query (`ArtistSectionQuery`). The page opens one
+  session per section (first page only) and shows each as a group of tiles one row high with
+  "Show all (N)", which opens the group in place and reads the section's other pages. A mixed
+  album list is grouped by `Album::type` and its newest release leads as the latest release.
+  Apple Music declares Apple's own artist views; the default (NetEase) is hot songs, the
+  mixed album list and, with `Capability::SimilarArtists`, similar artists. The expanded
+  tile style still shows every album's songs.
 - Providers supply stable navigation section ids, labels, kinds and child-ordering flags.
   The UI does not prescribe the number of playlist groups or a shared service vocabulary.
   Generic track/group pages support songs, genres and composers; section ordering is local,
@@ -311,6 +330,11 @@ All numbers in `aero/aero_metrics.h`, sources in `docs/design/visual-spec.md`.
 - Menus: `mainmenu_manager` builds the full File/Edit/View/Playback/Library/Help menu
   (right-click content, Alt/F10), so preferences, DSP and output stay reachable.
 - Keyboard: `keyboard_shortcut_manager::on_keydown_auto`.
+- Outside playback (`media/outside_play`): a file opened from Explorer expands to its folder
+  in the queue; a CD foobar2000 plays from its own playlist is taken over by the queue.
+- Audio CDs (`cd/`): TOC reading and MusicBrainz disc ids (`disc`), lookup, tagging and the
+  Cover Art Archive fallback (`musicbrainz`, `album_art_cd`), and the CD drives with their
+  discs, read silently through `playlist_loader` and listed under Local Music > Discs (`discs`).
 - Planned: hosting `ui_element` panels from other components (lyrics, visualizations) as
   child windows below/above the composition tree (ADR 0006).
 

@@ -1,6 +1,587 @@
 # Status
 
-Updated: 2026-11-14
+Updated: 2026-11-21
+
+## Duplicate GUIDs, wall's coloured tiles, a disabled item's glow, components (2026-11-21, latest); owner checks pending, uncommitted
+
+- The mini player came back at its default place: settings' cfg_miniPlayerRect had the GUID of
+  the search history (0x8d3a51d2, search_scope.cpp) and cfg_songTags that of the recent lists
+  (0x8d3a51d3, recent_lists.cpp); each pair shared one stored value, and whichever wrote last
+  won ("color capsule" then four numbers did not parse). Both settings have fresh random GUIDs.
+  scripts/build.ps1 now fails on any GUID literal written twice in src. Dev data updated by hand:
+  the last mini place (208 384 2138 1982) moved to the new key, the search history set back to
+  its one entry.
+- Album wall: coloured tiles counted as "still loading" in PickSlot, so any loaded cover went
+  first and with a handful of covers the coloured tiles left the wall at once. They now count as
+  ready and are dealt at their share of the deck (kMinDeck 24), giving way one by one.
+- Full screen: a disabled menu item (a station's shuffle) no longer starts the breathing focus
+  glow on hover.
+- Installed in the dev instance: foo_playcount 3.1.11 (foobar2000.org; star ratings, %rating%,
+  %play_count%), foo_input_dvda 0.8.2 (SourceForge dvdadecoder), the Free Encoder Pack 2026-03-13
+  (foobar2000.org, signed by Illustrate Ltd; unpacked into fb2k-dev\encoders instead of running
+  the installer). Topping E50 II: native DSD to DSD512, DoP to DSD256.
+
+## Menus that keep clear of what opened them; clipped song starts (2026-11-21); owner checks pending, uncommitted
+
+- The output device menu picked a device by itself: it opens on the press, anchored under the
+  device name at the window's foot; with the ASIO devices the list no longer fit below, Windows
+  moved it over the pointer and the release chose the item there. `ShowActionMenu(owner, RECT
+  anchor, ...)` passes the anchor as TPMPARAMS::rcExclude (TPM_VERTICAL), so the menu opens below
+  or above it, never over it; used for the device menu, the now-playing artist links and the
+  breadcrumb's drop-downs (`TrackWin7Menu` takes the exclude rectangle).
+- Song openings not heard: no Glasswave code seeks at a start. The dev instance's output is now
+  ASIO+DSD (core.output.mode 3CC07629..., foo_out_asio+dsd); an ASIO device restarts on a new
+  sample rate and the DAC needs time to lock, which a seek back (device running) does not
+  repeat. To confirm with the owner: whether it happens on the earlier output too.
+- Fades on pause / resume: foobar2000's own Preferences > Playback > Output > Fading. They stop
+  once an output device's Type is DSD: foo_input_sacd 2.0.27 clears outputCoreConfig_t::flagUseFades
+  whenever its DSD path is on (autoproxy_output_manager::getCoreConfig), for PCM songs too, so a
+  fade cannot corrupt DoP. Proposed, waiting for the owner: Glasswave ramps the volume itself on
+  pause / resume (harmless for DSD: the plugin holds DoP at 0 dB).
+
+## Rows of cards as the service shows them; output components (2026-11-21); owner checks pending, uncommitted
+
+- Owner: rows that are not mixed may be cards, as Apple Music's 专属推荐歌单 and 音乐回忆 rows are,
+  with motion. Apple's listen-now response says how each row is shown: `display.kind`
+  `MusicNotesHeroShelf` (cards: Top Picks, 专属推荐歌单, 音乐回忆：你的热门音乐) or `MusicCoverShelf`
+  (tiles; also `MusicConcertsEmptyShelf`, left out). Their items all carry superHeroTall art and
+  motionTallVideo3x4. `stream::HomeShelf` now holds cards or items; the first hero shelf stays
+  the top cards, every other one is a card row (`TileStyle::Card`, cards keyed per row). Home
+  cache format 6. Log: "home: apple 19 cards (14 with motion), 19 rows (2 of cards)". 月度音乐回忆
+  is an editorial item with no record behind it but a link (`attributes.link.url`,
+  replay.music.apple.com): `HomeCard::link` (https only) opens in the default browser on click,
+  and its menu has Open in browser.
+- Installed into the dev instance (profile\user-components-x64, x64 DLLs and their helper
+  executables; all four load): foo_out_asio 2.2.4 (foobar2000.org), foo_out_asio+dsd 0.4.7,
+  foo_input_sacd 2.0.27 and foo_dsd_processor from the same package (SourceForge sacddecoder;
+  foo_input_sacd's DoP output needs foo_dsd_processor since 1.6.1).
+
+## Stations as tiles, compact tag and its setting (2026-11-21); owner checks pending, uncommitted
+
+- Two 最近播放 on Home and 浮枕的电台 vanishing: Apple's 最近播放 row mixes 3 playlists with 8
+  stations; the stations went to a card row of the same title (two 最近播放), and a station that
+  was also a top card (same card key in two rows) had one visual moved between rows, leaving a
+  gap. Now a station is `stream::Station`, a home row item (`HomeShelfItem`) shown as a tile like
+  the others in the service's order (as Apple Music shows them), with its cover
+  (`ArtKind::Station`, apple://cover/station/, catalog /stations/{id}), playing as radio, with a
+  menu (Play station, Refresh). Live stations stay out. Card visuals are keyed per row. Home
+  cache format 4. Apple Home now has 20 rows.
+- The 原唱 tag hugs its glyphs' ink (DirectWrite overhang metrics) with a 2.5 / 1.5 DIP margin and
+  is centred on the line (it sat low and right in a loose box); one painter (`ui::DrawTag`) for
+  lists and the pane's queue. Preferences > Song lists: show or hide song tags (default shown).
+- Output components researched (installed in the next session):
+  foo_out_asio 2.2.4 (foobar2000.org, official, x64 since 2.2); foo_out_asio+dsd 0.4.7
+  (SourceForge sacddecoder, 2025-05-29, native DSD) and foo_input_sacd 2.0.27 (same project,
+  2026-11-01, DSD/SACD decoding); foobar2000 has no official DSD output. WASAPI event/push came
+  from the old foo_out_wasapi; v2's built-in [独占] outputs replace it.
+
+## Original-singer tag, artist search, station rows (2026-11-21); owner checks pending, uncommitted
+
+- Owner confirmed: the home scroll flash is gone (absolute scroll coordinates, below).
+- 原唱: NetEase's song objects carry `originCoverType` (1 original, 2 cover) on /song/detail,
+  playlist, album and search songs; `ParseSong` reads it into `Song::original` and the track
+  gets the badge "Original". `stream::Track::badges` is generic (untranslated keys); every view
+  draws them before the artist, as NetEase does, never as a column: the song table's artist
+  cell (`ListSource::CellBadges`), song tiles (`TileInfo::badges`: Home, search, artist page),
+  foobar2000 playlists such as Now Playing (`stream::TrackBadges(item)`), and the pane's queue.
+  Red outline #E5484D (owner's capture of NetEase). Persisted: list cache schema 6, home cache 3,
+  NetEase songs.tsv 16 fields (the owner's 3486 lines converted in place).
+- Song menu: Search for artist "<name>" for each credited artist, beside song and album.
+- Apple Music home rows of stations (心情主场): station items were dropped, so a row of them had
+  no items and was left out. A row's stations are now `HomeShelf::cards` with the square cover
+  (HomeCardOf without the tall editorial art), shown as a card row that plays as radio, with a
+  menu (Play station, Refresh); live stations stay out. Home went from 11 to 14 Apple rows.
+- Output devices: the dev instance is a clean foobar2000 v2 with only its own components. The
+  owner's other build lists ASIO (foo_out_asio), ASIO+DSD (the SACD component) and WASAPI
+  event/push (the old foo_out_wasapi, which v2 replaced with the built-in [独占] outputs).
+
+## List scrolling in absolute coordinates (2026-11-21); owner confirmed the flash is gone, uncommitted
+
+Owner: the double-buffered rows surface did not stop the flash while scrolling the home cards up
+and down. The scroll was built on coordinates relative to the painted range, whose origin moved
+at every repaint, so every new glide had to start from this thread's estimate of where the
+running one was (`VisualTopDip`, from its own clock). The compositor starts a glide only after
+the surface is drawn and committed (tens of ms for a multi-screen surface), so the estimate ran
+ahead and the content jumped forward at every notch of a running glide, most where a glide is
+fastest. Now content coordinates are absolute: m_content's offset is minus the scroll position,
+the painted range (rows sprite, card layer, shelf slide strip) stands at its own place in it, and
+a glide starts from `this.StartingValue` (where the compositor shows it), its painted range with a
+quarter-view margin each side. Settling also stops a glide the compositor still runs (a jump to a
+position left the old animation driving the offset). Two earlier changes on this path were
+guesses (double buffering, which stays as a sound practice); this one removes a definite flaw.
+If it still flashes, the next step needs a frame capture of it (asking the owner first).
+
+## A song that failed mid-play (2026-11-21); owner checks pending, uncommitted
+
+Owner: a song failed before the last restart. Fact (applemusic/playback.log, 02:53 local): Apple
+song 906238175, on the station 浮枕的电台, failed after 12.6 s decoded with "Unsupported format or
+corrupted file"; the next song started 3 s later. Fact: Apple's transfer (`AppleEncodedFetch`)
+read until the connection closed and called that a whole song, never checking the bridge's
+Content-Length; NetEase's did the same after its first bytes. Hypothesis, not confirmed: the
+bridge's connection closed early and the cut stream was decoded as a whole song. Now both check
+the length: Apple's short transfer fails as "ended early (received of expected bytes)" and is
+not kept; NetEase's continues once from where it stopped (renewed URL), then fails the same way.
+A recurrence now says which it was. Not done: playing on through a failed Apple transfer (the
+bridge's /audio may not take a Range).
+
+## Menus, places and the scroll flash (2026-11-21); owner checks pending, uncommitted
+
+- Context menus of records: one builder (`ui/item_menu.h`, RecordActions / ShowRecordMenu) for
+  an album, an artist or a playlist of any source, used by Home, search, recently played, the
+  artist page, saved albums, followed artists and the playlist menus (ShowRemotePlaylistMenu now
+  wraps it). Same groups everywhere: View; Play (PlayRemoteList: what plays stops at once), Play
+  next, Add to queue, Add to playlist, Download, Add to <source> playlist; Collect / Follow /
+  Rename / Delete; Go to artist; Search for "<name>"; then the page's own (Remove from Recently
+  Played, Refresh). Local results get View, the song commands and the search. Before, a recently
+  played album on Home offered View and Refresh only.
+- The song menu follows the same groups: Go to album, Go to artist, Song info (opened from the
+  page: the path goes on from it), then favorites / playlists / download, then Search for song
+  "<title>" and Search for album "<album>" (it offered only 搜索此唱片集). Wording: "Go to" is
+  转到, Album is 唱片集 everywhere (WMP 12), searches name what they look for.
+- A page's own place (SectionForView) follows real membership: an album is under Albums only
+  when saved, an artist under Artists only when followed, a playlist under a shelf only when the
+  source places it there; otherwise right under its source (an artist page read 唱片集 > ...).
+  Item pages no longer need a section to be restored. The log writes the breadcrumb as it
+  changes ("path: ..."). Checked with dev switches: Home > album > artist > playlist, back to Home.
+- Home scroll flash ("what is further down flashed up over the cards"): the rows surface on
+  screen was drawn into at each glide's start, so its new rows could reach the screen a frame
+  before the glide's new offset. Now two surfaces are drawn in turn and the swap lands with the
+  offset. Owner check pending.
+
+## Technical info across restarts (2026-11-21); owner checks pending, uncommitted
+
+Owner: after a restart the resumed NetEase song showed no sample rate. Its kept info was only
+`channels=2`: NetEase's input reported technical info only from its catalog record (filled only
+when the song's stream was asked for), never from its decoder, so nothing better was ever kept.
+Both inputs now report the decoder's technical info while decoding (NetEase once more through
+dynamic info as decoding begins) and keep it with `stream::NoteTechInfo` (written to metadb on
+the main thread, so the snapshot keeps it); before decoding they fill in the last kept
+(`KnownTechInfo`). Checked: played 6 s, restarted; paused and undecoded, the playback info reads
+FLAC 1010 kbps 44100 Hz 16 bit (`/glasswave:queue` now logs it). Apple's path is the same code,
+not yet checked with an Apple song.
+
+## Breadcrumb, window animation and the remaining queue (2026-11-21); owner checks pending, uncommitted
+
+- Breadcrumb is a component (`ui/breadcrumb.{h,cpp}`) that owns layout, painting, hover fades,
+  hit tests and menus; MainWindow only gives it the path. Every level but the last has an arrow
+  with a menu (at least the next level), so name and arrow always light together (before, levels
+  without children - Home, Now Playing, search results - lit only the name). Too wide, the first
+  levels go to the root arrow's menu.
+- The path is the chain of pages one came down through: `View::from` is the page another was
+  opened from inside (`MainWindow::Open`, the PageHost call every page uses); the breadcrumb is
+  that page's path plus the page's own level. Sections of the navigation pane, the pane, the
+  breadcrumb's menus and start-up show a page's own place. A link back up to a page already on the
+  path cuts it there. Replaces the search-only origin fields and the album's artist parent; a list
+  opened from Home now reads Home > list, a search result Search results (term) > it. The root
+  menu is the pane's top level (Home, Now Playing, All Music, Local Music, the sources). Last
+  view record is format 4 (no parent fields; older records fall back to the default page).
+- Window opening and closing animate (visual-spec "Window open and close"; values estimated).
+- Apple Music: an artist only in the library (uploaded songs) lists "Songs", not 热门歌曲. A
+  removed album stays out of every page of the saved albums while Apple still lists it (the list
+  read now applies the removals made here, as the artist album read did, now one helper), and its
+  page says "This album is no longer in your library." instead of HTTP 404.
+- Home scroll flash: not reproduced or explained. Two defects in that path fixed: the list's
+  painted-range surface was re-created at every wheel step (up to 50 MB each; now one surface for
+  the longest glide, kept while the view keeps its size), and motion covers faded in before
+  their first frame (now once the video moves).
+- Pane ghost: left until it shows again (memory: run `/glasswave:visuals` then).
+
+## Restored queue keeps its songs' info (2026-11-21); owner checks pending, uncommitted
+
+Owner: after a restart the resumed song in Now Playing showed "Apple Music 1888098957" and no bit
+rate. Causes found (log, the snapshot file and `/glasswave:queue`), all fixed for both sources:
+- Apple's restart catalog was installed from a worker after start-up; the paused song foobar2000
+  resumed was opened before it, got the input's stand-in title, and the player wrote that into
+  metadb (which foobar2000 keeps), so it stayed. It is installed on the main thread in `Start`
+  now (0.5 MB). Checked: after two restarts the playing title is 感情グラス.
+- `Catalog::Put` (Apple 30+ callers, NetEase 32) changed only the in-memory record; only
+  `PutAndHint` wrote metadb, so a song put any other way never replaced stale tags (the restart
+  install and unknown-song reads skip songs already known). Both catalogs now queue every record
+  that is new or shown differently and write them to metadb in one batch on the main thread.
+- Unknown songs asked for before the Apple provider started were dropped (and not asked again
+  for 2 minutes); `Start` reads them now.
+- Tag hints were "fresh" and wiped the technical info playback had measured (bit rate, codec).
+  Providers write tags with `stream::HintTags`, which keeps it.
+- New `stream/track_snapshot`: every streaming song in a playlist (tags, technical info, length)
+  is saved (3 s after changes, and at exit) to `<profile>\glasswave\tracks\snapshot.txt` and
+  given back to metadb in `on_init`, before playback resumes. Inputs use these last known tags
+  before a stand-in; stand-ins carry `glasswave_placeholder` and are never kept, and the input
+  reports the record once it arrives. Checked: 636 songs, no stand-ins, 399 with a bit rate (the
+  others have not been played since; a song's bit rate is kept once it has played).
+
+## Playing service lists, mini player place (2026-11-20); owner checks pending, uncommitted
+
+- One read per list: every "play this service list" (home cards and shelves, a list page's Play,
+  recently played, artist and search tiles; any provider, any song list kind) goes through
+  `PlayRemoteList` (ui/remote_grids.h), which joins the same shared `ListSession` as the page. A
+  cache confirmed within 5 minutes plays at once; otherwise the service's answer plays, at the
+  moment the page shows it (the settled state is looked at after the notification, so the refresh
+  a cache hit starts is seen). Before, the card used `FetchPlaylist` on its own: 15 s for Apple's
+  喜爱歌曲 (log 22:52:27-41, fallback_batches 10) while the page read the list twice, the two
+  fighting over its header. Open: Apple's `/tracks` read at 22:52:39-44 still gave 203 rows while
+  `?include=tracks` gave 204 (hypothesis: the endpoints lag each other; check on the next test).
+- Pressing play on such a list stops what plays at once; until the list is read, Play (main,
+  mini, full screen, space, taskbar) does not resume the old queue; Stop or any new queue cancels
+  it (`media::BeginPendingPlay`).
+- The mini player's rectangle is kept across restarts (`settings::MiniPlayerRect`).
+- Next, owner's queue: the home scroll flash (not found yet; the rows surface path clears before
+  drawing), a navigation bar redesign (one breadcrumb component whose roots follow the nav pane,
+  pages may only add nodes below theirs, uniform hover; lists opened from Home / search inherit the
+  current path), whether the pane-ghost fixes hold for the latest changes, Apple uploaded songs'
+  artists filed under top songs, removing an uploaded album (it comes back with 0 songs and a 404
+  page), and a Win7 window open / close animation.
+
+## Owner's sixth review (2026-11-20); owner checks pending, uncommitted
+
+- 不感兴趣: the mini player's glyph is back as it was (the owner was happy with it; only the
+  main window's was to change). The main window's keeps NetEase's heart outline but is drawn at
+  the weight of its neighbours, shuffle and repeat (2 DIP ink, 1 DIP white edge at 57 %, about
+  13 px across), with the slash cutting a white gap through the heart and its lower end shortened
+  (owner: the 1.3 DIP hairline at 16 DIP was thin and out of place, the lower end too long;
+  visual-spec "Radio mode"). Schedule tests updated for repeat one keeping the list order
+  (123717 checks pass).
+- The ghost above the now-playing pane's header is back. No `surface:` failures are logged and the
+  pane sits beside the list, so it is not the row cover of 2026-11-14. Owner: it came after
+  closing the mini player (its width dragged first), at random, not reproducible. The owner's
+  capture at 200 %: a square-cornered band 670 x 48 px (the mini pane's width) at the pane's top
+  left over the queue's song card, holding the cover large and sharp. Not the queue's hover plate
+  (rounded, 12 DIP in). Static reading found no undrawn surface, so it is to be caught live:
+  `foobar2000.exe /glasswave:visuals` logs every visible visual of the main window (tree path,
+  window rectangle, opacity, scale, clip, brush, the surface's real size; pane parts named via
+  `Visual.Comment`). Run it while the ghost shows; a visual of about 670 x 48 near the pane's top
+  left names it, and none at all points at the system compositor.
+- Station restore compares the saved paths with Now Playing only as a guard against a queue the
+  station did not leave (a crash before foobar2000 saved it, another component editing it);
+  owner asked why, decision pending.
+
+## Repeat one, owner's fifth review (2026-11-20); owner checks pending, uncommitted
+
+- Repeat one was built on moving the playing song to the end of Now Playing (the songs still to
+  come before it, the core's order left at Default so it stopped at the song's end and the host
+  restarted it). Next and Previous therefore fell off the list's end first: Next replayed the
+  song, the list looked emptied, switching repeat off left nothing to play. Now the list keeps its
+  order in every mode and the core's own order is Repeat (track) while repeating one
+  (`PlaybackScheduler::Impl::ApplyCoreOrder`): the core replays the song at its end, Next and
+  Previous walk the list. Checked on a station: repeat one sets "Repeat (track)"; Next went on to
+  the next song twice (one song more each time, two ahead), Previous back; repeat off went back
+  to Default with the list (3 ahead) and playback intact.
+- Previous with nothing before (a station's first song; quick presses that outran the greyed
+  button) starts the song over instead of letting the core stop. Checked: three quick presses
+  past the first song left it playing.
+- Station restore at start-up needs no service: the record is compared with the queue the
+  scheduler restored (paths only); the songs to come are asked for as it plays, and a source still
+  restoring its session does not count as refusing.
+- A wheel step at a shelf's end no longer blanks it (the running strip was hidden before finding
+  there was nothing to move).
+- 不感兴趣's slash crosses the heart at 50 degrees through its middle (superseded by the sixth
+  review).
+
+## Owner's fourth review (2026-11-20); owner checks pending, uncommitted
+
+- Radio across restarts: the station playing is kept (`cfg_station`: source, id, name, the paths of
+  the songs it queued). At start-up, if the queue the scheduler restored holds exactly those
+  songs, it goes on as the station (more songs as it plays); otherwise the record goes and the
+  queue is an ordinary list. A station that answers nothing three times becomes an ordinary list.
+  Checked: personal FM restored after a restart ("fm restored with 3 songs").
+- No station goes back from its first song any more (heartbeat's "back" there stopped playback:
+  nothing precedes it in the queue); `StationBacksAtStart` removed.
+- Stopping clears the now-playing area whole (text, cover, lyrics) instead of a placeholder
+  under the last song's name. A song's text and cover now change together (`MainWindow::ShowTrack`):
+  a new song whose cover is loading waits up to 1.5 s with the last song shown whole; between
+  songs the last one keeps its cover; and a starting playback shows its target at once
+  (`PlaybackScheduler::StartingTrack`: Next / Previous / a list started), before its audio opens.
+- The queue pane's repeat icons are vectors (`pane::DrawRepeat`): a loop of two arrows, the "1"
+  alone in its open middle (the icon font's badge "1" sat on the arrows).
+- Every sideways shelf keeps its tiles' width (the last one shows in part), not only the cards;
+  a horizontal wheel or Shift+wheel over a shelf moves it 100 DIP a notch, gliding from where it
+  shows (`ListView::SlideShelf`); paging slides the same way.
+- Back restores each page's shelves where they stood (`ListView::ShelfPositions`, kept with the
+  vertical position per view; a shelf that loads later takes its place when it comes).
+- Home: a visit reads a source again only after 20 minutes; Refresh always reads
+  (`Page::RefreshRequested`); the page's own second "Refresh" item is gone.
+- Full screen menu: quick presses on two items no longer leave the first without its text (the
+  first redraws its own type when the press's ink moves on).
+- Play orbs on covers and cards show WMP's pressed look (wmploc 4154) while held, and play on
+  release over the orb.
+
+## Radio, scrolling and hit areas, owner's third review (2026-11-20); owner checks pending, uncommitted
+
+- Previous on a station's first song: NetEase's PC client decides it by its play mode
+  (`playAi` heartbeat, `playFm` personal FM; FM mode `FAMILIAR` is labelled 相似歌曲), no server
+  field. `Provider::StationBacksAtStart`: heartbeat yes; personal FM, similar mixes and Apple's
+  stations no. `radio::CanGoBack` greys Previous in the main window, the mini bar and the full
+  screen (and the widget takes no hover).
+- 相似歌曲 / 相似艺人 are stations now: the PC client's `/api/v1/radio/get` with `mode: FAMILIAR` and
+  the card's `sourceIds` (`similar:<ids>`), 不感兴趣 like the personal FM.
+- Apple station songs showed addresses in the queue: their records were stored but not hinted
+  to foobar2000 (`Catalog::PutAndHint` on arrival now).
+- Repeat one made a station queue songs without end: with repeat one the queue puts the songs
+  still to come before the repeating song, so neither the schedule nor the queue's places tell
+  how many are ahead. The station now keeps its own account (the songs it queued, in order, and
+  which of them plays, followed through Next and Previous). Checked: personal FM with repeat one
+  for 20 s asked for one batch ahead and stopped; switching to repeat one keeps the list (Up Next 2,
+  queue rows 3 before and after; dev switches `/glasswave:repeat:<off|all|one>`, `/glasswave:queue`).
+- Radio limits everywhere: one repeat cycle (`MainWindow::CycleRepeat`, `PlayerWindow::NextRepeat`;
+  off / one on a station, and on a station the button shows repeat-one's glyph lit or not, the
+  full screen item reads "Repeat one") for the transport, the queue pane's capsules, the mini bar
+  and the full screen menu; shuffle shows 不感兴趣 where the station takes it (mini bar: a heart struck through
+  in the player's Media Center glyph style; full screen menu: "Not interested"), else greyed (main
+  window 35 %, the pane's capsule glyph 32 %, the player's glyph grey and the menu type grey, none
+  with hover feedback).
+- Album wall: `AlbumWall::UpdateAlbums` (called as the playing list changes) adds new albums to a
+  playing wall: among the next cards at random, and onto coloured placeholder tiles (fading) once
+  their covers load; albums already shown stay. A different list still starts the wall again.
+- Covers: 每日推荐 / style daily lists get a made cover in the band (`DetailInfo::artBadge` /
+  `artCaption`: the first song's cover, shaded, the day of the month and the list's name; a
+  gradient without a cover). Home's song rows: each NetEase song's album is registered with its
+  cover (the album cover lookup had no address until the song was played).
+- Hit areas: a tile is what it draws (its plate box; a card its card), not its column's whole
+  pitch, so the space between tiles is empty space for the page menu (every tile view).
+- Scrolling by pixels in every list: the thumb is the view's share of the content; the wheel
+  glides 100 DIP a notch (Windows' 3 lines; fractions for fine wheels; added up while gliding)
+  over 220 ms on ease-out cubic, run by the compositor: the rows surface is painted for the whole
+  glide and `m_content` (rows, cards, a sliding shelf) moves inside the clipping viewport, so the
+  motion keeps the display's refresh rate with no repaint. Arrows step 48 DIP, the track a view.
+  The scroll bar's thumb is a visual of its own placed by a compositor expression over
+  `m_content`'s offset, so it glides with the rows (owner: the thumb stepped while the rows glided).
+
+## Home page, second round; daily lists; radio mode (2026-11-15); owner checks pending, uncommitted
+
+- Owner's review of the first cut: corners now continuous-curvature (no joint at the straight
+  edge); elevation follows Material Design 1 (2 dp resting, 8 dp raised, two shadows each, rising
+  3 DIP instead of 6); cards keep a fixed 20 DIP spacing and the last one shows in part; a shelf is
+  one strip that slides as a whole (the jump to the next page before the slide is gone). Values in
+  visual-spec "Home cards".
+- Home at start-up: sources still restoring their session count (they used to be left out, so a
+  restored Home said "Sign in..."); the page listens for account events and reads a source once its
+  account is known. Each source's last home page is kept in `<profile>\glasswave\home\<source>.json`
+  (`ui/home_store.cpp`, with its account; another account's is not shown) and shown at once,
+  before the source is read again.
+- Daily lists (owner: 每日推荐 and 华语流行日推 are fixed lists, not radio): `HomeCard::list` opens a
+  `View::Kind::RemoteHomeList` page (a paged track page over `ListKind::HomeList`, cached like a
+  playlist, "Home > 每日推荐" in the breadcrumb, Play and Download all in the band); the orb plays
+  it. NetEase: `daily` (`/recommend/songs`) and `style:<category>:<tag>:<songs>` (the PC client's
+  `/api/homepage/category/daily/song/list`, `source=homepage` plus the card's ids from its
+  `targetUrl`; returns that style's 30 songs). Checked: 每日推荐 33 songs with its tagline.
+- Radio mode (`media/radio.cpp`, `stream::Capability::Stations`, `HomeCard::station`): a station
+  plays in the queue with two songs queued ahead; more are asked for as the schedule moves
+  (`PlaybackScheduler::AddListener`, after the scheduler has moved, not a raw playback callback);
+  a stall at the end restarts once songs arrive; playing anything else ends it. Shuffle and repeat
+  all are off while it plays (the user's own come back after); repeat one works. Previous goes
+  back through what played. NetEase: personal FM (`fm`, `/personal_fm`, 不感兴趣 through
+  `/fm_trash` in the shuffle button's place, then the next song) and heartbeat mode (`heart`,
+  `/playmode/intelligence/list` seeded with a liked song, then with the last song sent). Apple:
+  every non-live station card (`POST /v1/me/stations/next-tracks/{id}?limit=5`; no "suggest less":
+  its effect on the account is unverified). Checked: personal FM started and topped up on skips;
+  an Apple station started with 5 songs.
+- Not yet: NetEase's 相似歌曲 / 相似艺人 mixes (their endpoint is not in the PC bundle's plain
+  routes), Apple's station shelves below the cards (rows hold songs, albums and playlists only),
+  a "radio" mark in the Now Playing pane.
+
+## Home page, first cut (2026-11-15)
+
+- New `stream::Capability::Home` with `Provider::FetchHome` (`stream::Home`: the source's featured
+  cards with words, picture, motion video and colours, and its rows of songs, albums, playlists)
+  and `FetchHomeCardTracks` (a card that plays a song list). Apple Music: the Top Picks shelf of
+  `/v1/me/recommendations` (with `extend=editorialVideo,editorialArtwork` and `l=`) become cards
+  (tall `superHeroTall` art, `motionTallVideo3x4`), its album / playlist shelves rows. NetEase:
+  the PC client's cards (`/api/pc/daily/rcmd/block`; podcasts left out), its rows
+  (`/api/homepage/block/page` with the client's block codes, cursor and extInfo as JSON texts,
+  plus the radar rows of `/api/pc/customize/block/page`); the daily-songs card plays
+  `/recommend/songs`.
+- Home in the navigation pane, above Now Playing, with WMP's online globe (wmploc 29635); a
+  `View::Kind::Home` page (`ui/home_page.cpp`): Apple Music's cards, then NetEase's, each a shelf of
+  `TileStyle::Card`, then the sources' rows in turn (song cards or covers with source marks). A
+  visit reuses the session's last read for 5 minutes; Refresh reads again.
+- The cards (`ui/card_layer.cpp`): composition visuals under the list's rows surface, lifted on
+  hover as Material cards (compositor animations, no repaint), WMP's play orb, Apple's motion
+  covers through Windows.Media.Playback (an H.264 rendition chosen from the HLS master; system
+  media controls off; closed when off screen or minimized). Values in visual-spec "Home cards".
+- Not yet: stations, personal FM, heartbeat mode and the similar-song / similar-artist mixes have no
+  target (they show, but do not open or play) until radio mode; NetEase's style daily songs
+  (华语流行日推) has no endpoint yet. Dev switch `/glasswave:home` opens Home and logs what each
+  source sent; checked live: Apple 9 cards (4 with motion, two playing on screen), 16 rows; NetEase
+  10 cards, 7 rows.
+
+## Home page and radio: API survey (2026-11-15)
+
+Probed with the dev instance's own sessions (read-only calls, plus Apple station next-tracks).
+
+- NetEase, `/homepage/block/page` (the mobile home), paged by `cursor` (`hasMore`). Blocks seen:
+  `PLAYLIST_RCMD` (playlists), `STYLE_RCMD` (songs "made for you", play all), `OLD_SUBSCRIBE_ARTIST_NEW`
+  (followed artists' new songs / albums), `MGC_PLAYLIST` (radar playlists), `NEW_ALBUM_NEW_SONG`,
+  `OFFICIAL_PLAYLIST` (scene playlists); `VIP_RCMD` and `TOPLIST` are listed in the order but were
+  not returned on the first two pages. Skipped: podcasts / voice lists / voice books, music
+  calendar (concerts), GPT news. `/homepage/dragon/ball` is empty.
+- NetEase PC home (found in the PC client's own bundle, `orpheus.ntpk`, a zip from offset 0x64;
+  called through api-enhanced's generic `/api?uri=...&data=...&crypto=eapi`):
+  - Top cards: `/api/pc/daily/rcmd/block` `{clientTime: "YYYY-MM-DD HH:mm:ss"}`, fully dynamic.
+    `data.items[]`: `coverText` (the card's label: "11-15" for daily songs, 心动模式, 私人漫游, 私人雷达,
+    相似歌曲, 相似艺人, 华语流行日推, 听·<artist>, mood / trend playlists, music podcast), `title`
+    ("从「…」听起"), `simplifiedTitle`, `coverUrl`, `resourceType` / `subResourceType` /
+    `moduleType`, `resourceId`, `targetUrl` (orpheus:// action). `extInfo.pcRcmdDemoteItems` are
+    fallbacks. The client keeps only known resource / module types and drops duplicates.
+  - Rows below: `/api/homepage/block/page` with `cursor = {offset: 0, blockCodeOrderList: [...]}`,
+    `extInfo = {abInfo: {"hp-new-homepageV3.1": "t3"}}`, `newStyle: true` returns the named
+    blocks, e.g. `HOMPAGE_BLOCK_VIP_RCMD`, `HOMEPAGE_BLOCK_RED_SIMILAR_SONG`,
+    `HOMEPAGE_BLOCK_STYLE_RCMD`, `HOMEPAGE_BLOCK_PLAYLIST_RCMD`. Radar rows:
+    `/api/pc/customize/block/page` (`CUSTOMIZE_PLAYLIST_MGC`, `CUSTOMIZE_PLAYLIST_OFFICIAL`).
+    `/api/pc/page/rcmd/resource/show` (`pageCode: PC_RECOMMEND_HOME`) gives the first screen
+    (daily mix, banners, podcasts, toplist).
+  - Other PC endpoints seen in the bundle: `/api/pc/page/rcmd/block/resource/refresh`,
+    `/api/homepage/category/daily/song/list`, `/api/tag/tab/fm/recommends`,
+    `/api/content/scene/fm/play/list`, `/api/radio/trash/add`.
+- NetEase radio: `/personal_fm` and `/personal/fm/mode` (`DEFAULT`, `FAMILIAR`, `EXPLORE`, `aidj`,
+  `SCENE_RCMD` + `submode`) return 3 songs per call, endless, each with `alg` and sometimes a
+  `reason`. "Recommend less" is `/fm_trash` (exists in api-enhanced 4.41.1, not called: it changes
+  the account's recommendations). Heartbeat `/playmode/intelligence/list?id=<seed>&pid=<liked list>`
+  returns ~150 songs (`songInfo`) at once.
+- Apple, `/v1/me/recommendations?name=listen-now&platform=web&timezone=...&with=friendsMix,library,social`
+  (without `platform` it answers 400): the Home shelves, each `personal-recommendation` with a
+  title, `display.kind` (`MusicNotesHeroShelf` for the large cards, `MusicCoverShelf`) and contents
+  (albums, playlists, library playlists, stations, editorial items). Seen: Top Picks, Recently
+  Played, genre and decade shelves, Find Your Mood (mood stations), Stations for You, Playlists
+  Made for You, New Releases for You, More Like X, X Fans Like, Favorite Artists (artist
+  stations), Replay, Concerts (skip). The top cards are the first shelf (Top Picks,
+  `MusicNotesHeroShelf`, decoration `explanation`), dynamic: each item's `meta.reason` is the
+  small label ("We Recommend", "Made By You", "Mood for You", "Featuring CIEL", "New Release"),
+  `meta.subtitle` / `editorialNotes.short` the line under the title, `meta.editorialCard`
+  ("vcard" or an "emc." editorial card) the card style, `artwork.bgColor` / `textColor1-4` the
+  colours. `/v1/me/recent/played` and `/v1/me/recent/radio-stations`
+  work. `/v1/editorial/...` (Browse) is outside the bridge's allowlist.
+- Apple radio: `POST /v1/me/stations/next-tracks/{id}?limit=n` returns catalog songs for user
+  (`ra.u-`), artist (`ra.a-`, `ra.<artist>`), mood / query (`ra.q-`) and discovery stations.
+  Live stations (`isLive`, e.g. Apple Music Hits) and radio show episodes are HLS streams: skip.
+  "Suggest less" would be a song rating of -1 under `/v1/me/ratings/` (not called).
+
+## Download marks and smaller fixes (2026-11-15, later); owner checks pending, uncommitted
+
+- Download marks redrawn after Apple Music (round strokes, a fading plate under the mouse; the
+  offer an Aero glass ball fading in with the row); the Downloaded tab shows covers and the
+  playing marker; the Downloads navigation arrow is a vector redraw of wmploc 45221; the search
+  box's cross is WMP 12's clear button with its hot and pressed plates (clears on release).
+- Artist page Tiles -> Icons at the top: the rebuild restored the old layout's first-row offset
+  (`ScrollPosition::atTop` now brings it back at the top).
+
+## NetEase title notes (2026-11-15); owner checks pending, uncommitted
+
+- NetEase's grey note after a title (its `alia`, else `tns`; older endpoints `alias` /
+  `transNames`) is `stream::Track::note` / `netease::Song::note`. Song lists draw it after the
+  title as "(note)" in `#8C8C8C` where the title leaves room (`ListSource::CellNote`); the list's
+  search matches it. Titles stay the title alone everywhere else: file names and tags of downloads,
+  sorting, lyrics searches, now playing, matching.
+- Formats: the NetEase catalog file has a fifteenth field (lines of the old 14-field format are
+  dropped and fetched again); list cache pages are schema 5 (older pages read as misses).
+
+## Downloads (2026-11-15); owner checks pending, uncommitted
+
+- Follow-ups the same day: the band's "Play all" is "Play", its text no longer sits low (the
+  layout already centres vertically); local album and playlist pages have Play on the command bar
+  (plays the list as shown); a search page's breadcrumb is "Search results (term)" like the pages
+  opened from it; a page switched to another layout while at the top stays at the top (the first
+  row's offset from the old layout's header left a sliver); shelf arrows show the pressed plate
+  (849 state 3) while held and page on release.
+
+- Generic: a source with `Capability::Download` implements `Provider::ResolveDownload` (worker
+  thread): the file's extension and format, its tags (title, artists, album, album artist, disc,
+  number, date, genres, cover URL) and a `link(renew)` giving the HTTP address and headers (renew:
+  the old link expired). Nothing else is source-specific.
+- Engine: aria2 1.37.0 (`download/aria2.h`), the official 64-bit Windows build, downloaded on
+  first use into `<profile>\glasswave\aria2` and `aria2c.exe` extracted with miniz (no hash: a
+  newer aria2c.exe or release simply replaces it); it runs in a kill-on-close job with JSON-RPC on 127.0.0.1 and
+  a random secret, and stops with foobar2000. Each song is split over "Connections per song"
+  (1-16, default 8); "Songs downloaded at once" (1-10, default 3). An aria2 error renews the link
+  and continues from its control file (three times). When aria2 cannot be installed or started,
+  the song fails with the reason; the next download command (Download, Start, Retry) tries again. Options and
+  RPC calls were checked against the real aria2c 1.37.0 (getVersion, addUri with 8 connections,
+  a header, out/dir, tellStatus, shutdown). NetEase implements it at its own "Download quality" setting (a preview clip
+  is refused, an expired link is renewed at the same level and refused if the file changed).
+  Apple Music does not offer it (its audio is DRM-protected; decrypted exports are not built).
+- `download/downloads.h`: a queue, files written as `<file>.part` and resumed
+  from their size (pause, failure, restart), renamed when complete, then tagged and given the
+  front cover through foobar2000's own writers. The list lives in
+  `<profile>\glasswave\downloads.txt` (unfinished songs continue at the next start). Names follow
+  Preferences > Downloads: the folder (default `<Music>\Glasswave`), Title / Artist - Title /
+  Title - Artist, and no folders / by artist / by artist and album; a name in use gets " (2)".
+- Playback: the NetEase input plays a downloaded song from its file while the file exists, and
+  reads its tags when the catalog has not seen the song this run.
+- UI: All Music > Downloads (`ui/downloads_page.h`), tabs Downloading (Windows 7's progress bar,
+  aero 648 / 656 / 658 / 657, status with percent and speed, size) and Downloaded (format, size,
+  date, folder); Pause all / Start all or Open download folder at the command bar's right; menus
+  to start, pause, retry, cancel, open the file's location, remove or recycle the file. Song menus
+  offer Download and Save as... (one song) or Download to... (several); album and playlist tile
+  menus Download and Download to...; album and playlist pages Download all beside Collect.
+- Lyrics (Preferences > Downloads > Lyrics in downloaded files: don't save / embed / a same-name
+  .lrc beside the file / both; default embed): the lyrics the lyrics panel shows for the song (the
+  owner's selection, else the automatic answer, `lyrics::Service::Lookup`, which does not disturb
+  the panel's request), as found, with the song's offset as [offset:]. Embedded through
+  foobar2000's tag updater (MP3: UNSYNCED LYRICS, i.e. USLT; others: LYRICS). Another selection,
+  "no lyrics", automatic again, a new search or another offset (`Service::SubscribeChanges`)
+  rewrites the song's downloaded files 1.5 s after the last change; a new setting rewrites every
+  downloaded file; deleting a file recycles its .lrc too.
+- Song lists of a downloading source (and mixed search results) have a Download column before
+  the length: downloaded songs show a grey round mark (a click asks to remove the download and
+  recycles the file), downloading ones a progress ring, other songs a blue mark on the hovered row
+  (a click downloads). Downloaded tab: the songs' own menu (View album, Go to artist, Song info,
+  playlists) with Open file location / Remove from list / Delete file, and a Source column.
+  Running bars carry Windows 7's moving glow.
+- Owner checks: a song, an album and a playlist downloaded; pause / resume / restart in the
+  middle; names and folders of each setting; Save as...; playback from the file (also after the
+  file is deleted: it streams again); the progress bar's look.
+
+## Unified search (2026-11-15); owner checks pending, uncommitted
+
+- NetEase search API (`netease/client.h`): songs, albums, artists, playlists and lyrics
+  (`/cloudsearch` types 1, 10, 100, 1000, 1006), best matches (`/search/multimatch`, empty
+  when not signed in) and suggestions (`/search/suggest`, mobile completions plus top items).
+  The provider now offers `CatalogSearch` and `SearchSuggestions`; `ListKind::CatalogSearchLyrics`
+  is new, its tracks carry `lyricMatch` (the matched line and two after it) and `lyricText`.
+- One set of terms for every source: All results / Top results / Songs / Artists / Albums /
+  Playlists / Lyrics, in the app's WMP wording (歌曲, 艺术家, 唱片集, 播放列表).
+- Search box scopes (`ui/search_scope.h`): Current list (the old filter, default), All sources
+  (the local library and each provider), Local Music, each provider. Shown as a blue
+  "网易云音乐:" token, Backspace in an empty box removes it, the cross clears text then scope.
+  History of the last 20 searches (`cfg_searchHistory`), clearable from the drop-down.
+- Drop-down (`ui/search_popup.h`): history when empty, suggestions while typing (200 ms pause;
+  the current list's titles/artists/albums in the list scope; the library's names plus each
+  provider's terms and top items otherwise), the scope links in its footer. Up/Down/Enter/Esc.
+- Search page (`ui/search_page.h`, `View::Kind::Search`, replaces RemoteSearch and the
+  "Search ..." prompt): WMC text tabs over the list; All results groups Top results, Artists,
+  Albums, Songs, Playlists with "Show all (N)" opening the tab. Several sources mix by rank,
+  songs with a Source column, covers with a source badge. Lyrics tab: a Lyrics column and
+  "Copy lyrics" on one selected song; shown only where a source can search lyrics (NetEase).
+- Second round (owner feedback the same day): Show all crashed (the tab navigation destroyed
+  the list source inside its click; now deferred); history rows delete with aero's red cross;
+  glass magnifier and cross; scope buttons as Explorer's filter buttons; the list area hides
+  without history; suggestions follow the IME's uncommitted text; the tab bar sits on the rule
+  and slides; source marks are the installed apps' own icons (`Provider::AppNames`); the
+  category tabs offer Expanded tile; the overview is shelves of song cards and covers paging
+  sideways (`RowGroup::carousel`, `TileStyle::Song`) with round-chevron arrows and "show all";
+  covers and song cards show a play button on hover (`ListSource::CanPlayTile/PlayTile`).
+- Third round: the scope buttons use Explorer's measured filter button, tighter, with a fade;
+  the tab bar slides on the compositor (Windows 8.1 curve); "show all" is a vector redraw of the
+  aero expand button; shelf arrows are tall, shown over the hovered shelf, plated on hover; source
+  marks fade with the play button; play buttons also on provider album / playlist tiles, the artist
+  overview, local album tiles and the local Playlists page.
+- Apple Music: a library-only album (l.gypM54e "Stargazer") had its library id mapped as its
+  catalog id and its page asked the catalog (404). Only all-digit ids go to the catalog now.
+- Fourth round: the drop-down's highlight leaves with the mouse; the search box edits like an
+  edit box (caret, selection, word moves, clipboard, mouse); "show all" is the expando button
+  (aero 693 - 701) in vectors; shelves slide on the compositor (Windows 8.1 curve); pages opened
+  from search results carry the search (`View::searchTerm`), and the breadcrumb shows "Search
+  results (term)" above them; "View album" / "Go to album" select and scroll to the song
+  (`View::select`); a double click on Expanded tile's album column plays only that album
+  (`ListSource::ActivateGroup`); "Search for album" in song and album menus searches every
+  source; Recently Played has Songs / Albums / Playlists tabs (`ui/recent_page.h`; playlists
+  played are kept in `media/recent_lists.h`); album and playlist pages show Play all in the band
+  and Collect at the command bar's right, Refresh left the bar; scroll positions keep the top
+  row's offset, so a restored page no longer hides the group header above its first row.
+- Not done: NetEase-style expanding lyric blocks under each song (needs variable-height list
+  rows); restoring a mixed/local search page after a restart (only provider searches restore);
+  Play all on
+  local album / playlist pages (they have no detail band).
+- Owner checks: drop-down look and keys, token, tabs, overview, mixed results and badges,
+  lyrics tab, suggestions of each scope, history clearing.
 
 ## Player and lyrics follow-ups (2026-11-14)
 
@@ -53,6 +634,161 @@ items below not yet checked by the owner:
   logs. Next spike: compare `sections.txt` / `pool-tags.txt` with `sections-after.txt` and the
   unattributed column. (14:06 the old watchdog stopped the player because a 2 GB test
   allocation of mine pushed commit to 85.0 %; not a fault of the player.)
+- 14:25 and 14:32 the watchdog stopped the player again with commit at 85.6 / 85.0 % and the
+  repository processes at 0.8 GB: ordinary fluctuation over an 83-85 % idle level, not a
+  leak. Stops now come at 95 %, or at 88 % while commit rises 4 GB within 10 s (the real
+  incidents rise 14-19 GB in seconds). Running since 14:34 in
+  `.local/tests/memory-watch-forensics-20261114-143451`.
+- Build 2021 BGM1 (uploaded MP3, `i.1YBNXgQSqJaz4dR`): Apple's library says 470.952 s, the
+  delivered audio is 235.435 s (ffprobe of the stream; the session declares 235.464 s). The
+  preview check added on 11-11 rejected it before it started, and the decoder's estimate kept
+  7:51 on the seek bar, so seeking past 3:55 failed. Now uploaded songs skip the preview
+  check, the input reports the session's length when the decoder disagrees, and the
+  delivered length is kept in `applemusic/cache/lengths.tsv` and replaces the library length
+  in the catalog, metadb and Apple lists. Lists restored from the list cache keep the old
+  length until they are read again. Owner check pending.
+- Library items Apple refuses to play (bridge 500 "webPlayback refused the library item";
+  owner: a region restriction) open as empty tracks and are logged as `playback_skipped`, so
+  playback moves on without an error. Meeting the same song again before anything plays, or
+  20 in a row, fails as before. Owner check pending.
+
+## Owner request batch (2026-11-14), third part; owner checks pending, uncommitted
+
+- CD drives: a drive found empty no longer reads itself again on every refresh of its page
+  (it showed "Reading the disc..." forever); a click on its row looks again.
+- Navigation pane: scrolling to the end leaves the last row whole (the 6 DIP top inset was
+  not counted).
+- A link to the page on screen (the playing song's artist while on that artist) does nothing;
+  Refresh still reloads (`m_forcePageRefresh`).
+- Taskbar thumbnail: every answer to DWM is one square bitmap with the cover fitted in it. The
+  art cache's 1x1 clear stand-in (a cover reloading) had been scaled to DWM's whole box, so
+  DWM took the window's shape for the frame and stretched the real cover into it.
+- Breadcrumb plates fade in (about 65 ms) and out (about 160 ms) like Explorer's.
+- Control bar: a title, artist, lyric line, stream format or output device cut short shows
+  whole in the tooltip (above it) after the hover delay.
+- Apple Music: Audio quality (High Quality AAC 256 / Lossless up to 24-bit 48 kHz / Hi-Res
+  Lossless up to 192 kHz), sent as the playback capabilities. The helper (glasswave.patch)
+  now honours `hiRes: false` by picking the best ALAC variant at or below 48 kHz (a master with
+  only hi-res keeps its best); pre-warmed sessions carry the best ALAC and are skipped for a
+  capped request. Helper rebuilt and promoted; Go tests pass.
+- NetEase artist pages: EPs and singles in their own groups when NetEase types them "EP" or
+  "Single"; "EP/Single" stays in Singles and EPs. Apple Music keeps its own sections.
+- The image cache logs a transport error's text and tries once more.
+- CDs: a MusicBrainz 503 (its rate limit) is asked again after 1.5 / 3 / 6 s, and a tagging
+  whose lookup failed tries again every 20 s (4 attempts); before, the cover lookup got the
+  answer and the tags were never written. Tracks the loader left without info (path as title,
+  0:00) are read once more on the worker. Verified here: the second disc was tagged on start.
+
+## Opened files and audio CDs (2026-11-14); owner checks pending, uncommitted
+
+- A file opened from Explorer ("Open with"): foobar2000 replaces the active playlist (the
+  queue) with it and plays it. The queue then becomes every file foobar2000 reads in that
+  folder (not its subfolders), the opened song playing on without a restart
+  (`PlaybackScheduler::AdoptPlaying`, media/outside_play.cpp). foobar2000 hands plain file
+  arguments to no component, so this watches for the single foreign song in the queue.
+- Audio CDs (cd/): every CD drive has a row under Local Music > Discs (WMP's audio-CD icon,
+  wmploc 29560), named after the disc's album once read. With "When an audio CD is inserted:
+  Read it at once" (Preferences > Glasswave > Audio CDs, the default) a disc is read on
+  insertion; otherwise only when its row is opened, or when File > Open audio CD plays it.
+  The drive is read as a folder (`cdda://<id>,<nn>`) through `playlist_loader` on a worker,
+  so foobar2000's progress dialog never shows. No playlist, no autoplay; playing a row makes
+  the queue the disc; right-click offers Play and Eject. File > Open audio CD still works:
+  its playlist is taken over by the queue and removed.
+- Discs are identified on MusicBrainz by disc id (or the TOC when not submitted) and tagged
+  (title, artists, album, date, disc, MusicBrainz ids) through `metadb_io_v2`; the cover is
+  the release's Cover Art Archive front, cached under the disc. foobar2000 names untagged
+  tracks "CD Track 01", so "tagged" means having an album; lyrics wait for that.
+- A disc taken out leaves the queue (playback stops if it was playing), and its songs leave
+  Recently Played / Most Played (refreshed if on screen) / the pane's history until it is
+  back (counts are kept).
+- The image cache logs a transport error's text and tries once more: the CD's 1200 px cover
+  failed twice (archive.org redirects are slow at times), leaving the 500 px one stretched in
+  full screen. This disc's original on the Cover Art Archive is 1280 px.
+- Verified here: the disc in G: was identified and its 25 tracks tagged. Not verified: the
+  pane, the setting, the cover in full screen, lyrics, eject handling, Explorer folder
+  expansion.
+
+## Owner request batch (2026-11-14), first part; all owner checks pending
+
+- NetEase playlists show `trackNumberUpdateTime` (songs added or removed) as "Updated";
+  `trackUpdateTime` also moves when NetEase changes any listed song on its side.
+- NetEase song tables have a Popularity column (`pop`, 0-100) drawn as a bar
+  (`Capability::TrackPopularity`; its own saved column layout).
+- The search box filters the view only: activating a row plays the whole list from it.
+- The search box draws the IME composition in place; the candidate list sits under the box.
+- A list's loading band pushes the rows down instead of scrolling them under it.
+- Taskbar thumbnail: the playing song's cover (iconic bitmap), the window on Aero Peek.
+- Full screen: no shadow frame (its corners showed as rounded lines); the chrome layers fade
+  ahead of a shorter drift toward their edges.
+- One song's menu offers "Save album art..." (the provider's original: Apple 9999 px PNG,
+  capped by Apple at the upload's size; NetEase without `param`). The playing song's cover and
+  title open its menu without the play / queue commands. Covers drawn above 1200 px use the
+  original rendition.
+- Second part (same day, owner checks pending):
+  - Taskbar thumbnail: answered at once with a clear square while the cover loads (DWM sized
+    the first frame from the window and stretched the cover into it).
+  - Compact mini player (narrower than 344 DIP, down to 250): square client, the cover fills
+    it; title on a shade at its top and only stop / previous / play / next / volume at its
+    foot, both with the pointer; growing, the margin opens first (the cover's glass edge and
+    shadow fading in with it), then the cover grows. The old cover-only state is gone; the
+    song's lines no longer stay behind.
+  - Mini / full screen: right click on title, artist or album opens the song's menu; on the
+    time, the lyrics menu.
+  - Column layouts are kept per provider and kind of list (`stream-<provider>-<kind>`); the
+    Popularity column is offered on every NetEase list, on by default on albums only.
+  - Artist / saved-album pages in the expanded (tile) view load one album's songs at a time,
+    only as the list nears its end (or for sort, filter, play all), 600 ms apart; the band
+    shows only while something loads.
+  - Preferences > Window color: Win7's 16 colours (from its `themecpl.dll`) or the playing
+    cover's, and Win7's intensity slider mapped as themecpl does (visual-spec.md); colour
+    changes cross-fade. The lyrics pane takes the cover's colour under its shade.
+  - `scripts/build.ps1` caps parallel compilers by free commit: on 2026-11-14 at 14:52 a
+    32-compiler build took system commit from 85 % to 99.8 % and the memory watchdog
+    (correctly) stopped the dev instance.
+  - Old column layouts under `stream-songs*` are no longer read.
+- Third part (same day, owner checks pending):
+  - The list keeps its anchor row at the same distance from the top across a change (it
+    was put at the very top, hiding the album header above it on every load).
+  - Apple Music artist lists (albums, top songs, playlists) are persisted like the others;
+    the expanded view's 600 ms gap counts only after reads from the service.
+  - A double click in the expanded artist view plays that album only, at once.
+  - Narrowest library window with a lyric line: the artist leaves the title's row.
+  - Mini window restored from full screen: a pane opened there closes when the window is
+    lower than the pane's height or compact.
+  - Full-screen pane card: glass laps the rim by a device pixel (pale corner arcs); rim
+    `#2F64B4` at 36 %.
+  - Collapsed artist description: blank lines closed, last line ellipsized, Show more inline.
+  - Select lyrics > No lyrics (kept as a selection, `[glasswave-none:1]`).
+  - The full-screen chrome does not hide (nor the pointer) while a menu is open.
+- Artist page overview (same day, owner check pending): the icon view of an artist page is
+  now one group per artist section of the source (docs/architecture.md, "Streaming
+  providers"), one row of tiles each and "Show all (N)" opening the group in place.
+  Apple Music: latest release, hot songs, albums, singles and EPs, live, compilations,
+  appears on, artist playlists, similar artists (`/view/latest-release`,
+  `/view/similar-artists` added). NetEase: latest release and the album parts derived from
+  its album list's types, hot songs, similar artists (`/simi/artist`, signed in). The
+  ListView draws icon tiles in groups (header lines among tile rows). Not verified against
+  the services yet: the two new Apple views and NetEase's similar artists.
+- Follow-ups (same day): Show more sits on the description's last line (its top from the
+  line metrics; the caret's y was a line low); tile columns share the row's spare width and
+  respread on resize; text cut short in tiles and cells shows whole in the Win7 tooltip;
+  the full-screen card's rim takes OVERLAYS.OUTLINE's ~3 px corner (a 6 DIP rim left a pale
+  crescent of the outline's white plate in each corner).
+- Later still: the collapsed description's third line was not drawn (three lines of 16.004
+  DIP in a 48 DIP box; DirectWrite drops a line that does not fit), so Show more seemed to
+  stand alone; Apple's `latest-release` view answers `limit` with HTTP 400 and is now
+  requested without it; the expanded artist view keeps one loading band from the first
+  album read from the service until the screen is full (it came and went per album).
+- Covers that stayed away until a restart: NetEase album covers whose address the catalog
+  did not know (albums seen only through their songs) failed for good; the album's own
+  record is now read for it, as a song's details are for a song (verified in the log: the
+  failing albums load after one `/album` request). The cover cache gives a delivered picture
+  to the same cover's other sizes that have none, and tells the views when a failed
+  picture's retry pause ends (a view asked once never asked again). The NetEase cover
+  failure log line now says which cover and why.
+- Page header: an artist's counts survive the profile read after the album list (the stats
+  line showed, then vanished); without a stats line the facts close up under the name.
+- Next: owner checks of this batch; commits per logical change once approved.
 
 ## Backend review: caches, lists, requests, provider model (2026-11-13)
 
