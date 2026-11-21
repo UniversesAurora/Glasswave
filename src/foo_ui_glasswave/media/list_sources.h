@@ -112,6 +112,9 @@ struct CardInfo {
 class ListSource {
 public:
     virtual ~ListSource() = default;
+    // Never reused, unlike the object's address: what outlives a source and later asks
+    // whether the list on screen is still the one it began with compares this.
+    uint64_t Id() const { return m_id; }
 
     virtual const std::vector<Column>& Columns() const = 0;
     // Extra discriminator for the saved column layout (provider-specific column sets).
@@ -203,6 +206,11 @@ public:
     void SetLoadingText(std::wstring text) { m_loadingText = std::move(text); }
 
 private:
+    static uint64_t NextId() {
+        static uint64_t last = 0;
+        return ++last;
+    }
+    const uint64_t m_id = NextId();
     std::wstring m_loadingText;
 };
 

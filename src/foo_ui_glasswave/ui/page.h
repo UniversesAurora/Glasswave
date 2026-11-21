@@ -1,10 +1,13 @@
 #pragma once
 
 #include "media/list_sources.h"
+#include "ui/i18n.h"
 #include "ui/main_menu.h"
 #include "ui/view.h"
 
+#include <functional>
 #include <memory>
+#include <utility>
 
 // Pages whose content arrives asynchronously (a streaming provider's library, the combined
 // favorites). A page owns its loading state; the window owns at most one page, the one on
@@ -78,6 +81,45 @@ protected:
     ~PageHost() = default;
 };
 
+// "Loading..." on the list showing when some work began (reading a whole list to play it),
+// given back when the work ends if that same list is still showing it. The list is known by
+// its id, not its address, and the text taken back is the one put there, so a source made
+// in between (at the same address, or in another language) is left alone.
+class LoadingBadge {
+public:
+    LoadingBadge() = default;
+    LoadingBadge(const LoadingBadge&) = delete;
+    LoadingBadge& operator=(const LoadingBadge&) = delete;
+    ~LoadingBadge() { End(); }
+
+    void Begin(PageHost& host, media::ListSource* source) {
+        End();
+        if (!source) return;
+        m_host = &host;
+        m_alive = host.Lifetime();
+        m_id = source->Id();
+        m_previous = source->LoadingText();
+        m_text = Tr(L"Loading...");
+        source->SetLoadingText(m_text);
+        host.ListChanged();
+    }
+    void End() {
+        if (!m_host) return;
+        PageHost* host = std::exchange(m_host, nullptr);
+        if (m_alive.expired()) return;
+        auto* source = host->Source();
+        if (!source || source->Id() != m_id || source->LoadingText() != m_text) return;
+        source->SetLoadingText(std::move(m_previous));
+        host->ListChanged();
+    }
+
+private:
+    PageHost* m_host = nullptr;
+    std::weak_ptr<int> m_alive;
+    uint64_t m_id = 0;
+    std::wstring m_previous, m_text;
+};
+
 class Page {
 public:
     virtual ~Page() = default;
@@ -128,6 +170,12 @@ protected:
         };
     }
     std::weak_ptr<int> LifetimeToken() const { return m_alive; }
+    // A provider is allowed to complete from its cache synchronously. Run requests after
+    // Start() has returned so a completed result cannot be overwritten by its placeholder.
+    void AfterStart(std::function<void()> request) {
+        auto guarded = Guard(std::move(request));
+        fb2k::inMainThread([request = std::move(guarded)]() mutable { request(); });
+    }
 
     PageHost& m_host;
     View m_view;

@@ -268,9 +268,8 @@ struct AllSongsRequest {
     std::wstring name;                  // the list's name, set before `ready` runs
     std::shared_ptr<stream::ListSession> session;
     PageHost* host = nullptr;
-    media::ListSource* source = nullptr;
+    LoadingBadge badge;                 // "Loading..." on the list showing when the read began
     std::weak_ptr<int> alive;
-    std::wstring previousStatus;
     bool active = false;
     bool settling = false;              // a look at the settled state is queued
 };
@@ -312,22 +311,11 @@ void CancelSongsRequests(std::wstring_view provider) {
 
 void BeginAllSongs(const std::shared_ptr<AllSongsRequest>& request) {
     if (!request->host || request->alive.expired()) return;
-    request->source = request->host->Source();
-    if (!request->source) return;
-    request->previousStatus = request->source->LoadingText();
-    request->source->SetLoadingText(Tr(L"Loading..."));
-    request->host->ListChanged();
+    request->badge.Begin(*request->host, request->host->Source());
 }
 
 void EndAllSongs(const std::shared_ptr<AllSongsRequest>& request) {
-    if (!request->host || !request->source || request->alive.expired()) return;
-    if (request->host->Source() == request->source) {
-        if (request->source->LoadingText() == Tr(L"Loading...")) {
-            request->source->SetLoadingText(request->previousStatus);
-            request->host->ListChanged();
-        }
-    }
-    request->source = nullptr;
+    request->badge.End();
 }
 
 // A whole list is taken once its read has settled. The read is shared with the list's page, so
@@ -431,7 +419,7 @@ class PagedPlaybackFeed final {
   public:
     static bool Start(stream::Provider& provider, stream::ListQuery query,
                       const std::vector<stream::Track>& prefix, size_t prefixCount, size_t start,
-                      PageHost& host, std::weak_ptr<int> pageAlive, media::ListSource* statusSource) {
+                      PageHost& host, media::ListSource* statusSource) {
         auto* scheduler = media::PlaybackScheduler::Existing();
         prefixCount = std::min(prefixCount, prefix.size());
         if (!scheduler || prefixCount == 0 || start >= prefixCount) return false;
@@ -446,7 +434,7 @@ class PagedPlaybackFeed final {
         if (!scheduler || scheduler->ContentGeneration() == previousGeneration) return false;
         auto feed = std::shared_ptr<PagedPlaybackFeed>(
             new PagedPlaybackFeed(provider, std::move(query), std::move(fedIds),
-                                  scheduler->ContentGeneration(), host, std::move(pageAlive), statusSource));
+                                  scheduler->ContentGeneration(), host, statusSource));
         Active().push_back(feed);
         feed->m_session = stream::ListSession::Open(
             provider, feed->m_query,
@@ -472,15 +460,10 @@ class PagedPlaybackFeed final {
 
   private:
     PagedPlaybackFeed(stream::Provider& provider, stream::ListQuery query, std::vector<std::wstring> fedIds,
-                      uint64_t generation, PageHost& host, std::weak_ptr<int> pageAlive,
-                      media::ListSource* statusSource)
+                      uint64_t generation, PageHost& host, media::ListSource* statusSource)
         : m_provider(provider), m_query(std::move(query)), m_fedIds(std::move(fedIds)), m_host(&host),
-          m_pageAlive(std::move(pageAlive)), m_statusSource(statusSource), m_generation(generation) {
-        if (m_statusSource) {
-            m_previousStatus = m_statusSource->LoadingText();
-            m_statusSource->SetLoadingText(Tr(L"Loading..."));
-            m_host->ListChanged();
-        }
+          m_generation(generation) {
+        m_badge.Begin(host, statusSource);
     }
 
     static std::vector<std::shared_ptr<PagedPlaybackFeed>>& Active() {
@@ -554,11 +537,7 @@ class PagedPlaybackFeed final {
         m_finished = true;
         if (m_session) m_session->Cancel();
         std::erase_if(Active(), [this](const auto& feed) { return feed.get() == this; });
-        if (m_statusSource && !m_pageAlive.expired() && m_host->Source() == m_statusSource &&
-            m_statusSource->LoadingText() == Tr(L"Loading...")) {
-            m_statusSource->SetLoadingText(m_previousStatus);
-            m_host->ListChanged();
-        }
+        m_badge.End();
     }
 
     stream::Provider& m_provider;
@@ -567,9 +546,7 @@ class PagedPlaybackFeed final {
     std::vector<std::wstring> m_fedIds;
     uint64_t m_dataVersion = 0;
     PageHost* m_host = nullptr;
-    std::weak_ptr<int> m_pageAlive;
-    media::ListSource* m_statusSource = nullptr;
-    std::wstring m_previousStatus;
+    LoadingBadge m_badge; // "Loading..." on the list the play began from
     uint64_t m_generation = 0;
     bool m_hasPublication = false;
     bool m_finished = false;
@@ -702,13 +679,6 @@ class RemotePage : public Page {
         if (m_provider.AccountVerified()) return true;
         if (!m_provider.SessionRestoring()) m_provider.SignIn(m_host.Owner());
         return false;
-    }
-
-    // A provider is allowed to complete from its cache synchronously. Run requests after
-    // Start() has returned so a completed result cannot be overwritten by its placeholder.
-    void AfterStart(std::function<void()> request) {
-        auto guarded = Guard(std::move(request));
-        fb2k::inMainThread([request = std::move(guarded)]() mutable { request(); });
     }
 
     RemoteSongSource* SongSource() const { return dynamic_cast<RemoteSongSource*>(m_host.Source()); }
@@ -876,7 +846,7 @@ class PagedPage : public RemotePage {
                                          ? std::min(CurrentListState().metadataReadyRows, tracks.size())
                                          : tracks.size();
             if (row < published && MatchesPublishedPrefix(*source, m_provider, tracks, published) &&
-                PagedPlaybackFeed::Start(m_provider, m_query, tracks, published, row, m_host, LifetimeToken(),
+                PagedPlaybackFeed::Start(m_provider, m_query, tracks, published, row, m_host,
                                          source))
                 return;
         }
@@ -2591,16 +2561,18 @@ class SongPage final : public Page {
         : Page(host, std::move(view)), m_provider(provider) {}
 
     std::unique_ptr<media::ListSource> Start(bool) override {
-        m_provider.FetchSongDetails(m_view.remoteId, Guard([this](stream::SongDetails details, std::wstring error) {
-                                        m_error = std::move(error);
-                                        if (m_error.empty()) {
-                                            m_details = std::move(details);
-                                            if (!m_details->track.title.empty())
-                                                m_host.SetPageName(m_details->track.title);
-                                        }
-                                        m_host.ShowSource(Source());
-                                        m_host.ChromeChanged();
-                                    }));
+        AfterStart([this] {
+            m_provider.FetchSongDetails(m_view.remoteId, Guard([this](stream::SongDetails details, std::wstring error) {
+                                            m_error = std::move(error);
+                                            if (m_error.empty()) {
+                                                m_details = std::move(details);
+                                                if (!m_details->track.title.empty())
+                                                    m_host.SetPageName(m_details->track.title);
+                                            }
+                                            m_host.ShowSource(Source());
+                                            m_host.ChromeChanged();
+                                        }));
+        });
         return Source();
     }
 
