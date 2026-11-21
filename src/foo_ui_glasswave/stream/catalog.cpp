@@ -1,4 +1,5 @@
 #include "pch.h"
+#include "core/tsv.h"
 #include "stream/catalog.h"
 
 #include "core/file.h"
@@ -38,19 +39,6 @@ template <class T, class Text> std::string Pack(const std::vector<T>& values, Te
         out += Clean(text(values[i]));
     }
     return out;
-}
-
-std::vector<std::string_view> Split(std::string_view text, char separator) {
-    std::vector<std::string_view> values;
-    size_t start = 0;
-    while (start <= text.size()) {
-        const size_t end = text.find(separator, start);
-        values.push_back(
-            text.substr(start, end == std::string_view::npos ? std::string_view::npos : end - start));
-        if (end == std::string_view::npos) break;
-        start = end + 1;
-    }
-    return values;
 }
 
 int ToInt(std::string_view text) {
@@ -558,7 +546,7 @@ std::vector<CachedTrack> Catalog::ReadCache() const {
     std::vector<CachedTrack> loaded;
     size_t lines = 0;
     bool headerSeen = false;
-    for (const auto raw : Split(*bytes, '\n')) {
+    for (const auto raw : core::tsv::Split(*bytes, '\n')) {
         std::string_view line = raw;
         if (!line.empty() && line.back() == '\r') line.remove_suffix(1);
         if (++lines > kCacheLineLimit) return {};
@@ -569,7 +557,7 @@ std::vector<CachedTrack> Catalog::ReadCache() const {
             continue;
         }
         if (line.empty() || line[0] == '#') continue;
-        const auto fields = Split(line, '\t');
+        const auto fields = core::tsv::Split(line, '\t');
         if (fields.size() != kCacheFields) continue; // one current format; other lines are dropped
 
         CachedTrack song;
@@ -582,14 +570,14 @@ std::vector<CachedTrack> Catalog::ReadCache() const {
         track.note = Wide(fields[4]);
         track.album = Wide(fields[5]);
         track.albumId = Wide(fields[6]);
-        const auto names = Split(fields[7], kListSeparator);
-        const auto ids = Split(fields[8], kListSeparator);
+        const auto names = core::tsv::Split(fields[7], kListSeparator);
+        const auto ids = core::tsv::Split(fields[8], kListSeparator);
         for (size_t i = 0; i < names.size(); ++i) {
             const std::wstring name = Wide(names[i]);
             if (name.empty()) continue;
             track.artists.push_back({i < ids.size() ? Wide(ids[i]) : Id(), name});
         }
-        for (const auto badge : Split(fields[9], kListSeparator))
+        for (const auto badge : core::tsv::Split(fields[9], kListSeparator))
             if (!badge.empty()) track.badges.push_back(Wide(badge));
         song.cover = Wide(fields[10]);
         song.extra = Wide(fields[11]);

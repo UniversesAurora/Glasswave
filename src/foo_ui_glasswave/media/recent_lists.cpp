@@ -1,4 +1,5 @@
 #include "pch.h"
+#include "core/tsv.h"
 #include "media/recent_lists.h"
 #include "core/text.h"
 
@@ -12,44 +13,29 @@ namespace {
 
 constexpr size_t kLimit = 100;
 
-// One playlist per line: provider \t id \t name \t played.
+// One playlist per line: provider \t id \t name \t played (core/tsv.h).
 cfg_var_modern::cfg_string cfg_recentLists({0x8d3a51d3, 0x6e2f, 0x4b19, {0xa4, 0x7c, 0x1f, 0x5e, 0x9b, 0x2d, 0x7c, 0x40}},
                                            "");
 
-std::vector<std::wstring> Split(const std::wstring& line, wchar_t sep) {
-    std::vector<std::wstring> parts;
-    size_t start = 0;
-    while (true) {
-        const size_t end = line.find(sep, start);
-        parts.push_back(line.substr(start, end == std::wstring::npos ? std::wstring::npos : end - start));
-        if (end == std::wstring::npos) break;
-        start = end + 1;
-    }
-    return parts;
-}
-
-std::wstring Clean(std::wstring text) {
-    for (auto& c : text)
-        if (c == L'\t' || c == L'\n' || c == L'\r') c = L' ';
-    return text;
-}
-
 void Store(const std::vector<RecentList>& lists) {
-    std::wstring text;
+    const auto field = [](const std::wstring& text) { return core::tsv::Escape(core::Utf8(text)); };
+    std::string text;
     for (const auto& list : lists)
-        text += Clean(list.provider) + L'\t' + Clean(list.id) + L'\t' + Clean(list.name) + L'\t' +
-                std::to_wstring(list.played) + L'\n';
-    cfg_recentLists.set(core::Utf8(text).c_str());
+        text += field(list.provider) + '\t' + field(list.id) + '\t' + field(list.name) + '\t' +
+                std::to_string(list.played) + '\n';
+    cfg_recentLists.set(text.c_str());
 }
 
 } // namespace
 
 std::vector<RecentList> RecentLists() {
     std::vector<RecentList> lists;
-    for (const auto& line : Split(core::Wide(cfg_recentLists.get()), L'\n')) {
-        const auto parts = Split(line, L'\t');
+    const std::string text = cfg_recentLists.get().c_str();
+    const auto field = [](std::string_view value) { return core::Wide(core::tsv::Unescape(value)); };
+    for (const auto line : core::tsv::Split(text, '\n')) {
+        const auto parts = core::tsv::Split(line);
         if (parts.size() < 4 || parts[1].empty()) continue;
-        lists.push_back({parts[0], parts[1], parts[2], _wtoi64(parts[3].c_str())});
+        lists.push_back({field(parts[0]), field(parts[1]), field(parts[2]), _strtoi64(std::string(parts[3]).c_str(), nullptr, 10)});
     }
     return lists;
 }

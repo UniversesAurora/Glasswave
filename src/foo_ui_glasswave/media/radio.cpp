@@ -1,4 +1,5 @@
 #include "pch.h"
+#include "core/tsv.h"
 #include "media/radio.h"
 #include "core/signal.h"
 #include "core/text.h"
@@ -195,26 +196,13 @@ void ListenToSchedule();
 void Restore() {
     const std::string text = cfg_station.get().c_str();
     if (text.empty() || g_state.active) return;
-    std::vector<std::string> fields;
-    size_t start = 0;
-    for (int i = 0; i < 3; ++i) {
-        const size_t end = text.find(kField, start);
-        if (end == std::string::npos) break;
-        fields.push_back(text.substr(start, end - start));
-        start = end + 1;
-    }
-    const std::string paths = start <= text.size() ? text.substr(start) : std::string();
-    stream::Provider* provider = fields.size() == 3 ? stream::FindProvider(Wide(fields[0])) : nullptr;
+    const auto fields = core::tsv::Split(text, kField); // provider, station, name, paths
+    const std::string_view paths = fields.size() == 4 ? fields[3] : std::string_view();
+    stream::Provider* provider = fields.size() == 4 ? stream::FindProvider(Wide(std::string(fields[0]))) : nullptr;
     const t_size queue = QueuePlaylist(false);
     metadb_handle_list items;
     if (queue != SIZE_MAX) playlist_manager::get()->playlist_get_all_items(queue, items);
-    std::vector<std::string> expected;
-    for (size_t at = 0; !paths.empty();) {
-        const size_t end = paths.find(kItem, at);
-        expected.push_back(paths.substr(at, end == std::string::npos ? std::string::npos : end - at));
-        if (end == std::string::npos) break;
-        at = end + 1;
-    }
+    const auto expected = paths.empty() ? std::vector<std::string_view>() : core::tsv::Split(paths, kItem);
     bool same = provider && !expected.empty() && expected.size() == items.get_count();
     for (size_t i = 0; same && i < expected.size(); ++i) same = expected[i] == items[i]->get_path();
     if (!same) {

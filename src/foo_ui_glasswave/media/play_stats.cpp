@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "media/play_stats.h"
+#include "core/tsv.h"
 #include "core/log.h"
 #include "core/file.h"
 #include "core/text.h"
@@ -24,44 +25,6 @@ size_t MaxRecords() { return static_cast<size_t>(settings::PlayHistoryLimit()); 
 std::filesystem::path StatsFile() {
     const auto root = core::ProfileRoot();
     return root.empty() ? root : root / L"play-stats.txt";
-}
-
-std::string Escape(std::string_view text) {
-    std::string out;
-    out.reserve(text.size());
-    for (const char c : text) {
-        switch (c) {
-        case '%': out += "%25"; break;
-        case '\t': out += "%09"; break;
-        case '\n': out += "%0A"; break;
-        case '\r': out += "%0D"; break;
-        default: out += c; break;
-        }
-    }
-    return out;
-}
-
-std::string Unescape(std::string_view text) {
-    auto hex = [](char c) -> int {
-        if (c >= '0' && c <= '9') return c - '0';
-        if (c >= 'A' && c <= 'F') return c - 'A' + 10;
-        if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-        return -1;
-    };
-    std::string out;
-    out.reserve(text.size());
-    for (size_t i = 0; i < text.size(); ++i) {
-        if (text[i] == '%' && i + 2 < text.size()) {
-            const int hi = hex(text[i + 1]), lo = hex(text[i + 2]);
-            if (hi >= 0 && lo >= 0) {
-                out += static_cast<char>(hi * 16 + lo);
-                i += 2;
-                continue;
-            }
-        }
-        out += text[i];
-    }
-    return out;
 }
 
 using core::Utf8;
@@ -119,16 +82,9 @@ void PlayStats::Load() {
     std::string line;
     if (!std::getline(in, line) || line != kHeader) return;  // another format: start over
     while (std::getline(in, line)) {
-        std::vector<std::string_view> fields;
-        size_t start = 0;
-        while (true) {
-            const size_t tab = line.find('\t', start);
-            fields.emplace_back(line.data() + start, (tab == std::string::npos ? line.size() : tab) - start);
-            if (tab == std::string::npos) break;
-            start = tab + 1;
-        }
+        const auto fields = core::tsv::Split(line);
         if (fields.size() < 13) continue;
-        auto text = [](std::string_view field) { return Wide(Unescape(field)); };
+        auto text = [](std::string_view field) { return Wide(core::tsv::Unescape(field)); };
         PlayRecord record;
         record.count = static_cast<uint32_t>(ToInt(fields[0]));
         record.lastPlayed = ToInt(fields[1]);
@@ -138,11 +94,11 @@ void PlayStats::Load() {
         record.artistId = text(fields[5]);
         record.subsong = static_cast<uint32_t>(ToInt(fields[6]));
         record.durationMs = static_cast<int>(ToInt(fields[7]));
-        record.key = Unescape(fields[8]);
-        record.path = Unescape(fields[9]);
-        record.title = Unescape(fields[10]);
-        record.artist = Unescape(fields[11]);
-        record.album = Unescape(fields[12]);
+        record.key = core::tsv::Unescape(fields[8]);
+        record.path = core::tsv::Unescape(fields[9]);
+        record.title = core::tsv::Unescape(fields[10]);
+        record.artist = core::tsv::Unescape(fields[11]);
+        record.album = core::tsv::Unescape(fields[12]);
         if (record.key.empty()) continue;
         m_records.push_back(std::move(record));
     }
@@ -154,14 +110,14 @@ void PlayStats::Save() const {
     const auto file = StatsFile();
     if (file.empty()) return;
     std::ostringstream out;
-    auto text = [](const std::wstring& value) { return Escape(Utf8(value)); };
+    auto text = [](const std::wstring& value) { return core::tsv::Escape(Utf8(value)); };
     out << kHeader << '\n';
     for (const auto& record : m_records) {
         out << record.count << '\t' << record.lastPlayed << '\t' << text(record.provider) << '\t'
             << text(record.trackId) << '\t' << text(record.albumId) << '\t' << text(record.artistId) << '\t'
-            << record.subsong << '\t' << record.durationMs << '\t' << Escape(record.key) << '\t'
-            << Escape(record.path) << '\t' << Escape(record.title) << '\t' << Escape(record.artist) << '\t'
-            << Escape(record.album) << '\n';
+            << record.subsong << '\t' << record.durationMs << '\t' << core::tsv::Escape(record.key) << '\t'
+            << core::tsv::Escape(record.path) << '\t' << core::tsv::Escape(record.title) << '\t' << core::tsv::Escape(record.artist) << '\t'
+            << core::tsv::Escape(record.album) << '\n';
     }
     try {
         core::WriteFileAtomic(file, out.str());

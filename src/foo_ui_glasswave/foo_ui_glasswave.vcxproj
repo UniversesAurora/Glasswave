@@ -308,6 +308,7 @@
     <ClCompile Include="ui\record_menu.cpp" />
     <ClCompile Include="media\playback_checkpoint.cpp" />
     <ClCompile Include="media\playback_core_queue.cpp" />
+    <ClCompile Include="core\tsv.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="cd\disc.h" />
@@ -463,6 +464,7 @@
     <ClInclude Include="ui\list_view_parts.h" />
     <ClInclude Include="ui\remote_pages_parts.h" />
     <ClInclude Include="media\playback_scheduler_impl.h" />
+    <ClInclude Include="core\tsv.h" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="$(SdkRoot)pfc\pfc.vcxproj">

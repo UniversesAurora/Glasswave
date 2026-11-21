@@ -4,6 +4,7 @@
 #include "core/log.h"
 #include "core/file.h"
 #include "core/text.h"
+#include "core/tsv.h"
 #include "core/paths.h"
 
 #include "download/aria2.h"
@@ -106,54 +107,6 @@ std::filesystem::path ListFile() {
     return root.empty() ? root : root / L"downloads.txt";
 }
 
-std::string Escape(const std::wstring& text) {
-    std::string out;
-    for (const char c : Utf8(text)) {
-        switch (c) {
-        case '%': out += "%25"; break;
-        case '\t': out += "%09"; break;
-        case '\n': out += "%0A"; break;
-        case '\r': out += "%0D"; break;
-        default: out += c; break;
-        }
-    }
-    return out;
-}
-
-std::wstring Unescape(std::string_view text) {
-    auto hex = [](char c) -> int {
-        if (c >= '0' && c <= '9') return c - '0';
-        if (c >= 'A' && c <= 'F') return c - 'A' + 10;
-        if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-        return -1;
-    };
-    std::string out;
-    for (size_t i = 0; i < text.size(); ++i) {
-        if (text[i] == '%' && i + 2 < text.size()) {
-            const int hi = hex(text[i + 1]), lo = hex(text[i + 2]);
-            if (hi >= 0 && lo >= 0) {
-                out += static_cast<char>(hi * 16 + lo);
-                i += 2;
-                continue;
-            }
-        }
-        out += text[i];
-    }
-    return Wide(out.c_str());
-}
-
-std::vector<std::string_view> SplitTabs(std::string_view line) {
-    std::vector<std::string_view> parts;
-    size_t start = 0;
-    while (true) {
-        const size_t end = line.find('\t', start);
-        parts.push_back(line.substr(start, end == std::string_view::npos ? std::string_view::npos : end - start));
-        if (end == std::string_view::npos) break;
-        start = end + 1;
-    }
-    return parts;
-}
-
 // One line per item: provider, track, title, artist, album, root, path, format, state,
 // received, size, added, finished, error. A song that was running is saved as waiting.
 void Save() {
@@ -165,10 +118,10 @@ void Save() {
             const State state = i.state == State::Running ? State::Waiting : i.state;
             for (const std::wstring* field : {&i.provider, &i.track, &i.title, &i.artist, &i.album, &i.root, &i.path,
                                               &i.format})
-                text += Escape(*field) + '\t';
+                text += core::tsv::Escape(Utf8(*field)) + '\t';
             text += std::to_string(static_cast<int>(state)) + '\t' + std::to_string(i.received) + '\t' +
                     std::to_string(i.size) + '\t' + std::to_string(i.added) + '\t' + std::to_string(i.finished) +
-                    '\t' + Escape(i.error) + '\n';
+                    '\t' + core::tsv::Escape(Utf8(i.error)) + '\n';
         }
     }
     const auto file = ListFile();
@@ -189,20 +142,20 @@ void Load() {
     if (!std::getline(in, line) || line != kHeader) return; // one current format; anything else starts empty
     std::lock_guard lock(g_mutex);
     while (std::getline(in, line)) {
-        const auto parts = SplitTabs(line);
+        const auto parts = core::tsv::Split(line);
         if (parts.size() < 14) continue;
         Entry e;
         Item& i = e.item;
         std::wstring* fields[] = {&i.provider, &i.track, &i.title, &i.artist, &i.album, &i.root, &i.path, &i.format};
         for (size_t f = 0; f < std::size(fields); ++f)
-            *fields[f] = Unescape(parts[f]);
+            *fields[f] = Wide(core::tsv::Unescape(parts[f]));
         const int state = std::atoi(std::string(parts[8]).c_str());
         i.state = state >= 0 && state <= static_cast<int>(State::Done) ? static_cast<State>(state) : State::Failed;
         i.received = std::strtoull(std::string(parts[9]).c_str(), nullptr, 10);
         i.size = std::strtoull(std::string(parts[10]).c_str(), nullptr, 10);
         i.added = std::strtoll(std::string(parts[11]).c_str(), nullptr, 10);
         i.finished = std::strtoll(std::string(parts[12]).c_str(), nullptr, 10);
-        i.error = Unescape(parts[13]);
+        i.error = Wide(core::tsv::Unescape(parts[13]));
         e.provider = stream::FindProvider(i.provider);
         if (!e.provider || i.track.empty()) continue;
         i.id = g_nextId++;
