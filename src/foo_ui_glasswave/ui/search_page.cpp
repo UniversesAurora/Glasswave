@@ -732,7 +732,7 @@ class SearchPage final : public Page {
     // library's offer the same commands on their songs.
     void Menu(POINT screen, const Result& item) {
         RecordMenuContext context;
-        context.page.push_back({L"Refresh", [this] { m_host.Refresh(); }});
+        context.page.push_back(RefreshAction(m_host));
         if (item.provider) {
             std::visit(
                 [&](const auto& v) {
@@ -765,7 +765,7 @@ class SearchPage final : public Page {
             actions.push_back({Tr(what) + L" \u201C" + name + L"\u201D", [this, name] { m_host.Search(name); }});
         }
         actions.push_back({});
-        actions.push_back({L"Refresh", [this] { m_host.Refresh(); }});
+        actions.push_back(RefreshAction(m_host));
         ShowActionMenu(m_host.Owner(), screen, actions);
     }
 

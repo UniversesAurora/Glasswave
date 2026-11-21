@@ -40,6 +40,12 @@ void ShowRemotePlaylistMenu(PageHost& host, stream::Provider& provider, const st
                             std::optional<stream::Shelf> shelf, const stream::Id& sectionId, POINT screen,
                             std::function<void(const stream::Id&)> onUnsaved = {});
 void CreateRemotePlaylist(PageHost& host, stream::Provider& provider);
+// The menus' "New <provider> playlist" (CreateRemotePlaylist).
+MenuAction NewPlaylistAction(PageHost& host, stream::Provider& provider);
+// Reads a provider's library again. Its pictures are revalidated once: they keep showing
+// while a conditional request confirms them, and a cover whose URL changed is invalidated by
+// the page that learns the new URL. Other sources' are left alone.
+void RefreshProviderLibrary(stream::Provider& provider);
 void RenameRemotePlaylist(PageHost& host, stream::Provider& provider, const stream::Id& id, std::wstring name);
 void DeleteRemotePlaylist(PageHost& host, stream::Provider& provider, const stream::Id& id, std::wstring name,
                           const stream::Id& sectionId = {});

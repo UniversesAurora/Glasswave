@@ -563,7 +563,7 @@ class HomePage final : public Page, public stream::Provider::Listener {
                 actions.push_back({L"Open in browser", [link = card.link] { OpenLink(link); }});
             }
             actions.push_back({});
-            actions.push_back({L"Refresh", [this] { m_host.Refresh(); }});
+            actions.push_back(RefreshAction(m_host));
             ShowActionMenu(m_host.Owner(), screen, actions);
             return;
         }
@@ -573,11 +573,11 @@ class HomePage final : public Page, public stream::Provider::Listener {
             ShowActionMenu(m_host.Owner(), screen,
                            {{L"Play station", [p, s = *station] { media::radio::Play(*p, s.id, s.name); }},
                             {},
-                            {L"Refresh", [this] { m_host.Refresh(); }}});
+                            RefreshAction(m_host)});
             return;
         }
         RecordMenuContext context;
-        context.page.push_back({L"Refresh", [this] { m_host.Refresh(); }});
+        context.page.push_back(RefreshAction(m_host));
         std::visit(
             [&](const auto& v) {
                 using T = std::decay_t<decltype(v)>;

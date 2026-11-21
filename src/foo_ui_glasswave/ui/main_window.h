@@ -170,6 +170,7 @@ class MainWindow : public PageHost, public PlayerHost {
     std::vector<MenuAction> AllSectionsMenu();
     std::vector<MenuAction> LocalSectionsMenu();
     bool LocalPlayShown() const;
+    MenuAction SearchProviderAction(stream::Provider& provider); // "Search <provider>"
     std::vector<MenuAction> ProviderSectionsMenu(stream::Provider& provider);
     std::vector<MenuAction> PlaylistListMenu(bool smart);
     std::vector<MenuAction> GroupListMenu(media::GroupKind kind);

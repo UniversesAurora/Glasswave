@@ -1463,8 +1463,7 @@ class ShelfPage final : public PagedPage {
 
     void AddPageSpecificActions(std::vector<MenuAction>& actions) override {
         if (m_view.shelf == Shelf::Created && m_provider.Can(stream::Capability::CreatePlaylists))
-            actions.push_back({m_provider.NamedText(L"New {0} playlist"),
-                               [this] { CreateRemotePlaylist(m_host, m_provider); }});
+            actions.push_back(NewPlaylistAction(m_host, m_provider));
     }
 
     void OnLibraryChanged() override {
@@ -1524,7 +1523,7 @@ class ArtistsPage final : public PagedPage {
                 RecordMenuContext context;
                 context.sectionId = m_view.sectionId;
                 context.removed = Guard([this](const stream::Id&) { m_host.Reload(); }); // unfollowed
-                context.page.push_back({L"Refresh", [this] { m_host.Refresh(); }});
+                context.page.push_back(RefreshAction(m_host));
                 ShowRecordMenu(m_host, m_provider, a, screen, context);
             });
     }
@@ -2065,7 +2064,7 @@ class ArtistPage final : public AlbumBrowsePage {
         context.sectionId = m_view.sectionId;
         AddPageActions(context.page);
         context.page.push_back({});
-        context.page.push_back({L"Refresh", [this] { m_host.Refresh(); }});
+        context.page.push_back(RefreshAction(m_host));
         if (album) {
             ShowRecordMenu(m_host, m_provider, *album, screen, context);
             return;
@@ -2115,7 +2114,7 @@ class SavedAlbumsPage final : public AlbumBrowsePage {
                 m_host.ListChanged();
             }
         });
-        context.page.push_back({L"Refresh", [this] { m_host.Refresh(); }});
+        context.page.push_back(RefreshAction(m_host));
         ShowRecordMenu(m_host, m_provider, album, screen, context);
     }
 };
@@ -2799,8 +2798,17 @@ void ShowRemotePlaylistMenu(PageHost& host, stream::Provider& provider, const st
     context.sectionId = sectionId;
     context.shelf = shelf;
     context.removed = std::move(onUnsaved);
-    if (shelf != Shelf::Recommended) context.page.push_back({L"Refresh", [&host] { host.Refresh(); }});
+    if (shelf != Shelf::Recommended) context.page.push_back(RefreshAction(host));
     ShowRecordMenu(host, provider, playlist, screen, context);
+}
+
+MenuAction NewPlaylistAction(PageHost& host, stream::Provider& provider) {
+    return {provider.NamedText(L"New {0} playlist"), [&host, &provider] { CreateRemotePlaylist(host, provider); }};
+}
+
+void RefreshProviderLibrary(stream::Provider& provider) {
+    ArtCache::Get().Invalidate(std::wstring(provider.Key()) + L":");
+    provider.RefreshLibrary();
 }
 
 void CreateRemotePlaylist(PageHost& host, stream::Provider& provider) {

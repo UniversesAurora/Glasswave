@@ -3722,15 +3722,17 @@ std::vector<MenuAction> MainWindow::LocalSectionsMenu() {
     return out;
 }
 
+MenuAction MainWindow::SearchProviderAction(stream::Provider& provider) {
+    return {provider.NamedText(L"Search {0}"),
+            [this, key = std::wstring(provider.Key())] { BeginSearch({SearchScope::Kind::Provider, key}); }};
+}
+
 std::vector<MenuAction> MainWindow::ProviderSectionsMenu(stream::Provider& provider) {
     auto go = [this](View v) { return [this, v] { Navigate(v, true); }; };
     std::vector<MenuAction> out;
     for (const auto& section : provider.Sections())
         if (!section.id.empty()) out.push_back({Tr(section.label), go(SectionView(provider, section))});
-    if (provider.Can(stream::Capability::CatalogSearch))
-        out.push_back({provider.NamedText(L"Search {0}"), [this, key = std::wstring(provider.Key())] {
-                           BeginSearch({SearchScope::Kind::Provider, key});
-                       }});
+    if (provider.Can(stream::Capability::CatalogSearch)) out.push_back(SearchProviderAction(provider));
     return out;
 }
 
@@ -5171,7 +5173,7 @@ void MainWindow::ShowPageContextMenu(POINT screen) {
     actions.push_back({});
     for (auto& action : page)
         actions.push_back(std::move(action));
-    if (CanRefreshPage()) actions.insert(actions.end(), {{}, {L"Refresh", [this] { RefreshCurrentPage(); }}});
+    if (CanRefreshPage()) actions.insert(actions.end(), {{}, RefreshAction(*this)});
 
     // No leading, trailing or doubled separators.
     std::vector<MenuAction> tidy;
@@ -5399,17 +5401,14 @@ void MainWindow::ShowRemoteNavMenu(const NavPane::Item& item, POINT screen) {
         return;
     default:
         if (item.target == NavPane::Target::LibraryRemote && provider.Can(stream::Capability::CatalogSearch))
-            actions.push_back({provider.NamedText(L"Search {0}"), [this, key = std::wstring(provider.Key())] {
-                                   BeginSearch({SearchScope::Kind::Provider, key});
-                               }});
+            actions.push_back(SearchProviderAction(provider));
         if (provider.Can(stream::Capability::CreatePlaylists) && provider.AccountVerified() &&
             FindProviderSection(provider, stream::SectionKind::PlaylistShelf, stream::Shelf::Created) &&
             (item.target == NavPane::Target::LibraryRemote ||
              (item.target == NavPane::Target::RemoteSection &&
               item.sectionKind == stream::SectionKind::PlaylistShelf &&
               item.sectionShelf == stream::Shelf::Created)))
-            actions.push_back({provider.NamedText(L"New {0} playlist"),
-                               [this, &provider] { CreateRemotePlaylist(*this, provider); }});
+            actions.push_back(NewPlaylistAction(*this, provider));
         if (item.target == NavPane::Target::LibraryRemote) {
             if (provider.AccountVerified())
                 actions.push_back({Tr(L"Sign out"), [&provider] { provider.SignOut(); }});
@@ -5418,8 +5417,7 @@ void MainWindow::ShowRemoteNavMenu(const NavPane::Item& item, POINT screen) {
         }
         if (provider.AccountVerified()) // re-read the right-clicked section, not just the page on screen
             actions.push_back({L"Refresh", [this, item] {
-                                   ArtCache::Get().Invalidate(std::wstring(item.provider->Key()) + L":");
-                                   item.provider->RefreshLibrary();
+                                   RefreshProviderLibrary(*item.provider);
                                    m_forcePageRefresh = true;
                                    OnNavItem(item);
                                }});
@@ -5431,15 +5429,11 @@ void MainWindow::ShowRemoteNavMenu(const NavPane::Item& item, POINT screen) {
 void MainWindow::RefreshCurrentPage() {
     if (!CanRefreshPage()) return;
     m_page->RefreshRequested();
-    // Only the refreshed source's pictures are revalidated, once: they keep showing while a
-    // conditional request confirms them, and a cover whose URL changed is invalidated by the
-    // page that learns the new URL. Local art and other sources are left alone.
-    if (auto* provider = ViewProvider()) {
-        ArtCache::Get().Invalidate(std::wstring(provider->Key()) + L":");
-        provider->RefreshLibrary();
-    } else {
+    // Only the refreshed source's pictures are revalidated (RefreshProviderLibrary).
+    if (auto* provider = ViewProvider())
+        RefreshProviderLibrary(*provider);
+    else
         ArtCache::Get().Invalidate(L"");
-    }
     m_forcePageRefresh = true;
     Navigate(m_view, false);
     if (m_list) m_list->Refresh();

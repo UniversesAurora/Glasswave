@@ -122,6 +122,11 @@ class LoadingBadge {
     std::wstring m_previous, m_text;
 };
 
+// The menus' "Refresh": the current page read again from its service.
+inline MenuAction RefreshAction(PageHost& host) {
+    return {L"Refresh", [&host] { host.Refresh(); }};
+}
+
 class SongTableSource;
 
 // "Read the whole list, then act" (play from a song, add or download them all) on a page whose
