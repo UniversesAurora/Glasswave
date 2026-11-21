@@ -3078,9 +3078,8 @@ std::wstring StreamProvider::AccountName() const {
 }
 
 bool StreamProvider::RequireSignedIn(std::wstring& error) const {
-    std::lock_guard lock(m_mutex);
-    if (m_account.signedIn) return true;
-    error = L"Please sign in to Apple Music.";
+    if (SignedIn()) return true;
+    error = SignInRequiredMessage();
     return false;
 }
 
@@ -5221,6 +5220,21 @@ void StreamProvider::FetchSongDetails(const stream::Id& track, SongDetailsDone d
     });
 }
 
+bool StreamProvider::NeedsAccount(const stream::ListQuery& query) const {
+    switch (query.kind) {
+    case stream::ListKind::PlaylistTracks:
+    case stream::ListKind::Favorites:
+    case stream::ListKind::AlbumTracks:
+    case stream::ListKind::SectionTracks:
+    case stream::ListKind::SavedAlbums:
+    case stream::ListKind::FollowedArtists:
+    case stream::ListKind::Playlists:
+        return true;
+    default:
+        return false;
+    }
+}
+
 std::string StreamProvider::ListCacheContext(const stream::ListQuery& query) const {
     (void)query;
     return AppleListCacheContext();
@@ -5345,7 +5359,6 @@ void StreamProvider::FetchListPage(const stream::ListQuery& sourceQuery, const s
     uint64_t preferenceEpoch = 0;
     stream::Id favoritePlaylist;
     FavoriteBindingState favoriteBindingState = FavoriteBindingState::Unknown;
-    bool signedIn = false;
     {
         std::lock_guard lock(m_mutex);
         generation = m_generation;
@@ -5355,7 +5368,6 @@ void StreamProvider::FetchListPage(const stream::ListQuery& sourceQuery, const s
         preferenceEpoch = m_artistPreferenceEpoch;
         favoritePlaylist = m_favoritePlaylistId;
         favoriteBindingState = m_favoriteBindingState;
-        signedIn = m_account.signedIn;
     }
 
     stream::ListQuery query = sourceQuery;
@@ -5365,16 +5377,6 @@ void StreamProvider::FetchListPage(const stream::ListQuery& sourceQuery, const s
         else if (query.section == kSavedSection)
             query.shelf = stream::Shelf::Saved;
     }
-    const bool requiresAccount =
-        query.kind == stream::ListKind::PlaylistTracks || query.kind == stream::ListKind::Favorites ||
-        query.kind == stream::ListKind::AlbumTracks || query.kind == stream::ListKind::SectionTracks ||
-        query.kind == stream::ListKind::SavedAlbums || query.kind == stream::ListKind::FollowedArtists ||
-        query.kind == stream::ListKind::Playlists;
-    if (requiresAccount && !signedIn) {
-        if (done) done({}, L"Please sign in to Apple Music.");
-        return;
-    }
-
     const bool favoriteQuery =
         query.kind == stream::ListKind::Favorites ||
         (query.kind == stream::ListKind::SectionTracks && query.section == kFavoritesSection);

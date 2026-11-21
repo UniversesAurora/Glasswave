@@ -80,6 +80,7 @@ class StreamProvider final : public stream::Provider {
                        stream::ListPageDone done) override;
     bool EnrichListPage(const stream::ListQuery& query, const stream::ListPage& page,
                         stream::ListPageDone done) override;
+    bool NeedsAccount(const stream::ListQuery& query) const override;
     std::string ListCacheContext(const stream::ListQuery& query) const override;
     void RestoreListRecords(const stream::ListPage& page) override;
     void PutStations(const std::vector<stream::Station>& stations) override;

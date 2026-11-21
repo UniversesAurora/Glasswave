@@ -67,6 +67,13 @@ std::wstring Provider::Text(std::wstring_view english) const {
     return context.empty() ? ui::Tr(term) : ui::Tr(term, context);
 }
 
+std::wstring Provider::SignInRequiredMessage() const {
+    std::wstring text = ui::Tr(L"Please sign in to {0}.");
+    const size_t mark = text.find(L"{0}");
+    if (mark != std::wstring::npos) text.replace(mark, 3, ui::Tr(Name()));
+    return text;
+}
+
 bool Provider::IsAlbumSaved(const Id& album) const {
     const auto albums = SavedAlbums();
     return std::any_of(albums.begin(), albums.end(),

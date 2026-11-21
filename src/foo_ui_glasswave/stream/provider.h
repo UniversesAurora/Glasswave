@@ -209,6 +209,15 @@ class Provider {
     bool CanSetFavorite(bool favorite) const {
         return Can(favorite ? Capability::AddFavorite : Capability::RemoveFavorite);
     }
+    // Whether reading this list needs a signed-in account (the lists of the user's library, not
+    // the public catalog). ListSession fails such a read with SignInRequiredMessage() while the
+    // source is signed out, so a source does not check it in FetchListPage. Default: no list does.
+    virtual bool NeedsAccount(const ListQuery& query) const {
+        (void)query;
+        return false;
+    }
+    // "Please sign in to <Name()>." in the UI language.
+    std::wstring SignInRequiredMessage() const;
     virtual bool IsAlbumSaved(const Id& album) const;
     // Capability::SaveSongs: true when every one of `tracks` is in the library, false when one
     // is known not to be, nothing while that is not known yet.

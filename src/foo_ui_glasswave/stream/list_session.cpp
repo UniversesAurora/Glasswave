@@ -643,6 +643,10 @@ void Read::Fetch() {
     try {
         ListQuery requestQuery = query;
         requestQuery.cancelled = cancelled;
+        if (provider.NeedsAccount(requestQuery) && !provider.SignedIn()) {
+            Received(id, {}, provider.SignInRequiredMessage());
+            return;
+        }
         // The first page stays small: it is shown at once and may end an unchanged re-read.
         // Rows that will be read anyway (a re-read catching up, a list wanted whole) are asked
         // for in larger pages, which a source may serve with parallel requests.

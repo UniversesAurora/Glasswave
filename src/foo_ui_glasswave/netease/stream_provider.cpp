@@ -417,21 +417,6 @@ bool SongDetailsInBatches(Client& client, const std::vector<int64_t>& ids, abort
     return true;
 }
 
-bool RequiresLogin(stream::ListKind kind) {
-    switch (kind) {
-    case stream::ListKind::PlaylistTracks:
-    case stream::ListKind::Favorites:
-    case stream::ListKind::SavedAlbums:
-    case stream::ListKind::FollowedArtists:
-    case stream::ListKind::Playlists:
-    case stream::ListKind::ArtistSimilarArtists:
-    case stream::ListKind::HomeList:
-        return true;
-    default:
-        return false;
-    }
-}
-
 // Registered while the component loads, so the UI finds it however early it is created.
 // Started by the UI or at foobar2000 start-up on the main thread, whichever comes first, so
 // ncm:// items also play with another UI; stopped before the component is unloaded (no
@@ -1518,6 +1503,21 @@ void StreamProvider::FinishListWrite(bool ok, std::wstring error, Done done) {
     if (done) done(ok ? std::wstring() : ErrorOf(std::move(error)));
 }
 
+bool StreamProvider::NeedsAccount(const stream::ListQuery& query) const {
+    switch (query.kind) {
+    case stream::ListKind::PlaylistTracks:
+    case stream::ListKind::Favorites:
+    case stream::ListKind::SavedAlbums:
+    case stream::ListKind::FollowedArtists:
+    case stream::ListKind::Playlists:
+    case stream::ListKind::ArtistSimilarArtists:
+    case stream::ListKind::HomeList:
+        return true;
+    default:
+        return false;
+    }
+}
+
 void StreamProvider::FetchListPage(const stream::ListQuery& query, const stream::ListCursor& cursor,
                                    size_t requested, stream::ListPageDone done) {
     if (!done || ListCancelled(query.cancelled)) return;
@@ -1529,10 +1529,6 @@ void StreamProvider::FetchListPage(const stream::ListQuery& query, const stream:
         query.kind == stream::ListKind::PlaylistTracks || query.kind == stream::ListKind::Favorites;
     const size_t limit = snapshotKind ? requested : std::min<size_t>(requested, 100);
     if (query.kind == stream::ListKind::Playlists) {
-        if (!SignedIn()) {
-            PostListPage(std::move(done), {}, {}, L"Please sign in to NetEase Cloud Music.", query.cancelled);
-            return;
-        }
         stream::ListPage page;
         const auto playlists = Playlists(query.shelf);
         page.rows = playlists;
@@ -1550,10 +1546,6 @@ void StreamProvider::FetchListPage(const stream::ListQuery& query, const stream:
     }
     m_listTasks->Post([this, query, cursor, limit, done = std::move(done)]() mutable {
         if (ListCancelled(query.cancelled) || m_abort->is_aborting()) return;
-        if (RequiresLogin(query.kind) && !Ncm().LoggedIn()) {
-            PostListPage(std::move(done), {}, {}, L"Please sign in to NetEase Cloud Music.", query.cancelled);
-            return;
-        }
         std::wstring error;
         if (!Ncm().Service().EnsureStarted(*m_abort, &error)) {
             PostListPage(std::move(done), {}, {}, ErrorOf(std::move(error)), query.cancelled);

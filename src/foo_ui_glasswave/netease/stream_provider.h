@@ -51,6 +51,7 @@ class StreamProvider final : public stream::Provider {
     void FetchArtist(const stream::Id& artist, ArtistDone done) override;
     void FetchArtistBio(const stream::Id& artist, TextDone done) override;
     void FetchSongDetails(const stream::Id& track, SongDetailsDone done) override;
+    bool NeedsAccount(const stream::ListQuery& query) const override;
     void FetchListPage(const stream::ListQuery& query, const stream::ListCursor& cursor, size_t limit,
                        stream::ListPageDone done) override;
     void FetchCatalogSearchSuggestions(CatalogSearchSuggestionQuery query,
