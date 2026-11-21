@@ -645,6 +645,47 @@ MenuAction FollowAction(stream::Provider& provider, const stream::Id& id,
             }};
 }
 
+// Whether the account made a playlist (it may rename and delete it) or collected it, from
+// every place that knows: the provider's pending edit, the shelf the playlist is on or was
+// opened from, and its record.
+struct PlaylistFlags {
+    bool own = false, saved = false;
+};
+PlaylistFlags ResolvePlaylistFlags(stream::Provider& provider, const stream::Id& id, std::optional<Shelf> from,
+                                   const stream::Playlist* record) {
+    const auto shelf = provider.ShelfOf(id);
+    PlaylistFlags flags;
+    flags.own = from == Shelf::Created || shelf == Shelf::Created || (record && record->own);
+    flags.saved = provider.PlaylistSavedState(id).value_or(from == Shelf::Saved || shelf == Shelf::Saved ||
+                                                           (record && record->saved) ||
+                                                           Contains(provider.Playlists(Shelf::Saved), id));
+    return flags;
+}
+
+// The account's commands for a playlist: Rename and Delete for its own, Collect or Uncollect
+// for another's (`toggleSaved` makes that change). None without a verified account.
+std::vector<MenuAction> PlaylistAccountActions(PageHost& host, stream::Provider& provider, const stream::Id& id,
+                                               const std::wstring& name, const stream::Id& sectionId,
+                                               PlaylistFlags flags, std::function<void()> toggleSaved) {
+    std::vector<MenuAction> actions;
+    if (!provider.AccountVerified()) return actions;
+    if (flags.own) {
+        const auto offers = provider.Offers();
+        if (offers.Has(stream::Capability::RenamePlaylists))
+            actions.push_back({ProviderPlaylistText(provider, L"Rename..."),
+                               [&host, &provider, id, name] { RenameRemotePlaylist(host, provider, id, name); }});
+        if (offers.Has(stream::Capability::DeletePlaylists))
+            actions.push_back({ProviderPlaylistText(provider, L"Delete playlist"),
+                               [&host, &provider, id, name, sectionId] {
+                                   DeleteRemotePlaylist(host, provider, id, name, sectionId);
+                               }});
+    } else if (provider.Can(stream::Capability::SavePlaylists)) {
+        actions.push_back({ProviderPlaylistText(provider, flags.saved ? L"Uncollect playlist" : L"Collect playlist"),
+                           std::move(toggleSaved)});
+    }
+    return actions;
+}
+
 // "Go to artist" for an album's credited artists (a submenu when there are several).
 void AddGoToArtist(std::vector<MenuAction>& actions, PageHost& host, stream::Provider& provider,
                    const std::vector<stream::ArtistRef>& artists, const stream::Id& sectionId) {
@@ -1120,28 +1161,12 @@ class PlaylistPage final : public TrackPagedPage {
 
   protected:
     void AddTrackPageActions(std::vector<MenuAction>& actions) override {
-        if (!m_provider.AccountVerified()) return;
         const std::wstring name = m_info && !m_info->name.empty() ? m_info->name : m_view.name;
-        if (Own()) {
-            const auto offers = m_provider.Offers();
-            if (!offers.Has(stream::Capability::RenamePlaylists) && !offers.Has(stream::Capability::DeletePlaylists)) return;
-            actions.push_back({});
-            if (offers.Has(stream::Capability::RenamePlaylists))
-                actions.push_back({ProviderPlaylistText(m_provider, L"Rename..."), [this, name] {
-                                       RenameRemotePlaylist(m_host, m_provider, m_view.remoteId, name);
-                                   }});
-            if (offers.Has(stream::Capability::DeletePlaylists))
-                actions.push_back({ProviderPlaylistText(m_provider, L"Delete playlist"),
-                                   [this, name, sectionId = m_view.sectionId] {
-                                       DeleteRemotePlaylist(m_host, m_provider, m_view.remoteId, name,
-                                                            sectionId);
-                                   }});
-        } else if (m_provider.Can(stream::Capability::SavePlaylists)) {
-            actions.push_back({});
-            actions.push_back(
-                {ProviderPlaylistText(m_provider, Saved() ? L"Uncollect playlist" : L"Collect playlist"),
-                 [this] { SaveAction(); }});
-        }
+        auto account = PlaylistAccountActions(m_host, m_provider, m_view.remoteId, name, m_view.sectionId, Flags(),
+                                              Guard([this] { SaveAction(); }));
+        if (account.empty()) return;
+        actions.push_back({});
+        actions.insert(actions.end(), std::make_move_iterator(account.begin()), std::make_move_iterator(account.end()));
     }
 
   public:
@@ -1169,14 +1194,12 @@ class PlaylistPage final : public TrackPagedPage {
     }
 
   private:
-    bool Own() const {
-        return m_provider.ShelfOf(m_view.remoteId) == Shelf::Created || (m_info && m_info->own);
+    PlaylistFlags Flags() const {
+        const auto from = m_view.shelfKnown ? std::optional<Shelf>(m_view.shelf) : std::nullopt;
+        return ResolvePlaylistFlags(m_provider, m_view.remoteId, from, m_info ? &*m_info : nullptr);
     }
-    bool Saved() const {
-        if (const auto current = m_provider.PlaylistSavedState(m_view.remoteId)) return *current;
-        return m_provider.ShelfOf(m_view.remoteId) == Shelf::Saved || (m_info && m_info->saved) ||
-               Contains(m_provider.Playlists(Shelf::Saved), m_view.remoteId);
-    }
+    bool Own() const { return Flags().own; }
+    bool Saved() const { return Flags().saved; }
 
     // The rows go at once; the request confirms in the background and a failure reloads.
     void Remove(const std::vector<stream::Id>& ids) {
@@ -2441,31 +2464,17 @@ std::vector<MenuAction> RecordActions(PageHost& host, stream::Provider& provider
         AddBulkActions(actions, FetchPlaylistSongs(provider, id, &host), &provider, id, SIZE_MAX,
                        [&provider, id] { PlayRemotePlaylist(provider, id); });
         const auto info = provider.FindPlaylist(id);
-        const bool own = shelf == Shelf::Created || (info && info->own);
-        const bool saved = provider.PlaylistSavedState(id).value_or(
-            shelf == Shelf::Saved || (info && info->saved) || Contains(provider.Playlists(Shelf::Saved), id));
-        if (account && own) {
-            const auto offers = provider.Offers();
-            group();
-            if (offers.Has(stream::Capability::RenamePlaylists))
-                actions.push_back({ProviderPlaylistText(provider, L"Rename..."),
-                                   [&host, &provider, id, name] { RenameRemotePlaylist(host, provider, id, name); }});
-            if (offers.Has(stream::Capability::DeletePlaylists))
-                actions.push_back({ProviderPlaylistText(provider, L"Delete playlist"),
-                                   [&host, &provider, id, name, section = context.sectionId] {
-                                       DeleteRemotePlaylist(host, provider, id, name, section);
-                                   }});
-        } else if (account && provider.Can(stream::Capability::SavePlaylists)) {
-            group();
-            actions.push_back(
-                {ProviderPlaylistText(provider, saved ? L"Uncollect playlist" : L"Collect playlist"),
-                 [&provider, id, saved, removed = context.removed] {
+        const PlaylistFlags flags = ResolvePlaylistFlags(provider, id, shelf, info ? &*info : nullptr);
+        group();
+        for (auto& action : PlaylistAccountActions(
+                 host, provider, id, name, context.sectionId, flags,
+                 [&provider, id, saved = flags.saved, removed = context.removed] {
                      provider.SetPlaylistSaved(id, !saved, [&provider, id, saved, removed](std::wstring error) {
                          if (!error.empty()) return ShowProviderError(provider, error);
                          if (saved && removed) removed(id);
                      });
-                 }});
-        }
+                 }))
+            actions.push_back(std::move(action));
         group();
         actions.push_back(SearchFor(host, L"Search for playlist", name));
     }
