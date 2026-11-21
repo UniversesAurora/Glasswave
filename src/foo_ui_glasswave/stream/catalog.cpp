@@ -604,10 +604,9 @@ std::vector<Id> Catalog::InstallMissing(std::vector<CachedTrack> songs) {
     return installed;
 }
 
-void Catalog::Save() const {
+void Catalog::SaveLocked() const {
     const auto path = CacheFile();
     if (path.empty()) return;
-    std::lock_guard saving(m_saveMutex);
     std::vector<TrackEntry> songs;
     {
         std::lock_guard lock(m_mutex);
@@ -644,14 +643,20 @@ void Catalog::QueueSave() {
     // thread, after the burst.
     fb2k::callLater(2.0, [this] {
         m_savePosted = false;
+        if (m_saveClosed) return;
         fb2k::splitTask([this] {
-            if (m_saveDirty.exchange(false)) Save();
+            std::lock_guard saving(m_saveMutex);
+            if (!m_saveClosed && m_saveDirty.exchange(false)) SaveLocked();
         });
     });
 }
 
 void Catalog::FlushPendingSave() {
-    if (m_saveDirty.exchange(false)) Save();
+    // Waits for a write in flight (it holds m_saveMutex), writes what is still pending, and lets
+    // no deferred write start after it: the provider is going away.
+    std::lock_guard saving(m_saveMutex);
+    m_saveClosed = true;
+    if (m_saveDirty.exchange(false)) SaveLocked();
 }
 
 void Catalog::ClearMemory() {

@@ -139,12 +139,10 @@ class Catalog {
     // already known and returns their ids; the caller hints them once its side tables hold them.
     std::vector<CachedTrack> ReadCache() const;
     std::vector<Id> InstallMissing(std::vector<CachedTrack> songs);
-    // Any thread; one writer at a time. Writes nothing while no song is known, so a catalog
-    // cleared for a language change does not empty the cache on disk.
-    void Save() const;
     // Main thread: one deferred write, on a worker, for a burst of puts.
     void QueueSave();
-    // Main thread, at quit: writes now when a deferred write is still pending.
+    // Main thread, at quit: waits for a deferred write in flight, writes now when one is still
+    // pending, and starts no deferred write after it.
     void FlushPendingSave();
 
     // A language change: drops the records, keeps the restart cache. Stations stay.
@@ -160,6 +158,9 @@ class Catalog {
 
     // Under m_mutex: stores a record; true when a flush of queued hints must be posted.
     bool StoreLocked(const TrackRecord& song);
+    // Under m_saveMutex: writes the restart cache. Writes nothing while no song is known, so a
+    // catalog cleared for a language change does not empty the cache on disk.
+    void SaveLocked() const;
     void PostHints();
     void Hint(const std::vector<Track>& tracks) const;
     std::filesystem::path CacheFile() const;
@@ -170,6 +171,7 @@ class Catalog {
     mutable std::mutex m_saveMutex; // one writer of songs.tsv at a time
     std::atomic_bool m_saveDirty = false;
     std::atomic_bool m_savePosted = false;
+    std::atomic_bool m_saveClosed = false; // FlushPendingSave ran: quitting
     std::vector<Id> m_hintQueue; // songs new or shown differently, for metadb
     bool m_hintPosted = false;
     std::unordered_map<Id, TrackEntry> m_tracks;
