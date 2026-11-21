@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/json.h"
+#include "net/json_client.h"
 
 #include <optional>
 #include <stdexcept>
@@ -37,17 +38,15 @@ struct LibraryPlaybackMapping {
 // Non-2xx bridge response. The message retains the previous runtime_error text; callers
 // that need selective recovery inspect status(). Every 2xx, including an empty 202/204,
 // remains a successful Request result.
-class BridgeHttpError : public std::runtime_error {
+class BridgeHttpError : public net::HttpStatusError {
   public:
     explicit BridgeHttpError(int status, bool refused = false);
 
-    int status() const noexcept;
     // Apple's web player refused a library item (it cannot be played in this region). The
     // bridge answers 500 for it, so this is read from its message, never kept as text.
     bool refused() const noexcept;
 
   private:
-    int m_status;
     bool m_refused;
 };
 

@@ -3,9 +3,7 @@
 #include "core/text.h"
 #include "core/url.h"
 #include "applemusic/service.h"
-#include "net/http.h"
 #include "core/json.h"
-#include "core/log.h"
 #include "core/paths.h"
 #include "ui/i18n.h"
 
@@ -310,13 +308,10 @@ Object EmptyObject() {
 } // namespace
 
 BridgeHttpError::BridgeHttpError(int status, bool refused)
-    : std::runtime_error(refused ? "Apple Music refused this library item (HTTP " + std::to_string(status) + ")."
-                                 : "Apple Music bridge request failed (HTTP " + std::to_string(status) + ")."),
-      m_status(status), m_refused(refused) {}
-
-int BridgeHttpError::status() const noexcept {
-    return m_status;
-}
+    : net::HttpStatusError(
+          status, refused ? "Apple Music refused this library item (HTTP " + std::to_string(status) + ")."
+                          : "Apple Music bridge request failed (HTTP " + std::to_string(status) + ")."),
+      m_refused(refused) {}
 
 bool BridgeHttpError::refused() const noexcept {
     return m_refused;
@@ -366,52 +361,59 @@ void SetAppleLocale(bool chinese) {
 
 std::wstring Encode(std::wstring_view value) { return Wide(core::UrlEncode(value)); }
 
-Object Request(std::wstring_view path, abort_callback& abort, std::wstring_view method, std::string body) {
+namespace {
+
+// `logMethod` / `logPath` name the call in the log; an Apple API call logs the API request it
+// carries, not the bridge's one generic path.
+Object BridgeRequest(std::wstring_view path, abort_callback& abort, std::wstring_view method,
+                     std::string body, std::wstring logMethod, std::wstring logPath) {
     ValidateApiPath(path);
     const std::wstring verb = Method(method);
     const BridgeConfig config = ReadBridge();
     ServiceManager::Get().EnsureStarted(config.url, config.token, config.runtime, abort);
 
-    net::HttpOptions options;
-    options.method = verb;
-    options.body = std::move(body);
-    // A sign-in body carries the Apple Account password: zeroed when the call returns (the copy
-    // WinHTTP made while sending, and the caller's JSON objects, are beyond this).
-    struct WipeBody {
-        std::string& text;
-        ~WipeBody() {
-            if (!text.empty()) SecureZeroMemory(text.data(), text.size());
-        }
-    } wipeBody{options.body};
-    options.noProxy = true;
-    options.timeoutMs = 30000;
-    options.maxBodyBytes = 32u * 1024u * 1024u;
-    options.headers = {
+    net::JsonCall call;
+    call.method = verb;
+    call.url = config.url + std::wstring(path);
+    call.logMethod = std::move(logMethod);
+    call.logPath = logPath.empty() ? std::wstring(path) : std::move(logPath);
+    call.body = std::move(body);
+    call.noProxy = true;
+    call.timeoutMs = 30000;
+    call.maxBody = 32u * 1024u * 1024u;
+    call.headers = {
         {L"Accept", L"application/json"},
         {L"X-API-Token", Wide(config.token)},
     };
-    if (!g_probeTag.empty()) options.headers.emplace_back(L"X-Glasswave-Probe-Transaction", Wide(g_probeTag));
-    if (!options.body.empty()) options.headers.emplace_back(L"Content-Type", L"application/json");
+    if (!g_probeTag.empty()) call.headers.emplace_back(L"X-Glasswave-Probe-Transaction", Wide(g_probeTag));
+    if (!call.body.empty()) call.headers.emplace_back(L"Content-Type", L"application/json");
 
-    const net::HttpResponse response = net::SendHttp(config.url + std::wstring(path), options, abort);
-    if (response.status == 0 || !response.error.empty()) {
+    net::JsonReply reply;
+    try {
+        reply = net::CallJson(std::move(call), abort);
+    } catch (const net::TransportError& error) {
         // The transport's reason (a WinHTTP code, a truncated body); it holds no token or header.
         std::string message = "Cannot reach the Apple Music bridge.";
-        if (!response.error.empty()) message += " " + Utf8(response.error);
+        if (!error.reason().empty()) message += " " + Utf8(error.reason());
         Fail(message.c_str());
+    } catch (const net::HttpStatusError& error) {
+        throw BridgeHttpError(error.status(),
+                              error.body().find("webPlayback refused the library item") != std::string::npos);
     }
-    if (response.status < 200 || response.status >= 300)
-        throw BridgeHttpError(response.status,
-                              response.body.find("webPlayback refused the library item") != std::string::npos);
-    if (response.body.empty()) return EmptyObject();
+    if (reply.bodyEmpty) return EmptyObject();
 
-    std::wstring parseError;
-    const auto parsed = json::Parse(response.body, &parseError);
-    if (!parsed) Fail("The Apple Music bridge returned invalid JSON.");
-    if (!json::GetString(*parsed, L"error").empty()) Fail("The Apple Music bridge reported an error.");
-    if (const auto errors = json::GetArray(*parsed, L"errors"); errors && errors->Size() != 0)
+    if (!reply.json) Fail("The Apple Music bridge returned invalid JSON.");
+    const Object& parsed = *reply.json;
+    if (!json::GetString(parsed, L"error").empty()) Fail("The Apple Music bridge reported an error.");
+    if (const auto errors = json::GetArray(parsed, L"errors"); errors && errors->Size() != 0)
         Fail("The Apple Music bridge returned errors.");
-    return *parsed;
+    return parsed;
+}
+
+} // namespace
+
+Object Request(std::wstring_view path, abort_callback& abort, std::wstring_view method, std::string body) {
+    return BridgeRequest(path, abort, method, std::move(body), {}, {});
 }
 
 std::optional<LibraryPlaybackMapping> ResolveLibraryPlaybackMapping(std::wstring_view libraryId,
@@ -463,20 +465,8 @@ Object Apple(std::wstring_view path, abort_callback& abort, std::wstring_view me
         request.Insert(L"path", JsonValue::CreateStringValue(requestPath));
         request.Insert(L"body", body && *body ? static_cast<winrt::Windows::Data::Json::IJsonValue>(*body)
                                               : JsonValue::CreateNullValue());
-        // One line per request, as for the other source: what was asked and how long it took
-        // is what shows duplicated or repeated work.
-        const ULONGLONG started = GetTickCount64();
-        try {
-            Object response =
-                Request(L"/api/v1/glasswave/apple", abort, L"POST", Utf8(json::Stringify(request)));
-            core::LogHttp(L"apple " + Method(method), requestPath, 200,
-                             static_cast<long long>(GetTickCount64() - started));
-            return response;
-        } catch (const BridgeHttpError& error) {
-            core::LogHttp(L"apple " + Method(method), requestPath, static_cast<unsigned long>(error.status()),
-                             static_cast<long long>(GetTickCount64() - started));
-            throw;
-        }
+        return BridgeRequest(L"/api/v1/glasswave/apple", abort, L"POST", Utf8(json::Stringify(request)),
+                             L"apple " + Method(method), requestPath);
     };
 
     // The catalog host has been observed (2026-11) to answer every request that carries
