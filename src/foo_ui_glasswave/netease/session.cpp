@@ -216,6 +216,7 @@ bool Session::RequireLogin(std::wstring& error) const {
 }
 
 bool Session::EnsureAccount(abort_callback& abort, int64_t& userId, std::wstring& error) {
+    const uint64_t generation = m_accountGeneration;
     {
         std::lock_guard lock(m_mutex);
         if (m_account.loggedIn && m_account.userId) {
@@ -225,6 +226,10 @@ bool Session::EnsureAccount(abort_callback& abort, int64_t& userId, std::wstring
     }
     Account account;
     if (!m_client.GetAccount(abort, account, error)) return false;
+    if (generation != m_accountGeneration) {
+        error = L"The NetEase account changed.";
+        return false;
+    }
     if (!account.loggedIn) {
         const bool hadSession = !SessionCookie().empty();
         ClearSessionCookie();
@@ -239,6 +244,10 @@ bool Session::EnsureAccount(abort_callback& abort, int64_t& userId, std::wstring
     }
     {
         std::lock_guard lock(m_mutex);
+        if (generation != m_accountGeneration) {
+            error = L"The NetEase account changed.";
+            return false;
+        }
         SetAccountLocked(account);
     }
     userId = account.userId;
@@ -329,10 +338,17 @@ void Session::SchedulePlaylistSummaryRefresh(int64_t playlistId) {
 }
 
 void Session::RefreshAccount(DoneCallback done) {
-    m_tasks.Post([this, done = std::move(done)] {
+    const uint64_t generation = m_accountGeneration;
+    m_tasks.Post([this, generation, done = std::move(done)] {
         if (m_stopping) return;
         abort_callback& abort = m_abort;
         std::wstring error;
+        // A sign-out or a new sign-in while this ran: what was read belongs to the old account.
+        const auto superseded = [&] {
+            PostMain([done] {
+                if (done) done(false, L"The NetEase account changed.");
+            });
+        };
         if (!RequireLogin(error)) {
             PostMain([done = std::move(done), error] {
                 if (done) done(false, ErrorOf(error));
@@ -352,6 +368,7 @@ void Session::RefreshAccount(DoneCallback done) {
             });
             return;
         }
+        if (generation != m_accountGeneration) return superseded();
         if (!account.loggedIn) {
             ClearSessionCookie();
             ClearAccount();
@@ -374,11 +391,17 @@ void Session::RefreshAccount(DoneCallback done) {
         }
         {
             std::lock_guard lock(m_mutex);
+            if (generation != m_accountGeneration) {
+                superseded();
+                return;
+            }
             SetAccountLocked(account);
         }
         std::vector<int64_t> ids;
         std::wstring likeError;
         if (m_client.Likelist(account.userId, abort, ids, likeError)) {
+            std::lock_guard lock(m_mutex); // the order Logout takes them in
+            if (generation != m_accountGeneration) return superseded();
             std::lock_guard liked(m_likedMutex);
             m_liked.clear();
             for (int64_t id : ids) m_liked.insert(id);
@@ -392,6 +415,7 @@ void Session::RefreshAccount(DoneCallback done) {
             for (auto& playlist : playlists)
                 (playlist.creatorId == account.userId ? created : collected).push_back(std::move(playlist));
             std::lock_guard lock(m_mutex);
+            if (generation != m_accountGeneration) return superseded();
             m_createdPlaylists = std::move(created);
             m_collectedPlaylists = std::move(collected);
             m_likedPlaylist = likedPlaylist;
@@ -405,6 +429,7 @@ void Session::RefreshAccount(DoneCallback done) {
             followedCount = artists.size();
             for (const auto& artist : artists) Catalog::Get().Put(artist);
             std::lock_guard lock(m_mutex);
+            if (generation != m_accountGeneration) return superseded();
             m_followedArtists = std::move(artists);
         }
         std::vector<Album> albums;
@@ -412,6 +437,7 @@ void Session::RefreshAccount(DoneCallback done) {
             albumCount = albums.size();
             Catalog::Get().Put(albums);
             std::lock_guard lock(m_mutex);
+            if (generation != m_accountGeneration) return superseded();
             m_collectedAlbums = std::move(albums);
         }
         std::vector<Playlist> recommended;
@@ -419,6 +445,7 @@ void Session::RefreshAccount(DoneCallback done) {
             recommendedCount = recommended.size();
             PutRecommended(recommended);
             std::lock_guard lock(m_mutex);
+            if (generation != m_accountGeneration) return superseded();
             m_recommendedPlaylists = std::move(recommended);
         }
         core::Log(L"account: saved lists: " + std::to_wstring(followedCount) + L" artists, " +
@@ -1379,11 +1406,13 @@ void Session::OnLoginCookie(std::wstring cookie, DoneCallback done) {
         if (done) done(false, L"The login response did not contain a MUSIC_U session.");
         return;
     }
+    ++m_accountGeneration;
     SaveSessionCookie(normalized);
     RefreshAccount(std::move(done));
 }
 
 void Session::Logout() {
+    ++m_accountGeneration;
     ClearSessionCookie();
     ClearAccount();
     Catalog::Get().ClearPreferredCovers();

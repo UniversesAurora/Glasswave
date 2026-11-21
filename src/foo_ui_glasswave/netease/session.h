@@ -131,6 +131,9 @@ private:
     Client m_client;
     core::TaskQueue m_tasks;
     std::atomic_bool m_stopping{false};
+    // Bumped by Logout and a new sign-in: a task that read the account before a bump must not
+    // write what it fetched (it belongs to the previous sign-in).
+    std::atomic<uint64_t> m_accountGeneration{0};
     abort_callback_impl m_abort;  // every request of the session; signalled by Shutdown
     std::atomic_bool m_initialized{false};
 
