@@ -282,6 +282,7 @@
       <ObjectFileName>$(IntDir)core_text.obj</ObjectFileName>
     </ClCompile>
     <ClCompile Include="core\url.cpp" />
+    <ClCompile Include="ui\page.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="cd\disc.h" />

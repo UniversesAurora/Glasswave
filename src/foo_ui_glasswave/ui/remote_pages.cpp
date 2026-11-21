@@ -797,7 +797,7 @@ class PagedPage : public RemotePage {
             done(false);
             return;
         }
-        m_songWaiters.push_back(std::move(done));
+        m_drain.Wait(std::move(done));
         m_drainRequested = true;
         UpdateLoadingText();
         m_host.ListChanged();
@@ -809,27 +809,15 @@ class PagedPage : public RemotePage {
         if (!m_drainRequested) return;
         const bool failed = !m_state.error.empty() && !m_state.loading;
         if (!PlaybackReady() && !failed) return;
-        auto waiters = std::move(m_songWaiters);
-        m_songWaiters.clear();
         m_drainRequested = false;
         m_session->SetMode(m_allMode ? stream::ListLoadMode::All : stream::ListLoadMode::OnDemand);
-        const bool complete = PlaybackReady();
-        for (auto& waiter : waiters)
-            waiter(complete);
+        m_drain.Settle(PlaybackReady());
     }
 
-    SongsFetch AllSongsFetch() {
-        auto guarded = Guard([this](std::function<void(metadb_handle_list)> ready) {
-            EnsureAllSongs(Guard([this, ready = std::move(ready)](bool complete) {
-                if (!complete) return;
-                auto* source = SongSource();
-                if (source) ready(source->VisibleItems());
-            }));
-        });
-        return [guarded = std::move(guarded)](std::function<void(metadb_handle_list)> ready) mutable {
-            guarded(std::move(ready));
-        };
+    ReadAllSongs ReadAll() {
+        return [this](SongDrain::Waiter done) { EnsureAllSongs(std::move(done)); };
     }
+    SongsFetch AllSongsFetch() { return AllSongs(ReadAll()); }
 
     void ActivateSong(size_t row, const std::wstring& identity) {
         if (!m_session) return;
@@ -849,17 +837,7 @@ class PagedPage : public RemotePage {
                 PagedPlaybackFeed::Start(m_provider, m_query, tracks, published, row, m_host, source))
                 return;
         }
-        if (!m_state.error.empty() && !m_state.loading) {
-            if (const size_t current = source->FindRowByIdentity(identity); current != SIZE_MAX)
-                source->PlayFrom(current);
-            return;
-        }
-        EnsureAllSongs(Guard([this, identity](bool complete) {
-            auto* loaded = SongSource();
-            if (!complete || !loaded) return;
-            const size_t resolved = loaded->FindRowByIdentity(identity);
-            if (resolved != SIZE_MAX) loaded->PlayFrom(resolved);
-        }));
+        PlayWhenRead(ReadAll(), identity); // a failed read plays what there is
     }
 
     stream::ListQuery m_query;
@@ -871,7 +849,7 @@ class PagedPage : public RemotePage {
     bool m_starting = true;
     bool m_allMode = false;
     bool m_drainRequested = false;
-    std::vector<std::function<void(bool)>> m_songWaiters;
+    SongDrain m_drain;
 
   private:
     void UpdateMeta(const stream::ListState& state) {
@@ -1740,7 +1718,7 @@ class AlbumBrowsePage : public PagedPage {
 
     // Everything is needed: to sort or filter the songs, or for a play / add of all of them.
     bool CompleteNeeded() const {
-        return !m_waiters.empty() || (m_source && (m_source->HasFilter() || m_source->SortColumn() != SIZE_MAX));
+        return m_drain.Waiting() || (m_source && (m_source->HasFilter() || m_source->SortColumn() != SIZE_MAX));
     }
 
     // One album's songs at a time, the next only when wanted (the list reached its end, or
@@ -1849,43 +1827,27 @@ class AlbumBrowsePage : public PagedPage {
             done(false);
             return;
         }
-        m_waiters.push_back(std::move(done));
+        m_drain.Wait(std::move(done));
         m_session->SetMode(stream::ListLoadMode::All);
         if (!m_state.loading && !m_state.complete) m_session->RequestNext();
         StartNextAlbumTracks();
         SettleWaiters();
     }
 
+    // Settled once every album's songs are read, or one album's read failed.
     void SettleWaiters() {
-        if (m_waiters.empty() || !m_state.complete) return;
+        if (!m_drain.Waiting() || !m_state.complete) return;
         for (const auto& album : m_albums) {
             if (album.id.empty()) continue;
             const auto* state = AlbumTrackState(album.id);
             if (!state || (!state->complete && state->error.empty())) return;
-            if (!state->error.empty() && !state->loading) {
-                auto waiters = std::move(m_waiters);
-                m_waiters.clear();
-                for (auto& waiter : waiters)
-                    waiter(false);
-                return;
-            }
+            if (!state->error.empty() && !state->loading) return m_drain.Settle(false);
         }
-        auto waiters = std::move(m_waiters);
-        m_waiters.clear();
-        for (auto& waiter : waiters)
-            waiter(true);
+        m_drain.Settle(true);
     }
 
     SongsFetch ExpandedSongsFetch() {
-        auto guarded = Guard([this](std::function<void(metadb_handle_list)> ready) {
-            EnsureExpandedSongs(Guard([this, ready = std::move(ready)](bool complete) {
-                if (complete)
-                    if (auto* source = SongSource()) ready(source->VisibleItems());
-            }));
-        });
-        return [guarded = std::move(guarded)](std::function<void(metadb_handle_list)> ready) mutable {
-            guarded(std::move(ready));
-        };
+        return AllSongs([this](SongDrain::Waiter done) { EnsureExpandedSongs(std::move(done)); });
     }
 
     // A song of the expanded view plays its album, at once (owner, 2026-11-14): waiting for
@@ -1897,7 +1859,7 @@ class AlbumBrowsePage : public PagedPage {
     std::map<stream::Id, std::shared_ptr<stream::ListSession>> m_albumTrackSessions;
     std::map<stream::Id, uint64_t> m_albumTrackVersions; // data version last assembled
     std::map<stream::Id, uint64_t> m_albumTrackGenerations;
-    std::vector<std::function<void(bool)>> m_waiters;
+    SongDrain m_drain;
     std::wstring m_trackError;
     bool m_tracksWanted = true; // the first album's songs fill the empty list
     bool m_trackTimerArmed = false;
@@ -2357,7 +2319,7 @@ class AllFavoritesPage final : public Page {
             done(false);
             return;
         }
-        m_waiters.push_back(std::move(done));
+        m_drain.Wait(std::move(done));
         m_drainRequested = true;
         UpdateStatus();
         m_host.ListChanged();
@@ -2368,25 +2330,13 @@ class AllFavoritesPage final : public Page {
     }
 
     void SettleWaiters() {
-        if (m_waiters.empty() || (!Complete() && !HasError())) return;
-        const bool complete = Complete() && !HasError();
-        auto waiters = std::move(m_waiters);
-        m_waiters.clear();
-        for (auto& waiter : waiters)
-            waiter(complete);
+        if (m_drain.Waiting() && (Complete() || HasError())) m_drain.Settle(Complete() && !HasError());
     }
 
-    SongsFetch AllSongsFetch() {
-        auto guarded = Guard([this](std::function<void(metadb_handle_list)> ready) {
-            EnsureAllSongs(Guard([this, ready = std::move(ready)](bool complete) {
-                if (!complete) return;
-                if (auto* source = SongSource()) ready(source->VisibleItems());
-            }));
-        });
-        return [guarded = std::move(guarded)](std::function<void(metadb_handle_list)> ready) mutable {
-            guarded(std::move(ready));
-        };
+    ReadAllSongs ReadAll() {
+        return [this](SongDrain::Waiter done) { EnsureAllSongs(std::move(done)); };
     }
+    SongsFetch AllSongsFetch() { return AllSongs(ReadAll()); }
 
     void Activate(size_t row, const std::wstring& identity) {
         auto* source = SongSource();
@@ -2395,22 +2345,7 @@ class AllFavoritesPage final : public Page {
             source->PlayFrom(row);
             return;
         }
-        if (HasError()) {
-            const size_t current = source->FindRowByIdentity(identity);
-            if (current != SIZE_MAX) source->PlayFrom(current);
-            return;
-        }
-        EnsureAllSongs(Guard([this, identity](bool complete) {
-            auto* loaded = SongSource();
-            if (!loaded) return;
-            if (!complete) {
-                const size_t current = loaded->FindRowByIdentity(identity);
-                if (current != SIZE_MAX) loaded->PlayFrom(current);
-                return;
-            }
-            const size_t resolved = loaded->FindRowByIdentity(identity);
-            if (resolved != SIZE_MAX) loaded->PlayFrom(resolved);
-        }));
+        PlayWhenRead(ReadAll(), identity); // a failed read plays what there is
     }
 
     std::vector<metadb_handle_ptr> m_local;
@@ -2419,7 +2354,7 @@ class AllFavoritesPage final : public Page {
     uint64_t m_generation = 0;
     bool m_allMode = false;
     bool m_drainRequested = false;
-    std::vector<std::function<void(bool)>> m_waiters;
+    SongDrain m_drain;
 };
 
 } // namespace
@@ -2565,13 +2500,6 @@ void PlayRemoteAlbum(stream::Provider& provider, const stream::Id& album) {
 void InvalidateRemotePageCache(std::wstring_view provider) {
     CancelSongsRequests(provider);
     PagedPlaybackFeed::CancelProvider(provider);
-}
-
-void Page::OnFavoritesChanged() {
-    if (auto* source = dynamic_cast<SongTableSource*>(m_host.Source())) {
-        source->RefreshFavorites();
-        m_host.ListChanged();
-    }
 }
 
 // ---- one song --------------------------------------------------------------------------------

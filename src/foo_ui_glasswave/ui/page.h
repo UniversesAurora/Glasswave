@@ -3,11 +3,13 @@
 #include "media/list_sources.h"
 #include "ui/i18n.h"
 #include "ui/main_menu.h"
+#include "ui/song_actions.h"
 #include "ui/view.h"
 
 #include <functional>
 #include <memory>
 #include <utility>
+#include <vector>
 
 // Pages whose content arrives asynchronously (a streaming provider's library, the combined
 // favorites). A page owns its loading state; the window owns at most one page, the one on
@@ -120,6 +122,26 @@ class LoadingBadge {
     std::wstring m_previous, m_text;
 };
 
+class SongTableSource;
+
+// "Read the whole list, then act" (play from a song, add or download them all) on a page whose
+// songs arrive in pages: callers wait until the page has every song (true) or gave up on an
+// error (false). The page settles them when its list completes or fails.
+class SongDrain {
+  public:
+    using Waiter = std::function<void(bool complete)>;
+    void Wait(Waiter done) { m_waiters.push_back(std::move(done)); }
+    bool Waiting() const { return !m_waiters.empty(); }
+    // Calls and forgets every waiter (one may wait again).
+    void Settle(bool complete) {
+        auto waiters = std::exchange(m_waiters, {});
+        for (auto& waiter : waiters) waiter(complete);
+    }
+
+  private:
+    std::vector<Waiter> m_waiters;
+};
+
 class Page {
 public:
     virtual ~Page() = default;
@@ -170,6 +192,18 @@ protected:
         };
     }
     std::weak_ptr<int> LifetimeToken() const { return m_alive; }
+
+    // The song list on screen, when it is one.
+    SongTableSource* SongTable() const;
+    // A page's way to read its whole song list: done(true) once every song is there,
+    // done(false) when they cannot all be read.
+    using ReadAllSongs = std::function<void(SongDrain::Waiter done)>;
+    // The songs shown (in their order, through the filter) once the whole list is read; nothing
+    // when it cannot be. For the page's bulk actions.
+    SongsFetch AllSongs(ReadAllSongs read);
+    // Plays the list from the song `identity` (ui/song_table.h) once the whole list is read, or
+    // from what there is when it cannot be.
+    void PlayWhenRead(ReadAllSongs read, std::wstring identity);
     // A provider is allowed to complete from its cache synchronously. Run requests after
     // Start() has returned so a completed result cannot be overwritten by its placeholder.
     void AfterStart(std::function<void()> request) {
