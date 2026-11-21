@@ -254,6 +254,26 @@ public:
         if (song->bitsPerSample > 0) p_info.info_set_int("bitspersample", song->bitsPerSample);
         p_info.info_set_int("channels", 2);
         if (song->codec == L"FLAC") p_info.info_set("encoding", "lossless");
+        TechInfo(p_info, p_abort);
+    }
+
+    // What plays: the decoder's own technical info while decoding (kept for later runs, as the
+    // catalog record has it only for songs whose stream was asked for), else the last one kept.
+    void TechInfo(file_info& p_info, abort_callback& p_abort) {
+        const auto item = Catalog::Get().Handle(m_id);
+        if (m_decoder.is_valid()) {
+            try {
+                file_info_impl actual;
+                m_decoder->get_info(0, actual, p_abort);
+                stream::CopyTechInfo(actual, p_info);
+            } catch (const exception_aborted&) {
+                throw;
+            } catch (...) {
+            }
+            stream::NoteTechInfo(item, p_info);
+        } else {
+            stream::KnownTechInfo(item, p_info);
+        }
     }
 
     t_filestats2 get_stats2(uint32_t, abort_callback&) { return t_filestats2(); }
@@ -463,6 +483,15 @@ public:
 
     bool decode_get_dynamic_info(file_info& p_out, double& p_timestamp_delta) {
         try {
+            // The song's record arrived after it opened, or decoding has just begun (its real
+            // technical info): the playing info takes it now.
+            if ((m_reportWhenKnown && Catalog::Get().FindSong(m_id)) || (m_decoder.is_valid() && !m_techReported)) {
+                m_techReported = true;
+                abort_callback_dummy abort;
+                get_info(p_out, abort);
+                p_timestamp_delta = 0;
+                return true;
+            }
             return m_decoder.is_valid() && m_decoder->get_dynamic_info(p_out, p_timestamp_delta);
         } catch (const exception_aborted&) {
             throw;
@@ -536,6 +565,8 @@ private:
     }
 
     int64_t m_id = 0;
+    bool m_reportWhenKnown = false; // reported without the song's record
+    bool m_techReported = false;    // the decoder's technical info went out since it opened
     std::string m_path;
     service_ptr_t<input_decoder> m_decoder;
     file::ptr m_source;

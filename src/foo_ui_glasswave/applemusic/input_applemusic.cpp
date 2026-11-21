@@ -245,6 +245,11 @@ class AppleInput : public input_stubs {
         }
         if (out.get_length() <= 0 && m_durationMs > 0)
             out.set_length(static_cast<double>(m_durationMs) / 1000.0);
+        // What plays is kept for later runs; before it decodes, the last one kept.
+        if (m_atmos || m_decoder.is_valid())
+            stream::NoteTechInfo(Catalog::Get().Handle(m_id), out);
+        else
+            stream::KnownTechInfo(Catalog::Get().Handle(m_id), out);
         ApplyMetadata(out);
     }
 
