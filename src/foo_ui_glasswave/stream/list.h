@@ -92,6 +92,15 @@ inline bool IsCatalogSearch(ListKind kind) {
            kind == ListKind::CatalogSearchTopResults || kind == ListKind::CatalogSearchLyrics;
 }
 
+// The cursor bookkeeping of a service that pages by offset: `received` source rows were read
+// starting at `cursor`, and the service says whether more follow. An empty answer ends the list
+// whatever `more` says, so a service that keeps claiming more cannot loop. Sources whose cursors
+// are opaque server links (Apple Music) do not use it.
+inline void SetOffsetNext(ListPage& page, const ListCursor& cursor, size_t received, bool more) {
+    page.next = {{}, cursor.offset + received};
+    page.more = more && received != 0;
+}
+
 inline ListQuery ArtistSectionQuery(const Id& artist, const ArtistSection& section) {
     ListQuery query;
     query.id = artist;

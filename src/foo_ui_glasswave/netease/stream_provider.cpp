@@ -335,6 +335,17 @@ bool ToInt(size_t value, int& out, std::wstring& error) {
     return true;
 }
 
+// The first row and the row count of an offset-paged request, in the service client's ints.
+struct OffsetWindow {
+    int offset = 0;
+    int count = 0;
+};
+
+bool OffsetWindowOf(const stream::ListCursor& cursor, size_t limit, OffsetWindow& window,
+                    std::wstring& error) {
+    return ToInt(cursor.offset, window.offset, error) && ToInt(limit, window.count, error);
+}
+
 std::wstring IdsRevision(uint64_t accountRevision, const std::vector<int64_t>& ids,
                          int64_t sourceVersion = 0) {
     uint64_t hash = 1469598103934665603ull;
@@ -523,6 +534,75 @@ struct StreamProvider::IdSnapshotStore {
         m_index.clear();
         m_order.clear();
         m_bytes = 0;
+    }
+
+    // What the two id-paged lists say when a continuation does not fit its snapshot.
+    struct Wording {
+        const wchar_t* noRevision;
+        const wchar_t* changed;
+        const wchar_t* notRetained;
+        const wchar_t* outside;
+    };
+    static constexpr Wording kPlaylistWording{
+        L"The playlist cursor has no snapshot revision.",
+        L"The playlist changed while its pages were being loaded. Reload the list.",
+        L"The playlist snapshot could not be retained.",
+        L"The playlist cursor is outside the current track list."};
+    static constexpr Wording kFavoritesWording{
+        L"The favorites cursor has no snapshot revision.",
+        L"Favorites changed while their pages were being loaded. Reload the list.",
+        L"The favorites snapshot could not be retained.",
+        L"The favorites cursor is outside the current track list."};
+
+    // One page of a list the service gives as a single id list (a playlist's tracks, the
+    // favorites). The first page reads the ids with `fetchIds(ids, info, revision, error)` and
+    // keeps them under their revision; the pages after it are cut from the same snapshot, so the
+    // order cannot shift between pages, and a revision that no longer matches is an error. The
+    // page's rows are the songs of its slice of ids, read in batches. Worker thread; `snapshot`
+    // is the list's id list afterwards, for the caller's own page fields.
+    template <class FetchIds>
+    bool PageFromIdSnapshot(Key key, const Wording& wording, const stream::ListCursor& cursor, size_t limit,
+                            Client& client, abort_callback& abort, FetchIds&& fetchIds,
+                            stream::ListPage& page, std::vector<Song>& songs,
+                            std::shared_ptr<const Snapshot>& snapshot, std::wstring& error) {
+        if (cursor.offset != 0 && cursor.value.empty()) {
+            error = wording.noRevision;
+            return false;
+        }
+        key.revision = cursor.value;
+        if (cursor.offset != 0) snapshot = Find(key);
+        if (!snapshot) {
+            std::vector<int64_t> ids;
+            Playlist info;
+            std::wstring revision;
+            if (!fetchIds(ids, info, revision, error)) return false;
+            key.revision = std::move(revision);
+            if (cursor.offset != 0 && cursor.value != key.revision) {
+                error = wording.changed;
+                return false;
+            }
+            snapshot = Put(std::move(key), std::move(ids), std::move(info));
+        }
+        if (!snapshot) {
+            error = wording.notRetained;
+            return false;
+        }
+        if (cursor.offset > snapshot->ids.size()) {
+            error = wording.outside;
+            return false;
+        }
+        const size_t count = std::min({limit, snapshot->ids.size() - cursor.offset, kSnapshotPageLimit});
+        const auto begin = snapshot->ids.begin() + static_cast<std::ptrdiff_t>(cursor.offset);
+        std::vector<int64_t> ids(begin, begin + static_cast<std::ptrdiff_t>(count));
+        std::vector<Song> details;
+        if (!SongDetailsInBatches(client, Unique(ids), abort, details, error)) return false;
+        songs = OrderDetails(ids, details);
+        page.rows = ToTracks(songs);
+        page.total = snapshot->ids.size();
+        page.next = {snapshot->key.revision, cursor.offset + count};
+        page.more = cursor.offset + count < snapshot->ids.size();
+        page.revision = snapshot->key.revision;
+        return true;
     }
 
   private:
@@ -1574,40 +1654,23 @@ void StreamProvider::FetchListPage(const stream::ListQuery& query, const stream:
                 error = L"The playlist cursor has no snapshot revision.";
                 break;
             }
-            IdSnapshotStore::Key key{accountRevision, IdSnapshotStore::Kind::Playlist, playlistId,
-                                     cursor.value};
             std::shared_ptr<const IdSnapshotStore::Snapshot> snapshot;
-            if (cursor.offset != 0) snapshot = snapshots->Find(key);
-            if (!snapshot) {
-                PlaylistSnapshot fresh;
-                if (!client.GetPlaylistSnapshot(playlistId, *m_abort, fresh, error)) break;
-                key.revision = IdsRevision(accountRevision, fresh.trackIds, fresh.trackUpdateTime);
-                if (cursor.offset != 0 && cursor.value != key.revision) {
-                    error = L"The playlist changed while its pages were being loaded. Reload the list.";
-                    break;
-                }
-                snapshot = snapshots->Put(std::move(key), std::move(fresh.trackIds), std::move(fresh.info));
-            }
-            if (!snapshot) {
-                error = L"The playlist snapshot could not be retained.";
+            if (!snapshots->PageFromIdSnapshot(
+                    {accountRevision, IdSnapshotStore::Kind::Playlist, playlistId},
+                    IdSnapshotStore::kPlaylistWording, cursor, limit, client, *m_abort,
+                    [&](std::vector<int64_t>& ids, Playlist& info, std::wstring& revision,
+                        std::wstring& fetchError) {
+                        PlaylistSnapshot fresh;
+                        if (!client.GetPlaylistSnapshot(playlistId, *m_abort, fresh, fetchError))
+                            return false;
+                        revision = IdsRevision(accountRevision, fresh.trackIds, fresh.trackUpdateTime);
+                        ids = std::move(fresh.trackIds);
+                        info = std::move(fresh.info);
+                        return true;
+                    },
+                    page, hintSongs, snapshot, error))
                 break;
-            }
-            if (cursor.offset > snapshot->ids.size()) {
-                error = L"The playlist cursor is outside the current track list.";
-                break;
-            }
-            const size_t count = std::min({limit, snapshot->ids.size() - cursor.offset, kSnapshotPageLimit});
-            const auto begin = snapshot->ids.begin() + static_cast<std::ptrdiff_t>(cursor.offset);
-            std::vector<int64_t> ids(begin, begin + static_cast<std::ptrdiff_t>(count));
-            std::vector<Song> details;
-            if (!SongDetailsInBatches(client, Unique(ids), *m_abort, details, error)) break;
-            hintSongs = OrderDetails(ids, details);
-            page.rows = ToTracks(hintSongs);
             page.playlist = ToPlaylist(snapshot->info);
-            page.total = snapshot->ids.size();
-            page.next = {snapshot->key.revision, cursor.offset + count};
-            page.more = cursor.offset + count < snapshot->ids.size();
-            page.revision = snapshot->key.revision;
             Catalog::Get().Put(snapshot->info);
             break;
         }
@@ -1621,38 +1684,16 @@ void StreamProvider::FetchListPage(const stream::ListQuery& query, const stream:
                 error = L"The favorites cursor has no snapshot revision.";
                 break;
             }
-            IdSnapshotStore::Key key{accountRevision, IdSnapshotStore::Kind::Favorites, 0, cursor.value};
             std::shared_ptr<const IdSnapshotStore::Snapshot> snapshot;
-            if (cursor.offset != 0) snapshot = snapshots->Find(key);
-            if (!snapshot) {
-                std::vector<int64_t> ids;
-                if (!client.Likelist(userId, *m_abort, ids, error)) break;
-                key.revision = IdsRevision(accountRevision, ids);
-                if (cursor.offset != 0 && cursor.value != key.revision) {
-                    error = L"Favorites changed while their pages were being loaded. Reload the list.";
-                    break;
-                }
-                snapshot = snapshots->Put(std::move(key), std::move(ids));
-            }
-            if (!snapshot) {
-                error = L"The favorites snapshot could not be retained.";
-                break;
-            }
-            if (cursor.offset > snapshot->ids.size()) {
-                error = L"The favorites cursor is outside the current track list.";
-                break;
-            }
-            const size_t count = std::min({limit, snapshot->ids.size() - cursor.offset, kSnapshotPageLimit});
-            const auto begin = snapshot->ids.begin() + static_cast<std::ptrdiff_t>(cursor.offset);
-            std::vector<int64_t> selected(begin, begin + static_cast<std::ptrdiff_t>(count));
-            std::vector<Song> details;
-            if (!SongDetailsInBatches(client, Unique(selected), *m_abort, details, error)) break;
-            hintSongs = OrderDetails(selected, details);
-            page.rows = ToTracks(hintSongs);
-            page.total = snapshot->ids.size();
-            page.next = {snapshot->key.revision, cursor.offset + count};
-            page.more = cursor.offset + count < snapshot->ids.size();
-            page.revision = snapshot->key.revision;
+            snapshots->PageFromIdSnapshot(
+                {accountRevision, IdSnapshotStore::Kind::Favorites, 0}, IdSnapshotStore::kFavoritesWording,
+                cursor, limit, client, *m_abort,
+                [&](std::vector<int64_t>& ids, Playlist&, std::wstring& revision, std::wstring& fetchError) {
+                    if (!client.Likelist(userId, *m_abort, ids, fetchError)) return false;
+                    revision = IdsRevision(accountRevision, ids);
+                    return true;
+                },
+                page, hintSongs, snapshot, error);
             break;
         }
         case stream::ListKind::HomeList: {
@@ -1697,54 +1738,52 @@ void StreamProvider::FetchListPage(const stream::ListQuery& query, const stream:
         }
         case stream::ListKind::ArtistTopTracks: {
             const int64_t artistId = Num(query.id);
-            int offset = 0, count = 0;
             if (!artistId) {
                 error = L"The artist id is invalid.";
                 break;
             }
-            if (!ToInt(cursor.offset, offset, error) || !ToInt(limit, count, error)) break;
+            OffsetWindow window;
+            if (!OffsetWindowOf(cursor, limit, window, error)) break;
             bool more = false;
             size_t received = 0;
-            if (!client.GetArtistSongsPage(artistId, offset, count, L"hot", *m_abort, hintSongs, &more, error,
-                                           &received))
+            if (!client.GetArtistSongsPage(artistId, window.offset, window.count, L"hot", *m_abort, hintSongs,
+                                           &more, error, &received))
                 break;
             page.rows = ToTracks(hintSongs);
-            page.next = {{}, cursor.offset + received};
-            page.more = more && received != 0;
+            stream::SetOffsetNext(page, cursor, received, more);
             break;
         }
         case stream::ListKind::ArtistAlbums: {
             const int64_t artistId = Num(query.id);
-            int offset = 0, count = 0;
             if (!artistId) {
                 error = L"The artist id is invalid.";
                 break;
             }
-            if (!ToInt(cursor.offset, offset, error) || !ToInt(limit, count, error)) break;
+            OffsetWindow window;
+            if (!OffsetWindowOf(cursor, limit, window, error)) break;
             std::vector<Album> albums;
             bool more = false;
             size_t received = 0;
-            if (!client.GetArtistAlbumsPage(artistId, offset, count, *m_abort, albums, nullptr, &more, error,
-                                            &received))
+            if (!client.GetArtistAlbumsPage(artistId, window.offset, window.count, *m_abort, albums, nullptr,
+                                            &more, error, &received))
                 break;
             Catalog::Get().Put(albums);
             page.rows = ToAlbums(albums);
-            page.next = {{}, cursor.offset + received};
-            page.more = more && received != 0;
+            stream::SetOffsetNext(page, cursor, received, more);
             break;
         }
         case stream::ListKind::SavedAlbums: {
-            int offset = 0, count = 0;
-            if (!ToInt(cursor.offset, offset, error) || !ToInt(limit, count, error)) break;
+            OffsetWindow window;
+            if (!OffsetWindowOf(cursor, limit, window, error)) break;
             std::vector<Album> albums;
             bool more = false;
             size_t received = 0;
-            if (!client.GetCollectedAlbumsPage(offset, count, *m_abort, albums, more, error, &received))
+            if (!client.GetCollectedAlbumsPage(window.offset, window.count, *m_abort, albums, more, error,
+                                               &received))
                 break;
             Catalog::Get().Put(albums);
             page.rows = ToAlbums(albums);
-            page.next = {{}, cursor.offset + received};
-            page.more = more && received != 0;
+            stream::SetOffsetNext(page, cursor, received, more);
             break;
         }
         case stream::ListKind::ArtistSimilarArtists: {
@@ -1762,18 +1801,18 @@ void StreamProvider::FetchListPage(const stream::ListQuery& query, const stream:
             break;
         }
         case stream::ListKind::FollowedArtists: {
-            int offset = 0, count = 0;
-            if (!ToInt(cursor.offset, offset, error) || !ToInt(limit, count, error)) break;
+            OffsetWindow window;
+            if (!OffsetWindowOf(cursor, limit, window, error)) break;
             std::vector<Artist> artists;
             bool more = false;
             size_t received = 0;
-            if (!client.GetFollowedArtistsPage(offset, count, *m_abort, artists, more, received, error))
+            if (!client.GetFollowedArtistsPage(window.offset, window.count, *m_abort, artists, more, received,
+                                               error))
                 break;
             for (const auto& artist : artists)
                 Catalog::Get().Put(artist);
             page.rows = ToArtists(artists);
-            page.next = {{}, cursor.offset + received};
-            page.more = more && received != 0;
+            stream::SetOffsetNext(page, cursor, received, more);
             break;
         }
         case stream::ListKind::CatalogSearch:
@@ -1781,23 +1820,26 @@ void StreamProvider::FetchListPage(const stream::ListQuery& query, const stream:
         case stream::ListKind::CatalogSearchArtists:
         case stream::ListKind::CatalogSearchPlaylists:
         case stream::ListKind::CatalogSearchLyrics: {
-            int offset = 0, count = 0;
-            if (!ToInt(cursor.offset, offset, error) || !ToInt(limit, count, error)) break;
+            OffsetWindow window;
+            if (!OffsetWindowOf(cursor, limit, window, error)) break;
             SearchPage found;
             bool ok = false;
             if (query.kind == stream::ListKind::CatalogSearch) {
-                ok = client.SearchSongsPage(query.search, count, offset, *m_abort, hintSongs, found, error);
+                ok = client.SearchSongsPage(query.search, window.count, window.offset, *m_abort, hintSongs,
+                                         found, error);
                 if (ok) page.rows = ToTracks(hintSongs);
             } else if (query.kind == stream::ListKind::CatalogSearchAlbums) {
                 std::vector<Album> albums;
-                ok = client.SearchAlbumsPage(query.search, count, offset, *m_abort, albums, found, error);
+                ok = client.SearchAlbumsPage(query.search, window.count, window.offset, *m_abort, albums,
+                                         found, error);
                 if (ok) {
                     Catalog::Get().Put(albums);
                     page.rows = ToAlbums(albums);
                 }
             } else if (query.kind == stream::ListKind::CatalogSearchArtists) {
                 std::vector<Artist> artists;
-                ok = client.SearchArtistsPage(query.search, count, offset, *m_abort, artists, found, error);
+                ok = client.SearchArtistsPage(query.search, window.count, window.offset, *m_abort, artists,
+                                         found, error);
                 if (ok) {
                     for (const auto& artist : artists)
                         Catalog::Get().Put(artist);
@@ -1805,7 +1847,8 @@ void StreamProvider::FetchListPage(const stream::ListQuery& query, const stream:
                 }
             } else if (query.kind == stream::ListKind::CatalogSearchPlaylists) {
                 std::vector<Playlist> playlists;
-                ok = client.SearchPlaylistsPage(query.search, count, offset, *m_abort, playlists, found, error);
+                ok = client.SearchPlaylistsPage(query.search, window.count, window.offset, *m_abort, playlists,
+                                         found, error);
                 if (ok) {
                     for (const auto& playlist : playlists)
                         Catalog::Get().Put(playlist);
@@ -1813,7 +1856,8 @@ void StreamProvider::FetchListPage(const stream::ListQuery& query, const stream:
                 }
             } else {
                 std::vector<LyricHit> hits;
-                ok = client.SearchLyricsPage(query.search, count, offset, *m_abort, hits, found, error);
+                ok = client.SearchLyricsPage(query.search, window.count, window.offset, *m_abort, hits,
+                                         found, error);
                 if (ok) {
                     std::vector<stream::Track> tracks;
                     for (auto& hit : hits) {
@@ -1827,8 +1871,7 @@ void StreamProvider::FetchListPage(const stream::ListQuery& query, const stream:
             }
             if (!ok) break;
             page.total = found.total;
-            page.next = {{}, cursor.offset + found.received};
-            page.more = found.more && found.received != 0;
+            stream::SetOffsetNext(page, cursor, found.received, found.more);
             break;
         }
         case stream::ListKind::CatalogSearchTopResults: {
