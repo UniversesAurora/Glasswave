@@ -5821,37 +5821,6 @@ void StreamProvider::FetchSavedAlbums(size_t offset, size_t limit, AlbumPageDone
     });
 }
 
-stream::ListCachePolicy StreamProvider::ListPolicy(const stream::ListQuery& query) const {
-    if (query.cache) return *query.cache;
-    if (stream::IsCatalogSearch(query.kind)) return stream::ListCachePolicy::None;
-    switch (query.kind) {
-    // Genres and composers are derived from the whole library (every song page); kept on disk
-    // they show at once after a restart while the derivation runs again behind them.
-    // An artist's lists too: kept in memory only, every visit read them again (owner,
-    // 2026-11-14); on disk they show at once and are re-read only when stale.
-    case stream::ListKind::ArtistTopTracks:
-    case stream::ListKind::ArtistAlbums:
-    case stream::ListKind::ArtistPlaylists:
-    case stream::ListKind::ArtistSimilarArtists:
-    case stream::ListKind::Groups:
-    case stream::ListKind::PlaylistTracks:
-    case stream::ListKind::Favorites:
-    case stream::ListKind::AlbumTracks:
-    case stream::ListKind::SectionTracks:
-    case stream::ListKind::SavedAlbums:
-    case stream::ListKind::FollowedArtists:
-    case stream::ListKind::Playlists:
-        return stream::ListCachePolicy::Persistent;
-    case stream::ListKind::CatalogSearch:
-    case stream::ListKind::CatalogSearchArtists:
-    case stream::ListKind::CatalogSearchAlbums:
-    case stream::ListKind::CatalogSearchPlaylists:
-    case stream::ListKind::CatalogSearchTopResults:
-        return stream::ListCachePolicy::None;
-    }
-    return stream::ListCachePolicy::Persistent;
-}
-
 std::string StreamProvider::ListCacheContext(const stream::ListQuery& query) const {
     (void)query;
     return AppleListCacheContext();

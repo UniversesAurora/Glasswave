@@ -74,7 +74,6 @@ class StreamProvider final : public stream::Provider {
     void FetchStationTracks(const stream::Id& station, TracksDone done) override;
     bool CanDislike(const stream::Id& station) const override;
     void DislikeStationTrack(const stream::Id& station, const stream::Id& track, Done done) override;
-    stream::ListCachePolicy ListPolicy(const stream::ListQuery& query) const override;
     void RestoreListRecords(const stream::ListPage& page) override;
 
     void WriteFavorite(const stream::Id& track, bool favorite, Done done) override;

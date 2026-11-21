@@ -1567,12 +1567,6 @@ void StreamProvider::FetchSavedAlbums(size_t offset, size_t limit, AlbumPageDone
         });
 }
 
-stream::ListCachePolicy StreamProvider::ListPolicy(const stream::ListQuery& query) const {
-    if (stream::IsCatalogSearch(query.kind)) return stream::ListCachePolicy::None;
-    if (query.cache) return *query.cache;
-    return stream::ListCachePolicy::Persistent;
-}
-
 void StreamProvider::RestoreListRecords(const stream::ListPage& page) {
     if (const auto trackRows = std::get_if<std::vector<stream::Track>>(&page.rows)) {
         std::vector<Song> songs;
