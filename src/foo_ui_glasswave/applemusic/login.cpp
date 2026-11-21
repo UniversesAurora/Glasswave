@@ -69,7 +69,13 @@ struct LoginState {
             std::wstring path;
             {
                 std::unique_lock lock(mutex);
-                wake.wait_for(lock, std::chrono::seconds(1), [this] { return stopping || pending; });
+                const auto ready = [this] { return stopping || pending; };
+                // Polled once a second only while an authorization is under way; otherwise the
+                // thread sleeps until a command arrives or the dialog closes.
+                if (active)
+                    wake.wait_for(lock, std::chrono::seconds(1), ready);
+                else
+                    wake.wait(lock, ready);
                 if (stopping) return;
                 if (pending) {
                     body.swap(command);
@@ -81,7 +87,7 @@ struct LoginState {
             }
             try {
                 if (!path.empty()) {
-                    Request(path, abort, L"POST", body);
+                    Request(path, abort, L"POST", std::move(body)); // wiped by the request
                     Erase(body);
                     active = true;
                 }
@@ -228,7 +234,8 @@ void ShowLogin(HWND owner, std::function<void()> onChanged) {
     wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
     wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_BTNFACE + 1);
     wc.lpszClassName = kClass;
-    RegisterClassW(&wc);
+    static const ATOM registered = RegisterClassW(&wc); // once; the class outlives the dialog
+    (void)registered;
     RECT rect{0, 0, 460, 330};
     const UINT dpi = owner ? GetDpiForWindow(owner) : 96;
     rect.right = MulDiv(rect.right, static_cast<int>(dpi), 96);

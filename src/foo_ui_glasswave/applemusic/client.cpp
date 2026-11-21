@@ -375,6 +375,14 @@ Object Request(std::wstring_view path, abort_callback& abort, std::wstring_view 
     net::HttpOptions options;
     options.method = verb;
     options.body = std::move(body);
+    // A sign-in body carries the Apple Account password: zeroed when the call returns (the copy
+    // WinHTTP made while sending, and the caller's JSON objects, are beyond this).
+    struct WipeBody {
+        std::string& text;
+        ~WipeBody() {
+            if (!text.empty()) SecureZeroMemory(text.data(), text.size());
+        }
+    } wipeBody{options.body};
     options.noProxy = true;
     options.timeoutMs = 30000;
     options.maxBodyBytes = 32u * 1024u * 1024u;
