@@ -90,12 +90,28 @@ struct AppleEncodedFetch {
         if (cleanup && !cleanup->transactionTag.empty())
             request->add_header("X-Glasswave-Probe-Transaction", cleanup->transactionTag.c_str());
         const auto source = request->run(url.c_str(), abort);
+        // The bridge states the length (Content-Length). A connection that closes before it is
+        // a failed transfer, not a whole song: kept as one, the decoder met the cut 12 s in and
+        // called the file corrupt (owner, 2026-11-21).
+        t_filesize expected = filesize_invalid;
+        try {
+            expected = source->get_size(abort);
+        } catch (const exception_aborted&) {
+            throw;
+        } catch (...) {
+        }
+        uint64_t received = 0;
         std::array<uint8_t, 64 * 1024> buffer{};
         for (;;) {
             const auto count = source->read(buffer.data(), buffer.size(), abort);
-            if (!count) return;
+            if (!count) break;
             sink.Write(buffer.data(), count, abort);
+            received += count;
         }
+        if (expected != filesize_invalid && received < expected)
+            throw exception_io_data(("The Apple Music audio transfer ended early (" + std::to_string(received) +
+                                     " of " + std::to_string(expected) + " bytes)")
+                                        .c_str());
     }
 
     std::string url;

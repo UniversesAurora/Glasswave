@@ -145,6 +145,16 @@ struct NcmEncodedFetch {
             renew();
         }
 
+        // The source's whole length (Content-Length of the first answer): a connection that
+        // closes before it continues from where it stopped, once, then counts as a failed
+        // transfer rather than a whole song (a cut song was kept as one and failed mid-play).
+        t_filesize total = filesize_invalid;
+        try {
+            total = source->get_size(abort);
+        } catch (const exception_aborted&) {
+            throw;
+        } catch (...) {
+        }
         std::array<uint8_t, 64 * 1024> buffer{};
         for (;;) {
             abort.check();
@@ -163,6 +173,17 @@ struct NcmEncodedFetch {
                 if (!position && !renewedAtPosition) {
                     renew();
                     continue;
+                }
+                if (total != filesize_invalid && position < total) {
+                    if (!renewedAtPosition) {
+                        Log(L"input: song " + std::to_wstring(songId) + L" transfer ended at byte " +
+                            std::to_wstring(position) + L" of " + std::to_wstring(total) + L"; continuing");
+                        renew();
+                        continue;
+                    }
+                    throw exception_io_data(("The NetEase audio transfer ended early (" + std::to_string(position) +
+                                             " of " + std::to_string(total) + " bytes)")
+                                                .c_str());
                 }
                 return;
             }
