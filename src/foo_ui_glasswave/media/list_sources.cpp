@@ -11,6 +11,7 @@
 #include "stream/provider.h"
 #include "ui/text.h"
 #include "ui/i18n.h"
+#include "ui/win32.h"
 #include <cwctype>
 
 namespace glasswave::media {
@@ -142,9 +143,8 @@ void ListSource::ToggleDownload(size_t row) {
     if (!item.is_valid()) return;
     if (const auto state = download::StateOf(item)) {
         if (state->state == download::State::Done &&
-            MessageBoxW(core_api::get_main_window(),
-                        ui::Tr(L"Remove this download? Its file goes to the Recycle Bin.").c_str(),
-                        ui::Tr(L"Download").c_str(), MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) == IDYES)
+            ui::Confirm(core_api::get_main_window(), ui::Tr(L"Download"),
+                        ui::Tr(L"Remove this download? Its file goes to the Recycle Bin.")))
             download::Forget({state->id}, true);
     } else if (download::Downloadable(item)) {
         metadb_handle_list items;

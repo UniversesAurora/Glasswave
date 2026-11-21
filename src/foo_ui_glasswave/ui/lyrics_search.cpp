@@ -2,6 +2,7 @@
 #include "ui/lyrics_search.h"
 #include "lyrics/scripts.h"
 #include "ui/i18n.h"
+#include "ui/win32.h"
 
 #include <commctrl.h>
 #include <shobjidl.h>
@@ -36,15 +37,7 @@ std::shared_ptr<State> StateOf(HWND window) {
     return holder ? *holder : nullptr;
 }
 
-int Dip(HWND window, int value) {
-    return MulDiv(value, static_cast<int>(GetDpiForWindow(window)), 96);
-}
-std::wstring Text(HWND window, int id) {
-    HWND edit = GetDlgItem(window, id);
-    std::wstring text(static_cast<size_t>(GetWindowTextLengthW(edit)) + 1, 0);
-    text.resize(static_cast<size_t>(GetWindowTextW(edit, text.data(), static_cast<int>(text.size()))));
-    return text;
-}
+std::wstring Text(HWND window, int id) { return ItemText(window, id); }
 
 int Selection(const State& state) {
     return ListView_GetNextItem(GetDlgItem(state.window, kResults), -1, LVNI_SELECTED);

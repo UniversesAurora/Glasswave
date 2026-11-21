@@ -5,6 +5,7 @@
 #include "lyrics/lyrics_service.h"
 #include "stream/provider.h"
 #include "ui/i18n.h"
+#include "ui/win32.h"
 
 #include <commdlg.h>
 #include <filesystem>
@@ -104,8 +105,7 @@ bool Save(HWND owner, const metadb_handle_ptr& track, const std::wstring& docume
     if (target == SaveTarget::Default) target = CanSave(track, SaveTarget::TrackFolder) ? SaveTarget::TrackFolder : SaveTarget::Profile;
     if (target == SaveTarget::Tag) {
         if (CanSave(track, target) && SaveTag(owner, track, document)) return true;
-        MessageBoxW(owner, Tr(L"The lyrics could not be written to the track's tags.").c_str(), Tr(L"Lyrics").c_str(),
-                    MB_OK | MB_ICONWARNING);
+        Notice(owner, Tr(L"Lyrics"), Tr(L"The lyrics could not be written to the track's tags."), true);
         return false;
     }
     std::wstring path;
@@ -118,8 +118,7 @@ bool Save(HWND owner, const metadb_handle_ptr& track, const std::wstring& docume
         console::print("Glasswave lyrics: saved to ", Utf8(path).c_str());
         return true;
     }
-    MessageBoxW(owner, (Tr(L"The lyrics could not be saved to") + L"\n" + path).c_str(), Tr(L"Lyrics").c_str(),
-                MB_OK | MB_ICONWARNING);
+    Notice(owner, Tr(L"Lyrics"), Tr(L"The lyrics could not be saved to") + L"\n" + path, true);
     return false;
 }
 
@@ -228,11 +227,6 @@ void Layout(Dialog& d) {
     }
 }
 
-std::wstring TextOf(HWND control) {
-    std::wstring s(static_cast<size_t>(GetWindowTextLengthW(control)) + 1, L'\0');
-    s.resize(static_cast<size_t>(GetWindowTextW(control, s.data(), static_cast<int>(s.size()))));
-    return s;
-}
 
 LRESULT CALLBACK Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     auto* d = reinterpret_cast<Dialog*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
@@ -268,7 +262,7 @@ LRESULT CALLBACK Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 d->options.standard = Checked(*d, kStandard);
                 d->options.mergeSame = Checked(*d, kMerge);
             } else if (d->kind == Kind::Offset) {
-                d->number = TextOf(Item(*d, kEdit));
+                d->number = WindowText(Item(*d, kEdit));
             }
             d->accepted = d->kind != Kind::Text;
             d->running = false;
@@ -308,8 +302,7 @@ HWND Control(Dialog& d, const wchar_t* cls, const std::wstring& text, DWORD styl
 // Runs `d` modally over `owner` until it is closed.
 void Run(Dialog& d, HWND owner, const std::wstring& title, int wDip, int hDip, bool resizable) {
     Register();
-    d.dpi = owner ? static_cast<int>(GetDpiForWindow(owner)) : 96;
-    if (d.dpi <= 0) d.dpi = 96;
+    d.dpi = static_cast<int>(DpiOf(owner));
     RECT ownerRect{0, 0, 800, 600};
     if (owner) GetWindowRect(owner, &ownerRect);
     DWORD style = WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_CLIPCHILDREN;

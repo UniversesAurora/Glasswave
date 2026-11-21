@@ -21,6 +21,7 @@
 #include "ui/text.h"
 #include "win7/win7_resources.h"
 #include "wmp/wmp_transport.h"
+#include "ui/win32.h"
 
 #include <winrt/Windows.Foundation.Collections.h>
 
@@ -850,14 +851,7 @@ LRESULT CALLBACK PlayerWindow::WndProcThunk(HWND hwnd, UINT msg, WPARAM wp, LPAR
         self = reinterpret_cast<PlayerWindow*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
     }
     if (!self) return DefWindowProcW(hwnd, msg, wp, lp);
-    try {
-        return self->WndProc(msg, wp, lp);
-    } catch (const std::exception& e) {
-        console::complain("Glasswave", e.what());
-    } catch (const winrt::hresult_error& e) {
-        console::complain("Glasswave", pfc::stringcvt::string_utf8_from_wide(e.message().c_str()));
-    }
-    return DefWindowProcW(hwnd, msg, wp, lp);
+    return GuardedWindowProc(hwnd, msg, wp, lp, [&] { return self->WndProc(msg, wp, lp); });
 }
 
 void PlayerWindow::Create() {

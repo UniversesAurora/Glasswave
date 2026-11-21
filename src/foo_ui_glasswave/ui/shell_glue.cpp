@@ -5,6 +5,7 @@
 #include "gfx/composition_host.h"
 #include "ui/i18n.h"
 #include "ui/text.h"
+#include "ui/win32.h"
 
 #include <commdlg.h>
 #include <filesystem>
@@ -31,8 +32,7 @@ const wchar_t* ArtExtension(const album_art_data::ptr& data) {
 void SaveArtData(HWND owner, const album_art_data::ptr& data, std::wstring name) {
     if (!IsWindow(owner)) return;
     if (!data.is_valid() || data->get_size() == 0) {
-        MessageBoxW(owner, Tr(L"This song has no album art.").c_str(), Tr(L"Save album art").c_str(),
-                    MB_OK | MB_ICONINFORMATION);
+        Notice(owner, Tr(L"Save album art"), Tr(L"This song has no album art."));
         return;
     }
     const std::wstring ext = ArtExtension(data);
@@ -50,8 +50,7 @@ void SaveArtData(HWND owner, const album_art_data::ptr& data, std::wstring name)
     std::ofstream out(std::filesystem::path(file), std::ios::binary | std::ios::trunc);
     out.write(static_cast<const char*>(data->get_ptr()), static_cast<std::streamsize>(data->get_size()));
     if (!out)
-        MessageBoxW(owner, Tr(L"The picture could not be saved.").c_str(), Tr(L"Save album art").c_str(),
-                    MB_OK | MB_ICONWARNING);
+        Notice(owner, Tr(L"Save album art"), Tr(L"The picture could not be saved."), true);
 }
 
 }  // namespace

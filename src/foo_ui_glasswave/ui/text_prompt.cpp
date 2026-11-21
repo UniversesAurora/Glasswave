@@ -1,6 +1,7 @@
 #include "pch.h"
 #include "ui/text_prompt.h"
 #include "ui/i18n.h"
+#include "ui/win32.h"
 
 #include <commctrl.h>
 
@@ -29,10 +30,6 @@ std::shared_ptr<PromptState> StateOf(HWND hwnd) {
     return holder && *holder ? *holder : nullptr;
 }
 
-int Dip(HWND hwnd, int value) {
-    const UINT dpi = hwnd ? GetDpiForWindow(hwnd) : 96;
-    return MulDiv(value, static_cast<int>(dpi), 96);
-}
 
 void LayoutPrompt(PromptState& state) {
     RECT client{};
@@ -60,12 +57,7 @@ void ClosePrompt(const std::shared_ptr<PromptState>& state) {
 void Submit(const std::shared_ptr<PromptState>& state) {
     if (!state || state->closed) return;
     std::wstring text;
-    if (state->edit) {
-        const int length = GetWindowTextLengthW(state->edit);
-        text.resize(static_cast<size_t>(std::max(length, 0)) + 1);
-        const int got = GetWindowTextW(state->edit, text.data(), static_cast<int>(text.size()));
-        text.resize(static_cast<size_t>(std::max(got, 0)));
-    }
+    if (state->edit) text = WindowText(state->edit);
     auto callback = std::move(state->onOk);
     state->onOk = {};
     DestroyWindow(state->hwnd);
@@ -186,7 +178,7 @@ void PromptText(HWND owner, std::wstring title, std::wstring label, std::wstring
     state->hwnd = hwnd;
     SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(new std::shared_ptr<PromptState>(state)));
 
-    const UINT dpi = GetDpiForWindow(hwnd) ? GetDpiForWindow(hwnd) : 96;
+    const UINT dpi = DpiOf(hwnd);
     state->font = CreateFontW(-MulDiv(12, static_cast<int>(dpi), 72), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
                               DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
                               DEFAULT_PITCH, L"Segoe UI");

@@ -15,6 +15,7 @@
 #include "ui/text.h"
 #include "ui/text_prompt.h"
 #include "stream/list_session.h"
+#include "ui/win32.h"
 
 #include <cstdint>
 #include <cwctype>
@@ -2868,9 +2869,7 @@ void DeleteRemotePlaylist(PageHost& host, stream::Provider& provider, const stre
     if (!provider.AccountVerified()) return;
     const std::wstring deleteText = ProviderPlaylistText(provider, L"Delete playlist");
     const std::wstring message = deleteText + L" \"" + name + L"\"?\n" + Tr(L"This cannot be undone.");
-    if (MessageBoxW(host.Owner(), message.c_str(), deleteText.c_str(),
-                    MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) != IDYES)
-        return;
+    if (!Confirm(host.Owner(), deleteText, message, true)) return;
     stream::NavigationSection section = CreatedPlaylistSection(provider);
     if (const auto current = FindSection(provider, sectionId);
         current && current->kind == stream::SectionKind::PlaylistShelf)

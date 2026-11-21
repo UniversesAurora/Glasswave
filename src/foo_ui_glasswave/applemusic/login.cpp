@@ -5,6 +5,7 @@
 #include "core/json.h"
 #include "stream/provider.h"
 #include "ui/i18n.h"
+#include "ui/win32.h"
 
 #include <atomic>
 
@@ -19,13 +20,8 @@ HWND g_window = nullptr;
 
 using core::Utf8;
 
-std::wstring Text(HWND window, int id) {
-    HWND edit = GetDlgItem(window, id);
-    std::wstring value(static_cast<size_t>(GetWindowTextLengthW(edit)) + 1, L'\0');
-    const int count = GetWindowTextW(edit, value.data(), static_cast<int>(value.size()));
-    value.resize(static_cast<size_t>(std::max(0, count)));
-    return value;
-}
+using ui::Dip;
+std::wstring Text(HWND window, int id) { return ui::ItemText(window, id); }
 template <typename String> void Erase(String& text) {
     if (!text.empty()) SecureZeroMemory(text.data(), text.size() * sizeof(typename String::value_type));
     text.clear();
@@ -125,7 +121,6 @@ struct LoginState {
 };
 
 LoginState* State(HWND hwnd) { return reinterpret_cast<LoginState*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA)); }
-int Dip(HWND hwnd, int value) { return MulDiv(value, static_cast<int>(GetDpiForWindow(hwnd)), 96); }
 void Control(LoginState& state, const wchar_t* type, const wchar_t* label, int id, DWORD style,
              int x, int y, int width, int height) {
     const auto text = ui::Tr(label);
@@ -237,9 +232,8 @@ void ShowLogin(HWND owner, std::function<void()> onChanged) {
     static const ATOM registered = RegisterClassW(&wc); // once; the class outlives the dialog
     (void)registered;
     RECT rect{0, 0, 460, 330};
-    const UINT dpi = owner ? GetDpiForWindow(owner) : 96;
-    rect.right = MulDiv(rect.right, static_cast<int>(dpi), 96);
-    rect.bottom = MulDiv(rect.bottom, static_cast<int>(dpi), 96);
+    rect.right = Dip(owner, rect.right);
+    rect.bottom = Dip(owner, rect.bottom);
     AdjustWindowRectExForDpi(&rect, WS_CAPTION | WS_SYSMENU, FALSE, WS_EX_CONTROLPARENT, dpi);
     g_window = CreateWindowExW(WS_EX_CONTROLPARENT, kClass, ui::Tr(L"Sign in to Apple Music").c_str(),
                                  WS_CAPTION | WS_SYSMENU, CW_USEDEFAULT, CW_USEDEFAULT,

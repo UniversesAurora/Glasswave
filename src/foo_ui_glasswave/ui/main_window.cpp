@@ -38,6 +38,7 @@
 #include "media/playback_scheduler.h"
 #include "stream/playback_source.h"
 #include "stream/provider.h"
+#include "ui/win32.h"
 #include "ui/art_cache.h"
 #include "ui/cover_tint.h"
 #include "ui/pane_common.h"
@@ -925,15 +926,7 @@ LRESULT CALLBACK MainWindow::WndProcThunk(HWND hwnd, UINT msg, WPARAM wp, LPARAM
         LRESULT ret = 0;
         if (self->m_hook(hwnd, msg, wp, lp, &ret)) return ret;
     }
-    try {
-        return self->WndProc(msg, wp, lp);
-    } catch (const std::exception& e) {
-        console::complain("Glasswave", e.what());
-        return DefWindowProcW(hwnd, msg, wp, lp);
-    } catch (const winrt::hresult_error& e) {
-        console::complain("Glasswave", pfc::stringcvt::string_utf8_from_wide(e.message().c_str()));
-        return DefWindowProcW(hwnd, msg, wp, lp);
-    }
+    return GuardedWindowProc(hwnd, msg, wp, lp, [&] { return self->WndProc(msg, wp, lp); });
 }
 
 // ---- Composition visual tree ---------------------------------------------------------
@@ -3301,8 +3294,7 @@ void MainWindow::ShowLyricsMenu(POINT screen) {
                                if (result.status == lyrics::Status::Found)
                                    OnLyrics(result);
                                else
-                                   MessageBoxW(owner, Tr(L"The file contains no readable lyrics.").c_str(),
-                                               Tr(L"Lyrics").c_str(), MB_OK | MB_ICONINFORMATION);
+                                   Notice(owner, Tr(L"Lyrics"), Tr(L"The file contains no readable lyrics."));
                            }});
         actions.push_back({Tr(L"Reload lyrics"), [this, now] { RequestLyrics(now, false); }});
         actions.push_back({Tr(L"Search for lyrics again"), [this, now] { RequestLyrics(now, true); }});
@@ -3457,8 +3449,7 @@ void MainWindow::AddLyricsDocumentActions(std::vector<MenuAction>& actions, HWND
         if (result.status == lyrics::Status::Found)
             OnLyrics(result);
         else
-            MessageBoxW(owner, Tr(L"The lyric file could not be read in this encoding.").c_str(), Tr(L"Lyrics").c_str(),
-                        MB_OK | MB_ICONINFORMATION);
+            Notice(owner, Tr(L"Lyrics"), Tr(L"The lyric file could not be read in this encoding."));
     };
     MenuAction autoDetect{Tr(L"Auto detect"), [reencode] { reencode(0); }};
     autoDetect.checked = found && found->codePage == 0;

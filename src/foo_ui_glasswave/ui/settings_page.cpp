@@ -14,6 +14,7 @@
 #include "ui/art_cache.h"
 #include "ui/i18n.h"
 #include "ui/main_window.h"
+#include "ui/win32.h"
 
 #include <commctrl.h>
 
@@ -121,8 +122,8 @@ std::vector<Section> BuildSections() {
           Number(L"Songs shown in Recently Played and Most Played", L"songs", settings::kPlayHistoryRows,
                  settings::PlayHistoryRows, settings::SetPlayHistoryRows),
           Button(L"Clear play history...", [](HWND owner) {
-              if (MessageBoxW(owner, Tr(L"Clear Recently Played and Most Played? This cannot be undone.").c_str(),
-                              Tr(L"Play history").c_str(), MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) != IDYES)
+              if (!Confirm(owner, Tr(L"Play history"),
+                           Tr(L"Clear Recently Played and Most Played? This cannot be undone."), true))
                   return;
               media::PlayStats::Get().ForgetAllRecent();
               media::PlayStats::Get().ClearAllCounts();
@@ -333,7 +334,7 @@ private:
         }
     }
 
-    int Px(int dip) const { return MulDiv(dip, static_cast<int>(GetDpiForWindow(m_hwnd)), 96); }
+    int Px(int dip) const { return Dip(m_hwnd, dip); }
 
     HWND Make(const wchar_t* cls, const std::wstring& text, DWORD style, int x, int y, int w, int h, HFONT font) {
         HWND child = CreateWindowExW(0, cls, text.c_str(), WS_CHILD | WS_VISIBLE | style, x, y, w, h, m_hwnd,
@@ -438,11 +439,7 @@ private:
             if (row.field->kind == Field::Kind::Note) SetWindowTextW(row.control, row.field->note().c_str());
     }
 
-    static std::wstring ReadText(HWND control) {
-        std::wstring text(static_cast<size_t>(GetWindowTextLengthW(control)) + 1, L'\0');
-        text.resize(static_cast<size_t>(GetWindowTextW(control, text.data(), static_cast<int>(text.size()))));
-        return text;
-    }
+    static std::wstring ReadText(HWND control) { return WindowText(control); }
 
     static int ReadNumber(const Row& row) {
         const std::wstring text = ReadText(row.control);

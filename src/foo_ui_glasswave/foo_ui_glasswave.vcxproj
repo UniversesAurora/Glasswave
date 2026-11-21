@@ -285,6 +285,7 @@
     <ClCompile Include="ui\page.cpp" />
     <ClCompile Include="gfx\motion.cpp" />
     <ClCompile Include="ui\scroll_bar.cpp" />
+    <ClCompile Include="ui\win32.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="cd\disc.h" />
@@ -434,6 +435,7 @@
     <ClInclude Include="gfx\motion.h" />
     <ClInclude Include="ui\scroll_bar.h" />
     <ClInclude Include="ui\fling.h" />
+    <ClInclude Include="ui\win32.h" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="$(SdkRoot)pfc\pfc.vcxproj">

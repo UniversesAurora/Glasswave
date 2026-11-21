@@ -2,6 +2,7 @@
 #include "netease/login.h"
 #include "netease/session.h"
 #include "ui/i18n.h"
+#include "ui/win32.h"
 
 #include <gdiplus.h>
 #include <objidl.h>
@@ -60,10 +61,7 @@ std::shared_ptr<LoginState> StateOf(HWND hwnd) {
     return holder && *holder ? *holder : nullptr;
 }
 
-int Dip(HWND hwnd, int value) {
-    const UINT dpi = hwnd ? GetDpiForWindow(hwnd) : 96;
-    return MulDiv(value, static_cast<int>(dpi), 96);
-}
+using ui::Dip;
 
 void FreeQr(LoginState& state) {
     delete state.qr;
@@ -476,7 +474,7 @@ void ShowLogin(HWND owner, std::function<void()> onSuccess) {
     state->hwnd = hwnd;
     SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(new std::shared_ptr<LoginState>(state)));
 
-    const UINT dpi = GetDpiForWindow(hwnd) ? GetDpiForWindow(hwnd) : 96;
+    const UINT dpi = ui::DpiOf(hwnd);
     state->titleFont = CreateFontW(-MulDiv(15, static_cast<int>(dpi), 72), 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
                                    DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
                                    DEFAULT_PITCH, L"Segoe UI");

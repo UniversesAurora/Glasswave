@@ -8,6 +8,7 @@
 #include "ui/remote_grids.h"
 #include "ui/text.h"
 #include "ui/win7_menu.h"
+#include "ui/win32.h"
 
 #include <ShlObj.h>
 #include <shobjidl.h>
@@ -144,13 +145,11 @@ std::wstring PickFile(HWND owner, const metadb_handle_ptr& handle) {
 // Queues the songs; says so when none could be (all downloaded or queued already).
 void Queue(HWND owner, const metadb_handle_list& items, const std::wstring& root) {
     if (!download::AnyDownloadable(items)) {
-        MessageBoxW(owner, Tr(L"None of these songs can be downloaded.").c_str(), Tr(L"Download").c_str(),
-                    MB_OK | MB_ICONINFORMATION);
+        Notice(owner, Tr(L"Download"), Tr(L"None of these songs can be downloaded."));
         return;
     }
     if (download::Add(items, root) == 0)
-        MessageBoxW(owner, Tr(L"These songs are already downloaded or downloading.").c_str(), Tr(L"Download").c_str(),
-                    MB_OK | MB_ICONINFORMATION);
+        Notice(owner, Tr(L"Download"), Tr(L"These songs are already downloaded or downloading."));
 }
 
 // ---- the lists --------------------------------------------------------------------------------
@@ -390,8 +389,7 @@ class DownloadsPage final : public Page {
                                const std::wstring text = count == 1
                                                              ? Tr(L"Move the downloaded file to the Recycle Bin?")
                                                              : Tr(L"Move the downloaded files to the Recycle Bin?");
-                               if (MessageBoxW(owner, text.c_str(), Tr(L"Delete file").c_str(),
-                                               MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) == IDYES)
+                               if (Confirm(owner, Tr(L"Delete file"), text))
                                    download::Forget(ids, true);
                            }});
     }
