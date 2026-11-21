@@ -222,6 +222,17 @@ std::optional<std::vector<std::size_t>> JsonArray(std::string_view json, std::st
     return values;
 }
 
+// foobar2000's playback queue as it is now.
+std::vector<t_playback_queue_item> CoreQueueSnapshot() {
+    pfc::list_t<t_playback_queue_item> queue;
+    playlist_manager::get()->queue_get_contents(queue);
+    std::vector<t_playback_queue_item> items;
+    items.reserve(queue.get_count());
+    for (const auto& item : queue)
+        items.push_back(item);
+    return items;
+}
+
 bool CanReplayQueueItem(const t_playback_queue_item& item) {
     if (item.m_handle.is_empty() && item.m_playlist == SIZE_MAX) return false;
     auto manager = playlist_manager::get();
@@ -295,6 +306,10 @@ struct PlaybackScheduler::Impl {
     std::vector<PlaybackOccurrenceId> AllocateOccurrences(const metadb_handle_list& items);
     metadb_handle_list HandlesFor(std::span<const PlaybackOccurrenceId> occurrences) const;
     bool ApplyProjection();
+    bool ApplyPhysicalOrder(const std::vector<PlaybackOccurrenceId>& desired);
+    void SetPhysical(std::vector<PlaybackOccurrenceId> order);
+    void ReindexPhysical();
+    std::vector<PlaybackOccurrenceId> ResetModelFresh(const metadb_handle_list& items, std::size_t start);
     void RemapOwnedCoreQueue(const std::vector<PlaybackOccurrenceId>& oldPhysical);
     bool RebuildCoreQueue(const std::vector<t_playback_queue_item>& items);
     bool PrependCoreQueue(std::span<const PlaybackOccurrenceId> occurrences);
@@ -483,6 +498,35 @@ void PlaybackScheduler::Impl::EnsureModel() {
     if (loaded) ApplyProjection();
 }
 
+// The occurrences' physical order, and the index from occurrence to row that follows it.
+void PlaybackScheduler::Impl::SetPhysical(std::vector<PlaybackOccurrenceId> order) {
+    physical = std::move(order);
+    ReindexPhysical();
+}
+
+void PlaybackScheduler::Impl::ReindexPhysical() {
+    physicalIndex.clear();
+    for (std::size_t i = 0; i < physical.size(); ++i)
+        physicalIndex[physical[i]] = i;
+}
+
+// A fresh source of `items` played from `start`: the sidecar, the schedule and the physical
+// order begin anew (PlayQueue, AdoptPlaying). Returns the items' occurrences in their order.
+std::vector<PlaybackOccurrenceId> PlaybackScheduler::Impl::ResetModelFresh(const metadb_handle_list& items,
+                                                                           std::size_t start) {
+    physical.clear();
+    physicalIndex.clear();
+    handles.clear();
+    modelInitialized = false;
+    auto occurrences = AllocateOccurrences(items);
+    schedule.ResetFresh(std::span<const PlaybackOccurrenceId>(occurrences), start, NextSeed());
+    SetPhysical(schedule.ProjectionOrder());
+    modelInitialized = true;
+    ++contentGeneration;
+    checkpointDirty = true;
+    return occurrences;
+}
+
 bool PlaybackScheduler::Impl::PlayQueue(const metadb_handle_list& items, std::size_t start) {
     PFC_ASSERT(core_api::is_main_thread());
     if (!started || items.get_count() == 0) return false;
@@ -490,21 +534,7 @@ bool PlaybackScheduler::Impl::PlayQueue(const metadb_handle_list& items, std::si
     if (!RemoveOwnedCoreQueueEntries())
         console::print("Glasswave: stale explicit queue rows could not be removed.");
     InvalidatePosted();
-    physical.clear();
-    physicalIndex.clear();
-    handles.clear();
-    modelInitialized = false;
-
-    auto occurrences = AllocateOccurrences(items);
-    start = std::min(start, occurrences.size() - 1);
-    schedule.ResetFresh(std::span<const PlaybackOccurrenceId>(occurrences), start, NextSeed());
-    physical = schedule.ProjectionOrder();
-    physicalIndex.clear();
-    for (std::size_t i = 0; i < physical.size(); ++i)
-        physicalIndex[physical[i]] = i;
-    modelInitialized = true;
-    ++contentGeneration;
-    checkpointDirty = true;
+    ResetModelFresh(items, std::min(start, items.get_count() - 1));
 
     const auto ordered = HandlesFor(physical);
     auto manager = playlist_manager::get();
@@ -548,19 +578,7 @@ bool PlaybackScheduler::Impl::AdoptPlaying(const metadb_handle_list& items, std:
     InvalidatePosted();
     CancelSynchronize();
     wholeReplaceDirty = false; // the outside replacement this adopts is settled here
-    physical.clear();
-    physicalIndex.clear();
-    handles.clear();
-    modelInitialized = false;
-
-    const auto occurrences = AllocateOccurrences(items);
-    schedule.ResetFresh(std::span<const PlaybackOccurrenceId>(occurrences), start, NextSeed());
-    physical = schedule.ProjectionOrder();
-    for (std::size_t i = 0; i < physical.size(); ++i)
-        physicalIndex[physical[i]] = i;
-    modelInitialized = true;
-    ++contentGeneration;
-    checkpointDirty = true;
+    const auto occurrences = ResetModelFresh(items, start);
 
     const auto ordered = HandlesFor(physical);
     const std::size_t at = physicalIndex[occurrences[start]];
@@ -621,12 +639,7 @@ bool PlaybackScheduler::Impl::InsertNewOccurrences(const metadb_handle_list& ite
     const auto seedBefore = schedule.seed();
     const auto physicalBefore = physical;
     const auto ownedBefore = ownedCoreQueue;
-    pfc::list_t<t_playback_queue_item> queueListBefore;
-    playlist_manager::get()->queue_get_contents(queueListBefore);
-    std::vector<t_playback_queue_item> queueBefore;
-    queueBefore.reserve(queueListBefore.get_count());
-    for (const auto& item : queueListBefore)
-        queueBefore.push_back(item);
+    std::vector<t_playback_queue_item> queueBefore = CoreQueueSnapshot();
     const auto checkpointDirtyBefore = checkpointDirty;
     const auto nextOccurrenceBefore = nextOccurrence;
     const auto probeIndexBefore = g_probeCurrentIndex;
@@ -657,10 +670,7 @@ bool PlaybackScheduler::Impl::InsertNewOccurrences(const metadb_handle_list& ite
         }
         mapGuard = false;
         schedule.RestoreSnapshot(scheduleBefore, seedBefore);
-        physical = physicalBefore;
-        physicalIndex.clear();
-        for (std::size_t i = 0; i < physical.size(); ++i)
-            physicalIndex[physical[i]] = i;
+        SetPhysical(physicalBefore);
         for (const auto occurrence : occurrences)
             handles.erase(occurrence);
         nextOccurrence = nextOccurrenceBefore;
@@ -723,15 +733,14 @@ std::vector<std::size_t> PlaybackScheduler::Impl::ScheduledUpcomingIndices() {
 std::vector<ScheduledUpcomingEntry> PlaybackScheduler::Impl::ScheduledUpcomingSnapshot(bool display) {
     PFC_ASSERT(core_api::is_main_thread());
     std::vector<ScheduledUpcomingEntry> out;
-    pfc::list_t<t_playback_queue_item> queue;
-    playlist_manager::get()->queue_get_contents(queue);
+    const auto queue = CoreQueueSnapshot();
     const auto upcoming = modelInitialized ? (display ? schedule.DisplayUpcoming() : schedule.Upcoming())
                                            : std::vector<PlaybackOccurrenceId>{};
-    out.reserve(queue.get_count() + upcoming.size());
+    out.reserve(queue.size() + upcoming.size());
     std::unordered_set<std::size_t> coveredPhysical;
     const t_size queuePlaylist = QueuePlaylist(false);
     auto owned = BucketQueueItems(ownedCoreQueue);
-    for (std::size_t i = 0; i < queue.get_count(); ++i) {
+    for (std::size_t i = 0; i < queue.size(); ++i) {
         const auto& item = queue[i];
         const bool isOwned = TakeMatchingQueueItem(owned, item);
         out.push_back(
@@ -776,12 +785,7 @@ bool PlaybackScheduler::Impl::ReorderUpcomingSnapshot(std::uint64_t expectedRevi
     }
     if (!byToken.empty()) return false;
 
-    pfc::list_t<t_playback_queue_item> queueList;
-    playlist_manager::get()->queue_get_contents(queueList);
-    std::vector<t_playback_queue_item> queueBefore;
-    queueBefore.reserve(queueList.get_count());
-    for (const auto& item : queueList)
-        queueBefore.push_back(item);
+    std::vector<t_playback_queue_item> queueBefore = CoreQueueSnapshot();
 
     const auto scheduleBefore = schedule.Snapshot();
     const auto seedBefore = schedule.seed();
@@ -790,41 +794,6 @@ bool PlaybackScheduler::Impl::ReorderUpcomingSnapshot(std::uint64_t expectedRevi
     const auto probeIndexBefore = g_probeCurrentIndex;
     const auto currentOccurrence = schedule.Current();
 
-    const auto applyPhysical = [this](const std::vector<PlaybackOccurrenceId>& desired) {
-        if (desired == physical) return true;
-        const auto oldPhysical = physical;
-        std::unordered_map<PlaybackOccurrenceId, std::size_t> oldIndex;
-        oldIndex.reserve(physical.size());
-        for (std::size_t i = 0; i < physical.size(); ++i)
-            oldIndex[physical[i]] = i;
-        std::vector<t_size> permutation;
-        permutation.reserve(desired.size());
-        for (const auto occurrence : desired) {
-            const auto found = oldIndex.find(occurrence);
-            if (found == oldIndex.end()) return false;
-            permutation.push_back(found->second);
-        }
-        const t_size queue = QueuePlaylist(false);
-        if (queue == SIZE_MAX) return false;
-        mapGuard = true;
-        bool changed = false;
-        try {
-            auto manager = playlist_manager::get();
-            manager->playlist_undo_backup(queue);
-            changed = manager->playlist_reorder_items(queue, permutation.data(), permutation.size());
-        } catch (...) {
-            mapGuard = false;
-            return false;
-        }
-        mapGuard = false;
-        if (!changed) return false;
-        physical = desired;
-        physicalIndex.clear();
-        for (std::size_t i = 0; i < physical.size(); ++i)
-            physicalIndex[physical[i]] = i;
-        RemapOwnedCoreQueue(oldPhysical);
-        return true;
-    };
 
     std::vector<PlaybackOccurrenceId> desiredFuture;
     std::vector<std::optional<PlaybackOccurrenceId>> orderedOccurrences(ordered.size());
@@ -865,7 +834,7 @@ bool PlaybackScheduler::Impl::ReorderUpcomingSnapshot(std::uint64_t expectedRevi
 
     const auto rollback = [&] {
         schedule.RestoreSnapshot(scheduleBefore, seedBefore);
-        applyPhysical(physicalBefore);
+        ApplyPhysicalOrder(physicalBefore);
         RebuildCoreQueue(queueBefore);
         ownedCoreQueue = ownedBefore;
         g_probeCurrentIndex = probeIndexBefore;
@@ -885,7 +854,7 @@ bool PlaybackScheduler::Impl::ReorderUpcomingSnapshot(std::uint64_t expectedRevi
             rollback();
             return false;
         }
-    } else if (!applyPhysical(physicalAfter) ||
+    } else if (!ApplyPhysicalOrder(physicalAfter) ||
                !schedule.AdoptPhysicalOrder(std::span<const PlaybackOccurrenceId>(physicalAfter), currentAfter)) {
         rollback();
         return false;
@@ -1002,9 +971,7 @@ std::size_t PlaybackScheduler::Impl::EnsureSidecar() {
         exact = found != handles.end() && found->second == items[i];
     }
     if (!exact) RebuildSidecar(items);
-    physicalIndex.clear();
-    for (std::size_t i = 0; i < physical.size(); ++i)
-        physicalIndex[physical[i]] = i;
+    ReindexPhysical();
     return CurrentQueueIndex(physical.size(), true);
 }
 
@@ -1048,10 +1015,16 @@ bool PlaybackScheduler::Impl::ApplyProjection() {
     if (!modelInitialized || mapGuard) return false;
     const auto desired = schedule.ProjectionOrder();
     if (desired.size() != physical.size()) return false;
-    if (desired == physical) {
-        return true;
-    }
+    if (ApplyPhysicalOrder(desired)) return true;
+    ScheduleSynchronize(); // the playlist and the model disagree: read the playlist again
+    return false;
+}
 
+// Reorders the queue playlist's rows into `desired`, a permutation of the physical order: the
+// playlist (one undo step), the physical order and the core queue entries that point into it
+// move together. False when `desired` is no permutation of it or foobar2000 refused.
+bool PlaybackScheduler::Impl::ApplyPhysicalOrder(const std::vector<PlaybackOccurrenceId>& desired) {
+    if (desired == physical) return true;
     const auto oldPhysical = physical;
     std::unordered_map<PlaybackOccurrenceId, std::size_t> oldIndex;
     oldIndex.reserve(physical.size());
@@ -1064,22 +1037,21 @@ bool PlaybackScheduler::Impl::ApplyProjection() {
         if (found == oldIndex.end()) return false;
         permutation.push_back(found->second);
     }
-
     const t_size queue = QueuePlaylist(false);
     if (queue == SIZE_MAX) return false;
     mapGuard = true;
-    auto manager = playlist_manager::get();
-    manager->playlist_undo_backup(queue);
-    const bool changed = manager->playlist_reorder_items(queue, permutation.data(), permutation.size());
-    mapGuard = false;
-    if (!changed) {
-        ScheduleSynchronize();
+    bool changed = false;
+    try {
+        auto manager = playlist_manager::get();
+        manager->playlist_undo_backup(queue);
+        changed = manager->playlist_reorder_items(queue, permutation.data(), permutation.size());
+    } catch (...) {
+        mapGuard = false;
         return false;
     }
-    physical = desired;
-    physicalIndex.clear();
-    for (std::size_t i = 0; i < physical.size(); ++i)
-        physicalIndex[physical[i]] = i;
+    mapGuard = false;
+    if (!changed) return false;
+    SetPhysical(desired);
     RemapOwnedCoreQueue(oldPhysical);
     return true;
 }
@@ -1107,14 +1079,7 @@ bool PlaybackScheduler::Impl::RebuildCoreQueue(const std::vector<t_playback_queu
 
     auto manager = playlist_manager::get();
     // The queue as it is now, to put back if the rebuild fails half way.
-    std::vector<t_playback_queue_item> before;
-    {
-        pfc::list_t<t_playback_queue_item> current;
-        manager->queue_get_contents(current);
-        before.reserve(current.get_count());
-        for (const auto& item : current)
-            before.push_back(item);
-    }
+    const std::vector<t_playback_queue_item> before = CoreQueueSnapshot();
     const auto replace = [&](const std::vector<t_playback_queue_item>& list) {
         manager->queue_remove_mask(pfc::bit_array_true());
         for (const auto& item : list) {
@@ -1154,12 +1119,7 @@ void PlaybackScheduler::Impl::ReconcileOwnedCoreQueue(const std::vector<t_playba
 bool PlaybackScheduler::Impl::PrependCoreQueue(std::span<const PlaybackOccurrenceId> occurrences) {
     const t_size queue = QueuePlaylist(false);
     if (queue == SIZE_MAX) return false;
-    pfc::list_t<t_playback_queue_item> current;
-    playlist_manager::get()->queue_get_contents(current);
-    std::vector<t_playback_queue_item> snapshot;
-    snapshot.reserve(current.get_count());
-    for (const auto& item : current)
-        snapshot.push_back(item);
+    std::vector<t_playback_queue_item> snapshot = CoreQueueSnapshot();
     ReconcileOwnedCoreQueue(snapshot);
 
     std::vector<t_playback_queue_item> block;
@@ -1185,12 +1145,7 @@ bool PlaybackScheduler::Impl::PrependCoreQueue(std::span<const PlaybackOccurrenc
 }
 
 bool PlaybackScheduler::Impl::RemoveOwnedCoreQueueEntries() {
-    pfc::list_t<t_playback_queue_item> queue;
-    playlist_manager::get()->queue_get_contents(queue);
-    std::vector<t_playback_queue_item> snapshot;
-    snapshot.reserve(queue.get_count());
-    for (const auto& item : queue)
-        snapshot.push_back(item);
+    std::vector<t_playback_queue_item> snapshot = CoreQueueSnapshot();
     ReconcileOwnedCoreQueue(snapshot);
     if (ownedCoreQueue.empty()) return true;
 
@@ -1205,12 +1160,9 @@ bool PlaybackScheduler::Impl::RemoveOwnedCoreQueueEntries() {
 }
 
 bool PlaybackScheduler::Impl::RemoveCoreQueueItem(const t_playback_queue_item& item) {
-    pfc::list_t<t_playback_queue_item> queue;
-    playlist_manager::get()->queue_get_contents(queue);
     std::vector<t_playback_queue_item> updated;
-    updated.reserve(queue.get_count());
     bool removed = false;
-    for (const auto& current : queue) {
+    for (const auto& current : CoreQueueSnapshot()) {
         if (!removed && current == item) {
             removed = true;
             continue;
@@ -1268,12 +1220,7 @@ bool PlaybackScheduler::Impl::StartExplicitAt(PlaybackOccurrenceId occurrence) {
             });
         if (selectedQueueItem != ownedCoreQueue.end()) {
             const auto queuedItem = *selectedQueueItem;
-            pfc::list_t<t_playback_queue_item> current;
-            playlist_manager::get()->queue_get_contents(current);
-            std::vector<t_playback_queue_item> snapshot;
-            snapshot.reserve(current.get_count());
-            for (const auto& item : current)
-                snapshot.push_back(item);
+            std::vector<t_playback_queue_item> snapshot = CoreQueueSnapshot();
             const bool stillQueued =
                 std::find(snapshot.begin(), snapshot.end(), queuedItem) != snapshot.end();
             if (stillQueued) {
@@ -1472,10 +1419,7 @@ void PlaybackScheduler::Impl::QueuePlaylistReordered(const t_size* order, std::s
         for (std::size_t i = 0; i < copy.size(); ++i)
             updated[i] = physical[copy[i]];
         const auto oldPhysical = physical;
-        physical = std::move(updated);
-        physicalIndex.clear();
-        for (std::size_t i = 0; i < physical.size(); ++i)
-            physicalIndex[physical[i]] = i;
+        SetPhysical(std::move(updated));
         RemapOwnedCoreQueue(oldPhysical);
         reorderDirty = true;
         if (!ownedCoreQueue.empty() && !RemoveOwnedCoreQueueEntries()) {
@@ -1525,12 +1469,7 @@ void PlaybackScheduler::Impl::ScheduleCoreQueueChanged() {
     coreQueueSyncQueued = true;
     Post([this] {
         coreQueueSyncQueued = false;
-        pfc::list_t<t_playback_queue_item> queue;
-        playlist_manager::get()->queue_get_contents(queue);
-        std::vector<t_playback_queue_item> snapshot;
-        snapshot.reserve(queue.get_count());
-        for (const auto& item : queue)
-            snapshot.push_back(item);
+        std::vector<t_playback_queue_item> snapshot = CoreQueueSnapshot();
         ReconcileOwnedCoreQueue(snapshot);
         RequestListenerNotification();
     });
@@ -1860,10 +1799,7 @@ bool PlaybackScheduler::Impl::LoadCheckpoint(const metadb_handle_list& items) {
     canonicalOccurrences.reserve(canonical->size());
     for (const auto index : *canonical)
         canonicalOccurrences.push_back(physicalOccurrences[index]);
-    physical = physicalOccurrences;
-    physicalIndex.clear();
-    for (std::size_t i = 0; i < physical.size(); ++i)
-        physicalIndex[physical[i]] = i;
+    SetPhysical(physicalOccurrences);
 
     const auto idsOf = [&](const std::vector<std::size_t>& indices,
                            std::vector<PlaybackOccurrenceId>& result) {
@@ -1985,10 +1921,7 @@ bool PlaybackSchedulerProbeAccess::Restore(const HostState& state) {
     const auto saved = std::static_pointer_cast<const ProbeHostSnapshot>(state.data);
     auto& impl = *g_scheduler->m_impl;
     if (!impl.schedule.RestoreSnapshot(saved->scheduleState, saved->scheduleSeed)) return false;
-    impl.physical = saved->physical;
-    impl.physicalIndex.clear();
-    for (std::size_t i = 0; i < impl.physical.size(); ++i)
-        impl.physicalIndex[impl.physical[i]] = i;
+    impl.SetPhysical(saved->physical);
     impl.handles = saved->handles;
     impl.ownedCoreQueue = saved->ownedCoreQueue;
     impl.nextOccurrence = saved->nextOccurrence;
