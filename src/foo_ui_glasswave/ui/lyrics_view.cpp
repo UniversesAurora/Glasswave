@@ -823,7 +823,7 @@ bool LyricsView::Tick() {
     // Drag inertia.
     if (m_velocity != 0) {
         m_scroll += m_velocity * dt;
-        m_velocity *= std::pow(0.95f, dt * 60.0f);
+        m_velocity = FlingTracker::Decay(m_velocity, dt);
         if (std::abs(m_velocity) < 30) {
             m_velocity = 0;
             m_interactionEnd = frame;
@@ -1295,7 +1295,7 @@ void LyricsView::OnMouseMove(POINT pt) {
                 UpdateTargets(false, false, false);  // freezes the layout where it is
             }
             m_dragOffset0 = m_scroll;
-            m_dragTrail.clear();
+            m_fling.Reset();
             if (m_pressed >= 0) m_lines[static_cast<size_t>(m_pressed)]->press.SetTarget(100);
             m_pressed = -1;
             m_hover = -1;
@@ -1303,8 +1303,7 @@ void LyricsView::OnMouseMove(POINT pt) {
     }
     if (m_drag == Drag::Scroll) {
         m_scroll = m_dragOffset0 + (pt.y - m_dragStart.y) / m_scale;
-        m_dragTrail.emplace_back(Clock::now(), m_scroll);
-        if (m_dragTrail.size() > 8) m_dragTrail.erase(m_dragTrail.begin());
+        m_fling.Sample(m_scroll);
         UpdateTargets(false, true, false);
         StartFrames();
         return;
@@ -1337,15 +1336,7 @@ void LyricsView::OnLButtonDown(POINT pt) {
 void LyricsView::OnLButtonUp(POINT pt) {
     if (m_drag == Drag::Scroll) {
         // Inertia from the last ~100 ms of the drag.
-        m_velocity = 0;
-        if (m_dragTrail.size() >= 2) {
-            const auto& a = m_dragTrail.front();
-            const auto& b = m_dragTrail.back();
-            const float secs = std::chrono::duration<float>(b.first - a.first).count();
-            const float age = std::chrono::duration<float>(Clock::now() - b.first).count();
-            if (secs > 0.005f && age < 0.08f) m_velocity = (b.second - a.second) / secs;
-            if (std::abs(m_velocity) < 50) m_velocity = 0;
-        }
+        m_velocity = m_fling.ReleaseVelocity();
         m_drag = Drag::None;
         m_interactionEnd = Clock::now();
         StartFrames();
@@ -1380,7 +1371,7 @@ void LyricsView::OnWheel(int delta) {
         m_scroll = 0;
     }
     m_velocity = 0;
-    m_scroll += delta / 120.0f * 90.0f;
+    m_scroll += WheelNotches(delta) * 90.0f;
     // Keep the first line reachable at the anchor and the last one too.
     float total = 0;
     for (const auto& l : m_lines) total += l->height;

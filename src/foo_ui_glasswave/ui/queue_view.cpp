@@ -765,7 +765,7 @@ bool QueueView::Tick(float dt) {
     if (m_velocity != 0) {
         const float max = MaxScroll();
         float s = m_scroll.Position() - m_velocity * dt;
-        m_velocity *= std::pow(0.95f, dt * 60.0f);
+        m_velocity = FlingTracker::Decay(m_velocity, dt);
         // Past an end the motion runs into the rubber band and springs back.
         if (s < 0 || s > max) {
             m_velocity = 0;
@@ -850,12 +850,11 @@ void QueueView::OnMouseMove(POINT pt) {
         (std::abs(pt.y - m_downPt.y) > 4 * m_scale || std::abs(pt.x - m_downPt.x) > 4 * m_scale)) {
         m_dragging = true;
         m_hover = {};
-        m_trail.clear();
+        m_fling.Reset();
     }
     if (m_dragging) {
         m_scroll.Snap(m_downScroll - (pt.y - m_downPt.y) / m_scale);
-        m_trail.emplace_back(Clock::now(), m_scroll.Position());
-        if (m_trail.size() > 8) m_trail.erase(m_trail.begin());
+        m_fling.Sample(m_scroll.Position());
         StartFrames();
         return;
     }
@@ -935,16 +934,8 @@ void QueueView::OnLButtonUp(POINT pt) {
     }
     if (m_dragging) {
         m_dragging = false;
-        m_velocity = 0;
-        if (m_trail.size() >= 2) {
-            const auto& a = m_trail.front();
-            const auto& b = m_trail.back();
-            const float secs = std::chrono::duration<float>(b.first - a.first).count();
-            const float age = std::chrono::duration<float>(Clock::now() - b.first).count();
-            // Content offset grows as the pointer moves up: velocity is in pointer terms.
-            if (secs > 0.005f && age < 0.08f) m_velocity = -(b.second - a.second) / secs;
-            if (std::abs(m_velocity) < 50) m_velocity = 0;
-        }
+        // Content offset grows as the pointer moves up: velocity is in pointer terms.
+        m_velocity = -m_fling.ReleaseVelocity();
         m_scroll.SetTarget(std::clamp(m_scroll.Position(), 0.0f, MaxScroll()));
         StartFrames();
         return;
@@ -990,7 +981,7 @@ void QueueView::OnWheel(int delta) {
     m_velocity = 0;
     m_followingPlayback = false;
     m_scroll.SetParams(kScrollSpring);
-    m_scroll.SetTarget(std::clamp(m_scroll.Target() - delta / 120.0f * 80.0f, 0.0f, MaxScroll()));
+    m_scroll.SetTarget(std::clamp(m_scroll.Target() - WheelNotches(delta) * 80.0f, 0.0f, MaxScroll()));
     m_hover = {};
     StartFrames();
 }

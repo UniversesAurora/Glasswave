@@ -4,6 +4,7 @@
 #include "lyrics/lyrics_service.h"
 #include "ui/pane_common.h"
 #include "ui/spring.h"
+#include "ui/fling.h"
 
 // The lyrics in the now-playing pane: Apple Music's lyrics view (iOS 17+/macOS 14+) on the window's glass.
 // Lines move on springs with a staggered start, lines away from the current one are scaled
@@ -145,7 +146,7 @@ private:
     float m_dim = 0.24f;       // current inactive alpha (eases to the browsing level and back)
     std::chrono::steady_clock::time_point m_interactionEnd{};
     float m_velocity = 0;      // DIP / s, drag inertia
-    std::vector<std::pair<std::chrono::steady_clock::time_point, float>> m_dragTrail;
+    FlingTracker m_fling;
     bool m_hoverInside = false;
     POINT m_pointer{}; // the last pointer position inside: the hovered line is the one under it
 };

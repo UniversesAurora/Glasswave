@@ -3,6 +3,7 @@
 #include "core/signal.h"
 #include "ui/pane_common.h"
 #include "ui/spring.h"
+#include "ui/fling.h"
 
 // The queue side of the now-playing pane, after Apple Music's "Playing Next" sheet: one
 // scrolling column of History (oldest first, with Clear), the current song's card (the
@@ -137,7 +138,7 @@ class QueueView {
     POINT m_downPt{};
     float m_downScroll = 0;
     float m_velocity = 0; // DIP / s
-    std::vector<std::pair<std::chrono::steady_clock::time_point, float>> m_trail;
+    FlingTracker m_fling;
 
     // Reordering an up-next row by its handle.
     int m_reorder = -1;   // index into m_rows
