@@ -1,6 +1,43 @@
 # Status
 
-Updated: 2026-11-21
+Updated: 2026-11-22
+
+## Phases 5 and 6 of the review's work list (2026-11-22, latest)
+
+All remaining Phase 5 (UI) and Phase 6 (media, lyrics, CD) items have landed; see
+docs/plan/review-2026-11-21.md for where each now lives. In short:
+
+- List cells act through the list source (`ListSource::IsFavorite` / `Download` / `Rate` /
+  `ToggleFavorite` / `ToggleDownload`); the Favorites playlist's snapshot lives in
+  `media::IsFavorite` for one main-thread task.
+- Both windows build their Win7 frame with `aero::GlassWindow` and their caption buttons with
+  `ui::CaptionPainter` / `CaptionOptions`.
+- Page helpers: `SongDrain`, `Page::AllSongs` / `PlayWhenRead`, `media::PlayListFrom`,
+  `RefreshAction`, `NewPlaylistAction`, `RefreshProviderLibrary`, `ResolvePlaylistFlags`,
+  `PlaylistAccountActions`, `LoadingStatus`, `FactList`.
+- Shared utilities: `gfx/d2d_util.h`, `gfx/motion.h` (named curves, cached easings, `FadeTo`,
+  `FadeIn`, `Ease`), `ui::ScrollBarModel`, `ui::FlingTracker`, `pane::FadedLayer` / `PlateRow`,
+  `ui::MenuBuilder` (leaves out stray separators), `ui/win32.h` (`Dip`, `WindowText`, `Notice`,
+  `Confirm`, `GuardedWindowProc`), `core/tsv.h`, `media::RowSelection`.
+- File splits: main_window, player_window, list_view and remote_pages are split along their
+  banners with internal `*_parts.h` headers; the playback scheduler is split into checkpoint
+  and core queue files over `playback_scheduler_impl.h`, its checkpoint goes through
+  `core::json`.
+- Lyrics: `Start` and `Lookup` share `Known`, `PersistAutomatic` and `PersistNotFound`.
+- Open: the scheduler's probe seam (`g_probeEnabled`): still not cheap (the probe's simulated
+  playing row takes part in rollbacks).
+- Built once at the end, Release x64, warning-free after four fix-up commits. No tests run;
+  nothing run in foobar2000. Owner checks: see the list below.
+
+Owner checks in the running app (visuals should be pixel-identical; behaviour changes noted):
+library list rating / favourite / download cells and the remove-download prompt; both windows'
+frame, glass, side highlights, outline and caption buttons (active / inactive, maximize and
+restore); the player's fades and pane slide; scrolling the list and the detail description with
+the scroll bar (arrows, track auto-repeat, thumb drag); queue and lyrics fling, wheel, edge fades
+and hover plates; context and action menus (no stray separators, disabled / checked context
+commands now show as such); message boxes; play from a row on home, search, downloads, artist
+overview and song tables; Download all / bulk actions on long remote lists; the recent lists and
+saved radio station across a restart.
 
 ## Work list after the review (2026-11-21, latest)
 
