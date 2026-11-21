@@ -41,6 +41,7 @@ class StreamProvider final : public stream::Provider {
     std::optional<bool> ReadPlaylistSavedState(const stream::Id& playlist) const override;
     std::optional<bool> ReadArtistPreferenceState(const stream::Id& artist) const override;
     std::vector<settings::Field> SettingFields() override;
+    std::string PlaybackSettings() const override;
 
     bool SignedIn() const override;
     std::wstring AccountName() const override;

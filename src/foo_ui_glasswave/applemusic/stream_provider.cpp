@@ -2547,6 +2547,12 @@ void StreamProvider::CompleteFavoriteBinding(uint64_t generation, uint64_t bindi
     if (complete) m_snapshots.Queue();
 }
 
+// The quality, whether Atmos is asked for and how it is rendered (input_applemusic.cpp).
+std::string StreamProvider::PlaybackSettings() const {
+    return std::to_string(static_cast<int>(GetAudioQuality())) + (GetAtmosEnabled() ? ":atmos:" : ":stereo:") +
+           std::to_string(static_cast<int>(GetAtmosOutput()));
+}
+
 stream::Capabilities StreamProvider::Offers() const {
     using enum stream::Capability;
     // clang-format off

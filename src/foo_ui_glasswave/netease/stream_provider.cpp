@@ -937,6 +937,11 @@ void StreamProvider::RefreshLibrary(Done done) {
     });
 }
 
+// The quality tier asked for (input_ncm.cpp names its remembered source by it too).
+std::string StreamProvider::PlaybackSettings() const {
+    return std::to_string(static_cast<int>(GetQuality()));
+}
+
 stream::Id StreamProvider::TrackId(const metadb_handle_ptr& item) const {
     Id id;
     return item.is_valid() && Catalog::Get().Records().ParseSongPath(item->get_path(), id) ? id : Id();

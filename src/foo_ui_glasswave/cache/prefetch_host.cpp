@@ -4,9 +4,7 @@
 #include "cache/prefetch.h"
 #include "cache/prefetch_host.h"
 
-#include "applemusic/config.h"
 #include "cache/audio.h"
-#include "netease/config.h"
 #include "media/playback_scheduler.h"
 #include "media/special_playlists.h"
 #include "stream/provider.h"
@@ -54,14 +52,11 @@ std::string ContextFingerprint(std::string_view orderName) {
     AppendPart(value, orderName);
     if (auto* scheduler = media::PlaybackScheduler::Existing())
         AppendPart(value, std::to_string(scheduler->ScheduleRevision()));
-    AppendPart(value, std::to_string(static_cast<int>(netease::GetQuality())));
-    AppendPart(value, applemusic::GetAtmosEnabled() ? "atmos" : "lossless");
-    AppendPart(value, std::to_string(static_cast<int>(applemusic::GetAudioQuality())));
-    AppendPart(value, std::to_string(static_cast<int>(applemusic::GetAtmosOutput())));
     for (stream::Provider* provider : stream::Providers()) {
         const std::string key = Utf8(provider->Key());
         AppendPart(value, key);
         AppendPart(value, std::to_string(AccountRevision(key)));
+        AppendPart(value, provider->PlaybackSettings());
     }
     return value;
 }

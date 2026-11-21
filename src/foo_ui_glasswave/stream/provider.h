@@ -305,6 +305,12 @@ class Provider {
     // Asked only of a source with Capability::NativeLyrics.
     virtual std::wstring Lyrics(const Id& /*track*/, abort_callback& /*abort*/) { return {}; }
 
+    // ---- playback ---------------------------------------------------------------------
+    // What playing one of its songs depends on besides the song: the settings that choose what the
+    // service delivers (a quality tier, Atmos and its output), as one opaque text. A song prepared
+    // ahead under other settings is stale (cache::PrefetchHost). Default: nothing. Main thread.
+    virtual std::string PlaybackSettings() const { return {}; }
+
     // ---- downloads (Capability::Download) ---------------------------------------------
     // Where one of its songs' file comes from, at the source's download quality. Blocking, on
     // a download worker thread; throws (std::exception, a message for the user) when the song
