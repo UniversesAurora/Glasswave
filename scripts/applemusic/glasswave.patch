@@ -162,7 +162,7 @@ index 2adaf66..70c85dd 100644
      drm_shutdown();
  }
 diff --git a/engine/cmd/apiserver.go b/engine/cmd/apiserver.go
-index 7c368e4..0bb9281 100644
+index 7c368e4..8ab018c 100644
 --- a/engine/cmd/apiserver.go
 +++ b/engine/cmd/apiserver.go
 @@ -40,6 +40,7 @@ import (
@@ -193,14 +193,18 @@ index 7c368e4..0bb9281 100644
  	return info.DevToken, info.MusicToken, err
  }
  
-@@ -120,6 +124,7 @@ type PlaybackRequest struct {
+@@ -120,9 +124,10 @@ type PlaybackRequest struct {
  	// renderer can supply the tokens MusicKit already has.
  	Token        string `json:"token"`
  	MUT          string `json:"mediaUserToken"`
 +	PreferAtmos  bool   `json:"preferAtmos"`
  	Capabilities struct {
  		Lossless bool `json:"lossless"`
- 		HiRes    bool `json:"hiRes"` // true = hi-res ALAC permitted; false = cap at 44100/16-bit
+-		HiRes    bool `json:"hiRes"` // true = hi-res ALAC permitted; false = cap at 44100/16-bit
++		HiRes    bool `json:"hiRes"` // true = hi-res ALAC permitted; false = cap at 48 kHz
+ 		Video    bool `json:"video"`
+ 		Atmos    bool `json:"atmos"`
+ 	} `json:"capabilities"`
 @@ -233,6 +238,14 @@ func (l *engineLifecycle) OnFairPlayReady(onRefreshDue func()) {
  	l.drmReadyMu.Lock()
  	defer l.drmReadyMu.Unlock()
@@ -2771,7 +2775,7 @@ index 75b77ed..513c3ca 100644
 +	return 0, 0
 +}
 diff --git a/engine/cmd/handlers_playback.go b/engine/cmd/handlers_playback.go
-index 6deab9a..e5bc6ef 100644
+index 6deab9a..fe8db0b 100644
 --- a/engine/cmd/handlers_playback.go
 +++ b/engine/cmd/handlers_playback.go
 @@ -16,6 +16,7 @@ import (
@@ -2829,16 +2833,18 @@ index 6deab9a..e5bc6ef 100644
  	}
  
  	// Use a pre-warmed session if the prefetch scheduler already opened one
-@@ -156,7 +147,7 @@ func (s *APIServer) handleCreatePlayback(w http.ResponseWriter, r *http.Request)
+@@ -156,7 +147,9 @@ func (s *APIServer) handleCreatePlayback(w http.ResponseWriter, r *http.Request)
  	// and AAC sessions are tracked separately — the scheduler now pre-warms
  	// at whichever quality the renderer reported via ContextPayload.Lossless.
  	var sess *playback.Session
 -	if !req.Capabilities.Atmos && !req.Capabilities.Video {
-+	if s.scheduler != nil && !req.PreferAtmos && !req.Capabilities.Atmos && !req.Capabilities.Video {
++	// Pre-warmed sessions carry the best ALAC; a request capped below hi-res opens its own.
++	cappedLossless := req.Capabilities.Lossless && !req.Capabilities.HiRes
++	if s.scheduler != nil && !req.PreferAtmos && !req.Capabilities.Atmos && !req.Capabilities.Video && !cappedLossless {
  		if sessionID, ok := s.scheduler.TakePreWarmed(req.AssetID, req.Capabilities.Lossless); ok {
  			if preOpened, found := s.pm.GetSession(sessionID); found {
  				sess = preOpened
-@@ -173,16 +164,18 @@ func (s *APIServer) handleCreatePlayback(w http.ResponseWriter, r *http.Request)
+@@ -173,16 +166,18 @@ func (s *APIServer) handleCreatePlayback(w http.ResponseWriter, r *http.Request)
  		t0 := time.Now()
  		var err error
  		sess, err = s.pm.Open(r.Context(), playback.OpenRequest{
@@ -2867,7 +2873,7 @@ index 6deab9a..e5bc6ef 100644
  		})
  		latMs := time.Since(t0).Milliseconds()
  		if err != nil {
-@@ -229,6 +222,38 @@ func (s *APIServer) handlePlaybackAudio(w http.ResponseWriter, r *http.Request)
+@@ -229,6 +224,38 @@ func (s *APIServer) handlePlaybackAudio(w http.ResponseWriter, r *http.Request)
  		return
  	}
  
@@ -2906,7 +2912,7 @@ index 6deab9a..e5bc6ef 100644
  	// ?t=<seconds> — seek to an approximate time offset.
  	// The response header X-Actual-Start reports the real segment start time so
  	// the frontend can set audio.currentTime accurately after a seek.
-@@ -238,6 +263,13 @@ func (s *APIServer) handlePlaybackAudio(w http.ResponseWriter, r *http.Request)
+@@ -238,6 +265,13 @@ func (s *APIServer) handlePlaybackAudio(w http.ResponseWriter, r *http.Request)
  			seekSec = v
  		}
  	}
@@ -2920,7 +2926,7 @@ index 6deab9a..e5bc6ef 100644
  
  	// Disk cache: serve cached files for non-seek requests so replays skip CDN.
  	// Seeks (seekSec > 0) bypass the cache — the cached file may be truncated from a
-@@ -253,7 +285,7 @@ func (s *APIServer) handlePlaybackAudio(w http.ResponseWriter, r *http.Request)
+@@ -253,7 +287,7 @@ func (s *APIServer) handlePlaybackAudio(w http.ResponseWriter, r *http.Request)
  		streamMedia(w, r, func(dst io.Writer) error {
  			cw.w = dst
  			return s.pm.Stream(r.Context(), id, pipeline.KindAudio, cw)
@@ -2929,7 +2935,7 @@ index 6deab9a..e5bc6ef 100644
  		log.Printf("[INTERCEPT] MV audio stream END id=%s totalBytes=%d", id, cw.n)
  		return
  	}
-@@ -262,14 +294,17 @@ func (s *APIServer) handlePlaybackAudio(w http.ResponseWriter, r *http.Request)
+@@ -262,14 +296,17 @@ func (s *APIServer) handlePlaybackAudio(w http.ResponseWriter, r *http.Request)
  	// colliding with same-AssetID song cache entries.
  	if s.diskCache != nil && sess.Type != "mv" && seekSec == 0 {
  		qualifier := sess.Codec
@@ -2949,7 +2955,7 @@ index 6deab9a..e5bc6ef 100644
  		// This cuts first-play latency from the full lossless download time
  		// (~5-15 s) to the initial buffer fill (~0.5 s). The download goroutine
  		// uses a detached context so the file is always committed even when VLC
-@@ -277,12 +312,27 @@ func (s *APIServer) handlePlaybackAudio(w http.ResponseWriter, r *http.Request)
+@@ -277,12 +314,27 @@ func (s *APIServer) handlePlaybackAudio(w http.ResponseWriter, r *http.Request)
  		// On commit the file is served via http.ServeContent with full byte-range
  		// support on every subsequent play, enabling accurate SetTime seeks.
  		//
@@ -2982,7 +2988,7 @@ index 6deab9a..e5bc6ef 100644
  			// VLC Range seek during an active streaming download: serve the
  			// requested byte range from the in-progress writer only if the
  			// offset has already been written. Return 416 immediately when the
-@@ -307,7 +357,7 @@ func (s *APIServer) handlePlaybackAudio(w http.ResponseWriter, r *http.Request)
+@@ -307,7 +359,7 @@ func (s *APIServer) handlePlaybackAudio(w http.ResponseWriter, r *http.Request)
  					// Use a 1 GiB sentinel for the total size (no ALAC file is that
  					// large) since the true size is unknown during streaming.
  					const sentinel = int64(1 << 30)
@@ -2991,7 +2997,7 @@ index 6deab9a..e5bc6ef 100644
  					w.Header().Set("Accept-Ranges", "bytes")
  					w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", offset, sentinel-1, sentinel))
  					w.WriteHeader(http.StatusPartialContent)
-@@ -320,8 +370,7 @@ func (s *APIServer) handlePlaybackAudio(w http.ResponseWriter, r *http.Request)
+@@ -320,8 +372,7 @@ func (s *APIServer) handlePlaybackAudio(w http.ResponseWriter, r *http.Request)
  
  			if spw, _ := s.diskCache.BeginStreamingPut(sess.AssetID, qualifier); spw != nil {
  				s.startCacheDownload(id, spw)
@@ -3001,7 +3007,7 @@ index 6deab9a..e5bc6ef 100644
  				reader := spw.NewReader()
  				defer reader.Close()
  				io.Copy(w, reader) //nolint:errcheck — client disconnect is normal
-@@ -339,7 +388,7 @@ func (s *APIServer) handlePlaybackAudio(w http.ResponseWriter, r *http.Request)
+@@ -339,7 +390,7 @@ func (s *APIServer) handlePlaybackAudio(w http.ResponseWriter, r *http.Request)
  		// hit the committed file above via http.ServeContent.
  		if spw, _ := s.diskCache.BeginStreamingPut(sess.AssetID, qualifier); spw != nil {
  			s.startCacheDownload(id, spw)
@@ -3010,7 +3016,7 @@ index 6deab9a..e5bc6ef 100644
  			reader := spw.NewReader()
  			defer reader.Close()
  			// The streaming reader surfaces the download error (Discard sets it) as a
-@@ -359,7 +408,7 @@ func (s *APIServer) handlePlaybackAudio(w http.ResponseWriter, r *http.Request)
+@@ -359,7 +410,7 @@ func (s *APIServer) handlePlaybackAudio(w http.ResponseWriter, r *http.Request)
  		// returned nil) — stream without caching.
  		streamMedia(w, r, func(dst io.Writer) error {
  			return s.pm.Stream(r.Context(), id, pipeline.KindAudio, dst)
@@ -3019,7 +3025,7 @@ index 6deab9a..e5bc6ef 100644
  		return
  	}
  
-@@ -377,13 +426,22 @@ func (s *APIServer) handlePlaybackAudio(w http.ResponseWriter, r *http.Request)
+@@ -377,13 +428,22 @@ func (s *APIServer) handlePlaybackAudio(w http.ResponseWriter, r *http.Request)
  		streamMedia(w, r, func(dst io.Writer) error {
  			_, err := s.pm.StreamFrom(seekCtx, id, pipeline.KindAudio, seekSec, dst)
  			return err
@@ -3044,7 +3050,7 @@ index 6deab9a..e5bc6ef 100644
  }
  
  // startCacheDownload fills spw from the session's audio stream in the
-@@ -410,6 +468,10 @@ func (s *APIServer) startCacheDownload(id string, spw *diskcache.StreamingPutWri
+@@ -410,6 +470,10 @@ func (s *APIServer) startCacheDownload(id string, spw *diskcache.StreamingPutWri
  // session so VLC can load it instantly on the next track change. Returns 202
  // immediately; the download runs in a detached goroutine.
  func (s *APIServer) handlePlaybackPrecache(w http.ResponseWriter, r *http.Request) {
@@ -3055,7 +3061,7 @@ index 6deab9a..e5bc6ef 100644
  	id := r.PathValue("id")
  	sess, ok := s.pm.GetSession(id)
  	if !ok {
-@@ -479,6 +541,10 @@ func (s *APIServer) handlePlaybackTouch(w http.ResponseWriter, r *http.Request)
+@@ -479,6 +543,10 @@ func (s *APIServer) handlePlaybackTouch(w http.ResponseWriter, r *http.Request)
  // The renderer is telling the engine "the user is looking at this content."
  // All scheduling policy (which tracks, order, concurrency) is engine-internal.
  func (s *APIServer) handlePlaybackContext(w http.ResponseWriter, r *http.Request) {
@@ -3629,7 +3635,7 @@ index 0000000..93c3589
 +	}
 +}
 diff --git a/engine/core/apple/apple_test.go b/engine/core/apple/apple_test.go
-index 2857e65..88a8d48 100644
+index 2857e65..763885f 100644
 --- a/engine/core/apple/apple_test.go
 +++ b/engine/core/apple/apple_test.go
 @@ -1,7 +1,13 @@
@@ -3646,7 +3652,7 @@ index 2857e65..88a8d48 100644
  )
  
  // White-box tests for the unexported helpers.
-@@ -41,19 +47,257 @@ func TestTraitSet_Empty(t *testing.T) {
+@@ -41,19 +47,281 @@ func TestTraitSet_Empty(t *testing.T) {
  
  func TestExtractALACQuality_HiRes(t *testing.T) {
  	t.Parallel()
@@ -3703,6 +3709,30 @@ index 2857e65..88a8d48 100644
 +	}
 +	if got.SampleRate != 192000 || got.BitDepth != 24 {
 +		t.Fatalf("quality = %d/%d, want 192000/24", got.SampleRate, got.BitDepth)
++	}
++}
++
++func TestSelectSongFormat_LosslessTierCapsAt48k(t *testing.T) {
++	t.Parallel()
++	master := &hls.Master{Variants: []hls.Variant{
++		{URL: "44", Bandwidth: 900_000, Codecs: "alac", AudioSampleRate: 44100, AudioBitDepth: 16},
++		{URL: "48", Bandwidth: 1_200_000, Codecs: "alac", AudioSampleRate: 48000, AudioBitDepth: 24},
++		{URL: "192", Bandwidth: 4_600_000, Codecs: "alac", AudioSampleRate: 192000, AudioBitDepth: 24},
++		{URL: "aac", Bandwidth: 256_000, Codecs: "mp4a.40.2"},
++	}}
++	got, err := selectSongFormat(media.OpenRequest{Lossless: true, HiRes: false}, nil, master, nil)
++	if err != nil {
++		t.Fatal(err)
++	}
++	if got.Codec != pipeline.CodecALAC || got.PlaylistURL != "48" {
++		t.Fatalf("selected codec=%s url=%q, want ALAC at 48 kHz", got.Codec, got.PlaylistURL)
++	}
++	onlyHiRes := &hls.Master{Variants: []hls.Variant{
++		{URL: "96", Bandwidth: 2_300_000, Codecs: "alac", AudioSampleRate: 96000, AudioBitDepth: 24},
++	}}
++	got, err = selectSongFormat(media.OpenRequest{Lossless: true, HiRes: false}, nil, onlyHiRes, nil)
++	if err != nil || got.PlaylistURL != "96" {
++		t.Fatalf("hi-res-only master: url=%q err=%v, want the ALAC it has", got.PlaylistURL, err)
 +	}
 +}
 +
@@ -3912,7 +3942,7 @@ index 2857e65..88a8d48 100644
  }
  
 diff --git a/engine/core/apple/provider.go b/engine/core/apple/provider.go
-index 4383664..27a9dcb 100644
+index 4383664..b5449bb 100644
 --- a/engine/core/apple/provider.go
 +++ b/engine/core/apple/provider.go
 @@ -80,6 +80,13 @@ type AccountTokenSource interface {
@@ -4074,7 +4104,7 @@ index 4383664..27a9dcb 100644
  			go fairplay.WarmCBCSKey(context.Background(), dialer, assetID, firstKey)
  		}
  		// The file's own length wins over the catalog's: it is stored in the moov (the player reports it) and is
-@@ -722,16 +758,103 @@ func traitSet(traits []string) map[string]bool {
+@@ -722,16 +758,111 @@ func traitSet(traits []string) map[string]bool {
  
  func extractALACQuality(traits []string) (sampleRate, bitDepth int) {
  	for _, t := range traits {
@@ -4094,7 +4124,7 @@ index 4383664..27a9dcb 100644
 +			depth, depthErr := strconv.Atoi(parts[i+1])
 +			if rateErr != nil || depthErr != nil {
 +				continue
-+			}
+ 			}
 +			if rate == 44 || rate == 48 || rate == 88 || rate == 96 || rate == 176 || rate == 192 {
 +				rate *= 1000
 +			}
@@ -4107,8 +4137,9 @@ index 4383664..27a9dcb 100644
 +				continue
 +			}
 +			return rate, depth
-+		}
-+	}
+ 		}
+ 	}
+-	return 96000, 24
 +	return 0, 0
 +}
 +
@@ -4160,26 +4191,33 @@ index 4383664..27a9dcb 100644
 +	}
 +
 +	if req.Lossless && master != nil {
-+		if v, ok := master.SelectVariantByCodec("alac"); ok {
++		v, ok := master.SelectVariantByCodec("alac")
++		if !req.HiRes {
++			// Apple Music's "Lossless" tier: the best ALAC up to 48 kHz. A master with
++			// only hi-res (or unlabelled) ALAC variants keeps the best one it has.
++			if capped, okCapped := master.SelectVariantByCodecUpTo("alac", 48000); okCapped {
++				v, ok = capped, true
++			}
++		}
++		if ok {
 +			sr, bd := v.AudioSampleRate, v.AudioBitDepth
 +			if sr == 0 && bd == 0 {
 +				sr, bd = extractALACQuality(audioTraits)
- 			}
++			}
 +			return songFormat{
 +				Codec:       pipeline.CodecALAC,
 +				PlaylistURL: v.URL,
 +				SampleRate:  sr,
 +				BitDepth:    bd,
 +			}, nil
- 		}
++		}
 +		if master.HasCodec("alac") {
 +			return songFormat{}, fmt.Errorf("lossless requested, but every ALAC variant is outside the supported 24-bit/192kHz ceiling")
 +		}
 +	}
 +	if req.Lossless && master == nil && (traits["lossless"] || traits["hi-res-lossless"]) {
 +		return songFormat{}, fmt.Errorf("lossless requested and advertised, but the catalog supplied no enhanced HLS URL")
- 	}
--	return 96000, 24
++	}
 +
 +	return songFormat{Codec: pipeline.CodecAAC, FallbackToAAC: req.Lossless}, nil
  }
@@ -8370,7 +8408,7 @@ index 0000000..5ee2534
 +	return out
 +}
 diff --git a/engine/core/hls/hls.go b/engine/core/hls/hls.go
-index f607323..37f1434 100644
+index f607323..87c50e4 100644
 --- a/engine/core/hls/hls.go
 +++ b/engine/core/hls/hls.go
 @@ -27,8 +27,10 @@ import (
@@ -8401,7 +8439,7 @@ index f607323..37f1434 100644
  	// HDCPLevel is the HDCP-LEVEL attribute ("TYPE-0", "TYPE-1", "NONE"): the output protection the variant
  	// requires before it may be played. Empty when the playlist does not say.
  	HDCPLevel string
-@@ -192,25 +202,87 @@ func (m *Master) SelectVideoVariantWithCodec(maxHeight int) (variantURL, codecs,
+@@ -192,25 +202,112 @@ func (m *Master) SelectVideoVariantWithCodec(maxHeight int) (variantURL, codecs,
  	return "", "", "", fmt.Errorf("no video variant at or below %dp", maxHeight)
  }
  
@@ -8441,6 +8479,31 @@ index f607323..37f1434 100644
 +	return best, found
 +}
 +
++// SelectVariantByCodecUpTo is SelectVariantByCodec limited to variants whose
++// sample rate is known and at most maxRate (Apple Music's "Lossless" tier: up to
++// 48 kHz). Variants of unknown rate are skipped.
++func (m *Master) SelectVariantByCodecUpTo(codec string, maxRate int) (Variant, bool) {
++	codec = strings.ToLower(strings.TrimSpace(codec))
++	if codec == "" {
++		return Variant{}, false
++	}
++	var best Variant
++	found := false
++	for _, v := range m.Variants {
++		if !variantHasCodec(v, codec) || v.AudioQualityUnsupported {
++			continue
++		}
++		if v.AudioSampleRate <= 0 || v.AudioSampleRate > maxRate {
++			continue
++		}
++		if !found || betterCodecVariant(v, best) {
++			best = v
++			found = true
++		}
++	}
++	return best, found
++}
++
 +// SelectByCodec returns the URL selected by SelectVariantByCodec. It returns
 +// an empty string when no variant carries the requested codec; callers must
 +// decide explicitly whether a different codec is an acceptable fallback.
@@ -8474,7 +8537,8 @@ index f607323..37f1434 100644
 +		if variantHasCodec(v, codec) {
 +			return true
 +		}
-+	}
+ 	}
+-	return fallback.URL
 +	return false
 +}
 +
@@ -8497,13 +8561,12 @@ index f607323..37f1434 100644
 +	bRate := current.AverageBandwidth
 +	if bRate == 0 {
 +		bRate = current.Bandwidth
- 	}
--	return fallback.URL
++	}
 +	return cRate > bRate
  }
  
  // Height is the variant's pixel height from RESOLUTION, or from the dimensions in its URL; 0 when neither says.
-@@ -291,6 +363,60 @@ func allowedCPCByURI(master string) map[string]string {
+@@ -291,6 +388,60 @@ func allowedCPCByURI(master string) map[string]string {
  	return out
  }
  
@@ -8564,7 +8627,7 @@ index f607323..37f1434 100644
  // CPCSummary shortens an ALLOWED-CPC value for a log line: the key systems by name with their levels, for example
  // "fairplay:Main/AppleMain playready:SL3000".
  func CPCSummary(cpc string) string {
-@@ -882,6 +1008,7 @@ func parseMaster(base *url.URL, rawURL string, body []byte) (*Master, error) {
+@@ -882,6 +1033,7 @@ func parseMaster(base *url.URL, rawURL string, body []byte) (*Master, error) {
  	pl := from.(*m3u8.MasterPlaylist)
  	m := &Master{baseURL: base}
  	cpc := allowedCPCByURI(string(body))
@@ -8572,7 +8635,7 @@ index f607323..37f1434 100644
  
  	for _, v := range pl.Variants {
  		if v == nil {
-@@ -891,15 +1018,21 @@ func parseMaster(base *url.URL, rawURL string, body []byte) (*Master, error) {
+@@ -891,15 +1043,21 @@ func parseMaster(base *url.URL, rawURL string, body []byte) (*Master, error) {
  		if err != nil {
  			continue
  		}
@@ -8739,7 +8802,7 @@ index 7bd06fd..076d3da 100644
  }
  
 diff --git a/engine/core/media/provider.go b/engine/core/media/provider.go
-index b4be657..b4dc88d 100644
+index b4be657..ac8ffe8 100644
 --- a/engine/core/media/provider.go
 +++ b/engine/core/media/provider.go
 @@ -64,6 +64,9 @@ type Track struct {
@@ -8761,7 +8824,7 @@ index b4be657..b4dc88d 100644
 -	Atmos    bool
 -	Video    bool // request a music video if available
 +	Lossless    bool
-+	HiRes       bool // true = hi-res ALAC permitted when Lossless is set; false = cap at 44100/16-bit
++	HiRes       bool // true = hi-res ALAC permitted when Lossless is set; false = cap at 48 kHz (Apple's Lossless tier)
 +	Atmos       bool
 +	PreferAtmos bool // use Atmos only when both catalog trait and HLS EC-3 variant exist
 +	Video       bool // request a music video if available
@@ -9064,6 +9127,26 @@ index 8814617..a56dea7 100644
  	SpatialAudio  string `json:"spatialAudio,omitempty"` // "binaural" | "binaural-lossless"
  
  	Capabilities struct {
+diff --git a/engine/core/prefetch/prefetch.go b/engine/core/prefetch/prefetch.go
+index 55540ff..d1def05 100644
+--- a/engine/core/prefetch/prefetch.go
++++ b/engine/core/prefetch/prefetch.go
+@@ -860,6 +860,7 @@ func (s *Scheduler) warm(item *workItem) {
+ 			Token:      item.token,
+ 			MUT:        item.mut,
+ 			Lossless:   item.lossless,
++			HiRes:      true, // the best the track has; a capped request opens its own session
+ 			Private:    true,
+ 		})
+ 		if err != nil {
+@@ -892,6 +893,7 @@ func (s *Scheduler) warm(item *workItem) {
+ 				AssetID:    item.track.AssetID,
+ 				Storefront: sf,
+ 				Lossless:   item.lossless,
++				HiRes:      true,
+ 			},
+ 		}
+ 		s.mu.Unlock()
 diff --git a/engine/core/vlc/callbacks.go b/engine/core/vlc/callbacks.go
 index 3dfd6ee..5873ae2 100644
 --- a/engine/core/vlc/callbacks.go
