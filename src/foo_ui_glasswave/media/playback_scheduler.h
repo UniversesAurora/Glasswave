@@ -48,9 +48,9 @@ class PlaybackSchedulerProbeAccess final {
 };
 
 // Main-thread bridge between the deterministic schedule and foobar2000's protected Now
-// Playing playlist. Core playback order remains Default. The host projects future order
-// physically into the owned playlist and prepends PlayNext to the explicit core queue while
-// preserving all existing queue rows.
+// Playing playlist. Core playback order is Default (Repeat (track) while repeating one song).
+// The host projects future order physically into the owned playlist and prepends PlayNext to
+// the explicit core queue while preserving all existing queue rows.
 class PlaybackScheduler final {
   public:
     static void Start();

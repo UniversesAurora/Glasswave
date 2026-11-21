@@ -210,10 +210,13 @@ void CheckScheduleRoleRoundTrip() {
     Check(schedule.SetMode(true, PlaybackRepeatMode::All), "Initial shuffle was rejected");
     Check(schedule.Started(*schedule.Next()), "First role-changing step failed");
     Check(schedule.Started(*schedule.Next()), "Second role-changing step failed");
+    const auto beforeRepeatOne = schedule.ProjectionOrder();
     Check(schedule.SetMode(true, PlaybackRepeatMode::One), "Repeat-one for role round-trip failed");
+    // Repeat one keeps the list in its order (the core's Repeat (track) replays the song).
     const auto repeatOneProjection = schedule.ProjectionOrder();
-    Check(!repeatOneProjection.empty() && repeatOneProjection.back() == *schedule.Current(),
-          "Repeat-one setup did not place future before current");
+    const auto at = [](const std::vector<Id>& order, Id id) { return std::find(order.begin(), order.end(), id) - order.begin(); };
+    Check(at(repeatOneProjection, *schedule.Current()) == at(beforeRepeatOne, *schedule.Current()),
+          "Repeat-one moved the current row");
     const std::vector<Id> priority{90, 91};
     Check(schedule.AddPlayNext(Span(priority)), "Priority for role round-trip failed");
 
@@ -349,8 +352,9 @@ void CheckRepeatOnePriority() {
     schedule.ResetFresh(Span(imported), 0, 8);
     Check(schedule.SetMode(false, PlaybackRepeatMode::One), "Repeat-one was rejected");
     Check(schedule.Upcoming() == std::vector<Id>{1}, "Repeat-one must normally repeat current");
-    Check(schedule.ProjectionOrder() == std::vector<Id>({2, 3, 1}),
-          "Repeat-one projection must let core Default stop at current");
+    Check(schedule.ProjectionOrder() == std::vector<Id>({1, 2, 3}),
+          "Repeat-one projection must keep the list's order");
+    Check(schedule.ManualNext() == 2, "Next under repeat-one must go down the list");
 
     const std::vector<Id> priority{9};
     Check(schedule.AddPlayNext(Span(priority)), "Repeat-one PlayNext was rejected");

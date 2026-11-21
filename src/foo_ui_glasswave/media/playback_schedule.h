@@ -86,7 +86,8 @@ class PlaybackSchedule final {
 
     // Applies an explicit reorder of the complete physical playlist delivered by the core.
     // Rows before the current occurrence become history and the rest become ordinary
-    // future. Repeat-one projection keeps its ordinary future before the current row.
+    // future, whatever the repeat mode (repeat one keeps the list's order; the core's
+    // Repeat (track) order replays the song).
     bool AdoptPhysicalOrder(std::span<const PlaybackOccurrenceId> physical_order,
                             std::size_t current_position);
 

@@ -153,6 +153,7 @@ class PlayerWindow {
     void PlaceWall();
     void PaintPaneCard();
     void MenuPressed(int index);
+    static int NextRepeat(int repeat);
     std::wstring MenuText(int index) const;
     void AnimateWindowTo(const RECT& target);
     int CurrentLyricLine(int* ms) const;

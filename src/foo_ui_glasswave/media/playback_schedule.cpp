@@ -192,7 +192,7 @@ bool PlaybackSchedule::SetMode(bool shuffle, PlaybackRepeatMode repeat) {
         m_repeat = repeat;
         if (m_repeat != PlaybackRepeatMode::All) m_pendingCycle.clear();
     }
-    m_projectionOrder = RoleProjectionOrder(repeat != PlaybackRepeatMode::One);
+    m_projectionOrder = RoleProjectionOrder();
     BumpRevision();
     return true;
 }
@@ -277,15 +277,10 @@ bool PlaybackSchedule::AdoptPhysicalOrder(std::span<const PlaybackOccurrenceId> 
     if (!physical_order.empty() && current_position != SIZE_MAX) {
         current_position = std::min(current_position, physical_order.size() - 1);
         m_current = physical_order[current_position];
-        if (m_repeat == PlaybackRepeatMode::One && m_priorityBlocks.empty()) {
-            for (std::size_t i = 0; i < physical_order.size(); ++i)
-                if (i != current_position) m_ordinaryFuture.push_back(physical_order[i]);
-        } else {
-            for (std::size_t i = 0; i < current_position; ++i)
-                PushHistory(physical_order[i]);
-            for (std::size_t i = current_position + 1; i < physical_order.size(); ++i)
-                m_ordinaryFuture.push_back(physical_order[i]);
-        }
+        for (std::size_t i = 0; i < current_position; ++i)
+            PushHistory(physical_order[i]);
+        for (std::size_t i = current_position + 1; i < physical_order.size(); ++i)
+            m_ordinaryFuture.push_back(physical_order[i]);
     } else {
         m_ordinaryFuture.assign(physical_order.begin(), physical_order.end());
     }
@@ -523,26 +518,17 @@ std::vector<PlaybackOccurrenceId> PlaybackSchedule::RoleProjectionOrder(bool anc
     for (const auto occurrence : m_canonicalOrder)
         if (!represented.contains(occurrence)) append(occurrence);
 
-    if (m_repeat == PlaybackRepeatMode::One && m_priorityBlocks.empty() && m_current) {
-        for (const auto& occurrence : m_history)
-            if (!future_set.contains(occurrence) && occurrence != m_current) append(occurrence);
-        append_vector(m_ordinaryFuture);
-        append_vector(pending);
-        append(*m_current);
-    } else {
-        for (const auto& occurrence : m_history)
-            if (!future_set.contains(occurrence) && occurrence != m_current) append(occurrence);
-        if (m_current) append(*m_current);
-        append_vector(PriorityOrder());
-        append_vector(m_ordinaryFuture);
-        append_vector(pending);
-    }
+    for (const auto& occurrence : m_history)
+        if (!future_set.contains(occurrence) && occurrence != m_current) append(occurrence);
+    if (m_current) append(*m_current);
+    append_vector(PriorityOrder());
+    append_vector(m_ordinaryFuture);
+    append_vector(pending);
 
     // Automatic role changes and additions may not move the current physical row. Shuffle
     // toggles, queue insertions and paged appends can change surrounding rows, but the row
-    // the owner selected stays anchored until a deliberate drag, replacement, or repeat-one
-    // projection change.
-    if (anchor_current && m_repeat != PlaybackRepeatMode::One && m_current) {
+    // the owner selected stays anchored until a deliberate drag or replacement.
+    if (anchor_current && m_current) {
         const auto oldCurrent = std::find(m_projectionOrder.begin(), m_projectionOrder.end(), *m_current);
         if (oldCurrent != m_projectionOrder.end()) {
             const auto target =

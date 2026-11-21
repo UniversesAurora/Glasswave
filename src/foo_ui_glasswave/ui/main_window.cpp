@@ -1409,11 +1409,7 @@ void MainWindow::CreateWidgets() {
             }
         },
         {})
-        ->onClick = [this] {
-        SetShuffleRepeat(m_shuffle, m_repeat == Repeat::Off   ? Repeat::All
-                                    : m_repeat == Repeat::All ? Repeat::One
-                                                              : Repeat::Off);
-    };
+        ->onClick = [this] { CycleRepeat(); };
     add(kStop,
         [this](auto* dc, D2D1_SIZE_F s, Layer l) {
             if (m_win7Art)

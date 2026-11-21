@@ -76,10 +76,10 @@ std::size_t CurrentQueueIndex(std::size_t count, bool prefer_focus) {
     return SIZE_MAX;
 }
 
-std::size_t DefaultOrderIndex() {
+std::size_t OrderIndex(const char* name) {
     auto manager = playlist_manager::get();
     for (t_size i = 0, count = manager->playback_order_get_count(); i < count; ++i)
-        if (pfc::stricmp_ascii(manager->playback_order_get_name(i), "Default") == 0) return i;
+        if (pfc::stricmp_ascii(manager->playback_order_get_name(i), name) == 0) return i;
     return SIZE_MAX;
 }
 
@@ -294,7 +294,7 @@ struct PlaybackScheduler::Impl {
     void ScheduleSynchronize();
     void CancelSynchronize();
     void Synchronize();
-    void ApplyCoreDefault();
+    void ApplyCoreOrder();
     void SaveCheckpoint(bool force = false);
     bool LoadCheckpoint(const metadb_handle_list& items);
 
@@ -337,7 +337,8 @@ struct PlaybackScheduler::Impl {
     std::uint64_t sourceGeneration = 0;
     std::uint64_t contentGeneration = 0;
     std::uint64_t syncGeneration = 0;
-    std::uint64_t expectedDefaultEchoes = 0;
+    std::uint64_t expectedOrderEchoes = 0;
+    std::string expectedOrderName; // the core order we set, whose own callback is its echo
     std::uint64_t nextListener = 1;
     bool started = false;
     bool modelInitialized = false;
@@ -435,7 +436,7 @@ void PlaybackScheduler::Impl::Start() {
     schedule.SetMode(cfg_shuffle.get() != 0, static_cast<PlaybackRepeatMode>(repeat));
     playlistEvents = std::make_unique<PlaylistEvents>(*this);
     Synchronize();
-    ApplyCoreDefault();
+    ApplyCoreOrder();
 }
 
 void PlaybackScheduler::Impl::Shutdown() {
@@ -468,7 +469,7 @@ bool PlaybackScheduler::Impl::SetPlaybackMode(bool shuffle, int repeat) {
         if (modelInitialized) ApplyProjection();
         SaveCheckpoint();
     }
-    ApplyCoreDefault();
+    ApplyCoreOrder();
     if (changed) RequestListenerNotification();
     return true;
 }
@@ -1637,8 +1638,8 @@ void PlaybackScheduler::Impl::OnNativeOrderMode() {
         coreOrderCallbackSeen = true;
         return;
     }
-    if (expectedDefaultEchoes != 0 && pfc::stricmp_ascii(observedName.c_str(), "Default") == 0) {
-        --expectedDefaultEchoes;
+    if (expectedOrderEchoes != 0 && pfc::stricmp_ascii(observedName.c_str(), expectedOrderName.c_str()) == 0) {
+        --expectedOrderEchoes;
         return;
     }
     const auto generation = sourceGeneration;
@@ -1658,7 +1659,7 @@ void PlaybackScheduler::Impl::OnNativeOrderMode() {
                    (NameContains(name, "track") || NameContains(name, "one"))) {
             SetPlaybackMode(schedule.shuffle_enabled(), 2);
         } else {
-            ApplyCoreDefault();
+            ApplyCoreOrder();
         }
     });
 }
@@ -1670,17 +1671,28 @@ bool PlaybackScheduler::Impl::QueueIsEngaged() const {
            (manager->get_active_playlist() == queue || manager->get_playing_playlist() == queue);
 }
 
-void PlaybackScheduler::Impl::ApplyCoreDefault() {
+// The core's own order follows only what it must do itself: Default (the schedule projects the
+// order into the playlist), or Repeat (track) while repeating one song, so the core replays the
+// song at its end and Next / Previous still walk the list (owner, 2026-11-20: Next under repeat
+// one replayed the song, and the list was laid out with the song last).
+void PlaybackScheduler::Impl::ApplyCoreOrder() {
     if (!QueueIsEngaged() || applyingCoreOrder) return;
     auto manager = playlist_manager::get();
-    const t_size defaultOrder = DefaultOrderIndex();
-    if (defaultOrder == SIZE_MAX || manager->playback_order_get_active() == defaultOrder) return;
-    ++expectedDefaultEchoes;
+    const char* name = schedule.repeat_mode() == PlaybackRepeatMode::One ? "Repeat (track)" : "Default";
+    t_size order = OrderIndex(name);
+    if (order == SIZE_MAX) {
+        name = "Default";
+        order = OrderIndex(name);
+    }
+    if (order == SIZE_MAX || manager->playback_order_get_active() == order) return;
+    if (expectedOrderName != name) expectedOrderEchoes = 0;
+    expectedOrderName = name;
+    ++expectedOrderEchoes;
     coreOrderCallbackSeen = false;
     applyingCoreOrder = true;
-    manager->playback_order_set_active(defaultOrder);
+    manager->playback_order_set_active(order);
     applyingCoreOrder = false;
-    if (coreOrderCallbackSeen) --expectedDefaultEchoes;
+    if (coreOrderCallbackSeen) --expectedOrderEchoes;
 }
 
 void PlaybackScheduler::Impl::Post(std::function<void()> task) {

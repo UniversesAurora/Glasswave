@@ -63,7 +63,8 @@ void AddToQueue(const metadb_handle_list& items);              // ordinary futur
 bool AppendSourceBatch(const metadb_handle_list& items, uint64_t expectedGeneration);
 
 // Glasswave's predictable queue modes. repeat is 0=off, 1=all, 2=one. These are separate
-// from foobar2000's active playback order; core order stays Default while our queue is used.
+// from foobar2000's active playback order; while our queue is used the core order is Default
+// (Repeat (track) for repeat one, so the core replays the song and Next walks the list).
 bool SetQueuePlaybackMode(bool shuffle, int repeat);
 bool QueueShuffleEnabled();
 int QueueRepeatMode();
