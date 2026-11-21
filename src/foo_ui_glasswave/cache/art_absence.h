@@ -5,6 +5,9 @@
 #include <fstream>
 #include <map>
 #include <mutex>
+#include <string>
+#include <string_view>
+#include <vector>
 
 namespace glasswave::cache::art_absence {
 // A picture the service confirmed absent is not asked for again for a day, also across
@@ -15,11 +18,37 @@ struct Entry {
     int64_t checked = 0;
     bool invalidated = false;
 };
+// One explicit refresh: every art key under `prefix` (a whole key segment, see ArtKeyHasPrefix)
+// is asked again, whatever a record on disk or an answer still in flight says.
+struct Invalidation {
+    std::string prefix;
+    uint64_t sequence = 0;
+    int64_t at = 0; // Store::Now()
+};
 inline std::mutex mutex;
 inline std::map<std::string, Entry> entries;
-inline std::atomic_uint64_t generation = 0;
+inline std::vector<Invalidation> invalidations; // oldest first, bounded
+inline std::atomic_uint64_t generation = 0;     // the sequence of the latest invalidation
+// A worker captures this before it asks the service; an answer is kept only if no invalidation
+// of its own key has been made since (one of another cover or service does not discard it).
 inline uint64_t Epoch() {
     return generation.load();
+}
+// Under `mutex`.
+inline bool InvalidatedSinceLocked(std::string_view artKey, uint64_t epoch) {
+    for (const auto& item : invalidations)
+        if (item.sequence > epoch && ArtKeyHasPrefix(artKey, item.prefix)) return true;
+    return false;
+}
+inline int64_t InvalidatedAtLocked(std::string_view artKey) {
+    int64_t at = 0;
+    for (const auto& item : invalidations)
+        if (ArtKeyHasPrefix(artKey, item.prefix)) at = std::max(at, item.at);
+    return at;
+}
+inline bool Stale(const ImageIdentity& identity, uint64_t epoch) {
+    std::lock_guard lock(mutex);
+    return InvalidatedSinceLocked(ImageArtKey(identity), epoch);
 }
 inline Key StorageKey(const ImageIdentity& identity) {
     return {Kind::Data, identity.provider, AccountScope(identity.provider),
@@ -38,7 +67,7 @@ inline bool Fresh(std::string_view artKey) {
 inline bool Remember(const ImageIdentity& identity, uint64_t account, int64_t checked, uint64_t epoch) {
     if (AccountRevision(identity.provider) != account) return false;
     std::lock_guard lock(mutex);
-    if (epoch != Epoch()) return false;
+    if (InvalidatedSinceLocked(ImageArtKey(identity), epoch)) return false;
     if (entries.size() >= 4096) {
         auto oldest = std::min_element(entries.begin(), entries.end(), [](const auto& a, const auto& b) {
             return a.second.checked < b.second.checked;
@@ -69,13 +98,19 @@ inline bool KnownMissing(const ImageIdentity& identity) {
         const auto checked = record->Info().validatedAt;
         const auto now = Store::Now();
         if (checked <= 0 || now < checked || now - checked >= kFreshSeconds) return false;
+        {
+            // Written before (or in the second of) an explicit refresh: the refresh asked for
+            // the service's answer again, and the disk record is that stale answer.
+            std::lock_guard lock(mutex);
+            if (checked <= InvalidatedAtLocked(key)) return false;
+        }
         return Remember(identity, account, checked, epoch);
     } catch (...) {
         return false;
     }
 }
 inline void StoreMissing(const ImageIdentity& identity, uint64_t account, uint64_t epoch = Epoch()) {
-    if (epoch != Epoch()) return;
+    if (Stale(identity, epoch)) return;
     if (AccountRevision(identity.provider) != account) return;
     const auto now = Store::Now();
     if (!Remember(identity, account, now, epoch)) return;
@@ -85,7 +120,7 @@ inline void StoreMissing(const ImageIdentity& identity, uint64_t account, uint64
         std::ofstream output(writer->Path(), std::ios::binary);
         output << "missing";
         output.close();
-        if (!output || AccountRevision(identity.provider) != account || epoch != Epoch()) return;
+        if (!output || AccountRevision(identity.provider) != account || Stale(identity, epoch)) return;
         Metadata metadata;
         metadata.extra = "confirmed-missing/1";
         metadata.validatedAt = now;
@@ -94,7 +129,7 @@ inline void StoreMissing(const ImageIdentity& identity, uint64_t account, uint64
     }
 }
 inline void Clear(const ImageIdentity& identity, uint64_t account, uint64_t epoch = Epoch()) {
-    if (AccountRevision(identity.provider) != account || epoch != Epoch()) return;
+    if (AccountRevision(identity.provider) != account || Stale(identity, epoch)) return;
     {
         std::lock_guard lock(mutex);
         if (auto found = entries.find(ImageArtKey(identity)); found != entries.end())
@@ -107,8 +142,12 @@ inline void Clear(const ImageIdentity& identity, uint64_t account, uint64_t epoc
 }
 inline void Invalidate(std::string_view prefix) {
     std::lock_guard lock(mutex);
-    ++generation;
+    invalidations.push_back({std::string(prefix), ++generation, Store::Now()});
+    constexpr size_t kMaxInvalidations = 256;
+    if (invalidations.size() > kMaxInvalidations)
+        invalidations.erase(invalidations.begin(),
+                            invalidations.begin() + static_cast<std::ptrdiff_t>(invalidations.size() - kMaxInvalidations));
     for (auto& [key, entry] : entries)
-        if (key.starts_with(prefix)) entry.invalidated = true;
+        if (ArtKeyHasPrefix(key, prefix)) entry.invalidated = true;
 }
 } // namespace glasswave::cache::art_absence
