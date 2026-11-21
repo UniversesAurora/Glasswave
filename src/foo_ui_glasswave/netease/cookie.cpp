@@ -18,7 +18,6 @@ using core::LowerAscii;
 
 std::mutex g_mutex;
 std::wstring g_cookie;
-bool g_loaded = false;
 
 const wchar_t kEntropy[] = L"Glasswave.Netease.Session.v1";
 
@@ -70,16 +69,20 @@ bool LoadSessionCookie() {
     DATA_BLOB entropy = Entropy();
     DATA_BLOB out{};
     if (!CryptUnprotectData(&in, nullptr, &entropy, nullptr, nullptr, CRYPTPROTECT_UI_FORBIDDEN, &out)) {
-        core::Log(L"session: cannot decrypt the saved cookie");
+        // Another user's file or a damaged one: it will never decrypt, so it is removed rather
+        // than logged and retried at every start.
+        core::Log(L"session: cannot decrypt the saved cookie; removing it");
+        std::error_code ec;
+        std::filesystem::remove(path, ec);
         return false;
     }
     const size_t chars = out.cbData / sizeof(wchar_t);
     std::wstring cookie(reinterpret_cast<const wchar_t*>(out.pbData), chars);
+    SecureZeroMemory(out.pbData, out.cbData); // the plain cookie leaves only through `cookie`
     LocalFree(out.pbData);
 
     std::lock_guard lock(g_mutex);
     g_cookie = std::move(cookie);
-    g_loaded = true;
     return true;
 }
 
@@ -92,7 +95,6 @@ void SaveSessionCookie(std::wstring_view cookie) {
     {
         std::lock_guard lock(g_mutex);
         g_cookie.assign(cookie);
-        g_loaded = true;
     }
     const auto path = SessionPath();
     if (path.empty()) return;
@@ -115,7 +117,6 @@ void ClearSessionCookie() {
     {
         std::lock_guard lock(g_mutex);
         g_cookie.clear();
-        g_loaded = true;
     }
     const auto path = SessionPath();
     if (path.empty()) return;
@@ -176,7 +177,9 @@ std::wstring NormalizeCookie(std::wstring_view raw) {
     return out;
 }
 
-bool CookieHasMusicU(std::wstring_view cookie) {
+namespace {
+
+bool ScanForMusicU(std::wstring_view cookie) {
     const std::wstring normalized = NormalizeCookie(cookie);
     const std::wstring key = L"MUSIC_U=";
     size_t start = 0;
@@ -189,6 +192,25 @@ bool CookieHasMusicU(std::wstring_view cookie) {
         start = end + 1;
     }
     return false;
+}
+
+}  // namespace
+
+bool CookieHasMusicU(std::wstring_view cookie) {
+    // Session::LoggedIn asks this at every request, input open and UI query, always about the
+    // one saved cookie: the last answer is kept per cookie value.
+    static std::mutex cacheMutex;
+    static std::wstring cachedCookie;
+    static bool cachedAnswer = false;
+    {
+        std::lock_guard lock(cacheMutex);
+        if (!cachedCookie.empty() && cachedCookie == cookie) return cachedAnswer;
+    }
+    const bool answer = ScanForMusicU(cookie);
+    std::lock_guard lock(cacheMutex);
+    cachedCookie.assign(cookie);
+    cachedAnswer = answer;
+    return answer;
 }
 
 }  // namespace glasswave::netease
