@@ -26,6 +26,8 @@
 #include "ui/win7_menu.h"
 #include "ui/i18n.h"
 #include "media/favorites.h"
+#include "media/outside_play.h"
+#include "cd/discs.h"
 #include "media/play_stats.h"
 #include "media/special_playlists.h"
 #include "media/queue_order.h"
@@ -974,6 +976,8 @@ void MainWindow::InitComposition() {
     });
     m_providerListener = std::make_unique<ProviderListener>(*this);
     RefreshProviderSections();
+    m_discsToken = cd::AddDiscsListener([this] { OnDiscsChanged(); });
+    OnDiscsChanged();
     SetContextActionProvider([this](metadb_handle_list_cref items) { return BuildContextActions(items); });
     m_list = std::make_unique<ListView>(m_contentLayer);
     m_list->onLink = [this](size_t group, size_t line) { OnAlbumLink(group, line); };
@@ -3715,13 +3719,40 @@ std::vector<MainWindow::Crumb> MainWindow::BuildCrumbPath() {
     path.push_back({L"", {}, [this] { return LibraryMenu(); }});
     // Playlists: the queue is a root page, smart playlists sit flat under Local Music,
     // and the regular ones keep their section under All Music.
-    if (m_view.kind == View::Kind::Playlist) {
-        if (media::IsQueue(m_view.playlist)) {
-            path.push_back({L"Now Playing", go(m_view), {}});
+    if (view.kind == View::Kind::AudioCd) { // Local Music > Discs > the disc
+        View home;
+        home.library = View::Library::Local;
+        home.kind = View::Kind::AllMusic;
+        path.push_back({L"Local Music", go(home), [this] { return LocalSectionsMenu(); }});
+        path.push_back({L"Discs", {}, [this] {
+                            std::vector<MenuAction> drives;
+                            for (const auto& drive : cd::Drives()) {
+                                View v;
+                                v.library = View::Library::Local;
+                                v.kind = View::Kind::AudioCd;
+                                v.playlist = drive.drive;
+                                drives.push_back({cd::DriveTitle(drive), [this, v] { Navigate(v, true); }});
+                            }
+                            return drives;
+                        }});
+        path.push_back({view.name, go(view), {}, true});
+        return path;
+    }
+    if (view.kind == View::Kind::Home || view.kind == View::Kind::RemoteHomeList) {
+        View home;
+        home.library = View::Library::All;
+        home.kind = View::Kind::Home;
+        path.push_back({L"Home", go(home), {}});
+        if (view.kind == View::Kind::RemoteHomeList) path.push_back({view.name, go(view), {}, true});
+        return path;
+    }
+    if (view.kind == View::Kind::Playlist) {
+        if (media::IsQueue(view.playlist)) {
+            path.push_back({L"Now Playing", go(view), {}});
             return path;
         }
         const bool smart =
-            m_view.playlist == media::FavoritesPlaylist(false) || media::IsAutoPlaylist(m_view.playlist);
+            view.playlist == media::FavoritesPlaylist(false) || media::IsAutoPlaylist(view.playlist);
         if (smart) {
             View home;
             home.library = View::Library::Local;
@@ -5038,6 +5069,37 @@ void MainWindow::RefreshProviderSections() {
     m_nav->SetProviders(std::move(sections));
 }
 
+void MainWindow::OnDiscsChanged() {
+    if (!m_nav) return;
+    std::vector<NavPane::DiscRow> rows;
+    for (const auto& drive : cd::Drives())
+        rows.push_back({drive.drive, cd::DriveTitle(drive)});
+    m_nav->SetDiscs(std::move(rows));
+    if (m_view.kind != View::Kind::AudioCd) return;
+    if (cd::FindDrive(static_cast<wchar_t>(m_view.playlist))) {
+        Navigate(m_view, false); // read, tagged or taken out: the disc's name and rows
+        return;
+    }
+    View queue; // the drive itself went (an external drive unplugged)
+    queue.library = View::Library::All;
+    queue.kind = View::Kind::Playlist;
+    queue.playlist = media::QueuePlaylist(true);
+    Navigate(queue, true);
+}
+
+void MainWindow::ShowDiscMenu(wchar_t drive, POINT screen) {
+    const auto* disc = cd::FindDrive(drive);
+    if (!disc) return;
+    std::vector<MenuAction> actions;
+    if (disc->state == cd::CdDrive::State::Loaded) {
+        const metadb_handle_list tracks = disc->tracks;
+        actions.push_back({Tr(L"Play"), [tracks] { media::PlayQueue(tracks, 0); }});
+        actions.push_back({});
+    }
+    actions.push_back({Tr(L"Eject"), [drive] { cd::Eject(drive); }});
+    ShowActionMenu(m_hwnd, screen, actions);
+}
+
 void MainWindow::ShowRemoteNavMenu(const NavPane::Item& item, POINT screen) {
     stream::Provider& provider = *item.provider;
     std::vector<MenuAction> actions;
@@ -5098,6 +5160,7 @@ cfg_var_modern::cfg_int* MainWindow::ViewStyleSetting(const View& view) {
     case View::Kind::Group:
         return &cfg_viewSongs;
     case View::Kind::Playlist:
+    case View::Kind::AudioCd:
         return &cfg_viewPlaylist;
     case View::Kind::AllFavorites:
         return &cfg_viewAllFavorites;
@@ -5334,6 +5397,14 @@ void MainWindow::OnNavItem(const NavPane::Item& item) {
         v.library = View::Library::All;
         v.kind = View::Kind::Playlist;
         v.playlist = media::QueuePlaylist(true);
+        break;
+    case NavPane::Target::AudioCd:
+    case NavPane::Target::DiscsHeader: // the first drive
+        if (cd::Drives().empty()) return;
+        v.library = View::Library::Local;
+        v.kind = View::Kind::AudioCd;
+        v.playlist = item.target == NavPane::Target::AudioCd ? item.playlist : cd::Drives().front().drive;
+        cd::ReadDrive(static_cast<wchar_t>(v.playlist)); // looks again in a drive found empty
         break;
     case NavPane::Target::SmartHeader:
         v.library = View::Library::Local;
@@ -6571,6 +6642,27 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
         if (m_glass) m_glass->RefreshTransparencyPolicy();
         break;
 
+    case WM_DEVICECHANGE:
+        // A disc came or went: the navigation pane shows the drives' CDs (cd/discs.h), and a
+        // disc taken out leaves the queue (media/outside_play.h).
+        if ((wp == DBT_DEVICEARRIVAL || wp == DBT_DEVICEREMOVECOMPLETE) && lp &&
+            reinterpret_cast<const DEV_BROADCAST_HDR*>(lp)->dbch_devicetype == DBT_DEVTYP_VOLUME &&
+            (reinterpret_cast<const DEV_BROADCAST_VOLUME*>(lp)->dbcv_flags & DBTF_MEDIA)) {
+            cd::OnMediaChanged(reinterpret_cast<const DEV_BROADCAST_VOLUME*>(lp)->dbcv_unitmask,
+                               wp == DBT_DEVICEARRIVAL);
+            if (wp == DBT_DEVICEREMOVECOMPLETE)
+                media::DropEjectedDiscs([] {
+                    auto* window = Instance();
+                    if (!window) return;
+                    window->OnCoreQueueChanged(); // history rows
+                    // The disc's songs leave Recently Played and Most Played (media::PlayStats).
+                    if (window->m_view.kind == View::Kind::AllRecentPlayed ||
+                        window->m_view.kind == View::Kind::AllMostPlayed)
+                        window->Navigate(window->m_view, false);
+                });
+        }
+        break;
+
     case WM_ERASEBKGND:
         return 1;
     case WM_PAINT:
@@ -7067,8 +7159,12 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
         m_playCallback.reset();
         if (auto* cache = ArtCache::Existing()) cache->Unsubscribe(m_detailArtToken);
         m_detailArtToken = 0;
+        media::radio::Unsubscribe(m_radioToken);
+        m_radioToken = 0;
         SetContextActionProvider({});
         m_providerListener.reset();
+        cd::RemoveDiscsListener(m_discsToken);
+        m_discsToken = 0;
         m_alive.reset(); // provider callbacks that outlive the window do nothing
         m_page.reset();
         m_hover = m_pressed = nullptr;

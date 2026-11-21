@@ -264,6 +264,7 @@ struct PlaybackScheduler::Impl {
     void Shutdown();
     bool SetPlaybackMode(bool shuffle, int repeat);
     bool PlayQueue(const metadb_handle_list& items, std::size_t start);
+    bool AdoptPlaying(const metadb_handle_list& items, std::size_t start);
     bool PlayNext(const metadb_handle_list& items);
     bool AddToQueue(const metadb_handle_list& items);
     bool AppendSourceBatch(const metadb_handle_list& items, std::uint64_t expectedGeneration);
@@ -531,7 +532,66 @@ bool PlaybackScheduler::Impl::PlayQueue(const metadb_handle_list& items, std::si
     const auto currentIt = current ? physicalIndex.find(*current) : physicalIndex.end();
     if (currentIt == physicalIndex.end()) return false;
     if (!StartOccurrence(*current)) return false;
-    ApplyCoreDefault();
+    ApplyCoreOrder();
+    SaveCheckpoint();
+    RequestListenerNotification();
+    return true;
+}
+
+// PlayQueue without starting anything: the song playing from the queue stays where it is (its
+// row is kept, so foobar2000's playing location stays valid) and becomes `items[start]` of a
+// fresh source, the other songs placed around it.
+bool PlaybackScheduler::Impl::AdoptPlaying(const metadb_handle_list& items, std::size_t start) {
+    PFC_ASSERT(core_api::is_main_thread());
+    if (!started || start >= items.get_count()) return false;
+    auto manager = playlist_manager::get();
+    const t_size queue = QueuePlaylist(false);
+    t_size playingList = SIZE_MAX, playingRow = SIZE_MAX;
+    if (queue == SIZE_MAX || !manager->get_playing_item_location(&playingList, &playingRow) ||
+        playingList != queue || manager->playlist_get_item_handle(queue, playingRow) != items[start])
+        return false;
+
+    if (!RemoveOwnedCoreQueueEntries())
+        console::print("Glasswave: stale explicit queue rows could not be removed.");
+    InvalidatePosted();
+    CancelSynchronize();
+    wholeReplaceDirty = false; // the outside replacement this adopts is settled here
+    physical.clear();
+    physicalIndex.clear();
+    handles.clear();
+    modelInitialized = false;
+
+    const auto occurrences = AllocateOccurrences(items);
+    schedule.ResetFresh(std::span<const PlaybackOccurrenceId>(occurrences), start, NextSeed());
+    physical = schedule.ProjectionOrder();
+    for (std::size_t i = 0; i < physical.size(); ++i)
+        physicalIndex[physical[i]] = i;
+    modelInitialized = true;
+    ++contentGeneration;
+    checkpointDirty = true;
+
+    const auto ordered = HandlesFor(physical);
+    const std::size_t at = physicalIndex[occurrences[start]];
+    metadb_handle_list before, after;
+    for (std::size_t i = 0; i < ordered.get_count(); ++i)
+        if (i < at)
+            before.add_item(ordered[i]);
+        else if (i > at)
+            after.add_item(ordered[i]);
+    const t_size count = manager->playlist_get_item_count(queue);
+    mapGuard = true;
+    manager->playlist_undo_backup(queue);
+    pfc::bit_array_bittable others(count);
+    for (t_size i = 0; i < count; ++i)
+        others.set(i, i != playingRow);
+    manager->playlist_remove_items(queue, others);
+    manager->playlist_insert_items(queue, 0, before, pfc::bit_array_false());
+    manager->playlist_add_items(queue, after, pfc::bit_array_false());
+    mapGuard = false;
+    manager->playlist_set_focus_item(queue, at);
+
+    ApplyCoreOrder();
+    ApplyProjection();
     SaveCheckpoint();
     RequestListenerNotification();
     return true;
@@ -2086,6 +2146,14 @@ int PlaybackScheduler::QueueRepeatMode() const {
 
 bool PlaybackScheduler::PlayQueue(const metadb_handle_list& items, std::size_t start) {
     return m_impl->PlayQueue(items, start);
+}
+
+bool PlaybackScheduler::AdoptPlaying(const metadb_handle_list& items, std::size_t start) {
+    return m_impl->AdoptPlaying(items, start);
+}
+
+bool PlaybackScheduler::Editing() const {
+    return m_impl->mapGuard;
 }
 
 bool PlaybackScheduler::PlayNext(const metadb_handle_list& items) {

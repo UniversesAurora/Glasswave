@@ -2,6 +2,7 @@
 #include "media/play_stats.h"
 #include "stream/provider.h"
 #include "app/settings.h"
+#include "cd/disc.h"
 
 #include <cstdlib>
 #include <ctime>
@@ -312,6 +313,35 @@ void PlayStats::ClearAllCounts() {
         }
     if (changed) Save();
 }
+
+void PlayStats::Refresh(metadb_handle_list_cref items) {
+    if (!m_loaded) Load();
+    bool changed = false;
+    for (const auto& track : items) {
+        std::string key;
+        stream::Provider* provider = nullptr;
+        if (!track.is_valid() || !RecordKey(track, key, &provider) || provider) continue;
+        const auto it = m_index.find(key);
+        if (it == m_index.end()) continue;
+        PlayRecord& record = m_records[it->second];
+        std::string title = LocalField(track, "%title%");
+        if (title.empty()) title = LocalField(track, "%filename%");
+        std::string artist = LocalField(track, "%artist%"), album = LocalField(track, "%album%");
+        if (title == record.title && artist == record.artist && album == record.album) continue;
+        record.title = std::move(title);
+        record.artist = std::move(artist);
+        record.album = std::move(album);
+        changed = true;
+    }
+    if (changed) Save();
+}
+
+namespace {
+// A CD's tracks play only while it is in a drive.
+bool Playable(const PlayRecord& record) {
+    return !cd::IsCdPath(record.path.c_str()) || cd::DiscPresent(cd::DiscKey(record.path.c_str()));
+}
+} // namespace
 
 std::vector<PlayRecord> PlayStats::Recent(size_t limit) {
     if (!m_loaded) Load();

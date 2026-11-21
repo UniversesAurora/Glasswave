@@ -572,6 +572,17 @@ void Service::Start(const metadb_handle_ptr& track, bool useAutomaticCache,
         done({Status::NotFound, nullptr});
         return;
     }
+    // A CD track has no name to search by ("CD Track 01") until its disc is tagged
+    // (cd/musicbrainz.h); the tag update asks again (on_playback_edited). Nothing is cached
+    // for it meanwhile.
+    if (_strnicmp(track->get_path(), "cdda://", 7) == 0) {
+        const auto info = track->get_info_ref();
+        if (!info.is_valid() || !info->info().meta_get("ALBUM", 0)) {
+            Cancel();
+            done({Status::NotFound, nullptr});
+            return;
+        }
+    }
     const Query query = MakeQuery(track);
     const std::wstring identity = TrackIdentity(track);
 

@@ -82,6 +82,11 @@
       <PrecompiledHeader>Create</PrecompiledHeader>
     </ClCompile>
     <ClCompile Include="component.cpp" />
+    <ClCompile Include="cd\album_art_cd.cpp" />
+    <ClCompile Include="cd\disc.cpp" />
+    <ClCompile Include="cd\discs.cpp" />
+    <ClCompile Include="cd\musicbrainz.cpp" />
+    <ClCompile Include="media\outside_play.cpp" />
     <ClCompile Include="cache\store.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
     </ClCompile>
@@ -253,6 +258,10 @@
     <ClCompile Include="netease\task_queue.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="cd\disc.h" />
+    <ClInclude Include="cd\discs.h" />
+    <ClInclude Include="cd\musicbrainz.h" />
+    <ClInclude Include="media\outside_play.h" />
     <ClInclude Include="pch.h" />
     <ClInclude Include="cache\provider_snapshot.h" />
     <ClInclude Include="gfx\composition_host.h" />

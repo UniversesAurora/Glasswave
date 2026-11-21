@@ -67,6 +67,11 @@ class PlaybackScheduler final {
     int QueueRepeatMode() const;
 
     bool PlayQueue(const metadb_handle_list& items, std::size_t start);
+    // Makes `items` the queue around the song playing from it (items[start]) without
+    // restarting it; false when that song is not what plays.
+    bool AdoptPlaying(const metadb_handle_list& items, std::size_t start);
+    // The scheduler is editing the queue playlist itself (its callbacks are its own echo).
+    bool Editing() const;
     bool PlayNext(const metadb_handle_list& items);
     bool AddToQueue(const metadb_handle_list& items);
     // Paged-source append. The token changes only on Replace/Clear, never on an ordinary

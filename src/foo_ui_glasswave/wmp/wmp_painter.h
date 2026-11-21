@@ -48,7 +48,7 @@ void SearchFrame(ID2D1DeviceContext* dc, D2D1_SIZE_F size, bool focused);
 void SeekBar(ID2D1DeviceContext* dc, D2D1_SIZE_F size, float progress, bool hot, bool enabled, float ruleY);
 
 // Small glyphs used in lists and the navigation pane.
-enum class NavIcon { None, Library, Playlist, Music, Artist, Album, Genre, NowPlaying };
+enum class NavIcon { None, Library, Playlist, Music, Artist, Album, Genre, NowPlaying, Disc };
 void NavGlyph(ID2D1DeviceContext* dc, D2D1_POINT_2F center, NavIcon icon);
 // Expand / collapse triangle.
 void Disclosure(ID2D1DeviceContext* dc, D2D1_POINT_2F center, bool expanded, bool hot = false);

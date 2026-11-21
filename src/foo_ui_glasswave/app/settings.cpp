@@ -83,10 +83,33 @@ void SetSwapTranslation(bool swap) {
 }
 int LyricStyleGeneration() { return g_lyricStyle; }
 
+int Tint() { return Get(cfg_tint, kTint); }
+void SetTint(int tint) { Set(cfg_tint, kTint, tint); }
+int TintIntensity() { return Get(cfg_tintIntensity, kTintIntensity); }
+void SetTintIntensity(int slider) { Set(cfg_tintIntensity, kTintIntensity, slider); }
+
+bool AutoLoadCds() { return cfg_autoLoadCds.get() != 0; }
+void SetAutoLoadCds(bool load) { cfg_autoLoadCds.set(load ? 1 : 0); }
+
 bool LyricLineShown() { return cfg_lyricLine.get() != 0; }
+bool SongTagsShown() { return cfg_songTags.get() != 0; }
+void SetSongTagsShown(bool shown) { cfg_songTags.set(shown ? 1 : 0); }
 void SetLyricLineShown(bool shown) { cfg_lyricLine.set(shown ? 1 : 0); }
 bool PlayerTimeRemaining() { return cfg_playerTimeRemaining.get() != 0; }
 void SetPlayerTimeRemaining(bool remaining) { cfg_playerTimeRemaining.set(remaining ? 1 : 0); }
+
+std::optional<RECT> MiniPlayerRect() {
+    RECT r{};
+    if (sscanf_s(cfg_miniPlayerRect.get().c_str(), "%ld %ld %ld %ld", &r.left, &r.top, &r.right, &r.bottom) != 4 ||
+        r.right <= r.left || r.bottom <= r.top)
+        return std::nullopt;
+    return r;
+}
+void SetMiniPlayerRect(const RECT& r) {
+    char text[64];
+    sprintf_s(text, "%ld %ld %ld %ld", r.left, r.top, r.right, r.bottom);
+    cfg_miniPlayerRect.set(text);
+}
 int ThumbnailCacheEntries() { return Get(cfg_thumbnails, kThumbnailCache); }
 void SetThumbnailCacheEntries(int entries) { Set(cfg_thumbnails, kThumbnailCache, entries); }
 int CoverThreads() { return Get(cfg_coverThreads, kCoverThreads); }

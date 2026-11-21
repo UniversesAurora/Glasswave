@@ -1,5 +1,7 @@
 #include "pch.h"
 #include "ui/song_table.h"
+
+#include "cd/disc.h"
 #include "media/favorites.h"
 #include "media/special_playlists.h"
 #include "ui/i18n.h"
@@ -969,6 +971,33 @@ void AllFavoritesSource::ReplaceFavorites(const std::vector<metadb_handle_ptr>& 
     ReplaceRows(FavoriteRows(local, remote));
 }
 
+
+namespace {
+std::vector<SongTableRow> DiscRows(const metadb_handle_list& tracks) {
+    std::vector<SongTableRow> rows;
+    for (const auto& track : tracks) {
+        if (!track.is_valid()) continue;
+        SongTableRow row;
+        row.handle = track;
+        row.title = LocalField(track, "[%title%]");
+        if (row.title.empty()) // not tagged (yet): its number, as on the disc
+            row.title = Tr(L"Track") + L" " +
+                        std::to_wstring(cd::TrackNumber(track->get_path(), track->get_subsong_index()));
+        row.artist = LocalField(track, "[%artist%]");
+        row.album = LocalField(track, "[%album%]");
+        row.lengthMs = static_cast<int>(track->get_length() * 1000);
+        // One album: the disc, whatever its tags say.
+        row.albumKey = L"cd:" + Wide(cd::DiscKey(track->get_path()).c_str());
+        row.artKey = row.albumKey;
+        FinishRow(row);
+        rows.push_back(std::move(row));
+    }
+    return rows;
+}
+} // namespace
+
+DiscSource::DiscSource(const metadb_handle_list& tracks, std::wstring emptyText)
+    : SongTableSource(DiscRows(tracks), false, std::move(emptyText), L"audio-cd") {}
 
 PlayStatsSource::PlayStatsSource(const std::vector<media::PlayRecord>& records, std::wstring emptyText)
     : SongTableSource(PlayStatRows(records), true, std::move(emptyText), L"all-play-stats") {

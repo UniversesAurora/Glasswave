@@ -59,6 +59,8 @@ public:
     void Rebuild();  // playlists changed
     // The streaming providers' sections, in registration order.
     void SetProviders(std::vector<ProviderSection> sections);
+    // The CD drives (with their discs' names), under Local Music > Discs.
+    void SetDiscs(std::vector<DiscRow> discs);
     // The Music categories shown (WMP's "Customize navigation pane"), in order.
     void SetCategories(std::vector<media::GroupKind> kinds);
     const std::vector<media::GroupKind>& Categories() const { return m_categories; }

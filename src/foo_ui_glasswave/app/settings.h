@@ -73,6 +73,11 @@ void SetSwapTranslation(bool swap);
 // Bumped by every change above, so views can tell their layout is out of date.
 int LyricStyleGeneration();
 
+// An audio CD is read as soon as it is inserted (its tracks listed and looked up); otherwise
+// its drive is read only when opened.
+bool AutoLoadCds();
+void SetAutoLoadCds(bool load);
+
 // Hover time before the volume bubble appears (dragging shows it at once).
 inline constexpr Range kVolumeTipDelay{0, 3000, 800};
 int VolumeTipDelayMs();

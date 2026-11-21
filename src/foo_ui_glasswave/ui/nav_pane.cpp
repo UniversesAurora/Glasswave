@@ -29,6 +29,7 @@ int WmpIconId(wmp::paint::NavIcon icon, bool autoPlaylist) {
     case I::Artist: return 29514;
     case I::Album: return 29510;
     case I::Genre: return 29517;
+    case I::Disc: return 29560; // audio CD
     default: return 0;
     }
 }
@@ -359,6 +360,13 @@ void NavPane::Rebuild() {
                     {Target::Category, static_cast<size_t>(kind), 1, CategoryLabel(kind), wp::NavIcon::Artist, false});
             }
         }
+        if (!m_discs.empty()) {
+            m_items.push_back({Target::DiscsHeader, 0, 1, L"Discs", wp::NavIcon::Disc, true});
+            if (Expanded(m_items.back()))
+                for (const auto& disc : m_discs)
+                    m_items.push_back(
+                        {Target::AudioCd, static_cast<size_t>(disc.drive), 2, disc.title, wp::NavIcon::Disc, false});
+        }
     }
     for (const auto& section : m_providers) {
         stream::Provider* provider = section.provider;
@@ -435,6 +443,14 @@ void NavPane::SetProviders(std::vector<ProviderSection> sections) {
     };
     if (std::equal(sections.begin(), sections.end(), m_providers.begin(), m_providers.end(), same)) return;
     m_providers = std::move(sections);
+    Rebuild();
+}
+
+void NavPane::SetDiscs(std::vector<DiscRow> discs) {
+    const bool same = std::equal(discs.begin(), discs.end(), m_discs.begin(), m_discs.end(),
+                                 [](const DiscRow& a, const DiscRow& b) { return a.drive == b.drive && a.title == b.title; });
+    if (same) return;
+    m_discs = std::move(discs);
     Rebuild();
 }
 
@@ -551,6 +567,7 @@ void NavPane::CancelDrag() {
 bool NavPane::MovableItem(size_t index) const {
     if (index >= m_items.size()) return false;
     const Item& item = m_items[index];
+    if (item.target == Target::DiscsHeader || item.target == Target::AudioCd) return false; // Local Music's last group
     if (item.level == 0) return !ItemKey(item).empty();
     if (item.level == 1) {
         const std::wstring group = GroupKeyOf(index);
@@ -740,7 +757,7 @@ void NavPane::Paint() {
             const Item& it = m_items[i];
             const bool selected =
                 it.target == m_selTarget &&
-                (it.target == Target::Playlist || it.target == Target::Category
+                (it.target == Target::Playlist || it.target == Target::Category || it.target == Target::AudioCd
                      ? it.playlist == m_selPlaylist
                      : it.target == Target::RemoteSection
                            ? it.sectionId == m_selRemoteId

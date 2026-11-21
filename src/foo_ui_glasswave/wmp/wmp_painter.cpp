@@ -424,6 +424,11 @@ void NavGlyph(ID2D1DeviceContext* dc, D2D1_POINT_2F c, NavIcon icon) {
         dc->FillEllipse({c, 6.0f, 6.0f}, blue.get());
         dc->FillEllipse({c, 2.0f, 2.0f}, light.get());
         break;
+    case NavIcon::Disc: // an audio CD: a silver disc with its clear hub
+        dc->FillEllipse({c, 6.5f, 6.5f}, light.get());
+        dc->DrawEllipse({c, 6.0f, 6.0f}, blue.get(), 1.0f);
+        dc->DrawEllipse({c, 2.5f, 2.5f}, blue.get(), 1.0f);
+        break;
     case NavIcon::Genre:
         dc->FillRectangle({c.x - 6, c.y - 5, c.x + 6, c.y + 5}, blue.get());
         dc->FillRectangle({c.x - 4, c.y - 3, c.x + 4, c.y - 1.5f}, light.get());

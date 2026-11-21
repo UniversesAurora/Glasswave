@@ -114,6 +114,27 @@ std::vector<Section> BuildSections() {
               media::PlayStats::Get().ClearAllCounts();
           })}});
     {
+        Field autoLoad;
+        autoLoad.kind = Field::Kind::Choice;
+        autoLoad.label = L"When an audio CD is inserted";
+        autoLoad.choices = {L"Read it at once", L"Read it when opened"};
+        autoLoad.get = [] { return settings::AutoLoadCds() ? 0 : 1; };
+        autoLoad.set = [](int value) {
+            settings::SetAutoLoadCds(value == 0);
+            if (value == 0) cd::ReadUnreadDrives(); // discs already in a drive load now
+        };
+        sections.push_back({L"Audio CDs", {std::move(autoLoad)}});
+    }
+    {
+        Field tags;
+        tags.kind = Field::Kind::Choice;
+        tags.label = L"Song tags (such as Original) before the artist";
+        tags.choices = {L"Show", L"Hide"};
+        tags.get = [] { return settings::SongTagsShown() ? 0 : 1; };
+        tags.set = [](int value) { settings::SetSongTagsShown(value == 0); };
+        sections.push_back({L"Song lists", {std::move(tags)}});
+    }
+    {
         // How the lyrics look, then where they come from.
         std::vector<Field> fields{Number(L"Lyrics text size", L"%", settings::kLyricSize, settings::LyricSizePercent,
                                          settings::SetLyricSizePercent),

@@ -36,6 +36,7 @@ public:
     void ClearCounts(metadb_handle_list_cref items);
     void ForgetAllRecent();  // clears the whole Recently Played list
     void ClearAllCounts();   // clears the whole Most Played list
+    // Lists leave out the tracks of a CD that is not in a drive (cd::DiscPresent); their counts stay.
     std::vector<PlayRecord> Recent(size_t limit);
     std::vector<PlayRecord> MostPlayed(size_t limit);
 
