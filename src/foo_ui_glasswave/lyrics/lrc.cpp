@@ -59,6 +59,15 @@ int ParseTime(std::wstring_view s) {
     return ms > INT_MAX ? -1 : static_cast<int>(ms);
 }
 
+// The ID tags an LRC file carries (lower case). Any other "[word: text]" is lyric text: a
+// section note such as "[Chorus: x2]" is a line of the song, not metadata to drop.
+bool IsMetadataKey(const std::wstring& key) {
+    static constexpr std::wstring_view kKeys[] = {L"ti", L"ar", L"al", L"au", L"by",   L"offset", L"length",
+                                                  L"re", L"ve", L"id", L"total", L"sign", L"qq",   L"hash",
+                                                  L"tool", L"lang", L"language", L"encoding"};
+    return std::find(std::begin(kKeys), std::end(kKeys), key) != std::end(kKeys);
+}
+
 std::wstring_view Trim(std::wstring_view s) {
     while (!s.empty() && (s.front() == L' ' || s.front() == L'\t' || s.front() == 0xFEFF)) s.remove_prefix(1);
     while (!s.empty() && (s.back() == L' ' || s.back() == L'\t' || s.back() == L'\r')) s.remove_suffix(1);
@@ -172,6 +181,7 @@ Lyrics ParseLrc(std::wstring_view text) {
                 std::wstring key(Trim(inner.substr(0, colon)));
                 const std::wstring value(Trim(inner.substr(colon + 1)));
                 std::transform(key.begin(), key.end(), key.begin(), ::towlower);
+                if (!IsMetadataKey(key)) break; // lyric text; kept as a line below
                 if (key == L"offset") offset = _wtoi(value.c_str());
                 else if (key == L"ti") out.title = value;
                 else if (key == L"ar") out.artist = value;
