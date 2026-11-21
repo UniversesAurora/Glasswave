@@ -22,6 +22,8 @@ public:
     // Call after the owner moved, resized, changed visibility or activation.
     void Sync();
     void SetActive(bool active);
+    // A frameless owner (full screen) has no shadow; Sync hides it while this is set.
+    void SetSuppressed(bool suppressed) { m_suppressed = suppressed; }
 
 private:
     struct Side {
@@ -39,7 +41,7 @@ private:
     Side m_sides[4];  // top, bottom, left, right
     RECT m_renderedRect{};
     float m_renderedScale = 0;
-    bool m_active = true, m_renderedActive = true, m_visible = false;
+    bool m_active = true, m_renderedActive = true, m_visible = false, m_suppressed = false;
 };
 
 }  // namespace glasswave::aero

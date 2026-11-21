@@ -876,9 +876,50 @@ HWND MainWindow::Create(user_interface::HookProc_t hook) {
         wpl.flags = 0;
         SetWindowPlacement(m_hwnd, &wpl);
     }
+    const bool animate = WindowAnimations();
+    if (animate) {
+        m_windowRoot.Opacity(0.0f); // the first frame is already the animation's
+        m_shadow.SetSuppressed(true);
+    }
     ShowWindow(m_hwnd, show);
+    if (animate) AnimateWindow(true);
     m_shadow.Sync();
     return m_hwnd;
+}
+
+bool MainWindow::WindowAnimations() {
+    BOOL on = TRUE;
+    SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION, 0, &on, 0);
+    return on != FALSE;
+}
+
+// The window's content grows (or shrinks) about its middle while it fades; the shadow window
+// is out of the way meanwhile and comes back once the window stands at its size.
+void MainWindow::AnimateWindow(bool open) {
+    if (!m_windowRoot) return;
+    RECT client{};
+    GetClientRect(m_hwnd, &client);
+    const auto& comp = gfx::CompositionHost::Get().Compositor();
+    m_windowRoot.CenterPoint(float3{client.right / 2.0f, client.bottom / 2.0f, 0});
+    const auto ease = open ? comp.CreateCubicBezierEasingFunction({0.1f, 0.9f}, {0.2f, 1.0f})
+                           : comp.CreateCubicBezierEasingFunction({0.4f, 0.0f}, {1.0f, 1.0f});
+    const auto duration = std::chrono::milliseconds(open ? kOpenMs : kCloseMs);
+    auto scale = comp.CreateVector3KeyFrameAnimation();
+    const float from = open ? kOpenFrom : 1.0f, to = open ? 1.0f : kCloseTo;
+    scale.InsertKeyFrame(0.0f, float3{from, from, 1});
+    scale.InsertKeyFrame(1.0f, float3{to, to, 1}, ease);
+    scale.Duration(duration);
+    m_windowRoot.StartAnimation(L"Scale", scale);
+    auto fade = comp.CreateScalarKeyFrameAnimation();
+    fade.InsertKeyFrame(0.0f, open ? 0.0f : 1.0f);
+    fade.InsertKeyFrame(1.0f, open ? 1.0f : 0.0f, ease);
+    fade.Duration(duration);
+    m_windowRoot.StartAnimation(L"Opacity", fade);
+    if (!open) {
+        m_shadow.SetSuppressed(true);
+        m_shadow.Sync();
+    }
+    SetTimer(m_hwnd, open ? kWindowOpenTimer : kWindowCloseTimer, open ? kOpenMs : kCloseMs, nullptr);
 }
 
 void MainWindow::Destroy() {
@@ -7570,6 +7611,12 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
 
     case WM_CLOSE:
         // Closing the main window exits foobar2000; the core then calls user_interface::shutdown().
+        // Visible, it first closes the way Windows 7 closed windows (kWindowCloseTimer).
+        if (!m_closing && IsWindowVisible(hwnd) && !IsIconic(hwnd) && WindowAnimations()) {
+            m_closing = true;
+            AnimateWindow(false);
+            return 0;
+        }
         standard_commands::main_exit();
         return 0;
 

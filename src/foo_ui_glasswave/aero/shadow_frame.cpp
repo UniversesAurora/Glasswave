@@ -125,7 +125,7 @@ void ShadowFrame::SetActive(bool active) {
 
 void ShadowFrame::Sync() {
     if (!m_owner) return;
-    const bool show = IsWindowVisible(m_owner) && !IsIconic(m_owner) && !IsZoomed(m_owner);
+    const bool show = !m_suppressed && IsWindowVisible(m_owner) && !IsIconic(m_owner) && !IsZoomed(m_owner);
     if (!show) {
         if (m_visible)
             for (auto& side : m_sides) ShowWindow(side.hwnd, SW_HIDE);

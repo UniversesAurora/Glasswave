@@ -27,6 +27,74 @@
 namespace glasswave::ui {
 namespace {
 
+namespace wuc = winrt::Windows::UI::Composition;
+using winrt::Windows::Foundation::Numerics::float2;
+
+std::wstring Num(float v) {
+    wchar_t text[32];
+    swprintf_s(text, L"%.0f", v);
+    return text;
+}
+
+std::wstring BrushText(const wuc::CompositionBrush& brush) {
+    if (!brush) return L"no brush";
+    if (auto color = brush.try_as<wuc::CompositionColorBrush>()) {
+        const auto c = color.Color();
+        wchar_t text[48];
+        swprintf_s(text, L"color #%02X%02X%02X/%02X", c.R, c.G, c.B, c.A);
+        return text;
+    }
+    if (auto surfaceBrush = brush.try_as<wuc::CompositionSurfaceBrush>()) {
+        std::wstring text = L"surface";
+        const auto surface = surfaceBrush.Surface();
+        if (!surface) {
+            text += L" (none)";
+        } else if (auto drawing = surface.try_as<wuc::CompositionDrawingSurface>()) {
+            const auto size = drawing.SizeInt32();
+            text += L" " + std::to_wstring(size.Width) + L"x" + std::to_wstring(size.Height);
+        } else {
+            text += L" " + std::wstring(winrt::get_class_name(surface));
+        }
+        static constexpr const wchar_t* kStretch[] = {L"none", L"fill", L"uniform", L"uniform-fill"};
+        const auto stretch = static_cast<int>(surfaceBrush.Stretch());
+        text += L" stretch ";
+        text += stretch >= 0 && stretch < 4 ? kStretch[stretch] : L"?";
+        const auto scale = surfaceBrush.Scale();
+        if (scale.x != 1 || scale.y != 1) text += L" scaled " + Num(scale.x * 100) + L"%";
+        return text;
+    }
+    return std::wstring(winrt::get_class_name(brush));
+}
+
+// One line per visible visual: its place in the tree, its rectangle in window pixels (offsets
+// added up; scales, rotations and running animations are not followed, only flagged), and
+// what it draws. Hidden subtrees are skipped.
+void LogVisual(const wuc::Visual& visual, float x, float y, float2 parent, const std::wstring& path, int& count) {
+    if (!visual || ++count > 4000) return;
+    if (!visual.IsVisible()) return;
+    const auto offset = visual.Offset();
+    const auto rel = visual.RelativeSizeAdjustment();
+    const float w = visual.Size().x + rel.x * parent.x, h = visual.Size().y + rel.y * parent.y;
+    const float left = x + offset.x, top = y + offset.y;
+    std::wstring line = L"visual " + path + L" [" + Num(left) + L"," + Num(top) + L" " + Num(w) + L"x" + Num(h) + L"]";
+    if (const auto comment = visual.Comment(); !comment.empty()) line += L" '" + std::wstring(comment) + L"'";
+    if (visual.Opacity() != 1) line += L" opacity " + Num(visual.Opacity() * 100) + L"%";
+    if (const auto s = visual.Scale(); s.x != 1 || s.y != 1) line += L" scale " + Num(s.x * 100) + L"%x" + Num(s.y * 100) + L"%";
+    if (visual.RotationAngle() != 0) line += L" rotated";
+    if (visual.Clip()) line += L" clipped";
+    if (auto sprite = visual.try_as<wuc::SpriteVisual>()) {
+        line += L" sprite: " + BrushText(sprite.Brush());
+    } else if (auto layer = visual.try_as<wuc::LayerVisual>()) {
+        line += layer.Effect() ? L" layer with effect" : L" layer";
+    }
+    netease::Log(line);
+    if (auto container = visual.try_as<wuc::ContainerVisual>()) {
+        int index = 0;
+        for (const auto& child : container.Children())
+            LogVisual(child, left, top, float2{w, h}, path + L"." + std::to_wstring(index++), count);
+    }
+}
+
 class OpenPageCommand : public commandline_handler {
   public:
     result on_token(const char* token) override {

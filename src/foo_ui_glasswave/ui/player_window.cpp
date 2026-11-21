@@ -1836,6 +1836,22 @@ void PlayerWindow::ApplyMode(bool first) {
         }
         SetWindowPos(m_hwnd, HWND_NOTOPMOST, m_miniRect.left, m_miniRect.top, m_miniRect.right - m_miniRect.left,
                      m_miniRect.bottom - m_miniRect.top, SWP_FRAMECHANGED | SWP_SHOWWINDOW);
+        // The lyrics or the queue opened full screen do not fit every mini window: one lower
+        // than the mini window grows to for them (or a compact one) shows the song instead, at
+        // the size it was left (owner, 2026-11-14: the pane stood under the control bar).
+        if (m_paneShown && m_pane) {
+            const float s = GetDpiForWindow(m_hwnd) / 96.0f;
+            const int w = m_miniRect.right - m_miniRect.left, h = m_miniRect.bottom - m_miniRect.top;
+            if (w < std::lround(kMiniMinW * s) || h < std::lround(kMiniPaneH * s)) {
+                m_paneShown = false;
+                m_miniCoverHeight = 0;
+                m_pane->SetVisible(false);
+                m_stage.StopAnimation(L"Opacity");
+                m_stage.Opacity(1.0f);
+                for (int id : {kLyrics, kList, kMenuLyrics, kMenuList, kLibrary})
+                    if (auto* widget = WidgetById(id)) widget->Invalidate();
+            }
+        }
     }
     m_scale = GetDpiForWindow(m_hwnd) / 96.0f;
     m_chromeShown = false;
