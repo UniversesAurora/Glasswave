@@ -2,7 +2,34 @@
 
 Updated: 2026-11-21
 
-## Playback plumbing shared by the sources (2026-11-21, latest)
+## Review of the 63 commits after the code review (2026-11-21, latest)
+
+Every commit from 0a1ce54 to 43a859c was reviewed against 9fcfbed (was the finding real, is the
+fix the right design). Five `ui:` subjects of provider commits were reworded (`stream:`,
+`applemusic:`, `netease:`); the lines those commits changed were run through clang-format.
+Fixes on top:
+
+- A request a source drops (sign-out, account switch, quit) completes with the one
+  `stream::kRequestDropped`, which `ShowProviderError` and the radio ignore: no error dialog for
+  a write that was in flight at sign-out. NetEase's Session-based entry points (refresh, the
+  library edits, playlist writes, artist reads) were not wrapped in `GuardDone`; they are.
+- Apple's `PutIfCurrent` holds the provider lock again (d3164a4's reason did not hold and the
+  move let a signed-out account's songs back into the catalog).
+- An account change clears the pending favorites and library edits.
+- `SnapshotSaver`: a write dropped by a generation bump (Apple's language change) no longer
+  blocks every later snapshot write.
+- `stream::Catalog`: the deferred restart-cache write is joined at quit.
+- Lyrics: a sleeping view no longer renders, and arms a timer, on every frame the library
+  window's seek head drives; a seek while paused moves the lines.
+- `ui::ArtCache` selects pictures by whole key segments like the image cache.
+- NetEase keeps the MUSIC_U answer with the cookie (no cached copy of the secret); the cookie
+  file uses `core::WriteFileAtomic`. The download list is written once per burst.
+- Radio popups are translated.
+
+Owner checks and decisions: see the Stage A report of this review. Tests of these changes
+(Stage B) have not been run yet.
+
+## Playback plumbing shared by the sources (2026-11-21)
 
 - `net::FetchResumable` (`net/resumable_fetch.*`) is Apple's Range-resuming fetcher made
   source-neutral and used by both inputs. NetEase now resumes with Range requests (and renews its
