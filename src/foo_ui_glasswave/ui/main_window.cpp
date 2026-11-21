@@ -4849,8 +4849,8 @@ std::vector<MenuAction> MainWindow::BuildArtistLinks(metadb_handle_list_cref ite
 
 // Our commands above foobar2000's in a song's context menu: where the song leads (artist,
 // album), what it can be added to, then what this page can do with it.
-std::vector<ContextAction> MainWindow::BuildContextActions(metadb_handle_list_cref items) {
-    std::vector<ContextAction> actions;
+std::vector<MenuAction> MainWindow::BuildContextActions(metadb_handle_list_cref items) {
+    std::vector<MenuAction> actions;
     if (items.get_count() == 0) return actions;
     metadb_handle_list selected;
     selected.add_items(items);
@@ -5109,16 +5109,7 @@ void MainWindow::ShowPageContextMenu(POINT screen) {
         actions.push_back(std::move(action));
     if (CanRefreshPage()) actions.insert(actions.end(), {{}, RefreshAction(*this)});
 
-    // No leading, trailing or doubled separators.
-    std::vector<MenuAction> tidy;
-    for (auto& action : actions) {
-        const bool separator = action.label.empty() && !action.run && action.children.empty();
-        if (separator && (tidy.empty() || tidy.back().label.empty())) continue;
-        tidy.push_back(std::move(action));
-    }
-    while (!tidy.empty() && tidy.back().label.empty())
-        tidy.pop_back();
-    if (!tidy.empty()) ShowActionMenu(m_hwnd, screen, tidy);
+    ShowActionMenu(m_hwnd, screen, actions); // stray separators are left out there
 }
 
 void MainWindow::OnProviderAccount(stream::Provider& provider) {

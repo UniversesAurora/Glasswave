@@ -393,35 +393,11 @@ namespace {
 // Queue and Favorites commands above foobar2000's own context menu (ids past its range).
 enum : UINT { kPlay = 0x8001, kPlayNext, kAddToQueue, kClearQueue, kSaveArt };
 
-std::function<std::vector<ContextAction>(metadb_handle_list_cref)> g_contextActions;
+std::function<std::vector<MenuAction>(metadb_handle_list_cref)> g_contextActions;
 
-std::vector<ContextAction> ContextActionsFor(metadb_handle_list_cref items) {
+std::vector<MenuAction> ContextActionsFor(metadb_handle_list_cref items) {
     if (!g_contextActions || items.get_count() == 0) return {};
     return g_contextActions(items);
-}
-
-void AppendContextActions(HMENU menu, const std::vector<ContextAction>& actions, UINT& next,
-                          std::vector<std::function<void()>>& flat) {
-    for (const auto& action : actions) {
-        if (action.label.empty()) {
-            AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-        } else if (!action.children.empty()) {
-            HMENU sub = CreatePopupMenu();
-            AppendContextActions(sub, action.children, next, flat);
-            AppendMenuW(menu, MF_POPUP | MF_STRING, reinterpret_cast<UINT_PTR>(sub), action.label.c_str());
-        } else {
-            const UINT id = next++;
-            flat.push_back(action.run);
-            AppendMenuW(menu, MF_STRING, id, action.label.c_str());
-        }
-    }
-}
-
-bool RunContextAction(UINT cmd, UINT base, UINT next, const std::vector<std::function<void()>>& flat) {
-    if (cmd < base || cmd >= next) return false;
-    const size_t index = cmd - base;
-    if (index < flat.size() && flat[index]) flat[index]();
-    return true;
 }
 
 void AppendQueueCommands(HMENU menu, bool inQueue) {
@@ -443,7 +419,7 @@ bool RunQueueCommand(UINT cmd, metadb_handle_list_cref items) {
 
 }  // namespace
 
-void SetContextActionProvider(std::function<std::vector<ContextAction>(metadb_handle_list_cref)> provider) {
+void SetContextActionProvider(std::function<std::vector<MenuAction>(metadb_handle_list_cref)> provider) {
     g_contextActions = std::move(provider);
 }
 
@@ -455,10 +431,8 @@ void RunContextMenu(HWND owner, metadb_handle_list_cref items, POINT pt, bool no
     constexpr UINT kActionBase = 0x8200;
     HMENU menu = CreatePopupMenu();
     AppendQueueCommands(menu, nowPlaying);
-    const auto actions = ContextActionsFor(items);
-    UINT nextAction = kActionBase;
-    std::vector<std::function<void()>> flat;
-    if (!actions.empty()) AppendContextActions(menu, actions, nextAction, flat);
+    MenuBuilder custom(kActionBase);
+    custom.Append(menu, ContextActionsFor(items));
     if (items.get_count() == 1) AppendMenuW(menu, MF_STRING, kSaveArt, TrC(L"Save album art..."));
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     cm->win32_build_menu(menu, kBase, 0x7FFF);
@@ -468,7 +442,7 @@ void RunContextMenu(HWND owner, metadb_handle_list_cref items, POINT pt, bool no
         SaveAlbumArt(owner, items[0]);
         return;
     }
-    if (RunContextAction(cmd, kActionBase, nextAction, flat)) return;
+    if (custom.Run(cmd)) return;
     if (RunQueueCommand(cmd, items)) return;
     if (cmd >= kBase) cm->execute_by_id(cmd - kBase);
 }
@@ -490,12 +464,9 @@ void RunPlaylistContextMenu(HWND owner, POINT pt) {
     }
     if (items.get_count()) AppendQueueCommands(menu, queue);
     const auto actions = ContextActionsFor(items);
-    UINT nextAction = kActionBase;
-    std::vector<std::function<void()>> flat;
-    if (!actions.empty()) {
-        AppendContextActions(menu, actions, nextAction, flat);
-        AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-    }
+    MenuBuilder custom(kActionBase);
+    custom.Append(menu, actions);
+    if (!actions.empty()) AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     cm->win32_build_menu(menu, kBase, 0x7FFF);
     const UINT cmd = TrackWin7Menu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_NONOTIFY, pt.x, pt.y, owner);
     DestroyMenu(menu);
@@ -510,7 +481,7 @@ void RunPlaylistContextMenu(HWND owner, POINT pt) {
         }
         return;
     }
-    if (RunContextAction(cmd, kActionBase, nextAction, flat)) return;
+    if (custom.Run(cmd)) return;
     if (RunQueueCommand(cmd, items)) return;
     if (cmd >= kBase) cm->execute_by_id(cmd - kBase);
 }

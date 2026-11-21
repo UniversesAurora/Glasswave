@@ -805,7 +805,7 @@ class PagedPage : public RemotePage {
     void AddPageActions(std::vector<MenuAction>& actions) override {
         AddPageSpecificActions(actions);
         if (HasPagedError()) {
-            if (!actions.empty() && !actions.back().label.empty()) actions.push_back({});
+            AppendSeparator(actions);
             actions.push_back({L"Retry", Guard([this] { RetryPage(); })});
         }
     }
@@ -2186,7 +2186,7 @@ class AllFavoritesPage final : public Page {
             actions.push_back({});
         }
         if (HasError()) {
-            if (!actions.empty() && !actions.back().label.empty()) actions.push_back({});
+            AppendSeparator(actions);
             actions.push_back({L"Retry", Guard([this] { Retry(); })});
         }
     }
@@ -2429,9 +2429,7 @@ MenuAction SearchFor(PageHost& host, const wchar_t* what, const std::wstring& na
 std::vector<MenuAction> RecordActions(PageHost& host, stream::Provider& provider, const MenuRecord& record,
                                       const RecordMenuContext& context) {
     std::vector<MenuAction> actions;
-    const auto group = [&actions] {
-        if (!actions.empty() && !actions.back().label.empty()) actions.push_back({});
-    };
+    const auto group = [&actions] { AppendSeparator(actions); };
     const bool account = provider.AccountVerified();
     if (const auto* album = std::get_if<stream::Album>(&record)) {
         const stream::Album a = *album;

@@ -31,7 +31,6 @@ void RunContextMenu(HWND owner, metadb_handle_list_cref items, POINT pt, bool no
 void RunPlaylistContextMenu(HWND owner, POINT pt);
 
 // Extra context-menu commands supplied by the main window for the selected items.
-using ContextAction = MenuAction;
-void SetContextActionProvider(std::function<std::vector<ContextAction>(metadb_handle_list_cref)> provider);
+void SetContextActionProvider(std::function<std::vector<MenuAction>(metadb_handle_list_cref)> provider);
 
 }  // namespace glasswave::ui

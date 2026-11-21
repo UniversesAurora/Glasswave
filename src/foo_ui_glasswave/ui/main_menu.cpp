@@ -196,29 +196,6 @@ void SnapshotNativeCommands(HMENU menu, const service_ptr_t<mainmenu_manager>& m
     }
 }
 
-// Appends `actions` (submenus included) to `menu`; ids are base + index into `flat`.
-void Append(HMENU menu, const std::vector<MenuAction>& actions, UINT base,
-            std::vector<const MenuAction*>& flat) {
-    for (const auto& a : actions) {
-        if (a.label.empty()) {
-            AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-        } else if (!a.children.empty()) {
-            HMENU sub = CreatePopupMenu();
-            Append(sub, a.children, base, flat);
-            AppendMenuW(menu, MF_POPUP | MF_STRING | (a.disabled ? MF_GRAYED : 0u), reinterpret_cast<UINT_PTR>(sub),
-                        a.label.c_str());
-        } else {
-            flat.push_back(&a);
-            const UINT id = base + static_cast<UINT>(flat.size() - 1);
-            AppendMenuW(menu, MF_STRING | (a.disabled ? MF_GRAYED : 0u), id, a.label.c_str());
-            if (a.checked && a.checkbox)
-                CheckMenuItem(menu, id, MF_BYCOMMAND | MF_CHECKED);
-            else if (a.checked)
-                CheckMenuRadioItem(menu, id, id, id, MF_BYCOMMAND);
-        }
-    }
-}
-
 } // namespace
 
 void ShowMainMenu(HWND owner, POINT pt, const std::vector<MenuAction>& actions) {
@@ -235,12 +212,10 @@ void ShowMainMenu(HWND owner, POINT pt, const std::vector<MenuAction>& actions) 
     constexpr uint32_t kActionBase = 0x10000;
 
     HMENU menu = CreatePopupMenu();
-    std::vector<const MenuAction*> flat;
+    MenuBuilder custom(kActionBase);
     CommandActions commands;
-    Append(menu, actions, kActionBase, flat);
-    for (size_t i = 0; i < flat.size(); ++i)
-        if (flat[i]->run) commands[kActionBase + static_cast<UINT>(i)] = flat[i]->run;
-    if (!actions.empty()) AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+    custom.Append(menu, actions);
+    if (GetMenuItemCount(menu) > 0) AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
 
     const std::string stopDescription = CommandDescription(standard_commands::guid_main_stop);
     uint32_t base = 1;
@@ -259,8 +234,52 @@ void ShowMainMenu(HWND owner, POINT pt, const std::vector<MenuAction>& actions) 
     const UINT cmd = TrackWin7Menu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_NONOTIFY, pt.x, pt.y, owner);
     DestroyMenu(menu); // also destroys the submenus
 
+    if (custom.Run(cmd)) return;
     const auto command = commands.find(cmd);
     if (command != commands.end() && command->second) command->second();
+}
+
+namespace {
+// The menu has an item and the last one is not a separator.
+bool EndsWithItem(HMENU menu) {
+    const int count = GetMenuItemCount(menu);
+    if (count <= 0) return false;
+    MENUITEMINFOW info{sizeof(info)};
+    info.fMask = MIIM_FTYPE;
+    return GetMenuItemInfoW(menu, static_cast<UINT>(count - 1), TRUE, &info) && !(info.fType & MFT_SEPARATOR);
+}
+} // namespace
+
+void MenuBuilder::Append(HMENU menu, const std::vector<MenuAction>& actions) {
+    bool separate = false; // a separator waits for the next item
+    for (const auto& a : actions) {
+        if (a.label.empty()) {
+            separate = EndsWithItem(menu);
+            continue;
+        }
+        if (separate) AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+        separate = false;
+        if (!a.children.empty()) {
+            HMENU sub = CreatePopupMenu();
+            Append(sub, a.children);
+            AppendMenuW(menu, MF_POPUP | MF_STRING | (a.disabled ? MF_GRAYED : 0u), reinterpret_cast<UINT_PTR>(sub),
+                        a.label.c_str());
+            continue;
+        }
+        const UINT id = m_base + static_cast<UINT>(m_runs.size());
+        m_runs.push_back(a.run);
+        AppendMenuW(menu, MF_STRING | (a.disabled ? MF_GRAYED : 0u), id, a.label.c_str());
+        if (a.checked && a.checkbox)
+            CheckMenuItem(menu, id, MF_BYCOMMAND | MF_CHECKED);
+        else if (a.checked)
+            CheckMenuRadioItem(menu, id, id, id, MF_BYCOMMAND);
+    }
+}
+
+bool MenuBuilder::Run(UINT cmd) const {
+    if (cmd < m_base || cmd - m_base >= m_runs.size()) return false;
+    if (const auto& run = m_runs[cmd - m_base]) run();
+    return true;
 }
 
 namespace {
@@ -270,16 +289,16 @@ void ShowActions(HWND owner, POINT pt, const RECT* anchor, const std::vector<Men
     std::vector<MenuAction> copy = actions;
     if (checked < copy.size()) copy[checked].checked = true;
     HMENU menu = CreatePopupMenu();
-    std::vector<const MenuAction*> flat;
-    Append(menu, copy, 1, flat);
-    CommandActions commands;
-    for (size_t i = 0; i < flat.size(); ++i)
-        if (flat[i]->run) commands[1 + static_cast<UINT>(i)] = flat[i]->run;
+    MenuBuilder builder(1);
+    builder.Append(menu, copy);
+    if (GetMenuItemCount(menu) == 0) { // only separators
+        DestroyMenu(menu);
+        return;
+    }
     const UINT cmd = TrackWin7Menu(menu, TPM_RETURNCMD | TPM_NONOTIFY | TPM_LEFTALIGN | TPM_TOPALIGN | TPM_VERTICAL,
                                    pt.x, pt.y, owner, nullptr, anchor);
     DestroyMenu(menu);
-    const auto command = commands.find(cmd);
-    if (command != commands.end() && command->second) command->second();
+    builder.Run(cmd);
 }
 
 } // namespace

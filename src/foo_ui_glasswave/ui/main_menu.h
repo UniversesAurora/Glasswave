@@ -11,6 +11,25 @@ struct MenuAction {
     bool disabled = false;             // greyed: shown, not chosen
 };
 
+// Ends a group of actions: a separator, unless there is nothing before it or a separator already.
+inline void AppendSeparator(std::vector<MenuAction>& actions) {
+    if (!actions.empty() && !actions.back().label.empty()) actions.push_back({});
+}
+
+// Turns actions into a Win32 popup's items and runs the one chosen. Command ids are numbered
+// from `base`; separators at either end of a menu or next to another are left out.
+class MenuBuilder {
+  public:
+    explicit MenuBuilder(UINT base) : m_base(base) {}
+    void Append(HMENU menu, const std::vector<MenuAction>& actions); // submenus included
+    // Runs the action behind `cmd`: false when `cmd` is not one of these.
+    bool Run(UINT cmd) const;
+
+  private:
+    UINT m_base;
+    std::vector<std::function<void()>> m_runs; // per id from m_base
+};
+
 // Pop up a menu at screen point pt: optional custom actions first, then the complete
 // foobar2000 main menu (File/Edit/View/Playback/Library/Help) built by mainmenu_manager,
 // so preferences, components, DSP and output settings are always reachable.

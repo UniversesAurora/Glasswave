@@ -267,7 +267,7 @@ class MainWindow : public PageHost, public PlayerHost {
     void ShowPageContextMenu(POINT screen); // actions for the page itself (no selected item)
     // Context-menu "Go to artist" destinations for the first item (provider or local).
     std::vector<MenuAction> BuildArtistLinks(metadb_handle_list_cref items);
-    std::vector<ContextAction> BuildContextActions(metadb_handle_list_cref items);
+    std::vector<MenuAction> BuildContextActions(metadb_handle_list_cref items);
     void RemoveFromNowPlaying(); // the selected rows of the queue
     void ClearNowPlaying();
     void ForgetPlayStats(metadb_handle_list_cref items, bool recent);
