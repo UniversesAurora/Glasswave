@@ -7,7 +7,7 @@
 #include <thread>
 #include <vector>
 
-namespace glasswave::netease {
+namespace glasswave::core {
 
 // A small fixed-size worker pool for blocking network calls. Results are delivered by the
 // task itself (normally through fb2k::inMainThread).
@@ -30,4 +30,4 @@ private:
     bool m_stopping = false;
 };
 
-}  // namespace glasswave::netease
+}  // namespace glasswave::core

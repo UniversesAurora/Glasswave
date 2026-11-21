@@ -4,8 +4,8 @@
 #include "download/downloads.h"
 #include "netease/config.h"
 #include "netease/handle.h"
-#include "netease/log.h"
-#include "netease/profile.h"
+#include "core/log.h"
+#include "core/paths.h"
 #include "netease/session.h"
 #include "stream/track_snapshot.h"
 
@@ -123,7 +123,7 @@ struct NcmEncodedFetch {
             if (position) source->seek(position, abort);
             openedAt = GetTickCount64();
             renewedAtPosition = true;
-            Log(L"input: renewed the stream URL at byte " + std::to_wstring(position));
+            core::Log(L"input: renewed the stream URL at byte " + std::to_wstring(position));
         };
 
         try {
@@ -165,7 +165,7 @@ struct NcmEncodedFetch {
                 }
                 if (total != filesize_invalid && position < total) {
                     if (!renewedAtPosition) {
-                        Log(L"input: song " + std::to_wstring(songId) + L" transfer ended at byte " +
+                        core::Log(L"input: song " + std::to_wstring(songId) + L" transfer ended at byte " +
                             std::to_wstring(position) + L" of " + std::to_wstring(total) + L"; continuing");
                         renew();
                         continue;
@@ -284,11 +284,11 @@ public:
                 m_decodePath = location;
                 m_positionSeconds = 0;
                 m_durationSeconds = actual.get_length();
-                Log(L"input: song " + std::to_wstring(m_id) + L" from its downloaded file");
+                core::Log(L"input: song " + std::to_wstring(m_id) + L" from its downloaded file");
                 return;
             }
             const auto epoch = stream::SourcePlaybackEpoch();
-            Log(L"input: decoding song " + std::to_wstring(m_id));
+            core::Log(L"input: decoding song " + std::to_wstring(m_id));
             auto& provider = Session::Get();  // started by the component's initquit, on the main thread
             if (!provider.LoggedIn())
                 throw exception_io_data("Please sign in to NetEase Cloud Music before playing this track.");
@@ -350,7 +350,7 @@ public:
                 if (ParseSourceMemo(*remembered, known) && openSource(known, true)) {
                     resolved = std::move(known);
                     fromCache = true;
-                    Log(L"input: song " + std::to_wstring(m_id) + L" from the cache, level " + resolved.level);
+                    core::Log(L"input: song " + std::to_wstring(m_id) + L" from the cache, level " + resolved.level);
                 }
             }
             if (!fromCache) {
@@ -371,7 +371,7 @@ public:
                         stream::SkipUnavailableSource(epoch, m_path, error, p_flags, p_abort)) {
                         // No CDN request or audio decoder is created for an unavailable source.
                         // EOF lets the core choose the next item in its native playback order.
-                        Log(L"input: skipped unavailable song " + std::to_wstring(m_id));
+                        core::Log(L"input: skipped unavailable song " + std::to_wstring(m_id));
                         return;
                     }
                     if (!requestError.empty()) error = requestError;
@@ -379,8 +379,8 @@ public:
                         Utf8(error.empty() ? L"No playable source for this song." : error).c_str());
                 }
                 if (resolved.trial)
-                    Log(L"input: playing a free trial for song " + std::to_wstring(m_id));
-                Log(L"input: song " + std::to_wstring(m_id) + L", level " + resolved.level + L", type " +
+                    core::Log(L"input: playing a free trial for song " + std::to_wstring(m_id));
+                core::Log(L"input: song " + std::to_wstring(m_id) + L", level " + resolved.level + L", type " +
                     resolved.type + L", ext " + Wide(ExtensionFor(resolved).c_str()));
                 if (!openSource(resolved, false)) throw exception_io_data("Audio prefetch capacity is full");
                 // A trial clip is never remembered: the full song must be asked for again.
@@ -410,7 +410,7 @@ public:
                 throw exception_io_data("NetEase decoder received an incomplete song");
             if (m_durationSeconds <= 0 && actualSeconds > 0) m_durationSeconds = actualSeconds;
             m_positionSeconds = 0;
-            Log(L"input: opened song " + std::to_wstring(m_id) + L" as stream " +
+            core::Log(L"input: opened song " + std::to_wstring(m_id) + L" as stream " +
                 Wide(contentType.c_str()));
         } catch (const exception_aborted&) {
             ReleaseDecoder();

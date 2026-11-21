@@ -1,7 +1,7 @@
 #include "pch.h"
 #include "applemusic/service.h"
 #include "net/http.h"
-#include "netease/json.h"
+#include "core/json.h"
 
 #include <fstream>
 #include <utility>
@@ -82,13 +82,13 @@ void WriteRecord(const fs::path& path, HANDLE process, const fs::path& engine, u
     wchar_t utc[40]{};
     swprintf_s(utc, L"%04u-%02u-%02uT%02u:%02u:%02u.%03uZ", time.wYear, time.wMonth, time.wDay,
                time.wHour, time.wMinute, time.wSecond, time.wMilliseconds);
-    netease::json::Object record;
+    core::json::Object record;
     record.Insert(L"enginePid", Value::CreateNumberValue(GetProcessId(process)));
     record.Insert(L"enginePath", Value::CreateStringValue(engine.wstring()));
     record.Insert(L"startedUtc", Value::CreateStringValue(utc));
     record.Insert(L"port", Value::CreateNumberValue(port));
     record.Insert(L"ownerPid", Value::CreateNumberValue(GetCurrentProcessId()));
-    const auto json = netease::json::Stringify(record);
+    const auto json = core::json::Stringify(record);
     const std::string bytes = pfc::stringcvt::string_utf8_from_wide(json.c_str()).get_ptr();
     std::ofstream file(path, std::ios::binary | std::ios::trunc);
     file.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));

@@ -1,7 +1,7 @@
 #include "pch.h"
 #include "media/radio.h"
 #include "media/special_playlists.h"
-#include "netease/log.h"
+#include "core/log.h"
 #include "stream/provider.h"
 #include "ui/main_window.h"
 #include "ui/remote_pages.h"
@@ -87,7 +87,7 @@ void LogVisual(const wuc::Visual& visual, float x, float y, float2 parent, const
     } else if (auto layer = visual.try_as<wuc::LayerVisual>()) {
         line += layer.Effect() ? L" layer with effect" : L" layer";
     }
-    netease::Log(line);
+    core::Log(line);
     if (auto container = visual.try_as<wuc::ContainerVisual>()) {
         int index = 0;
         for (const auto& child : container.Children())
@@ -109,7 +109,7 @@ class OpenPageCommand : public commandline_handler {
         if (text == "/glasswave:queue") { // what Up Next shows and what the queue holds, to the log
             auto& scheduler = media::PlaybackScheduler::Get();
             const t_size queue = media::QueuePlaylist(false);
-            netease::Log(L"dev: up next " + std::to_wstring(scheduler.DisplayUpcomingSnapshot().size()) +
+            core::Log(L"dev: up next " + std::to_wstring(scheduler.DisplayUpcomingSnapshot().size()) +
                          L", scheduled " + std::to_wstring(scheduler.ScheduledUpcomingIndices().size()) +
                          L", queue rows " +
                          std::to_wstring(queue == SIZE_MAX ? 0 : playlist_manager::get()->playlist_get_item_count(queue)) +
@@ -146,12 +146,12 @@ class OpenPageCommand : public commandline_handler {
             if (auto* window = MainWindow::Instance(); window && window->VisualRoot()) {
                 RECT client{};
                 GetClientRect(window->Hwnd(), &client);
-                netease::Log(L"dev: visuals of the main window, client " + std::to_wstring(client.right) + L"x" +
+                core::Log(L"dev: visuals of the main window, client " + std::to_wstring(client.right) + L"x" +
                              std::to_wstring(client.bottom));
                 int count = 0;
                 LogVisual(window->VisualRoot(), 0, 0,
                           float2{static_cast<float>(client.right), static_cast<float>(client.bottom)}, L"0", count);
-                netease::Log(L"dev: visuals end, " + std::to_wstring(count) + L" visited");
+                core::Log(L"dev: visuals end, " + std::to_wstring(count) + L" visited");
             }
             return RESULT_PROCESSED;
         }
@@ -177,7 +177,7 @@ class OpenPageCommand : public commandline_handler {
         auto* window = MainWindow::Instance();
         stream::Provider* provider = parts.size() == 3 ? stream::FindProvider(parts[0]) : nullptr;
         if (!window || !provider || parts[2].empty()) {
-            netease::Log(L"dev: cannot open " + Wide(token));
+            core::Log(L"dev: cannot open " + Wide(token));
             return RESULT_PROCESSED;
         }
         const std::wstring& kind = parts[1];
@@ -195,7 +195,7 @@ class OpenPageCommand : public commandline_handler {
         else if (kind == L"station")
             media::radio::Play(*provider, id, id);
         else
-            netease::Log(L"dev: unknown page kind " + kind);
+            core::Log(L"dev: unknown page kind " + kind);
         return RESULT_PROCESSED;
     }
 };

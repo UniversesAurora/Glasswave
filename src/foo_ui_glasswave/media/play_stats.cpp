@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "media/play_stats.h"
+#include "core/paths.h"
 #include "stream/provider.h"
 #include "app/settings.h"
 #include "cd/disc.h"
@@ -18,16 +19,8 @@ constexpr const char* kHeader = "# glasswave play stats 2";
 size_t MaxRecords() { return static_cast<size_t>(settings::PlayHistoryLimit()); }
 
 std::filesystem::path StatsFile() {
-    pfc::string8 native;
-    try {
-        if (!filesystem::g_get_native_path(core_api::get_profile_path(), native)) return {};
-    } catch (...) {
-        return {};
-    }
-    std::wstring base = pfc::stringcvt::string_wide_from_utf8(native.get_ptr()).get_ptr();
-    if (base.empty()) return {};
-    if (base.back() != L'\\') base += L'\\';
-    return std::filesystem::path(base + L"glasswave") / L"play-stats.txt";
+    const auto root = core::ProfileRoot();
+    return root.empty() ? root : root / L"play-stats.txt";
 }
 
 std::string Escape(std::string_view text) {

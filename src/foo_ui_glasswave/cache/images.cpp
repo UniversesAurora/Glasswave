@@ -2,7 +2,7 @@
 #include "cache/images.h"
 #include "cache/art_absence.h"
 #include "net/http.h"
-#include "netease/log.h"
+#include "core/log.h"
 
 #include <array>
 #include <cctype>
@@ -191,7 +191,7 @@ std::wstring_view RunFailureReasonName(RunFailureReason reason) {
 void LogImageRunDiagnostic(std::string_view artKey, unsigned long status, RunFailureReason reason,
                            std::wstring_view detail = {}) noexcept {
     try {
-        netease::Log(L"image cache: art=" + Wide(artKey) + L" status=" + std::to_wstring(status) +
+        core::Log(L"image cache: art=" + Wide(artKey) + L" status=" + std::to_wstring(status) +
                      L" reason=" + std::wstring(RunFailureReasonName(reason)) +
                      (detail.empty() ? std::wstring() : L" (" + std::wstring(detail) + L")"));
     } catch (...) {

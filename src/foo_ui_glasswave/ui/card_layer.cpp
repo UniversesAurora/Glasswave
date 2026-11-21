@@ -4,7 +4,7 @@
 #include "cache/images.h"
 #include "gfx/composition_host.h"
 #include "net/http.h"
-#include "netease/log.h"
+#include "core/log.h"
 #include "ui/cover_tint.h"
 #include "ui/shell_glue.h"
 #include "ui/text.h"
@@ -685,7 +685,7 @@ void CardLayer::LoadPicture(Card& card) {
             card.picture = picture;
             card.failed = !picture;
             if (!picture) {
-                netease::Log(L"home: no picture for card " + key);
+                core::Log(L"home: no picture for card " + key);
                 return;
             }
             PaintFace(card);
@@ -761,7 +761,7 @@ void CardLayer::UpdateVideo(Card& card) {
             });
         });
         player.MediaFailed([key = card.info.key](auto&&, const playback::MediaPlayerFailedEventArgs& args) {
-            netease::Log(L"home: motion cover of " + key + L" failed: " + std::wstring(args.ErrorMessage()) +
+            core::Log(L"home: motion cover of " + key + L" failed: " + std::wstring(args.ErrorMessage()) +
                          L" (" + std::to_wstring(static_cast<int>(args.Error())) + L")");
         });
         card.player = player;

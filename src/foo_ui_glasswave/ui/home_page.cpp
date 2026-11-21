@@ -2,7 +2,7 @@
 #include "ui/home_page.h"
 
 #include "media/radio.h"
-#include "netease/log.h"
+#include "core/log.h"
 #include "stream/list_session.h"
 #include "ui/home_store.h"
 
@@ -372,7 +372,7 @@ class HomePage final : public Page, public stream::Provider::Listener {
                 cards += shelf.cards.size();
                 for (const auto& card : shelf.cards) videos += card.videoUrl.empty() ? 0 : 1;
             }
-            netease::Log(L"home: " + key + L" " + std::to_wstring(cards) + L" cards (" + std::to_wstring(videos) +
+            core::Log(L"home: " + key + L" " + std::to_wstring(cards) + L" cards (" + std::to_wstring(videos) +
                          L" with motion), " + std::to_wstring(home.shelves.size()) + L" rows (" +
                          std::to_wstring(cardRows) + L" of cards)" + (error.empty() ? L"" : L"; " + error));
             if (error.empty() || !home.cards.empty() || !home.shelves.empty()) {

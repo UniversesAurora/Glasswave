@@ -1,12 +1,12 @@
 #include "pch.h"
-#include "netease/log.h"
-#include "netease/profile.h"
+#include "core/log.h"
+#include "core/paths.h"
 
 #include <filesystem>
 #include <fstream>
 #include <mutex>
 
-namespace glasswave::netease {
+namespace glasswave::core {
 
 namespace {
 
@@ -26,8 +26,8 @@ std::wstring Stamp() {
 }
 
 std::filesystem::path FilePath() {
-    const auto dir = ProfileDir();
-    return dir.empty() ? std::filesystem::path() : dir / L"glasswave-netease.log";
+    const auto dir = ProfileRoot();
+    return dir.empty() ? std::filesystem::path() : dir / L"glasswave.log";
 }
 
 constexpr uintmax_t kRotateBytes = 2u * 1024u * 1024u;
@@ -89,4 +89,4 @@ std::wstring LogPath() {
     return path.empty() ? std::wstring() : path.wstring();
 }
 
-}  // namespace glasswave::netease
+}  // namespace glasswave::core

@@ -69,7 +69,7 @@ class AppleMusicSearcher final : public lyrics::Searcher {
         }
         if (scope.value.empty() || !scope.Current(abort)) return;
 
-        netease::json::Object response;
+        core::json::Object response;
         try {
             response = Request(L"/api/v1/glasswave/lyrics", abort, L"POST",
                                lyrics_protocol::BuildRequestBody(request));

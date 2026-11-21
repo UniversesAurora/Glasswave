@@ -1,7 +1,7 @@
 #include "pch.h"
 #include "netease/catalog.h"
 #include "netease/handle.h"
-#include "netease/profile.h"
+#include "core/paths.h"
 #include "stream/track_snapshot.h"
 
 #include <SDK/file_info_impl.h>
@@ -34,8 +34,8 @@ std::string Clean(std::wstring_view s) {
 }
 
 std::filesystem::path CacheFile() {
-    const auto dir = CacheDir();
-    return dir.empty() ? dir : dir / L"songs.tsv";
+    const auto dir = core::ProfileDir(L"netease");
+    return dir.empty() ? dir : dir / L"cache" / L"songs.tsv";
 }
 
 void Fill(std::wstring& target, const std::wstring& value) {
@@ -421,7 +421,7 @@ void Catalog::Load() {
 
 void Catalog::Save() const {
     const auto path = CacheFile();
-    if (path.empty() || !EnsureDir(path.parent_path())) return;
+    if (path.empty() || !core::EnsureDir(path.parent_path())) return;
     std::vector<Song> songs;
     {
         std::lock_guard lock(m_mutex);

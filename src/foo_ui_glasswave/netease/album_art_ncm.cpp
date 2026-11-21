@@ -3,7 +3,7 @@
 #include "cache/art_absence.h"
 #include "netease/catalog.h"
 #include "netease/handle.h"
-#include "netease/log.h"
+#include "core/log.h"
 #include "netease/session.h"
 
 #include <SDK/album_art_helpers.h>
@@ -181,7 +181,7 @@ class NcmArtInstance : public album_art_extractor_instance_v2 {
             const auto wide = [](const char* text) {
                 return std::wstring(pfc::stringcvt::string_wide_from_utf8(text ? text : "").get_ptr());
             };
-            Log(L"art: cover download failed: " + wide(ArtKindName(kind)) + L" " + std::to_wstring(id) + L" (" +
+            core::Log(L"art: cover download failed: " + wide(ArtKindName(kind)) + L" " + std::to_wstring(id) + L" (" +
                 wide(rendition.version) + L"): " + reason);
         }
         throw exception_album_art_not_found();

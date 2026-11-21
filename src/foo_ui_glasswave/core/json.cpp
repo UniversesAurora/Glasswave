@@ -1,9 +1,9 @@
 #include "pch.h"
-#include "netease/json.h"
+#include "core/json.h"
 
 #include <climits>
 
-namespace glasswave::netease::json {
+namespace glasswave::core::json {
 
 using winrt::Windows::Data::Json::IJsonValue;
 using winrt::Windows::Data::Json::JsonValueType;
@@ -81,4 +81,4 @@ std::wstring Stringify(const Object& object) {
     return std::wstring(object.Stringify().c_str());
 }
 
-}  // namespace glasswave::netease::json
+}  // namespace glasswave::core::json

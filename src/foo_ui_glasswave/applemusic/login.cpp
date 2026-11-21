@@ -1,7 +1,7 @@
 #include "pch.h"
 #include "applemusic/login.h"
 #include "applemusic/client.h"
-#include "netease/json.h"
+#include "core/json.h"
 #include "stream/provider.h"
 #include "ui/i18n.h"
 
@@ -9,7 +9,7 @@
 
 namespace glasswave::applemusic {
 namespace {
-namespace json = netease::json;
+namespace json = core::json;
 using Value = winrt::Windows::Data::Json::JsonValue;
 constexpr wchar_t kClass[] = L"Glasswave.AppleMusicLogin";
 constexpr UINT kResult = WM_APP + 77;

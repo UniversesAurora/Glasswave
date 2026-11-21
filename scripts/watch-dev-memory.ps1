@@ -449,7 +449,7 @@ function Write-Forensics([string]$directory, [string]$suffix) {
 function Write-LogTails([string]$directory) {
     $logs = [ordered]@{
         'engine-log-tail.txt' = Join-Path $localRoot 'applemusic/windows/runtime/logs/component-service.log'
-        'glasswave-log-tail.txt' = Join-Path $localRoot 'fb2k-dev/profile/glasswave/netease/glasswave-netease.log'
+        'glasswave-log-tail.txt' = Join-Path $localRoot 'fb2k-dev/profile/glasswave/glasswave.log'
         'playback-log-tail.txt' = Join-Path $localRoot 'fb2k-dev/profile/glasswave/applemusic/playback.log'
     }
     foreach ($name in $logs.Keys) {

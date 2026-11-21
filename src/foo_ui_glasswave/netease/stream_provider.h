@@ -1,6 +1,6 @@
 #pragma once
 
-#include "netease/task_queue.h"
+#include "core/task_queue.h"
 #include "netease/types.h"
 #include "stream/provider.h"
 
@@ -114,7 +114,7 @@ class StreamProvider final : public stream::Provider {
     std::wstring m_cachedAccountId;
     std::vector<stream::Playlist> m_cachedCreated;
     std::vector<stream::Playlist> m_cachedSaved;
-    std::unique_ptr<netease::TaskQueue> m_listTasks;
+    std::unique_ptr<core::TaskQueue> m_listTasks;
     std::unique_ptr<abort_callback_impl> m_abort;
     std::shared_ptr<IdSnapshotStore> m_idSnapshots;
     std::atomic<int64_t> m_heartbeatSeed{0}; // heartbeat mode's next seed: the last song it sent

@@ -2,7 +2,7 @@
 
 #include "netease/catalog.h"
 #include "netease/client.h"
-#include "netease/task_queue.h"
+#include "core/task_queue.h"
 #include "netease/service.h"
 
 #include <atomic>
@@ -32,7 +32,7 @@ public:
     // rows change, so the page must not be re-read.
     void SetLikesCallback(std::function<void()> callback);
 
-    TaskQueue& Tasks() { return m_tasks; }
+    core::TaskQueue& Tasks() { return m_tasks; }
     Client& Api() { return m_client; }
     ServiceManager& Service() { return m_service; }
     Catalog& Songs() { return Catalog::Get(); }
@@ -129,7 +129,7 @@ private:
 
     ServiceManager& m_service;
     Client m_client;
-    TaskQueue m_tasks;
+    core::TaskQueue m_tasks;
     std::atomic_bool m_stopping{false};
     abort_callback_impl m_abort;  // every request of the session; signalled by Shutdown
     std::atomic_bool m_initialized{false};

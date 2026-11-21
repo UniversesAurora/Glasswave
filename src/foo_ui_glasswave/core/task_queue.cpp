@@ -1,8 +1,8 @@
 #include "pch.h"
-#include "netease/log.h"
-#include "netease/task_queue.h"
+#include "core/log.h"
+#include "core/task_queue.h"
 
-namespace glasswave::netease {
+namespace glasswave::core {
 
 TaskQueue::TaskQueue(int threads) {
     const int n = threads > 0 ? threads : 1;
@@ -58,4 +58,4 @@ void TaskQueue::Worker() {
     }
 }
 
-}  // namespace glasswave::netease
+}  // namespace glasswave::core

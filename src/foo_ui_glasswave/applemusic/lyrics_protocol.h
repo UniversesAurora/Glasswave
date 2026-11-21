@@ -1,6 +1,6 @@
 #pragma once
 
-#include "netease/json.h"
+#include "core/json.h"
 
 #include <cstdint>
 #include <string>
@@ -33,6 +33,6 @@ struct Result {
 };
 
 std::string BuildRequestBody(const Request& request);
-std::vector<Result> ParseResponse(const netease::json::Object& response);
+std::vector<Result> ParseResponse(const core::json::Object& response);
 
 } // namespace glasswave::applemusic::lyrics_protocol

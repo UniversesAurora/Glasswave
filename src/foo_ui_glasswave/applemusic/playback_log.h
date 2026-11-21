@@ -1,6 +1,7 @@
 #pragma once
 
 #include <SDK/foobar2000.h>
+#include "core/paths.h"
 
 #include <algorithm>
 #include <cctype>
@@ -117,10 +118,9 @@ inline std::string WideToUtf8(std::wstring_view text) {
 
 inline std::optional<fs::path> LogPath() noexcept {
     try {
-        pfc::string8 native;
-        if (!filesystem::g_get_native_path(core_api::get_profile_path(), native)) return std::nullopt;
-        const auto wide = pfc::stringcvt::string_wide_from_utf8(native.get_ptr());
-        return fs::path(wide.get_ptr()) / L"glasswave" / L"applemusic" / L"playback.log";
+        const fs::path directory = core::ProfileDir(L"applemusic");
+        if (directory.empty()) return std::nullopt;
+        return directory / L"playback.log";
     } catch (...) {
         return std::nullopt;
     }

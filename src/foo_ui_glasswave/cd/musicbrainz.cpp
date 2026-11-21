@@ -5,8 +5,8 @@
 
 #include "media/play_stats.h"
 #include "net/http.h"
-#include "netease/json.h"
-#include "netease/log.h"
+#include "core/json.h"
+#include "core/log.h"
 #include "ui/text.h"
 
 #include <SDK/initquit.h>
@@ -18,8 +18,8 @@
 
 namespace glasswave::cd {
 
-namespace json = netease::json;
-using netease::Log;
+namespace json = core::json;
+using core::Log;
 using ui::Utf8;
 using ui::Wide;
 

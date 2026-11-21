@@ -1,7 +1,7 @@
 #include "pch.h"
 #include "netease/cookie.h"
-#include "netease/log.h"
-#include "netease/profile.h"
+#include "core/log.h"
+#include "core/paths.h"
 
 #include <dpapi.h>
 #include <cwctype>
@@ -20,7 +20,7 @@ bool g_loaded = false;
 const wchar_t kEntropy[] = L"Glasswave.Netease.Session.v1";
 
 std::filesystem::path SessionPath() {
-    const auto dir = ProfileDir();
+    const auto dir = core::ProfileDir(L"netease");
     return dir.empty() ? std::filesystem::path() : dir / L"session.dat";
 }
 
@@ -30,7 +30,7 @@ DATA_BLOB Entropy() {
 }
 
 bool WriteFileBytes(const std::filesystem::path& path, const std::vector<BYTE>& bytes) {
-    if (!EnsureDir(path.parent_path())) return false;
+    if (!core::EnsureDir(path.parent_path())) return false;
     auto tmp = path;
     tmp += L".tmp";
     {
@@ -67,7 +67,7 @@ bool LoadSessionCookie() {
     DATA_BLOB entropy = Entropy();
     DATA_BLOB out{};
     if (!CryptUnprotectData(&in, nullptr, &entropy, nullptr, nullptr, CRYPTPROTECT_UI_FORBIDDEN, &out)) {
-        Log(L"session: cannot decrypt the saved cookie");
+        core::Log(L"session: cannot decrypt the saved cookie");
         return false;
     }
     const size_t chars = out.cbData / sizeof(wchar_t);
@@ -100,12 +100,12 @@ void SaveSessionCookie(std::wstring_view cookie) {
     DATA_BLOB out{};
     if (!CryptProtectData(&in, L"Glasswave NetEase session", &entropy, nullptr, nullptr,
                           CRYPTPROTECT_UI_FORBIDDEN, &out)) {
-        Log(L"session: cannot encrypt the cookie");
+        core::Log(L"session: cannot encrypt the cookie");
         return;
     }
     const std::vector<BYTE> bytes(out.pbData, out.pbData + out.cbData);
     LocalFree(out.pbData);
-    if (!WriteFileBytes(path, bytes)) Log(L"session: cannot write the cookie file");
+    if (!WriteFileBytes(path, bytes)) core::Log(L"session: cannot write the cookie file");
 }
 
 void ClearSessionCookie() {

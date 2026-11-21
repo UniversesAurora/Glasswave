@@ -1,11 +1,12 @@
 #include "pch.h"
 
 #include "applemusic/catalog.h"
+#include "core/paths.h"
 #include "applemusic/client.h"
 #include "applemusic/config.h"
 #include "applemusic/display_metadata.h"
 #include "net/http.h"
-#include "netease/json.h"
+#include "core/json.h"
 #include "stream/list_session.h"
 #include "stream/provider.h"
 
@@ -25,7 +26,7 @@ namespace glasswave::applemusic {
 namespace {
 
 namespace fs = std::filesystem;
-namespace json = netease::json;
+namespace json = core::json;
 using winrt::Windows::Data::Json::JsonArray;
 using winrt::Windows::Data::Json::JsonObject;
 using winrt::Windows::Data::Json::JsonValue;
@@ -631,10 +632,8 @@ stream::Provider* Provider(const std::shared_ptr<State>& state) {
 }
 
 std::optional<Paths> ProbePaths() {
-    pfc::string8 native;
-    if (!filesystem::g_get_native_path(core_api::get_profile_path(), native)) return std::nullopt;
-    const fs::path directory = fs::path(pfc::stringcvt::string_wide_from_utf8(native.get_ptr()).get_ptr()) /
-                               L"glasswave" / L"applemusic";
+    const fs::path directory = core::ProfileDir(L"applemusic");
+    if (directory.empty()) return std::nullopt;
     return Paths{directory / L"provider-test-request.json", directory / L"provider-test-request.claimed.json",
                  directory / L"provider-test-result.json"};
 }

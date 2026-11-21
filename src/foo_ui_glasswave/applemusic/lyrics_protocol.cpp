@@ -23,7 +23,7 @@ std::string Utf8(std::wstring_view value) {
 } // namespace
 
 std::string BuildRequestBody(const Request& request) {
-    netease::json::Object object;
+    core::json::Object object;
     object.Insert(L"mode", winrt::Windows::Data::Json::JsonValue::CreateStringValue(
                                request.mode == Mode::Direct ? L"direct" : L"search"));
     object.Insert(L"trackId", winrt::Windows::Data::Json::JsonValue::CreateStringValue(request.trackId));
@@ -34,25 +34,25 @@ std::string BuildRequestBody(const Request& request) {
     object.Insert(L"locale", winrt::Windows::Data::Json::JsonValue::CreateStringValue(request.locale));
     object.Insert(L"durationMs",
                   winrt::Windows::Data::Json::JsonValue::CreateNumberValue(std::max(request.durationMs, 0)));
-    return Utf8(netease::json::Stringify(object));
+    return Utf8(core::json::Stringify(object));
 }
 
-std::vector<Result> ParseResponse(const netease::json::Object& response) {
-    const auto array = netease::json::GetArray(response, L"results");
+std::vector<Result> ParseResponse(const core::json::Object& response) {
+    const auto array = core::json::GetArray(response, L"results");
     if (!array) return {};
-    const auto objects = netease::json::Objects(*array);
+    const auto objects = core::json::Objects(*array);
     if (objects.size() > kMaxResults) throw std::runtime_error("Too many Apple Music lyric results.");
 
     std::vector<Result> results;
     results.reserve(objects.size());
     for (const auto& object : objects) {
         Result result;
-        result.title = netease::json::GetString(object, L"title");
-        result.artist = netease::json::GetString(object, L"artist");
-        result.album = netease::json::GetString(object, L"album");
-        result.enhancedLrc = netease::json::GetString(object, L"lrc");
+        result.title = core::json::GetString(object, L"title");
+        result.artist = core::json::GetString(object, L"artist");
+        result.album = core::json::GetString(object, L"album");
+        result.enhancedLrc = core::json::GetString(object, L"lrc");
         if (result.enhancedLrc.empty() || Utf8(result.enhancedLrc).size() > kMaxEnhancedLrcBytes) continue;
-        const int confidence = netease::json::GetInt(object, L"confidence", -1);
+        const int confidence = core::json::GetInt(object, L"confidence", -1);
         result.confidence = confidence >= 0 && confidence <= 100 ? confidence : -1;
         results.push_back(std::move(result));
     }

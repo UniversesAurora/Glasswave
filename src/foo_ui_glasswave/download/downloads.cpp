@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "download/downloads.h"
+#include "core/paths.h"
 
 #include "download/aria2.h"
 #include "lyrics/lyrics_service.h"
@@ -98,16 +99,8 @@ uint64_t FileSize(const std::wstring& path) {
 // ---- the list file ------------------------------------------------------------------------
 
 std::filesystem::path ListFile() {
-    pfc::string8 native;
-    try {
-        if (!filesystem::g_get_native_path(core_api::get_profile_path(), native)) return {};
-    } catch (...) {
-        return {};
-    }
-    std::wstring base = Wide(native.get_ptr());
-    if (base.empty()) return {};
-    if (base.back() != L'\\') base += L'\\';
-    return std::filesystem::path(base + L"glasswave") / L"downloads.txt";
+    const auto root = core::ProfileRoot();
+    return root.empty() ? root : root / L"downloads.txt";
 }
 
 std::string Escape(const std::wstring& text) {

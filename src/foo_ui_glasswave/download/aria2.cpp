@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "download/aria2.h"
+#include "core/paths.h"
 
 #include "net/http.h"
 #include "ui/text.h"
@@ -40,18 +41,7 @@ std::wstring g_version;
 std::wstring g_lastError;
 bool g_failed = false; // until the next download command (RetryAfterFailure)
 
-std::filesystem::path Folder() {
-    pfc::string8 native;
-    try {
-        if (!filesystem::g_get_native_path(core_api::get_profile_path(), native)) return {};
-    } catch (...) {
-        return {};
-    }
-    std::wstring base = Wide(native.get_ptr());
-    if (base.empty()) return {};
-    if (base.back() != L'\\') base += L'\\';
-    return std::filesystem::path(base + L"glasswave") / L"aria2";
-}
+std::filesystem::path Folder() { return core::ProfileDir(L"aria2"); }
 
 std::filesystem::path ExePath() {
     const auto folder = Folder();

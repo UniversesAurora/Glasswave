@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "win7/win7_resources.h"
+#include "core/paths.h"
 #include "gfx/composition_host.h"
 
 namespace glasswave::win7 {
@@ -24,15 +25,8 @@ const ModuleInfo kModules[] = {
 static_assert(std::size(kModules) == static_cast<size_t>(Module::Count));
 
 std::wstring ProfileFolder() {
-    pfc::string8 native;
-    try {
-        if (!filesystem::g_get_native_path(core_api::get_profile_path(), native)) return {};
-    } catch (...) {
-        return {};
-    }
-    std::wstring path = pfc::stringcvt::string_wide_from_utf8(native).get_ptr();
-    if (!path.empty() && path.back() != L'\\') path += L'\\';
-    return path + L"glasswave\\";
+    const auto root = core::ProfileRoot();
+    return root.empty() ? std::wstring() : root.wstring() + L"\\";
 }
 
 }  // namespace

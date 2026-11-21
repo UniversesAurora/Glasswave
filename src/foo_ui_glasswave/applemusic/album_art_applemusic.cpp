@@ -15,7 +15,7 @@ namespace glasswave::applemusic {
 
 namespace {
 
-namespace json = netease::json;
+namespace json = core::json;
 
 constexpr unsigned kMaxRelationshipDepth = 4;
 constexpr size_t kMaxRelationshipItems = 32;

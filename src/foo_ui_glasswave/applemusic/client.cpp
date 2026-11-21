@@ -2,9 +2,9 @@
 #include "applemusic/client.h"
 #include "applemusic/service.h"
 #include "net/http.h"
-#include "netease/json.h"
-#include "netease/log.h"
-#include "netease/profile.h"
+#include "core/json.h"
+#include "core/log.h"
+#include "core/paths.h"
 #include "ui/i18n.h"
 
 #include <atomic>
@@ -16,7 +16,7 @@ namespace glasswave::applemusic {
 
 namespace {
 
-namespace json = netease::json;
+namespace json = core::json;
 using winrt::Windows::Data::Json::JsonValue;
 
 constexpr uintmax_t kBridgeFileLimit = 64u * 1024u;
@@ -109,9 +109,9 @@ bool ValidCatalogId(std::wstring_view id) {
 }
 
 BridgeConfig ReadBridge() {
-    const auto profile = netease::ProfileDir();
-    if (profile.empty()) Fail("The foobar2000 profile is unavailable.");
-    const auto path = profile.parent_path() / L"applemusic" / L"bridge.json";
+    const auto dir = core::ProfileDir(L"applemusic");
+    if (dir.empty()) Fail("The foobar2000 profile is unavailable.");
+    const auto path = dir / L"bridge.json";
 
     std::error_code ec;
     const auto status = std::filesystem::symlink_status(path, ec);
@@ -483,11 +483,11 @@ Object Apple(std::wstring_view path, abort_callback& abort, std::wstring_view me
         try {
             Object response =
                 Request(L"/api/v1/glasswave/apple", abort, L"POST", Utf8(json::Stringify(request)));
-            netease::LogHttp(L"apple " + Method(method), requestPath, 200,
+            core::LogHttp(L"apple " + Method(method), requestPath, 200,
                              static_cast<long long>(GetTickCount64() - started));
             return response;
         } catch (const BridgeHttpError& error) {
-            netease::LogHttp(L"apple " + Method(method), requestPath, static_cast<unsigned long>(error.status()),
+            core::LogHttp(L"apple " + Method(method), requestPath, static_cast<unsigned long>(error.status()),
                              static_cast<long long>(GetTickCount64() - started));
             throw;
         }

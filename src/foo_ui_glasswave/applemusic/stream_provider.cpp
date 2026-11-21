@@ -9,8 +9,8 @@
 #include "applemusic/login.h"
 #include "cache/provider_snapshot.h"
 #include "cache/store.h"
-#include "netease/json.h"
-#include "netease/log.h"
+#include "core/json.h"
+#include "core/log.h"
 #include "ui/i18n.h"
 
 #include <array>
@@ -26,7 +26,7 @@ namespace glasswave::applemusic {
 
 namespace {
 
-namespace json = netease::json;
+namespace json = core::json;
 using winrt::Windows::Data::Json::JsonArray;
 using winrt::Windows::Data::Json::JsonValue;
 using winrt::Windows::Data::Json::JsonValueType;
@@ -2131,7 +2131,7 @@ StreamProvider::~StreamProvider() {
 }
 
 void StreamProvider::Post(uint64_t generation, std::function<void()> callback) {
-    netease::TaskQueue* tasks = nullptr;
+    core::TaskQueue* tasks = nullptr;
     {
         std::lock_guard lock(m_mutex);
         if (!m_started || generation != m_generation || !m_tasks || !m_abort) return;
@@ -2147,7 +2147,7 @@ void StreamProvider::Post(uint64_t generation, std::function<void()> callback) {
 }
 
 void StreamProvider::PostMutation(uint64_t generation, std::function<void()> callback) {
-    netease::TaskQueue* tasks = nullptr;
+    core::TaskQueue* tasks = nullptr;
     {
         std::lock_guard lock(m_mutex);
         if (!m_started || generation != m_generation || !m_mutationTasks || !m_abort) return;
@@ -2163,7 +2163,7 @@ void StreamProvider::PostMutation(uint64_t generation, std::function<void()> cal
 }
 
 bool StreamProvider::PostDetail(uint64_t generation, std::function<void()> callback) {
-    netease::TaskQueue* tasks = nullptr;
+    core::TaskQueue* tasks = nullptr;
     {
         std::lock_guard lock(m_mutex);
         if (!m_started || generation != m_generation || !m_detailTasks || !m_abort) return false;
@@ -2368,10 +2368,10 @@ void StreamProvider::Start() {
         m_started = true;
         ++m_generation;
         generation = m_generation;
-        m_tasks = std::make_unique<netease::TaskQueue>(3);
-        m_mutationTasks = std::make_unique<netease::TaskQueue>(1);
-        m_detailTasks = std::make_unique<netease::TaskQueue>(2);
-        m_enrichTasks = std::make_unique<netease::TaskQueue>(1);
+        m_tasks = std::make_unique<core::TaskQueue>(3);
+        m_mutationTasks = std::make_unique<core::TaskQueue>(1);
+        m_detailTasks = std::make_unique<core::TaskQueue>(2);
+        m_enrichTasks = std::make_unique<core::TaskQueue>(1);
         m_abort = std::make_unique<abort_callback_impl>();
         m_locale = CurrentLocale();
         m_account = {};
@@ -2476,10 +2476,10 @@ void StreamProvider::Shutdown() {
         }
     }
 
-    netease::TaskQueue* tasks = nullptr;
-    netease::TaskQueue* mutations = nullptr;
-    netease::TaskQueue* details = nullptr;
-    netease::TaskQueue* enrichment = nullptr;
+    core::TaskQueue* tasks = nullptr;
+    core::TaskQueue* mutations = nullptr;
+    core::TaskQueue* details = nullptr;
+    core::TaskQueue* enrichment = nullptr;
     {
         std::lock_guard lock(m_mutex);
         if (!m_started && !m_tasks && !m_mutationTasks && !m_detailTasks && !m_enrichTasks && !m_abort)
@@ -3222,14 +3222,14 @@ void StreamProvider::ResolveSongDisplayNames(std::vector<Song>& songs, uint64_t 
         } catch (const exception_aborted&) {
             throw;
         } catch (const std::exception& exception) {
-            netease::Log(L"Apple Music regional song names failed: " +
+            core::Log(L"Apple Music regional song names failed: " +
                          Wide(std::string_view(exception.what())));
             if (DefiniteNotFound(exception) && canCommit())
                 for (size_t i = first; i < last; ++i)
                     DisplayMetadata::Get().PutSongFor(region, sourceStorefront, pending[i].source->track.id,
                                                       {}, true, displayEpoch);
         } catch (...) {
-            netease::Log(L"Apple Music regional song names failed.");
+            core::Log(L"Apple Music regional song names failed.");
         }
     }
 }
@@ -3297,14 +3297,14 @@ void StreamProvider::ResolveAlbumDisplayNames(std::vector<stream::Album>& albums
         } catch (const exception_aborted&) {
             throw;
         } catch (const std::exception& exception) {
-            netease::Log(L"Apple Music regional album names failed: " +
+            core::Log(L"Apple Music regional album names failed: " +
                          Wide(std::string_view(exception.what())));
             if (DefiniteNotFound(exception) && canCommit())
                 for (size_t i = first; i < last; ++i)
                     DisplayMetadata::Get().PutAlbumFor(region, sourceStorefront, pending[i].source->id, {},
                                                        true, displayEpoch);
         } catch (...) {
-            netease::Log(L"Apple Music regional album names failed.");
+            core::Log(L"Apple Music regional album names failed.");
         }
     }
 }
@@ -3374,14 +3374,14 @@ void StreamProvider::ResolveArtistDisplayNames(std::vector<stream::Artist>& arti
         } catch (const exception_aborted&) {
             throw;
         } catch (const std::exception& exception) {
-            netease::Log(L"Apple Music regional artist names failed: " +
+            core::Log(L"Apple Music regional artist names failed: " +
                          Wide(std::string_view(exception.what())));
             if (DefiniteNotFound(exception) && canCommit())
                 for (size_t i = first; i < last; ++i)
                     DisplayMetadata::Get().PutArtistFor(region, sourceStorefront, pending[i].source->id, {},
                                                         true, displayEpoch);
         } catch (...) {
-            netease::Log(L"Apple Music regional artist names failed.");
+            core::Log(L"Apple Music regional artist names failed.");
         }
     }
 }
@@ -3445,13 +3445,13 @@ void StreamProvider::ResolvePlaylistDisplayNames(std::vector<stream::Playlist>& 
         } catch (const exception_aborted&) {
             throw;
         } catch (const std::exception& exception) {
-            netease::Log(L"Apple Music regional playlist names failed: " +
+            core::Log(L"Apple Music regional playlist names failed: " +
                          Wide(std::string_view(exception.what())));
             if (DefiniteNotFound(exception) && canCommit())
                 DisplayMetadata::Get().PutPlaylistFor(region, sourceStorefront, item.source->id, {}, true,
                                                       displayEpoch);
         } catch (...) {
-            netease::Log(L"Apple Music regional playlist names failed.");
+            core::Log(L"Apple Music regional playlist names failed.");
         }
     }
 }
@@ -4928,7 +4928,7 @@ void StreamProvider::FetchPlaylist(const stream::Id& playlist, PlaylistDone done
             performance += L" total_ms=" + std::to_wstring(ElapsedMs(requestStarted, completed));
             performance += L" rows=" + std::to_wstring(data.songs.size());
             performance += L" fallback_batches=" + std::to_wstring(data.metrics.fallbackBatches);
-            netease::Log(performance);
+            core::Log(performance);
             stream::Playlist displayInfo = data.info;
             DisplayMetadata::Get().Apply(displayInfo, DisplayMetadata::Get().SourceStorefront());
             const std::vector<stream::Track> tracks = DisplayTracks(data.songs);
@@ -6922,10 +6922,10 @@ bool StreamProvider::EnrichListPage(const stream::ListQuery& query, const stream
             } catch (const exception_aborted&) {
                 return;
             } catch (const std::exception& exception) {
-                netease::Log(L"Apple Music page enrichment failed: " +
+                core::Log(L"Apple Music page enrichment failed: " +
                              Wide(std::string_view(exception.what())));
             } catch (...) {
-                netease::Log(L"Apple Music page enrichment failed.");
+                core::Log(L"Apple Music page enrichment failed.");
             }
             if (ListCancelled(cancelled)) return;
 
@@ -7591,7 +7591,7 @@ void StreamProvider::EnrichArtistCountsAsync(uint64_t generation) {
                     } catch (const exception_aborted&) {
                         throw;
                     } catch (const std::exception& exception) {
-                        netease::Log(L"apple: album count of " + libraryId + L" failed: " +
+                        core::Log(L"apple: album count of " + libraryId + L" failed: " +
                                      Wide(exception.what()));
                         if (DefiniteNotFound(exception)) return kNoAlbumCount;
                     } catch (...) {

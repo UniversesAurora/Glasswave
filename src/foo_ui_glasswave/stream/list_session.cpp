@@ -3,7 +3,7 @@
 #include "stream/provider.h"
 #include "cache/lists.h"
 #include "cache/store.h"
-#include "netease/log.h"
+#include "core/log.h"
 #include "ui/i18n.h"
 
 #include <map>
@@ -380,7 +380,7 @@ void Read::LoadCache() {
         if (!self->Current(id)) return;
         self->cacheLoading = false;
         self->initializing = false;
-        netease::Log(L"list cache: " + std::wstring(self->provider.Key()) + L" kind " +
+        core::Log(L"list cache: " + std::wstring(self->provider.Key()) + L" kind " +
                      std::to_wstring(static_cast<int>(self->query.kind)) + L" id " + self->query.id +
                      L" section " + self->query.section +
                      (cached ? L" hit rows " + std::to_wstring(RowCount(cached->page)) + L" pages " +
@@ -511,7 +511,7 @@ void Read::PersistPage(bool update, cache::lists::Record record) {
 void Read::SaveCompleted(uint64_t id, bool success) {
     pendingSaves.erase(id);
     if (!success)
-        netease::Log(L"list cache: " + std::wstring(provider.Key()) + L" kind " +
+        core::Log(L"list cache: " + std::wstring(provider.Key()) + L" kind " +
                      std::to_wstring(static_cast<int>(query.kind)) + L" id " + query.id +
                      L" page was not persisted");
     if (!success && (!firstFailedSave || id < *firstFailedSave)) firstFailedSave = id;
@@ -682,7 +682,7 @@ void Read::Received(uint64_t id, ListPage page, std::wstring error) {
     if (!Current(id)) return;
     inFlight = false;
     if (!error.empty())
-        netease::Log(L"list: " + std::wstring(provider.Key()) + L" kind " +
+        core::Log(L"list: " + std::wstring(provider.Key()) + L" kind " +
                      std::to_wstring(static_cast<int>(query.kind)) + L" id " + query.id + L" failed: " + error);
     if (error.empty() && page.rows.index() != state.page.rows.index())
         error = L"The service returned a different list type.";
@@ -693,7 +693,7 @@ void Read::Received(uint64_t id, ListPage page, std::wstring error) {
     if (!error.empty() && resumedCursor && !cursorRejected) {
         // A continuation saved with the rows may no longer be accepted (it expired, or an
         // earlier build made it): the list is read again from its start rather than failing.
-        netease::Log(L"list: " + std::wstring(provider.Key()) + L" kind " +
+        core::Log(L"list: " + std::wstring(provider.Key()) + L" kind " +
                      std::to_wstring(static_cast<int>(query.kind)) + L" id " + query.id +
                      L" saved cursor rejected; reading from the start");
         cursorRejected = true;
@@ -1110,7 +1110,7 @@ class ListSessionLifetime : public initquit {
   public:
     void on_init() override {
         glasswave::cache::lists::SetDiagnostics([](std::string_view reason) {
-            glasswave::netease::Log(
+            glasswave::core::Log(
                 L"list cache: " +
                 std::wstring(pfc::stringcvt::string_wide_from_utf8(reason.data(), reason.size()).get_ptr()));
         });

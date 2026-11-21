@@ -2,7 +2,7 @@
 #include "media/radio.h"
 
 #include "media/special_playlists.h"
-#include "netease/log.h"
+#include "core/log.h"
 
 #include <deque>
 
@@ -83,7 +83,7 @@ void End() {
 bool Current() {
     if (!g_state.active) return false;
     if (QueueContentGeneration() == g_state.generation) return true;
-    netease::Log(L"radio: " + g_state.name + L" ended (the queue was replaced)");
+    core::Log(L"radio: " + g_state.name + L" ended (the queue was replaced)");
     End();
     return false;
 }
@@ -134,12 +134,12 @@ void TopUp() {
         g_state.pending.pop_front();
     }
     if (add.get_count()) {
-        netease::Log(L"radio: " + std::to_wstring(add.get_count()) + L" more queued, " +
+        core::Log(L"radio: " + std::to_wstring(add.get_count()) + L" more queued, " +
                      std::to_wstring(g_state.pending.size()) + L" waiting");
         for (size_t i = 0; i < add.get_count(); ++i) g_state.queued.push_back(add[i]);
         Save();
         if (!AppendSourceBatch(add, g_state.generation)) {
-            netease::Log(L"radio: " + g_state.name + L" ended (the queue refused its songs)");
+            core::Log(L"radio: " + g_state.name + L" ended (the queue refused its songs)");
             End();
             return;
         }
@@ -159,7 +159,7 @@ void Fetch() {
             if (!g_state.provider->SessionRestoring() && g_state.provider->SignedIn()) ++g_state.failures;
             if (!error.empty()) console::print(("Glasswave radio: " + Utf8(error)).c_str());
             if (g_state.failures >= kMaxFailures) { // the songs queued play on as an ordinary list
-                netease::Log(L"radio: " + g_state.name + L" sends nothing; the queue goes on as a list");
+                core::Log(L"radio: " + g_state.name + L" sends nothing; the queue goes on as a list");
                 End();
             }
             return; // asked again when the next song starts
@@ -238,7 +238,7 @@ void Restore() {
     g_state.generation = QueueContentGeneration();
     g_state.active = true;
     ++g_serial;
-    netease::Log(L"radio: " + g_state.name + L" restored with " + std::to_wstring(items.get_count()) + L" songs");
+    core::Log(L"radio: " + g_state.name + L" restored with " + std::to_wstring(items.get_count()) + L" songs");
     ListenToSchedule();
     Notify();
 }
@@ -300,7 +300,7 @@ void Play(stream::Provider& provider, const stream::Id& station, std::wstring na
         g_state.generation = QueueContentGeneration();
         g_state.active = true;
         Save();
-        netease::Log(L"radio: " + g_state.name + L" started, " + std::to_wstring(tracks.size()) + L" songs sent");
+        core::Log(L"radio: " + g_state.name + L" started, " + std::to_wstring(tracks.size()) + L" songs sent");
         Notify();
         TopUp();
     });

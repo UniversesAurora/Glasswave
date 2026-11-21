@@ -1,8 +1,8 @@
 #include "pch.h"
 #include "netease/config.h"
 #include "net/http.h"
-#include "netease/log.h"
-#include "netease/profile.h"
+#include "core/log.h"
+#include "core/paths.h"
 #include "netease/service.h"
 
 #include <bcrypt.h>
@@ -21,6 +21,12 @@ constexpr wchar_t kServiceVersion[] = L"4.41.1";
 constexpr wchar_t kServiceUrl[] =
     L"https://github.com/NeteaseCloudMusicApiEnhanced/api-enhanced/releases/download/"
     L"v4.41.1/ncm-api-win-x64.exe";
+
+std::filesystem::path ServiceDir() {
+    const auto dir = core::ProfileDir(L"netease");
+    return dir.empty() ? dir : dir / L"service";
+}
+
 constexpr char kServiceSha256[] = "f196774ab85dc1039ec3ca6b5297cbc3e086b0bbbfc744498e6064ea94ceaa02";
 
 std::wstring Wide(const std::string& s) {
@@ -171,7 +177,7 @@ std::wstring ServiceManager::ExePath() const {
 }
 
 std::wstring ServiceManager::LogPath() const {
-    const auto dir = ProfileDir();
+    const auto dir = core::ProfileDir(L"netease");
     return dir.empty() ? std::wstring() : (dir / L"service.log").wstring();
 }
 
@@ -200,12 +206,12 @@ bool ServiceManager::Install(abort_callback& abort, const std::function<void(lon
         }
     }
     const auto dir = ServiceDir();
-    if (dir.empty() || !EnsureDir(dir)) {
+    if (dir.empty() || !core::EnsureDir(dir)) {
         if (error) *error = L"Cannot create the NetEase service folder.";
         return false;
     }
     Stop();  // a running helper would keep the old executable locked
-    Log(L"service: downloading " + std::wstring(kServiceUrl));
+    core::Log(L"service: downloading " + std::wstring(kServiceUrl));
 
     net::HttpOptions options;
     options.noProxy = false;
@@ -217,7 +223,7 @@ bool ServiceManager::Install(abort_callback& abort, const std::function<void(lon
     if (!response.ok()) {
         if (error) *error = response.error.empty() ? L"Download failed (HTTP " + std::to_wstring(response.status) + L")."
                                                    : response.error;
-        Log(L"service: download failed: " + (error ? *error : L"unknown"));
+        core::Log(L"service: download failed: " + (error ? *error : L"unknown"));
         return false;
     }
     if (response.body.size() < 1024u * 1024u) {
@@ -227,7 +233,7 @@ bool ServiceManager::Install(abort_callback& abort, const std::function<void(lon
     const std::string hash = Sha256Hex(response.body);
     if (hash != kServiceSha256) {
         if (error) *error = L"Downloaded service failed the SHA-256 check.";
-        Log(L"service: SHA-256 mismatch");
+        core::Log(L"service: SHA-256 mismatch");
         return false;
     }
 
@@ -252,7 +258,7 @@ bool ServiceManager::Install(abort_callback& abort, const std::function<void(lon
         if (error) *error = L"Cannot install the NetEase service: " + Win32Error(GetLastError());
         return false;
     }
-    Log(L"service: installed " + std::wstring(kServiceVersion) + L" at " + exe.wstring());
+    core::Log(L"service: installed " + std::wstring(kServiceVersion) + L" at " + exe.wstring());
     return true;
 }
 
@@ -340,7 +346,7 @@ bool ServiceManager::StartLocked(abort_callback& abort, std::wstring* error) {
         info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
         SetInformationJobObject(job, JobObjectExtendedLimitInformation, &info, sizeof(info));
         if (!AssignProcessToJobObject(job, process.hProcess)) {
-            Log(L"service: cannot assign the helper to a job object");
+            core::Log(L"service: cannot assign the helper to a job object");
             CloseHandle(job);
             job = nullptr;
         }
@@ -360,7 +366,7 @@ bool ServiceManager::StartLocked(abort_callback& abort, std::wstring* error) {
     m_job = job;
     m_port = port;
     m_baseUrl = "http://127.0.0.1:" + std::to_string(port);
-    Log(L"service: started on port " + std::to_wstring(port));
+    core::Log(L"service: started on port " + std::to_wstring(port));
 
     for (int attempt = 0; attempt < 120; ++attempt) {
         abort_callback_impl startAbort;  // not the caller's: a stopped playback must not kill start-up
@@ -373,7 +379,7 @@ bool ServiceManager::StartLocked(abort_callback& abort, std::wstring* error) {
         if (WaitForSingleObject(process.hProcess, 0) == WAIT_OBJECT_0) {
             DWORD code = 0;
             GetExitCodeProcess(process.hProcess, &code);
-            Log(L"service: helper exited during start-up, code " + std::to_wstring(code));
+            core::Log(L"service: helper exited during start-up, code " + std::to_wstring(code));
             StopLocked();
             SetErrorLocked(L"The NetEase service exited during start-up (code " + std::to_wstring(code) + L").");
             if (error) *error = m_lastError;
@@ -387,11 +393,11 @@ bool ServiceManager::StartLocked(abort_callback& abort, std::wstring* error) {
         if (response.status != 0) {
             m_state = ServiceState::Ready;
             m_lastError.clear();
-            Log(L"service: ready");
+            core::Log(L"service: ready");
             return true;
         }
         if (attempt == 0 || attempt == 20 || attempt == 60 || attempt == 119) {
-            Log(L"service: probe " + std::to_wstring(attempt) + L" failed: " +
+            core::Log(L"service: probe " + std::to_wstring(attempt) + L" failed: " +
                 (response.error.empty() ? L"no HTTP response" : response.error));
         }
         Sleep(250);

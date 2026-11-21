@@ -1,7 +1,7 @@
 #include "pch.h"
 #include "ui/home_store.h"
 
-#include "netease/profile.h"
+#include "core/paths.h"
 #include "ui/text.h"
 
 #include <winrt/Windows.Data.Json.h>
@@ -22,9 +22,9 @@ using winrt::Windows::Data::Json::JsonValue;
 constexpr int kFormat = 6;
 
 std::filesystem::path FileOf(const stream::Provider& provider) {
-    const auto glasswave = netease::ProfileDir().parent_path(); // <profile>\glasswave
-    if (glasswave.empty()) return {};
-    return glasswave / L"home" / (std::wstring(provider.Key()) + L".json");
+    const auto dir = core::ProfileDir(L"home");
+    if (dir.empty()) return {};
+    return dir / (std::wstring(provider.Key()) + L".json");
 }
 
 // ---- writing ----

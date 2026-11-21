@@ -577,7 +577,7 @@ void StreamProvider::Start() {
     if (m_started) return;
     Ncm().Initialize();
     m_abort = std::make_unique<abort_callback_impl>();
-    m_listTasks = std::make_unique<TaskQueue>(2);
+    m_listTasks = std::make_unique<core::TaskQueue>(2);
     m_idSnapshots = std::make_shared<IdSnapshotStore>();
     m_started = true;
     ++m_generation;

@@ -8,7 +8,7 @@
 #include <winrt/Windows.Data.Json.h>
 #include <winrt/Windows.Foundation.Collections.h>
 
-namespace glasswave::netease::json {
+namespace glasswave::core::json {
 
 using Object = winrt::Windows::Data::Json::JsonObject;
 using Array = winrt::Windows::Data::Json::JsonArray;
@@ -24,4 +24,4 @@ std::optional<Array> GetArray(const Object& object, const wchar_t* key);
 std::vector<Object> Objects(const Array& array);
 std::wstring Stringify(const Object& object);
 
-}  // namespace glasswave::netease::json
+}  // namespace glasswave::core::json

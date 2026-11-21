@@ -2,7 +2,7 @@
 
 #include "applemusic/catalog.h"
 #include "applemusic/client.h"
-#include "netease/task_queue.h"
+#include "core/task_queue.h"
 #include "stream/provider.h"
 
 #include <chrono>
@@ -242,10 +242,10 @@ class StreamProvider final : public stream::Provider {
     bool m_artistCountsInFlight = false;
     bool m_librarySnapshotLoaded = false;
     std::chrono::steady_clock::time_point m_librarySnapshotValidUntil{};
-    std::unique_ptr<netease::TaskQueue> m_tasks;
-    std::unique_ptr<netease::TaskQueue> m_mutationTasks;
-    std::unique_ptr<netease::TaskQueue> m_detailTasks;
-    std::unique_ptr<netease::TaskQueue> m_enrichTasks;
+    std::unique_ptr<core::TaskQueue> m_tasks;
+    std::unique_ptr<core::TaskQueue> m_mutationTasks;
+    std::unique_ptr<core::TaskQueue> m_detailTasks;
+    std::unique_ptr<core::TaskQueue> m_enrichTasks;
     std::unique_ptr<abort_callback_impl> m_abort;
     AccountState m_account;
     std::wstring m_cachedAccountId;

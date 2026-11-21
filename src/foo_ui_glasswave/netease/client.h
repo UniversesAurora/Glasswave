@@ -1,6 +1,6 @@
 #pragma once
 
-#include "netease/json.h"
+#include "core/json.h"
 #include "netease/service.h"
 #include "netease/types.h"
 #include "stream/playback_source.h"
@@ -184,21 +184,21 @@ public:
 private:
     // One of the service's own API paths through the helper's generic call
     // (/api?uri=&data=&crypto=eapi), for endpoints the helper has no route for.
-    bool Generic(std::wstring_view uri, std::wstring_view data, abort_callback& abort, json::Object& out,
+    bool Generic(std::wstring_view uri, std::wstring_view data, abort_callback& abort, core::json::Object& out,
                  std::wstring& error);
     bool Request(std::wstring_view path, const std::vector<std::pair<std::wstring, std::wstring>>& params,
-                 bool post, abort_callback& abort, json::Object& out, int& apiCode, std::wstring& error,
+                 bool post, abort_callback& abort, core::json::Object& out, int& apiCode, std::wstring& error,
                  std::vector<std::wstring>* responseCookies = nullptr);
     // One page of /cloudsearch of the given type: the objects under result.<rowsKey>.
     bool CloudSearch(std::wstring_view query, int type, int limit, int offset, const wchar_t* rowsKey,
-                     const wchar_t* countKey, abort_callback& abort, std::vector<json::Object>& rows,
+                     const wchar_t* countKey, abort_callback& abort, std::vector<core::json::Object>& rows,
                      SearchPage& page, std::wstring& error);
 
     ServiceManager& m_service;
 };
 
 // Parsing helpers shared with the catalog and tests.
-Song ParseSong(const json::Object& object);
-Playlist ParsePlaylist(const json::Object& object);
+Song ParseSong(const core::json::Object& object);
+Playlist ParsePlaylist(const core::json::Object& object);
 
 }  // namespace glasswave::netease

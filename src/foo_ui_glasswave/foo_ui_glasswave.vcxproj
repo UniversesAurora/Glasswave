@@ -253,12 +253,12 @@
     <ClCompile Include="netease\handle.cpp" />
     <ClCompile Include="net\http.cpp" />
     <ClCompile Include="netease\input_ncm.cpp" />
-    <ClCompile Include="netease\json.cpp" />
-    <ClCompile Include="netease\log.cpp" />
-    <ClCompile Include="netease\profile.cpp" />
+    <ClCompile Include="core\json.cpp" />
+    <ClCompile Include="core\log.cpp" />
+    <ClCompile Include="core\paths.cpp" />
     <ClCompile Include="netease\session.cpp" />
     <ClCompile Include="netease\service.cpp" />
-    <ClCompile Include="netease\task_queue.cpp" />
+    <ClCompile Include="core\task_queue.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="cd\disc.h" />
@@ -378,12 +378,12 @@
     <ClInclude Include="netease\handle.h" />
     <ClInclude Include="net\http.h" />
     <ClInclude Include="net\http_request.h" />
-    <ClInclude Include="netease\json.h" />
-    <ClInclude Include="netease\log.h" />
-    <ClInclude Include="netease\profile.h" />
+    <ClInclude Include="core\json.h" />
+    <ClInclude Include="core\log.h" />
+    <ClInclude Include="core\paths.h" />
     <ClInclude Include="netease\session.h" />
     <ClInclude Include="netease\service.h" />
-    <ClInclude Include="netease\task_queue.h" />
+    <ClInclude Include="core\task_queue.h" />
     <ClInclude Include="netease\types.h" />
   </ItemGroup>
   <ItemGroup>

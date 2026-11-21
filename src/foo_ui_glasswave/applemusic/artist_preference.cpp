@@ -12,20 +12,20 @@ namespace {
 using winrt::Windows::Data::Json::IJsonValue;
 using winrt::Windows::Data::Json::JsonValueType;
 
-IJsonValue Lookup(const netease::json::Object& object, const wchar_t* key) {
+IJsonValue Lookup(const core::json::Object& object, const wchar_t* key) {
     if (!object) return nullptr;
     const winrt::hstring name(key);
     if (!object.HasKey(name)) return nullptr;
     return object.Lookup(name);
 }
 
-std::optional<std::wstring> String(const netease::json::Object& object, const wchar_t* key) {
+std::optional<std::wstring> String(const core::json::Object& object, const wchar_t* key) {
     const IJsonValue value = Lookup(object, key);
     if (!value || value.ValueType() != JsonValueType::String) return std::nullopt;
     return std::wstring(value.GetString().c_str());
 }
 
-std::optional<netease::json::Object> Object(const netease::json::Object& object, const wchar_t* key) {
+std::optional<core::json::Object> Object(const core::json::Object& object, const wchar_t* key) {
     const IJsonValue value = Lookup(object, key);
     if (!value || value.ValueType() != JsonValueType::Object) return std::nullopt;
     return value.GetObject();
@@ -35,7 +35,7 @@ bool IsCatalogArtistId(std::wstring_view id) {
     return !id.empty() && std::all_of(id.begin(), id.end(), [](wchar_t c) { return c >= L'0' && c <= L'9'; });
 }
 
-std::optional<std::wstring> CatalogArtistIdFromLibraryArtist(const netease::json::Object& resource) {
+std::optional<std::wstring> CatalogArtistIdFromLibraryArtist(const core::json::Object& resource) {
     const auto relationships = Object(resource, L"relationships");
     if (!relationships) return std::nullopt;
     const auto catalog = Object(*relationships, L"catalog");
@@ -57,7 +57,7 @@ std::optional<std::wstring> CatalogArtistIdFromLibraryArtist(const netease::json
 
 } // namespace
 
-ArtistPreference ParseArtistPreference(const netease::json::Object& resource) noexcept {
+ArtistPreference ParseArtistPreference(const core::json::Object& resource) noexcept {
     try {
         const auto type = String(resource, L"type");
         if (!type || (*type != L"artists" && *type != L"library-artists")) return ArtistPreference::Unknown;
@@ -72,7 +72,7 @@ ArtistPreference ParseArtistPreference(const netease::json::Object& resource) no
     }
 }
 
-std::optional<CatalogArtistId> VerifiedArtistCatalogId(const netease::json::Object& resource,
+std::optional<CatalogArtistId> VerifiedArtistCatalogId(const core::json::Object& resource,
                                                        std::wstring_view expectedResourceId) noexcept {
     try {
         const auto type = String(resource, L"type");

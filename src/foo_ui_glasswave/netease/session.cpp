@@ -2,7 +2,7 @@
 #include "netease/config.h"
 #include "netease/cookie.h"
 #include "netease/handle.h"
-#include "netease/log.h"
+#include "core/log.h"
 #include "netease/session.h"
 
 #include <atomic>
@@ -51,7 +51,7 @@ void Session::Initialize() {
     if (!CookieHasMusicU(SessionCookie())) ClearSessionCookie();
     m_service.Initialize();
     Catalog::Get().Load();
-    Log(L"art: extractor supports ncm://song/ = " +
+    core::Log(L"art: extractor supports ncm://song/ = " +
         std::wstring(album_art_extractor::g_is_supported_path("ncm://song/1") ? L"yes" : L"no"));
     std::lock_guard lock(m_mutex);
     m_account = {};
@@ -421,7 +421,7 @@ void Session::RefreshAccount(DoneCallback done) {
             std::lock_guard lock(m_mutex);
             m_recommendedPlaylists = std::move(recommended);
         }
-        Log(L"account: saved lists: " + std::to_wstring(followedCount) + L" artists, " +
+        core::Log(L"account: saved lists: " + std::to_wstring(followedCount) + L" artists, " +
             std::to_wstring(albumCount) + L" albums, " + std::to_wstring(recommendedCount) + L" recommended");
         PostMain([done = std::move(done)] {
             if (done) done(true, {});
@@ -859,7 +859,7 @@ void Session::FetchArtistDetail(int64_t artistId, ArtistDetailCallback done) {
         }
         Artist artist;
         if (!m_client.GetArtistDetail(artistId, abort, artist, error)) {
-            Log(L"artist: detail failed for " + std::to_wstring(artistId) + L": " + error);
+            core::Log(L"artist: detail failed for " + std::to_wstring(artistId) + L": " + error);
             PostMain([done = std::move(done), error] {
                 if (done) done({}, ErrorOf(error));
             });
@@ -1365,7 +1365,7 @@ void Session::ReorderPlaylists(std::vector<int64_t> ids, DoneCallback done) {
                 ReloadUserPlaylists(abort, userId, listError);  // authoritative order (or restores)
             }
         }
-        if (!ok) Log(L"playlist: reorder failed: " + error);
+        if (!ok) core::Log(L"playlist: reorder failed: " + error);
         PostMain([done = std::move(done), ok, error] {
             if (done) done(ok, ok ? std::wstring() : ErrorOf(error));
         });

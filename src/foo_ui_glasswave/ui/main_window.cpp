@@ -14,7 +14,7 @@
 #include "ui/downloads_page.h"
 #include "ui/home_page.h"
 #include "media/radio.h"
-#include "netease/log.h"
+#include "core/log.h"
 #include "aero/aero_atlas.h"
 #include "aero/aero_metrics.h"
 #include "aero/aero_painter.h"
@@ -3738,7 +3738,7 @@ void MainWindow::RepaintBreadcrumb() {
         if (!level.text.empty()) text += L" > " + (level.literal ? level.text : Tr(level.text));
     if (text != m_loggedPath) {
         m_loggedPath = text;
-        netease::Log(text);
+        core::Log(text);
     }
     m_crumbBar->SetPath(std::move(path));
     UpdateLayout();
@@ -4682,7 +4682,7 @@ void MainWindow::LogDetail(bool art) {
                 m_detail.brief.substr(0, 24) + L"...\"";
     if (text == m_loggedDetail) return;
     m_loggedDetail = text;
-    netease::Log(text);
+    core::Log(text);
 }
 
 void MainWindow::RepaintDetailHeader() {

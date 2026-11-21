@@ -1,7 +1,7 @@
 #include "pch.h"
 #include "cache/config.h"
 #include "cache/store.h"
-#include "netease/profile.h"
+#include "core/paths.h"
 
 namespace glasswave::cache {
 namespace {
@@ -40,9 +40,9 @@ void SetListLimitMiB(int value) {
 
 Store& GetStore() {
     static Store store([] {
-        const auto profile = netease::ProfileDir();
-        if (profile.empty()) throw std::runtime_error("The cache profile is unavailable.");
-        return profile.parent_path() / L"cache" / L"v1";
+        const auto dir = core::ProfileDir(L"cache");
+        if (dir.empty()) throw std::runtime_error("The cache profile is unavailable.");
+        return dir / L"v1";
     }());
     static const bool configured = [&] {
         store.SetLimit(Kind::Audio, static_cast<uint64_t>(AudioLimitMiB()) * 1024 * 1024);

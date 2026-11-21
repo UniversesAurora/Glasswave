@@ -1,6 +1,6 @@
 #include "pch.h"
 #include "gfx/composition_host.h"
-#include "netease/log.h"
+#include "core/log.h"
 
 namespace glasswave::gfx {
 
@@ -115,7 +115,7 @@ void CompositionHost::ReportFailure(const char* step, HRESULT hr, int widthPx, i
     // someone looks into one.
     wchar_t line[160];
     swprintf_s(line, L"surface: %hs failed, hr 0x%08X, %dx%d px", step, static_cast<unsigned>(hr), widthPx, heightPx);
-    netease::Log(line);
+    core::Log(line);
 }
 
 // After a failed draw: the surface on its own cleared to transparent, so that it never shows

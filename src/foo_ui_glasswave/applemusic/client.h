@@ -1,6 +1,6 @@
 #pragma once
 
-#include "netease/json.h"
+#include "core/json.h"
 
 #include <optional>
 #include <stdexcept>
@@ -10,7 +10,7 @@
 
 namespace glasswave::applemusic {
 
-using Object = netease::json::Object;
+using Object = core::json::Object;
 
 struct AccountState {
     bool signedIn = false;

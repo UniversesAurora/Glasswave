@@ -2,7 +2,7 @@
 
 #include "stream/track_snapshot.h"
 
-#include "netease/profile.h"
+#include "core/paths.h"
 #include "stream/provider.h"
 
 #include <filesystem>
@@ -18,7 +18,10 @@ constexpr char kField = '\x1F';  // between a record's fields
 constexpr char kValue = '\x1D';  // between a multi-value tag's values
 constexpr double kSaveDelay = 3.0; // seconds after the last change
 
-std::filesystem::path File() { return netease::ProfileDir().parent_path() / L"tracks" / L"snapshot.txt"; }
+std::filesystem::path File() {
+    const auto dir = core::ProfileDir(L"tracks");
+    return dir.empty() ? dir : dir / L"snapshot.txt";
+}
 
 bool Streaming(const metadb_handle_ptr& item) {
     for (const Provider* provider : Providers())

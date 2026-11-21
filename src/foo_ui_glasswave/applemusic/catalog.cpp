@@ -1,7 +1,7 @@
 #include "pch.h"
 #include "applemusic/catalog.h"
 #include "applemusic/display_metadata.h"
-#include "netease/profile.h"
+#include "core/paths.h"
 #include "stream/track_snapshot.h"
 
 #include <SDK/file_info_impl.h>
@@ -65,9 +65,8 @@ std::vector<std::string> Split(std::string_view text) {
 }
 
 std::filesystem::path CacheFile() {
-    const auto profile = netease::ProfileDir();
-    return profile.empty() ? std::filesystem::path()
-                           : profile.parent_path() / L"applemusic" / L"cache" / L"songs.tsv";
+    const auto dir = core::ProfileDir(L"applemusic");
+    return dir.empty() ? std::filesystem::path() : dir / L"cache" / L"songs.tsv";
 }
 
 std::filesystem::path MeasuredFile() {
@@ -109,7 +108,7 @@ void Catalog::ApplyMeasuredLocked(Song& song) const {
 
 void Catalog::SaveMeasuredLocked() const {
     const auto path = MeasuredFile();
-    if (path.empty() || !netease::EnsureDir(path.parent_path())) return;
+    if (path.empty() || !core::EnsureDir(path.parent_path())) return;
     auto temp = path;
     temp += L".tmp";
     {
@@ -561,7 +560,7 @@ void Catalog::InstallCached(std::vector<Song> songs) {
 
 void Catalog::Save() const {
     const auto path = CacheFile();
-    if (path.empty() || !netease::EnsureDir(path.parent_path())) return;
+    if (path.empty() || !core::EnsureDir(path.parent_path())) return;
     std::vector<Song> songs;
     {
         std::lock_guard lock(m_mutex);

@@ -1,6 +1,7 @@
 #include "pch.h"
 
 #include "lyrics/lyrics_service.h"
+#include "core/paths.h"
 
 #include "stream/provider.h"
 #include "lyrics/cache_format.h"
@@ -360,9 +361,7 @@ Service& Service::Get() {
 }
 
 std::wstring Service::CacheFolder() {
-    pfc::string8 native;
-    if (!filesystem::g_get_native_path(core_api::get_profile_path(), native)) return {};
-    return (std::filesystem::path(Wide(native.get_ptr())) / L"glasswave" / L"lyrics").wstring();
+    return core::ProfileDir(L"lyrics").wstring();
 }
 
 Query Service::QueryFor(const metadb_handle_ptr& track) {

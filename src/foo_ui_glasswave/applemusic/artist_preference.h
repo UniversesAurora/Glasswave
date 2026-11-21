@@ -1,6 +1,6 @@
 #pragma once
 
-#include "netease/json.h"
+#include "core/json.h"
 
 #include <optional>
 #include <string>
@@ -39,7 +39,7 @@ class CatalogArtistId final {
     std::wstring m_value;
 
     friend std::optional<CatalogArtistId> VerifiedArtistCatalogId(
-        const netease::json::Object& resource, std::wstring_view expectedResourceId) noexcept;
+        const core::json::Object& resource, std::wstring_view expectedResourceId) noexcept;
 };
 
 struct ArtistPreferenceRequest {
@@ -50,13 +50,13 @@ struct ArtistPreferenceRequest {
 
 // Reads the optional attributes.inFavorites field. Missing, null, or malformed
 // values remain Unknown; library membership never implies Favorite.
-ArtistPreference ParseArtistPreference(const netease::json::Object& resource) noexcept;
+ArtistPreference ParseArtistPreference(const core::json::Object& resource) noexcept;
 
 // The returned resource id must equal expectedResourceId. A catalog artist then
 // supplies its own numeric id. A library artist is accepted only when
 // relationships.catalog is complete and identifies exactly one catalog artist.
 // Name matching and ambiguous relationships are rejected.
-std::optional<CatalogArtistId> VerifiedArtistCatalogId(const netease::json::Object& resource,
+std::optional<CatalogArtistId> VerifiedArtistCatalogId(const core::json::Object& resource,
                                                        std::wstring_view expectedResourceId) noexcept;
 
 // Apple's current web contract uses the catalog artist id for both directions:

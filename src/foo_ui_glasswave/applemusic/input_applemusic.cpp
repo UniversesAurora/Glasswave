@@ -8,7 +8,7 @@
 #include "applemusic/stream_provider.h"
 #include "cache/audio.h"
 #include "net/http.h"
-#include "netease/json.h"
+#include "core/json.h"
 #include "stream/playback_source.h"
 #include "stream/track_snapshot.h"
 
@@ -21,7 +21,7 @@
 namespace glasswave::applemusic {
 namespace {
 
-namespace json = netease::json;
+namespace json = core::json;
 
 constexpr double kFullSongDurationToleranceSeconds = 2.0;
 

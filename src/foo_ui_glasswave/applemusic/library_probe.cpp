@@ -1,6 +1,7 @@
 #include "pch.h"
 
 #include "applemusic/catalog.h"
+#include "core/paths.h"
 #include "stream/provider.h"
 #include "stream/list_session.h"
 #include "ui/art_cache.h"
@@ -213,10 +214,8 @@ void Finish(const std::shared_ptr<State>& state, std::wstring fatal = {}) {
 }
 
 std::optional<Paths> ProbePaths() {
-    pfc::string8 native;
-    if (!filesystem::g_get_native_path(core_api::get_profile_path(), native)) return std::nullopt;
-    const fs::path dir = fs::path(pfc::stringcvt::string_wide_from_utf8(native.get_ptr()).get_ptr()) /
-                         L"glasswave" / L"applemusic";
+    const fs::path dir = core::ProfileDir(L"applemusic");
+    if (dir.empty()) return std::nullopt;
     return Paths{dir / L"browse-request.json", dir / L"browse-request.claimed.json",
                  dir / L"browse-result.json"};
 }
