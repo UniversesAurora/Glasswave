@@ -348,7 +348,7 @@ std::vector<PlayRecord> PlayStats::Recent(size_t limit) {
     std::vector<PlayRecord> out;
     out.reserve(m_records.size());
     for (const auto& record : m_records)
-        if (record.lastPlayed > 0) out.push_back(record);  // ForgetRecent clears this
+        if (record.lastPlayed > 0 && Playable(record)) out.push_back(record);  // ForgetRecent clears this
     std::sort(out.begin(), out.end(), [](const PlayRecord& a, const PlayRecord& b) {
         return a.lastPlayed != b.lastPlayed ? a.lastPlayed > b.lastPlayed : a.count > b.count;
     });

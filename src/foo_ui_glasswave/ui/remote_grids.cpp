@@ -2,6 +2,7 @@
 #include "ui/remote_grids.h"
 #include "ui/i18n.h"
 #include "ui/win7_menu.h"
+#include "media/recent_lists.h"
 
 namespace glasswave::ui {
 

@@ -11,6 +11,15 @@
 // followed artists and playlists. Opening an item and its context menu belong to the page.
 namespace glasswave::ui {
 
+// Playing every song of a service's list from the first: a cover's or a card's play button, a
+// list page's Play (defined with the pages, remote_pages.cpp). Any provider, any list kind of
+// songs: the list is read through the same shared ListSession its page shows (the cache when it
+// was confirmed lately, otherwise the service's answer, which the page then shows as well), and
+// what plays stops at once, the transport's Play waiting for the list (media::BeginPendingPlay).
+void PlayRemoteList(stream::Provider& provider, stream::ListQuery query, bool recordRecent);
+void PlayRemoteAlbum(stream::Provider& provider, const stream::Id& album);
+void PlayRemotePlaylist(stream::Provider& provider, const stream::Id& playlist); // also a recent list
+
 // Selection, focus and filtering shared by the tile sources. Rows are the indices of the
 // items that pass the filter; the selection is per row.
 class GridSource : public media::ListSource {

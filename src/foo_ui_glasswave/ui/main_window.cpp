@@ -43,6 +43,10 @@
 #include "lyrics/scripts.h"
 #include "app/settings.h"
 #include "ui/remote_pages.h"
+#include "ui/recent_page.h"
+#include "ui/search_page.h"
+#include "media/recent_lists.h"
+#include "ui/search_popup.h"
 #include "ui/song_actions.h"
 #include "ui/song_table.h"
 #include "ui/text.h"
@@ -992,16 +996,19 @@ void MainWindow::InitComposition() {
     m_list->onScrollAnim = [this] { StartScrollAnimation(); };
     m_list->onScrollHold = [this] { StartScrollRepeat(); };
     m_search = std::make_unique<SearchBox>(m_contentLayer);
-    m_search->onChange = [this](const std::wstring& text) {
-        m_filter = media::Lower(text);
-        if (m_source) {
-            m_source->SetFilter(m_filter);
-            m_list->SetSource(m_source.get(), true);
-            if (m_page) m_page->OnPresentationChanged();
-        }
-    };
+    m_search->onChange = [this](const std::wstring& text) { OnSearchTextChanged(text); };
+    m_search->onTokenRemoved = [this] { SetSearchScope({}); };
+    // A playlist's songs played from its page: the playlist goes to Recently Played's Playlists.
+    media::SetPlayQueueListener([this] {
+        if (m_view.kind == View::Kind::RemotePlaylist)
+            media::RecordRecentList(m_view.provider, m_view.remoteId, m_view.name);
+        else if (m_view.kind == View::Kind::Playlist && !media::IsQueue(m_view.playlist))
+            media::RecordRecentList({}, m_view.name, m_view.name);
+    });
+    m_search->onCompose = [this] { OnSearchTextChanged(m_search->Text()); };
     m_paneSlot = gfx::CompositionHost::Get().Compositor().CreateContainerVisual();
     m_paneSlot.RelativeSizeAdjustment(float2{1, 1});
+    m_paneSlot.Comment(L"pane slot");
     m_root.Children().InsertAtTop(m_paneSlot);
     m_pane = std::make_unique<NowPlayingPane>(m_paneSlot);
     m_pane->onFrames = [this] { StartLyricsFrames(); };

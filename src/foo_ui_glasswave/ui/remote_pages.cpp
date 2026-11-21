@@ -2261,6 +2261,138 @@ class AllFavoritesPage final : public Page {
 
 } // namespace
 
+// ---- Playing a service's list ------------------------------------------------------------------
+
+void PlayRemoteList(stream::Provider& provider, stream::ListQuery query, bool recordRecent) {
+    const uint64_t token = media::BeginPendingPlay(); // what plays stops now
+    query = PreparedQuery(provider, std::move(query));
+    auto request = std::make_shared<AllSongsRequest>();
+    request->provider = &provider;
+    request->failed = [token] { media::DropPendingPlay(token); };
+    request->ready = [token, &provider, weak = std::weak_ptr<AllSongsRequest>(request), id = query.id,
+                      recordRecent](metadb_handle_list items) {
+        if (!media::TakePendingPlay(token) || items.get_count() == 0) return; // superseded, or empty
+        media::PlayItems(items, 0);
+        if (auto self = weak.lock(); recordRecent && self && !self->name.empty())
+            media::RecordRecentList(std::wstring(provider.Key()), id, self->name);
+    };
+    StartAllSongs(request, query);
+}
+
+// ---- A record's menu (ui/item_menu.h) ----------------------------------------------------------
+
+namespace {
+MenuAction SearchFor(PageHost& host, const wchar_t* what, const std::wstring& name) {
+    return {Tr(what) + L" \u201C" + name + L"\u201D", [&host, name] { host.Search(name); }};
+}
+} // namespace
+
+std::vector<MenuAction> RecordActions(PageHost& host, stream::Provider& provider, const MenuRecord& record,
+                                      const RecordMenuContext& context) {
+    std::vector<MenuAction> actions;
+    const auto group = [&actions] {
+        if (!actions.empty() && !actions.back().label.empty()) actions.push_back({});
+    };
+    const bool account = provider.AccountVerified();
+    if (const auto* album = std::get_if<stream::Album>(&record)) {
+        const stream::Album a = *album;
+        if (!context.onItsPage)
+            actions.push_back({L"View", [&host, &provider, a, section = context.sectionId] {
+                                   host.Open(AlbumView(provider, a.id, a.name, section));
+                               }});
+        group();
+        AddBulkActions(actions, FetchAlbumSongs(provider, a.id, &host), &provider, {}, SIZE_MAX,
+                       [&provider, id = a.id] { PlayRemoteAlbum(provider, id); });
+        if (account && provider.Can(stream::Capability::SaveAlbums)) {
+            group();
+            actions.push_back(SaveAlbumAction(provider, a.id, [removed = context.removed, id = a.id](bool saved) {
+                if (!saved && removed) removed(id);
+            }));
+        }
+        group();
+        AddGoToArtist(actions, host, provider, a.artists, context.sectionId);
+        group();
+        actions.push_back(SearchFor(host, L"Search for album", a.name));
+    } else if (const auto* artist = std::get_if<stream::Artist>(&record)) {
+        const stream::Artist a = *artist;
+        if (!context.onItsPage)
+            actions.push_back({L"View", [&host, &provider, a, section = context.sectionId] {
+                                   host.Open(ArtistView(provider, a.id, a.name, section));
+                               }});
+        group();
+        // The artist's songs: what its page lists first (top songs, or an uploaded artist's).
+        const stream::ListQuery songs = IdQuery(stream::ListKind::ArtistTopTracks, a.id);
+        AddBulkActions(actions, FetchListSongs(provider, songs, &host), &provider, {}, SIZE_MAX,
+                       [&provider, songs] { PlayRemoteList(provider, songs, false); });
+        if (account && SupportsArtistPreference(provider)) {
+            group();
+            actions.push_back(FollowAction(provider, a.id, [removed = context.removed, id = a.id](bool followed) {
+                if (!followed && removed) removed(id);
+            }));
+        }
+        group();
+        actions.push_back(SearchFor(host, L"Search for artist", a.name));
+    } else if (const auto* playlist = std::get_if<stream::Playlist>(&record)) {
+        const stream::Id id = playlist->id;
+        const std::wstring name = playlist->name;
+        const auto shelf = context.shelf;
+        if (!context.onItsPage)
+            actions.push_back({L"View", [&host, &provider, id, name, shelf, section = context.sectionId] {
+                                   host.Open(PlaylistView(provider, id, name, shelf, section));
+                               }});
+        group();
+        AddBulkActions(actions, FetchPlaylistSongs(provider, id, &host), &provider, id, SIZE_MAX,
+                       [&provider, id] { PlayRemotePlaylist(provider, id); });
+        const auto info = provider.FindPlaylist(id);
+        const bool own = shelf == Shelf::Created || (info && info->own);
+        const bool saved = provider.PlaylistSavedState(id).value_or(
+            shelf == Shelf::Saved || (info && info->saved) || Contains(provider.Playlists(Shelf::Saved), id));
+        if (account && own) {
+            const auto offers = provider.Offers();
+            group();
+            if (offers.Has(stream::Capability::RenamePlaylists))
+                actions.push_back({ProviderPlaylistText(provider, L"Rename..."),
+                                   [&host, &provider, id, name] { RenameRemotePlaylist(host, provider, id, name); }});
+            if (offers.Has(stream::Capability::DeletePlaylists))
+                actions.push_back({ProviderPlaylistText(provider, L"Delete playlist"),
+                                   [&host, &provider, id, name, section = context.sectionId] {
+                                       DeleteRemotePlaylist(host, provider, id, name, section);
+                                   }});
+        } else if (account && provider.Can(stream::Capability::SavePlaylists)) {
+            group();
+            actions.push_back(
+                {ProviderPlaylistText(provider, saved ? L"Uncollect playlist" : L"Collect playlist"),
+                 [&provider, id, saved, removed = context.removed] {
+                     provider.SetPlaylistSaved(id, !saved, [&provider, id, saved, removed](std::wstring error) {
+                         if (!error.empty()) return ShowProviderError(provider, error);
+                         if (saved && removed) removed(id);
+                     });
+                 }});
+        }
+        group();
+        actions.push_back(SearchFor(host, L"Search for playlist", name));
+    }
+    if (!context.page.empty()) {
+        group();
+        for (const auto& action : context.page) actions.push_back(action);
+    }
+    while (!actions.empty() && actions.back().label.empty() && !actions.back().run) actions.pop_back();
+    return actions;
+}
+
+void ShowRecordMenu(PageHost& host, stream::Provider& provider, const MenuRecord& record, POINT screen,
+                    const RecordMenuContext& context) {
+    ShowActionMenu(host.Owner(), screen, RecordActions(host, provider, record, context));
+}
+
+void PlayRemotePlaylist(stream::Provider& provider, const stream::Id& playlist) {
+    PlayRemoteList(provider, IdQuery(stream::ListKind::PlaylistTracks, playlist), true);
+}
+
+void PlayRemoteAlbum(stream::Provider& provider, const stream::Id& album) {
+    PlayRemoteList(provider, IdQuery(stream::ListKind::AlbumTracks, album), false);
+}
+
 // ---- Page ------------------------------------------------------------------------------------
 
 // Drops the UI's own page-level requests for a provider. The provider's notification has

@@ -2,6 +2,7 @@
 #include "media/list_sources.h"
 #include "media/play_stats.h"
 #include "media/special_playlists.h"
+#include "media/recent_lists.h"
 #include "media/favorites.h"
 #include "ui/win7_menu.h"
 #include "media/source_identity.h"
@@ -125,6 +126,19 @@ void PlaylistsSource::SetSelection(const std::vector<size_t>& rows) {
 
 void PlaylistsSource::Activate(size_t row) {
     if (row < m_rows.size() && m_open) m_open(m_rows[row]);
+}
+
+void PlaylistsSource::PlayTile(size_t row) {
+    if (row >= m_rows.size()) return;
+    auto pm = playlist_manager::get();
+    metadb_handle_list items;
+    pm->playlist_get_all_items(m_rows[row], items);
+    if (!items.get_count()) return;
+    PlayItems(items, 0);
+    pfc::string8 name;
+    pm->playlist_get_name(m_rows[row], name);
+    const std::wstring wide = ui::Wide(name.get_ptr());
+    RecordRecentList({}, wide, wide);
 }
 
 void PlaylistsSource::ContextMenu(HWND, POINT screen) {
