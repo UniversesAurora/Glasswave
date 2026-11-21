@@ -78,11 +78,21 @@ struct ImageEvent {
 std::string ImageArtKey(const ImageIdentity& identity);
 // True when `artKey` ("<provider>:<kind>:<id>") is `prefix` or lies under it, counting whole
 // segments: "apple:album:12" matches "apple:album:12" but not "apple:album:123"; a prefix that
-// ends in ':' ("apple:album:") matches everything below it.
-inline bool ArtKeyHasPrefix(std::string_view artKey, std::string_view prefix) {
+// ends in ':' ("apple:album:") matches everything below it. The image cache and ui::ArtCache both
+// select by it, so an invalidation reaches the same pictures in either.
+namespace detail {
+template <class Char>
+bool ArtKeyHasPrefix(std::basic_string_view<Char> artKey, std::basic_string_view<Char> prefix) {
     if (!artKey.starts_with(prefix)) return false;
-    return prefix.empty() || prefix.back() == ':' || artKey.size() == prefix.size() ||
-           artKey[prefix.size()] == ':';
+    return prefix.empty() || prefix.back() == Char(':') || artKey.size() == prefix.size() ||
+           artKey[prefix.size()] == Char(':');
+}
+} // namespace detail
+inline bool ArtKeyHasPrefix(std::string_view artKey, std::string_view prefix) {
+    return detail::ArtKeyHasPrefix(artKey, prefix);
+}
+inline bool ArtKeyHasPrefix(std::wstring_view artKey, std::wstring_view prefix) {
+    return detail::ArtKeyHasPrefix(artKey, prefix);
 }
 
 // {Kind::Image, provider, AccountScope(provider), artKind/id, renditionVersion}.

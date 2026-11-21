@@ -2,6 +2,7 @@
 #include "ui/art_cache.h"
 #include "core/text.h"
 #include "cache/art_absence.h"
+#include "cache/images.h"
 #include "app/settings.h"
 #include "stream/provider.h"
 #include "ui/shell_glue.h"
@@ -32,8 +33,9 @@ std::string ProviderFor(std::wstring_view sourceKey) {
     return stream::FindProvider(name) ? Utf8(name) : std::string();
 }
 
+// The key selects whole segments: "apple:album:12" is that album, not "apple:album:123".
 bool HasPrefix(std::wstring_view value, std::wstring_view prefix) {
-    return value.size() >= prefix.size() && value.compare(0, prefix.size(), prefix) == 0;
+    return cache::ArtKeyHasPrefix(value, prefix);
 }
 
 } // namespace
