@@ -22,6 +22,7 @@
 #include "aero/aero_painter.h"
 #include "gfx/composition_host.h"
 #include "media/source_identity.h"
+#include "ui/caption_buttons.h"
 #include "ui/main_menu.h"
 #include "ui/shell_glue.h"
 #include "ui/taskbar.h"
@@ -463,20 +464,6 @@ View NormalizeRemoteView(const stream::Provider& provider, View view, bool disca
             }
     }
     return view;
-}
-
-wuc::CompositionNineGridBrush NineGrid(int wPx, int hPx, float scale, float insetPx, bool hollow,
-                                       const std::function<void(ID2D1DeviceContext*)>& painter) {
-    auto& host = gfx::CompositionHost::Get();
-    auto surface = host.CreateSurface(wPx, hPx);
-    host.Draw(surface, scale, painter);
-    auto source = host.Compositor().CreateSurfaceBrush(surface);
-    source.Stretch(wuc::CompositionStretch::Fill);
-    auto brush = host.Compositor().CreateNineGridBrush();
-    brush.Source(source);
-    brush.SetInsets(insetPx);
-    brush.IsCenterHollow(hollow);
-    return brush;
 }
 
 // A horizontally stretchable strip: painted once a few pixels wide, stretched to any width.
@@ -951,45 +938,13 @@ LRESULT CALLBACK MainWindow::WndProcThunk(HWND hwnd, UINT msg, WPARAM wp, LPARAM
 // ---- Composition visual tree ---------------------------------------------------------
 
 void MainWindow::InitComposition() {
-    // Allow this non-UWP window to use HostBackdropBrush (Windows 11 22000+, documented).
-    BOOL enable = TRUE;
-    DwmSetWindowAttribute(m_hwnd, DWMWA_USE_HOSTBACKDROPBRUSH, &enable, sizeof(enable));
-    // We draw the Win7 corners and border ourselves: no Win11 rounding, no accent border.
-    DWM_WINDOW_CORNER_PREFERENCE corner = DWMWCP_DONOTROUND;
-    DwmSetWindowAttribute(m_hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, &corner, sizeof(corner));
-    COLORREF border = DWMWA_COLOR_NONE;
-    DwmSetWindowAttribute(m_hwnd, DWMWA_BORDER_COLOR, &border, sizeof(border));
-    DWM_SYSTEMBACKDROP_TYPE backdrop = DWMSBT_NONE;
-    DwmSetWindowAttribute(m_hwnd, DWMWA_SYSTEMBACKDROP_TYPE, &backdrop, sizeof(backdrop));
-    // The Win11 DWM shadow is replaced by ShadowFrame's Win7-measured shadow.
-    DWMNCRENDERINGPOLICY ncrp = DWMNCRP_DISABLED;
-    DwmSetWindowAttribute(m_hwnd, DWMWA_NCRENDERING_POLICY, &ncrp, sizeof(ncrp));
+    m_frame = std::make_unique<aero::GlassWindow>(m_hwnd, WindowColorization(), aero::atlas::Available());
+    m_windowRoot = m_frame->Root();
+    m_root = m_frame->Clipped();
 
     auto& host = gfx::CompositionHost::Get();
     const auto& comp = host.Compositor();
-    auto interop = comp.as<ABI::Windows::UI::Composition::Desktop::ICompositorDesktopInterop>();
-    winrt::check_hresult(interop->CreateDesktopWindowTarget(
-        m_hwnd, FALSE,
-        reinterpret_cast<ABI::Windows::UI::Composition::Desktop::IDesktopWindowTarget**>(
-            winrt::put_abi(m_target))));
-
-    // The frame outline sits above the rounded clip, not inside it: clipping an anti-aliased
-    // one-pixel line along the same curve multiplies the two coverages and the dark line
-    // all but vanishes at the corners while the light line inside it stays.
-    m_windowRoot = comp.CreateContainerVisual();
-    m_windowRoot.RelativeSizeAdjustment(float2{1, 1});
-    m_target.Root(m_windowRoot);
-    m_root = comp.CreateContainerVisual();
-    m_root.RelativeSizeAdjustment(float2{1, 1});
-    m_windowRoot.Children().InsertAtTop(m_root);
-
-    // Win7 windows have all four corners rounded (radius 6 at 96 DPI).
-    m_clipGeometry = comp.CreateRoundedRectangleGeometry();
-    m_root.Clip(comp.CreateGeometricClip(m_clipGeometry));
-
-    m_glass = std::make_unique<aero::GlassMaterial>(WindowColorization(), aero::atlas::Available());
     auto children = m_root.Children();
-    children.InsertAtTop(m_glass->Root());
     // The content base stops at the library boundary. The shared edge also surrounds
     // the now-playing pane, whose glass must remain visible through its dark tint.
     m_clientBackground = comp.CreateSpriteVisual();
@@ -997,19 +952,12 @@ void MainWindow::InitComposition() {
         comp.CreateColorBrush(winrt::Windows::UI::ColorHelper::FromArgb(255, 0xF1, 0xF7, 0xFD)));
     children.InsertAtTop(m_clientBackground);
 
-    m_frameOutline = comp.CreateSpriteVisual();
-    m_frameOutline.RelativeSizeAdjustment(float2{1, 1});
     for (auto* v : {&m_clientEdge, &m_navBar, &m_cmdBar, &m_contentTop, &m_transportBand, &m_capsule,
                     &m_cluster, &m_divider, &m_clientGlow, &m_title, &m_nowPlaying, &m_breadcrumb,
                     &m_navGroove, &m_time, &m_streamVisual})
         *v = comp.CreateSpriteVisual();
     m_crumbBar = std::make_unique<Breadcrumb>([this] { StartScrollAnimation(); });
     m_crumbBar->SetVisual(m_breadcrumb);
-    for (auto& v : m_sideHighlight) {
-        v = comp.CreateSpriteVisual();
-        children.InsertAtTop(v);
-    }
-    m_windowRoot.Children().InsertAtTop(m_frameOutline);
     for (const auto& v : {m_clientEdge, m_navBar, m_navGroove, m_cmdBar, m_contentTop, m_transportBand})
         children.InsertAtTop(v);
     // Navigation pane, list and search box live in their own layer above the bars.
@@ -1117,53 +1065,13 @@ void MainWindow::CreateWidgets() {
         return m_widgets.back().get();
     };
 
-    // Caption button cluster
     // Caption button cluster: Win7's own DWM images when aero.msstyles is present.
-    const bool dwmArt = m_aeroArt;
-    auto captionOptions = [&](bool close) {
-        Widget::Options o;
-        o.inactiveLayer = true;
-        if (dwmArt) {
-            o.glow = [close](ID2D1DeviceContext* dc, D2D1_SIZE_F s) {
-                aero::atlas::CaptionGlow(dc, s, close);
-            };
-            o.glowOutset = aero::atlas::GlowOutset(close);
-            o.glowOutsetInPixels = true;
-        }
-        return o;
-    };
-    add(
-        kCapMin,
-        [dwmArt](auto* dc, D2D1_SIZE_F s, Layer l) {
-            if (dwmArt)
-                aero::atlas::CaptionButton(dc, s, aero::atlas::Button::Minimize,
-                                           paint::CaptionGlyph::Minimize, l);
-            else
-                paint::CaptionButton(dc, s, paint::CaptionGlyph::Minimize, l, true, false);
-        },
-        captionOptions(false))
+    add(kCapMin, CaptionPainter(CaptionButton::Minimize, m_aeroArt), CaptionOptions(CaptionButton::Minimize, m_aeroArt))
         ->onClick = [this] { ShowWindow(m_hwnd, SW_MINIMIZE); };
-    add(
-        kCapMax,
-        [this, dwmArt](auto* dc, D2D1_SIZE_F s, Layer l) {
-            const auto glyph =
-                IsWindowMaximized() ? paint::CaptionGlyph::Restore : paint::CaptionGlyph::Maximize;
-            if (dwmArt)
-                aero::atlas::CaptionButton(dc, s, aero::atlas::Button::Maximize, glyph, l);
-            else
-                paint::CaptionButton(dc, s, glyph, l, false, false);
-        },
-        captionOptions(false))
+    add(kCapMax, CaptionPainter(CaptionButton::Maximize, m_aeroArt, [this] { return IsWindowMaximized(); }),
+        CaptionOptions(CaptionButton::Maximize, m_aeroArt))
         ->onClick = [this] { ShowWindow(m_hwnd, IsWindowMaximized() ? SW_RESTORE : SW_MAXIMIZE); };
-    add(
-        kCapClose,
-        [dwmArt](auto* dc, D2D1_SIZE_F s, Layer l) {
-            if (dwmArt)
-                aero::atlas::CaptionButton(dc, s, aero::atlas::Button::Close, paint::CaptionGlyph::Close, l);
-            else
-                paint::CaptionButton(dc, s, paint::CaptionGlyph::Close, l, false, true);
-        },
-        captionOptions(true))
+    add(kCapClose, CaptionPainter(CaptionButton::Close, m_aeroArt), CaptionOptions(CaptionButton::Close, m_aeroArt))
         ->onClick = [this] { PostMessageW(m_hwnd, WM_SYSCOMMAND, SC_CLOSE, 0); };
 
     // Navigation bar
@@ -2093,28 +2001,7 @@ void MainWindow::UpdateLayout() {
                     L.transport.bottom - PxI(3)};
 
     // Apply to the visual tree.
-    const float radius = max ? 0.0f : Px(m::kCornerRadius);
-    m_clipGeometry.Size(float2{static_cast<float>(W), static_cast<float>(H)});
-    m_clipGeometry.CornerRadius(float2{radius, radius});
-    m_frameOutline.IsVisible(!max);
-
-    // DWM's side highlights run down the left / right frame from the top and end sharply at
-    // H / 4 + 20 DIP (fitted to Win7 captures: 110 px on a 360 px window at 96 DPI, 290 px on
-    // a 1050 px window at 144 DPI).
-    {
-        const bool show = m_aeroArt && !max && L.clientEdge.left > 0;
-        const SIZE size{L.clientEdge.left, H / 4 + PxI(20)};
-        for (auto& v : m_sideHighlight)
-            v.IsVisible(show);
-        if (show) {
-            Place(m_sideHighlight[0], {0, 0, size.cx, size.cy});
-            Place(m_sideHighlight[1], {W - size.cx, 0, W, size.cy});
-            if (size.cx != m_sideHighlightSize.cx || size.cy != m_sideHighlightSize.cy) {
-                m_sideHighlightSize = size;
-                PaintSideHighlights();
-            }
-        }
-    }
+    m_frame->Layout({W, H}, L.clientEdge.left, !max);
 
     Place(m_navGroove, L.navGroove);
     if (const SIZE gs{L.navGroove.right - L.navGroove.left, L.navGroove.bottom - L.navGroove.top};
@@ -2304,7 +2191,7 @@ void MainWindow::UpdateLayout() {
             });
         }
     }
-    m_glass->UpdateReflectionAnchor(m_hwnd);
+    m_frame->Glass().UpdateReflectionAnchor(m_hwnd);
     // The time's alignment follows its side, and the song's text is laid out within the width
     // the block has (cut short with an ellipsis, its star never under the capsule). Painting
     // lays out again, which then finds both unchanged.
@@ -2353,23 +2240,15 @@ void MainWindow::OnDeviceReplaced() {
 
 void MainWindow::RepaintScaleDependent() {
     const float s = m_scale;
-    m_glass->SetScale(s);
-    PaintSideHighlights();
+    m_frame->SetScale(s);
     m_navGrooveSize = {}; // repainted at the new scale by the next layout
     const int line = LinePx();
 
-    // Frame lines are one device pixel at any DPI (as DWM draws them); the corner scales with DPI.
-    const int frameSrc = PxI(32);
-    m_frameOutline.Brush(NineGrid(frameSrc, frameSrc, s, static_cast<float>(PxI(m::kCornerRadius + 2)), true,
-                                  [&](ID2D1DeviceContext* dc) {
-                                      paint::FrameOutline(dc, D2D1::SizeF(frameSrc / s, frameSrc / s),
-                                                          m::kCornerRadius);
-                                  }));
     const int edgeSrc = PxI(16);
-    m_clientEdge.Brush(NineGrid(edgeSrc, edgeSrc, s, 3.0f, true, [&](ID2D1DeviceContext* dc) {
+    m_clientEdge.Brush(gfx::CompositionHost::Get().CreateNineGrid(edgeSrc, edgeSrc, s, 3.0f, true, [&](ID2D1DeviceContext* dc) {
         paint::ClientEdge(dc, D2D1::SizeF(edgeSrc / s, edgeSrc / s));
     }));
-    m_clientGlow.Brush(NineGrid(edgeSrc, edgeSrc, s, 4.0f, true, [&](ID2D1DeviceContext* dc) {
+    m_clientGlow.Brush(gfx::CompositionHost::Get().CreateNineGrid(edgeSrc, edgeSrc, s, 4.0f, true, [&](ID2D1DeviceContext* dc) {
         paint::ClientGlow(dc, D2D1::SizeF(edgeSrc / s, edgeSrc / s));
     }));
 
@@ -2417,7 +2296,7 @@ void MainWindow::RepaintScaleDependent() {
     } else {
         const int capH = PxI(m::kCapsuleHeight);
         m_capsule.Brush(
-            NineGrid(2 * capH, capH, s, static_cast<float>(capH / 2), false, [&](ID2D1DeviceContext* dc) {
+            gfx::CompositionHost::Get().CreateNineGrid(2 * capH, capH, s, static_cast<float>(capH / 2), false, [&](ID2D1DeviceContext* dc) {
                 paint::TransportCapsule(dc, D2D1::SizeF(2 * capH / s, capH / s));
             }));
     }
@@ -2929,7 +2808,7 @@ aero::Colorization MainWindow::WindowColorization() const {
 void MainWindow::ApplyTint(bool fade) {
     const aero::Colorization c = WindowColorization();
     const int ms = fade ? 600 : 0;
-    if (m_glass) m_glass->SetColorization(c, ms);
+    if (m_frame) m_frame->Glass().SetColorization(c, ms);
     if (m_player) m_player->SetColorization(c, ms);
 }
 
@@ -6926,23 +6805,12 @@ void MainWindow::OnActivate(bool active) {
     m_active = active;
     if (!active) SetVolumeFlyout(false);
     if (!active) HideSearchPopup();
-    if (m_glass) m_glass->SetActive(active);
+    if (m_frame) m_frame->SetActive(active);
     if (m_pane) m_pane->SetActive(active);
     for (auto& w : m_widgets)
         if (IsCaptionWidget(w->Id())) w->SetInactive(!active);
     if (m_title) gfx::CompositionHost::Get().AnimateOpacity(m_title, active ? 1.0f : 0.85f, 200);
     m_shadow.SetActive(active);
-    PaintSideHighlights();
-}
-
-void MainWindow::PaintSideHighlights() {
-    const SIZE size = m_sideHighlightSize;
-    if (!m_aeroArt || size.cx <= 0 || size.cy <= 0 || !m_sideHighlight[0]) return;
-    auto& host = gfx::CompositionHost::Get();
-    const D2D1_SIZE_F dip{size.cx / m_scale, size.cy / m_scale};
-    for (auto& v : m_sideHighlight)
-        host.Repaint(v, size.cx, size.cy, m_scale,
-                     [&](ID2D1DeviceContext* dc) { aero::atlas::SideHighlight(dc, m_active, dip); });
 }
 
 // ---- Window procedure ----------------------------------------------------------------
@@ -7212,17 +7080,17 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
 
     case WM_MOVE:
         HideSearchPopup();
-        if (m_glass) m_glass->UpdateReflectionAnchor(hwnd);
+        if (m_frame) m_frame->Glass().UpdateReflectionAnchor(hwnd);
         return 0;
 
     case WM_WINDOWPOSCHANGING: {
         const auto* pos = reinterpret_cast<const WINDOWPOS*>(lp);
-        if (m_glass && !(pos->flags & SWP_NOMOVE) && !IsIconic(hwnd)) {
+        if (m_frame && !(pos->flags & SWP_NOMOVE) && !IsIconic(hwnd)) {
             RECT wr{};
             GetWindowRect(hwnd, &wr);
             const LONG w = (pos->flags & SWP_NOSIZE) ? wr.right - wr.left : pos->cx;
             const LONG h = (pos->flags & SWP_NOSIZE) ? wr.bottom - wr.top : pos->cy;
-            m_glass->UpdateReflectionAnchor(hwnd, RECT{pos->x, pos->y, pos->x + w, pos->y + h});
+            m_frame->Glass().UpdateReflectionAnchor(hwnd, RECT{pos->x, pos->y, pos->x + w, pos->y + h});
         }
         break;
     }
@@ -7257,7 +7125,7 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
     }
 
     case WM_SETTINGCHANGE:
-        if (m_glass) m_glass->RefreshTransparencyPolicy();
+        if (m_frame) m_frame->Glass().RefreshTransparencyPolicy();
         break;
 
     case WM_DEVICECHANGE:
@@ -7898,11 +7766,10 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
         lyrics::Service::Get().Cancel();
         m_source.reset();
         m_widgets.clear();
-        m_glass.reset();
         m_outputCallback.release();
         m_root = nullptr;
         m_windowRoot = nullptr;
-        m_target = nullptr;
+        m_frame.reset();
         return 0;
     }
     case WM_NCDESTROY:

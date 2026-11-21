@@ -1,6 +1,6 @@
 #pragma once
 
-#include "aero/glass_material.h"
+#include "aero/glass_window.h"
 #include "core/signal.h"
 #include "aero/shadow_frame.h"
 #include "gfx/frame_clock.h"
@@ -90,7 +90,7 @@ class PlayerWindow {
     void OnLyricLineSetting(); // the lyric line was hidden or shown
     void StartFrames(); // the lent pane or the sung line wants frames
     void SetColorization(const aero::Colorization& c, int fadeMs) {
-        if (m_glass) m_glass->SetColorization(c, fadeMs);
+        if (m_frame) m_frame->Glass().SetColorization(c, fadeMs);
     }
 
   private:
@@ -155,7 +155,6 @@ class PlayerWindow {
     bool TickSeek();            // a frame: moves the head a device pixel, the times a second
     float SeekHead(float progress) const; // the played part's front, DIP from the bar's left
     void PaintMenuShade();
-    void PaintSideHighlights();
     void PlaceWall();
     void PaintPaneCard();
     void MenuPressed(int index);
@@ -199,13 +198,12 @@ class PlayerWindow {
     bool m_ehres = false; // ehres.dll artwork (Media Center controls, bars, shades)
     bool m_aeroArt = false;
 
-    winrt::Windows::UI::Composition::Desktop::DesktopWindowTarget m_target{nullptr};
-    winrt::Windows::UI::Composition::ContainerVisual m_windowRoot{nullptr}, m_root{nullptr}, m_content{nullptr},
+    std::unique_ptr<aero::GlassWindow> m_frame;
+    winrt::Windows::UI::Composition::ContainerVisual m_root{nullptr}, m_content{nullptr},
         m_stage{nullptr}, m_paneHost{nullptr}, m_barLayer{nullptr}, m_capsLayer{nullptr}, m_frameLayer{nullptr},
         m_menuLayer{nullptr};
-    winrt::Windows::UI::Composition::CompositionRoundedRectangleGeometry m_clipGeometry{nullptr};
     winrt::Windows::UI::Composition::InsetClip m_contentClip{nullptr};
-    winrt::Windows::UI::Composition::SpriteVisual m_frameOutline{nullptr}, m_clientEdge{nullptr}, m_shade{nullptr},
+    winrt::Windows::UI::Composition::SpriteVisual m_clientEdge{nullptr}, m_shade{nullptr},
         m_cover{nullptr}, m_coverOld{nullptr}, m_info{nullptr}, m_barBack{nullptr}, m_topBack{nullptr},
         m_times{nullptr}, m_cluster{nullptr}, m_shadeOld{nullptr}, m_lyric{nullptr}, m_menuShade{nullptr},
         m_menuSweep{nullptr}, m_menuAfter{nullptr}, m_menuInk{nullptr}, m_seek{nullptr}, m_slider{nullptr},
@@ -246,10 +244,8 @@ class PlayerWindow {
     int m_menuInking = -1; // the menu item whose press draws its type
     uint64_t m_menuInkGeneration = 0;
     std::shared_ptr<int> m_alive = std::make_shared<int>(0); // for compositor callbacks
-    std::array<winrt::Windows::UI::Composition::SpriteVisual, 2> m_sideHighlight{nullptr, nullptr};
     std::array<winrt::Windows::UI::Composition::SpriteVisual, 2> m_coverFrame{nullptr, nullptr}; // on cover, old
 
-    SIZE m_sideHighlightSize{};
     winrt::Windows::UI::Composition::CompositionLinearGradientBrush m_menuInkMask{nullptr},
         m_menuInkMaskWhite{nullptr};
     std::array<winrt::Windows::UI::Composition::SpriteVisual, 4> m_menuGlow{nullptr, nullptr, nullptr, nullptr};
@@ -257,7 +253,6 @@ class PlayerWindow {
     winrt::Windows::UI::Composition::ContainerVisual m_menuSweepHost{nullptr}; // clipped to the plate
     winrt::Windows::UI::Composition::CompositionRoundedRectangleGeometry m_menuSweepShape{nullptr};
     winrt::Windows::UI::Composition::InsetClip m_menuFxClip{nullptr};
-    std::unique_ptr<aero::GlassMaterial> m_glass;
     aero::ShadowFrame m_shadow;
     std::unique_ptr<AlbumWall> m_wall;
     std::unique_ptr<WmcVolume> m_volumePanel, m_volumeBubble;

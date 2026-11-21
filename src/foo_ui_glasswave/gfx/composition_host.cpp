@@ -397,6 +397,20 @@ wuc::SpriteVisual CompositionHost::CreatePaintedVisual(int widthPx, int heightPx
     return visual;
 }
 
+wuc::CompositionNineGridBrush CompositionHost::CreateNineGrid(int widthPx, int heightPx, float scale, float insetPx,
+                                                             bool hollow,
+                                                             const std::function<void(ID2D1DeviceContext*)>& paint) {
+    auto surface = CreateSurface(widthPx, heightPx);
+    Draw(surface, scale, paint);
+    auto source = m_compositor.CreateSurfaceBrush(surface);
+    source.Stretch(wuc::CompositionStretch::Fill);
+    auto brush = m_compositor.CreateNineGridBrush();
+    brush.Source(source);
+    brush.SetInsets(insetPx);
+    brush.IsCenterHollow(hollow);
+    return brush;
+}
+
 void CompositionHost::Repaint(const wuc::SpriteVisual& visual, int widthPx, int heightPx, float scale,
                               const std::function<void(ID2D1DeviceContext*)>& paint) {
     auto surface = CreateSurface(widthPx, heightPx);

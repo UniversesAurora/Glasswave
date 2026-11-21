@@ -1,5 +1,5 @@
 #pragma once
-#include "aero/glass_material.h"
+#include "aero/glass_window.h"
 #include "aero/shadow_frame.h"
 #include "core/signal.h"
 #include "gfx/frame_clock.h"
@@ -334,7 +334,6 @@ class MainWindow : public PageHost, public PlayerHost {
     int m_splitMenu = 0;           // split button whose menu is open
     float m_newPlaylistSplit = 90; // DIP, width of Create playlist's main half
     void OnActivate(bool active);
-    void PaintSideHighlights();
     // Now playing details in the transport band: title and artist are links, a synced
     // lyric line under them; the time right of the controls; stream format and the
     // output device (a menu) right-aligned.
@@ -468,20 +467,14 @@ class MainWindow : public PageHost, public PlayerHost {
     std::unique_ptr<class Taskbar> m_taskbar;
 
     // Composition visual tree
-    winrt::Windows::UI::Composition::Desktop::DesktopWindowTarget m_target{nullptr};
-    winrt::Windows::UI::Composition::ContainerVisual m_windowRoot{nullptr}; // unclipped: root + frame outline
+    std::unique_ptr<aero::GlassWindow> m_frame;
+    winrt::Windows::UI::Composition::ContainerVisual m_windowRoot{nullptr}; // m_frame->Root()
     bool m_closing = false; // the closing animation runs; foobar2000 exits after it
     static bool WindowAnimations(); // Windows' animation effects are on
     void AnimateWindow(bool open);
-    winrt::Windows::UI::Composition::ContainerVisual m_root{nullptr};       // clipped to the rounded window
+    winrt::Windows::UI::Composition::ContainerVisual m_root{nullptr};       // m_frame->Clipped()
     winrt::Windows::UI::Composition::ContainerVisual m_contentLayer{nullptr};
-    winrt::Windows::UI::Composition::CompositionRoundedRectangleGeometry m_clipGeometry{nullptr};
-    std::unique_ptr<aero::GlassMaterial> m_glass;
     std::optional<uint32_t> m_windowCoverRgb; // the last cover's colour (tint following the cover)
-    winrt::Windows::UI::Composition::SpriteVisual m_frameOutline{nullptr};
-    std::array<winrt::Windows::UI::Composition::SpriteVisual, 2> m_sideHighlight{nullptr,
-                                                                                 nullptr}; // left, right
-    SIZE m_sideHighlightSize{};
     winrt::Windows::UI::Composition::SpriteVisual m_clientEdge{nullptr}, m_clientBackground{nullptr};
     winrt::Windows::UI::Composition::SpriteVisual m_navBar{nullptr};
     winrt::Windows::UI::Composition::SpriteVisual m_navGroove{nullptr}; // recess behind back / forward

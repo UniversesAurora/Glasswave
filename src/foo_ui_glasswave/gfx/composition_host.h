@@ -172,6 +172,10 @@ public:
                                           const std::function<void(ID2D1DeviceContext*)>& paint);
     void Repaint(const wuc::SpriteVisual& visual, int widthPx, int heightPx, float scale,
                  const std::function<void(ID2D1DeviceContext*)>& paint);
+    // A nine-grid brush over a freshly painted wPx x hPx surface whose edges are `insetPx`
+    // wide: frames and plates painted once, stretched to any size. `hollow`: no centre.
+    wuc::CompositionNineGridBrush CreateNineGrid(int widthPx, int heightPx, float scale, float insetPx, bool hollow,
+                                                 const std::function<void(ID2D1DeviceContext*)>& paint);
     // Repaint through caller-owned backing. Content-only updates redraw the existing surface;
     // a size change resizes or recreates it without changing the visual's identity.
     void Repaint(const wuc::SpriteVisual& visual, RetainedSurface& retained, int widthPx, int heightPx,

@@ -13,6 +13,7 @@
 #include "gfx/effects.h"
 #include "media/favorites.h"
 #include "ui/art_cache.h"
+#include "ui/caption_buttons.h"
 #include "ui/i18n.h"
 #include "ui/pane_common.h"
 #include "ui/text.h"
@@ -812,20 +813,6 @@ void Morph(const wuc::Visual& v, const RECT& from, float scale) {
     v.StartAnimation(L"Scale", grow);
 }
 
-wuc::CompositionNineGridBrush NineGrid(int wPx, int hPx, float scale, float insetPx,
-                                       const std::function<void(ID2D1DeviceContext*)>& painter) {
-    auto& host = gfx::CompositionHost::Get();
-    auto surface = host.CreateSurface(wPx, hPx);
-    host.Draw(surface, scale, painter);
-    auto source = host.Compositor().CreateSurfaceBrush(surface);
-    source.Stretch(wuc::CompositionStretch::Fill);
-    auto brush = host.Compositor().CreateNineGridBrush();
-    brush.Source(source);
-    brush.SetInsets(insetPx);
-    brush.IsCenterHollow(true);
-    return brush;
-}
-
 } // namespace
 
 PlayerWindow::PlayerWindow(PlayerHost& host) : m_host(host) {
@@ -841,7 +828,6 @@ void PlayerWindow::OnDeviceReplaced() {
     m_paneGlassScale = 0;
     m_frostScale = 0;
     if (!m_shown || !m_hwnd) return;
-    PaintSideHighlights();
     UpdateLayout(false);
     for (auto& w : m_widgets)
         w->Invalidate();
@@ -857,7 +843,7 @@ PlayerWindow::~PlayerWindow() {
     m_wall.reset();
     m_light.reset();
     m_veil.reset();
-    m_glass.reset();
+    m_frame.reset();
     if (m_hwnd) {
         SetWindowLongPtrW(m_hwnd, GWLP_USERDATA, 0);
         DestroyWindow(m_hwnd);
@@ -900,17 +886,6 @@ void PlayerWindow::Create() {
                     WS_POPUP | WS_CLIPCHILDREN, 0, 0, 100, 100, nullptr, nullptr, inst, this);
     if (!m_hwnd) throw exception_win32(GetLastError());
     m_scale = GetDpiForWindow(m_hwnd) / 96.0f;
-    // The same window attributes as the library window: our own Win7 frame and shadow.
-    BOOL enable = TRUE;
-    DwmSetWindowAttribute(m_hwnd, DWMWA_USE_HOSTBACKDROPBRUSH, &enable, sizeof(enable));
-    DWM_WINDOW_CORNER_PREFERENCE corner = DWMWCP_DONOTROUND;
-    DwmSetWindowAttribute(m_hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, &corner, sizeof(corner));
-    COLORREF border = DWMWA_COLOR_NONE;
-    DwmSetWindowAttribute(m_hwnd, DWMWA_BORDER_COLOR, &border, sizeof(border));
-    DWM_SYSTEMBACKDROP_TYPE backdrop = DWMSBT_NONE;
-    DwmSetWindowAttribute(m_hwnd, DWMWA_SYSTEMBACKDROP_TYPE, &backdrop, sizeof(backdrop));
-    DWMNCRENDERINGPOLICY ncrp = DWMNCRP_DISABLED;
-    DwmSetWindowAttribute(m_hwnd, DWMWA_NCRENDERING_POLICY, &ncrp, sizeof(ncrp));
 
     m_wmp = m_host.OriginalTransportArt();
     m_ehres = win7::Resources::Get().Has(kEhres, L"TWOFOOT.CONTROL.PLAY.NOFOCUS.PNG");
@@ -927,31 +902,9 @@ void PlayerWindow::Create() {
 void PlayerWindow::InitVisuals() {
     auto& host = gfx::CompositionHost::Get();
     const auto& comp = host.Compositor();
-    auto interop = comp.as<ABI::Windows::UI::Composition::Desktop::ICompositorDesktopInterop>();
-    winrt::check_hresult(interop->CreateDesktopWindowTarget(
-        m_hwnd, FALSE,
-        reinterpret_cast<ABI::Windows::UI::Composition::Desktop::IDesktopWindowTarget**>(
-            winrt::put_abi(m_target))));
-    // As in the library window: the frame outline lies above the rounded clip, not inside it.
-    m_windowRoot = comp.CreateContainerVisual();
-    m_windowRoot.RelativeSizeAdjustment(float2{1, 1});
-    m_target.Root(m_windowRoot);
-    m_root = comp.CreateContainerVisual();
-    m_root.RelativeSizeAdjustment(float2{1, 1});
-    m_windowRoot.Children().InsertAtTop(m_root);
-    m_clipGeometry = comp.CreateRoundedRectangleGeometry();
-    m_root.Clip(comp.CreateGeometricClip(m_clipGeometry));
-    m_frameOutline = comp.CreateSpriteVisual();
-    m_frameOutline.RelativeSizeAdjustment(float2{1, 1});
-    m_windowRoot.Children().InsertAtTop(m_frameOutline);
-
-    m_glass = std::make_unique<aero::GlassMaterial>(m_host.PlayerColorization(), m_aeroArt);
-    m_root.Children().InsertAtTop(m_glass->Root());
-    // DWM's highlights down the upper left and right frame, as on the library window.
-    for (auto& v : m_sideHighlight) {
-        v = comp.CreateSpriteVisual();
-        m_root.Children().InsertAtTop(v);
-    }
+    // The library window's Win7 frame: the same window attributes, glass and outline.
+    m_frame = std::make_unique<aero::GlassWindow>(m_hwnd, m_host.PlayerColorization(), m_aeroArt);
+    m_root = m_frame->Clipped();
 
     // Everything inside the frame, clipped to the client area.
     m_content = comp.CreateContainerVisual();
@@ -1442,43 +1395,14 @@ void PlayerWindow::CreateWidgets() {
         ->onClick = [this] { ApplyModes(media::transport::RepeatPressed({m_shuffle, m_repeat})); };
 
     // The mini window's Win7 caption buttons (the library window's, same artwork).
-    const bool dwmArt = m_aeroArt;
-    auto captionOptions = [&](bool close) {
-        Widget::Options o;
-        o.inactiveLayer = true;
-        if (dwmArt) {
-            o.glow = [close](ID2D1DeviceContext* dc, D2D1_SIZE_F s) { aero::atlas::CaptionGlow(dc, s, close); };
-            o.glowOutset = aero::atlas::GlowOutset(close);
-            o.glowOutsetInPixels = true;
-        }
-        return o;
-    };
-    add(kCapMin, m_frameLayer,
-        [dwmArt](auto* dc, D2D1_SIZE_F s, Layer l) {
-            if (dwmArt)
-                aero::atlas::CaptionButton(dc, s, aero::atlas::Button::Minimize, paint::CaptionGlyph::Minimize, l);
-            else
-                paint::CaptionButton(dc, s, paint::CaptionGlyph::Minimize, l, true, false);
-        },
-        captionOptions(false))
+    add(kCapMin, m_frameLayer, CaptionPainter(CaptionButton::Minimize, m_aeroArt),
+        CaptionOptions(CaptionButton::Minimize, m_aeroArt))
         ->onClick = [this] { ShowWindow(m_hwnd, SW_MINIMIZE); };
-    add(kCapMax, m_frameLayer,
-        [dwmArt](auto* dc, D2D1_SIZE_F s, Layer l) {
-            if (dwmArt)
-                aero::atlas::CaptionButton(dc, s, aero::atlas::Button::Maximize, paint::CaptionGlyph::Maximize, l);
-            else
-                paint::CaptionButton(dc, s, paint::CaptionGlyph::Maximize, l, false, false);
-        },
-        captionOptions(false))
+    add(kCapMax, m_frameLayer, CaptionPainter(CaptionButton::Maximize, m_aeroArt),
+        CaptionOptions(CaptionButton::Maximize, m_aeroArt))
         ->onClick = [this] { Show(Mode::Full); }; // maximizing the player is the full screen
-    add(kCapClose, m_frameLayer,
-        [dwmArt](auto* dc, D2D1_SIZE_F s, Layer l) {
-            if (dwmArt)
-                aero::atlas::CaptionButton(dc, s, aero::atlas::Button::Close, paint::CaptionGlyph::Close, l);
-            else
-                paint::CaptionButton(dc, s, paint::CaptionGlyph::Close, l, false, true);
-        },
-        captionOptions(true))
+    add(kCapClose, m_frameLayer, CaptionPainter(CaptionButton::Close, m_aeroArt),
+        CaptionOptions(CaptionButton::Close, m_aeroArt))
         ->onClick = [this] { Close(); };
 }
 
@@ -1842,8 +1766,7 @@ void PlayerWindow::ApplyMode(bool first) {
     }
     const bool mini = m_mode == Mode::Mini;
     m_shadow.SetSuppressed(!mini); // its corners showed as rounded lines round the screen
-    m_glass->Root().IsVisible(mini);
-    m_frameOutline.IsVisible(mini);
+    m_frame->Glass().Root().IsVisible(mini); // the outline follows in UpdateLayout
     m_clientEdge.IsVisible(mini);
     m_frameLayer.IsVisible(mini);
     if (!mini) {
@@ -1897,7 +1820,7 @@ void PlayerWindow::ApplyMode(bool first) {
     ShowChrome(true);
     UpdateLayout(false);
     for (auto& w : m_widgets) w->Invalidate(); // the two forms draw different artwork
-    m_glass->UpdateReflectionAnchor(m_hwnd);
+    m_frame->Glass().UpdateReflectionAnchor(m_hwnd);
     m_shadow.Sync();
     ArmHideTimer();
 }
@@ -2637,32 +2560,13 @@ void PlayerWindow::UpdateLayout(bool animate) {
     m_layout = L;
 
     // Apply.
-    const float radius = full ? 0.0f : Px(m::kCornerRadius);
-    m_clipGeometry.Size(float2{static_cast<float>(W), static_cast<float>(H)});
-    m_clipGeometry.CornerRadius(float2{radius, radius});
+    if (!full && m_framePainted != m_scale) PaintFrame(); // before the frame's layout, which uses its scale
+    m_frame->Layout({W, H}, L.clientEdge.left, !full);
     m_contentClip.LeftInset(static_cast<float>(C.left));
     m_contentClip.TopInset(static_cast<float>(C.top));
     m_contentClip.RightInset(static_cast<float>(W - C.right));
     m_contentClip.BottomInset(static_cast<float>(H - C.bottom));
-    if (!full) {
-        Place(m_clientEdge, L.clientEdge);
-        if (m_framePainted != m_scale) PaintFrame();
-    }
-    // DWM's side highlights, as on the library window: down the left and right frame from the
-    // top, ending sharply at H / 4 + 20 DIP.
-    {
-        const bool show = m_aeroArt && !full && L.clientEdge.left > 0;
-        const SIZE size{L.clientEdge.left, H / 4 + PxI(20)};
-        for (auto& v : m_sideHighlight) v.IsVisible(show);
-        if (show) {
-            Place(m_sideHighlight[0], {0, 0, size.cx, size.cy});
-            Place(m_sideHighlight[1], {W - size.cx, 0, W, size.cy});
-            if (size.cx != m_sideHighlightSize.cx || size.cy != m_sideHighlightSize.cy) {
-                m_sideHighlightSize = size;
-                PaintSideHighlights();
-            }
-        }
-    }
+    if (!full) Place(m_clientEdge, L.clientEdge);
     if (m_pane) m_pane->SetEmbedded(true, full); // full screen shows cover, title and modes itself
     PlaceWall();
     m_light->SetSize({W, H});
@@ -2818,17 +2722,11 @@ void PlayerWindow::UpdateLayout(bool animate) {
 void PlayerWindow::PaintFrame() {
     m_framePainted = m_scale;
     const float s = m_scale;
-    m_glass->SetScale(s);
-    const int frameSrc = PxI(32);
-    m_frameOutline.Brush(NineGrid(frameSrc, frameSrc, s, static_cast<float>(PxI(m::kCornerRadius + 2)),
-                                  [&](ID2D1DeviceContext* dc) {
-                                      paint::FrameOutline(dc, D2D1::SizeF(frameSrc / s, frameSrc / s),
-                                                          m::kCornerRadius);
-                                  }));
+    m_frame->SetScale(s);
     const int edgeSrc = PxI(16);
-    m_clientEdge.Brush(NineGrid(edgeSrc, edgeSrc, s, 3.0f, [&](ID2D1DeviceContext* dc) {
-        paint::ClientEdge(dc, D2D1::SizeF(edgeSrc / s, edgeSrc / s));
-    }));
+    m_clientEdge.Brush(gfx::CompositionHost::Get().CreateNineGrid(
+        edgeSrc, edgeSrc, s, 3.0f, true,
+        [&](ID2D1DeviceContext* dc) { paint::ClientEdge(dc, D2D1::SizeF(edgeSrc / s, edgeSrc / s)); }));
 }
 
 // Full screen the lyrics / queue lie on a pane of Media Center's overlay glass, built like its
@@ -2906,16 +2804,6 @@ void PlayerWindow::PlaceWall() {
     GetMonitorInfoW(MonitorFromWindow(m_hwnd, MONITOR_DEFAULTTONEAREST), &mi);
     m_wall->SetGeometry(m_client, {mi.rcMonitor.right - mi.rcMonitor.left, mi.rcMonitor.bottom - mi.rcMonitor.top},
                         m_scale);
-}
-
-void PlayerWindow::PaintSideHighlights() {
-    const SIZE size = m_sideHighlightSize;
-    if (!m_aeroArt || size.cx <= 0 || size.cy <= 0 || !m_sideHighlight[0]) return;
-    auto& host = gfx::CompositionHost::Get();
-    const D2D1_SIZE_F dip{size.cx / m_scale, size.cy / m_scale};
-    for (auto& v : m_sideHighlight)
-        host.Repaint(v, size.cx, size.cy, m_scale,
-                     [&](ID2D1DeviceContext* dc) { aero::atlas::SideHighlight(dc, m_active, dip); });
 }
 
 // The blue that WMC lays over the tiles behind its text, painted small and stretched. With
@@ -3786,11 +3674,10 @@ LRESULT PlayerWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
         const bool active = wp != FALSE;
         if (active != m_active) {
             m_active = active;
-            if (m_glass) m_glass->SetActive(active);
+            if (m_frame) m_frame->SetActive(active);
             for (auto& w : m_widgets)
                 if (w->Id() >= kCapMin && w->Id() <= kCapClose) w->SetInactive(!active); // caption only
             m_shadow.SetActive(active);
-            PaintSideHighlights();
         }
         return DefWindowProcW(hwnd, msg, wp, -1); // -1: do not repaint the (non-existent) frame
     }
@@ -3874,17 +3761,17 @@ LRESULT PlayerWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
 
     case WM_MOVE:
-        if (m_glass && m_mode == Mode::Mini) m_glass->UpdateReflectionAnchor(hwnd);
+        if (m_frame && m_mode == Mode::Mini) m_frame->Glass().UpdateReflectionAnchor(hwnd);
         return 0;
 
     case WM_WINDOWPOSCHANGING: {
         const auto* pos = reinterpret_cast<const WINDOWPOS*>(lp);
-        if (m_glass && m_mode == Mode::Mini && !(pos->flags & SWP_NOMOVE) && !IsIconic(hwnd)) {
+        if (m_frame && m_mode == Mode::Mini && !(pos->flags & SWP_NOMOVE) && !IsIconic(hwnd)) {
             RECT wr{};
             GetWindowRect(hwnd, &wr);
             const LONG w = (pos->flags & SWP_NOSIZE) ? wr.right - wr.left : pos->cx;
             const LONG h = (pos->flags & SWP_NOSIZE) ? wr.bottom - wr.top : pos->cy;
-            m_glass->UpdateReflectionAnchor(hwnd, RECT{pos->x, pos->y, pos->x + w, pos->y + h});
+            m_frame->Glass().UpdateReflectionAnchor(hwnd, RECT{pos->x, pos->y, pos->x + w, pos->y + h});
         }
         break;
     }

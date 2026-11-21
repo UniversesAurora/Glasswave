@@ -196,6 +196,7 @@
     <ClCompile Include="ui\player_window.cpp" />
     <ClCompile Include="gfx\color_matrix_effect.cpp" />
     <ClCompile Include="aero\glass_material.cpp" />
+    <ClCompile Include="aero\glass_window.cpp" />
     <ClCompile Include="aero\aero_painter.cpp" />
     <ClCompile Include="aero\shadow_frame.cpp" />
     <ClCompile Include="ui\widget.cpp" />
@@ -238,6 +239,7 @@
     <ClCompile Include="download\aria2.cpp" />
     <ClCompile Include="ui\downloads_page.cpp" />
     <ClCompile Include="ui\breadcrumb.cpp" />
+    <ClCompile Include="ui\caption_buttons.cpp" />
     <ClCompile Include="ui\card_layer.cpp" />
     <ClCompile Include="ui\home_page.cpp" />
     <ClCompile Include="ui\home_store.cpp" />
@@ -317,6 +319,7 @@
     <ClInclude Include="aero\aero_colorization.h" />
     <ClInclude Include="aero\aero_metrics.h" />
     <ClInclude Include="aero\glass_material.h" />
+    <ClInclude Include="aero\glass_window.h" />
     <ClInclude Include="aero\aero_painter.h" />
     <ClInclude Include="aero\shadow_frame.h" />
     <ClInclude Include="ui\widget.h" />
@@ -384,6 +387,7 @@
     <ClInclude Include="download\aria2.h" />
     <ClInclude Include="ui\downloads_page.h" />
     <ClInclude Include="ui\breadcrumb.h" />
+    <ClInclude Include="ui\caption_buttons.h" />
     <ClInclude Include="ui\card_layer.h" />
     <ClInclude Include="ui\home_page.h" />
     <ClInclude Include="ui\home_store.h" />
