@@ -1,12 +1,13 @@
 #include "pch.h"
 #include "core/hex.h"
+#include "core/json.h"
+#include "core/text.h"
 #include "core/signal.h"
 
 #include "media/playback_scheduler.h"
 #include "media/special_playlists.h"
 
 #include <chrono>
-#include <charconv>
 #include <functional>
 #include <limits>
 #include <unordered_map>
@@ -29,6 +30,9 @@ bool g_schedulerStopped = false;
 bool g_schedulerStarting = false;
 bool g_probeEnabled = false;
 std::optional<std::size_t> g_probeCurrentIndex;
+
+// The checkpoint's format; a checkpoint of another version is dropped.
+constexpr int kCheckpointVersion = 3;
 
 std::uint64_t NextSeed() {
     static std::uint64_t counter = 0;
@@ -169,58 +173,58 @@ std::string QueueFingerprint(const metadb_handle_list& items) {
     return core::HexLower(count) + core::HexLower(bytes);
 }
 
-std::optional<std::string> JsonString(std::string_view json, std::string_view key) {
-    const std::string needle = "\"" + std::string(key) + "\":\"";
-    const auto begin = json.find(needle);
-    if (begin == std::string_view::npos) return std::nullopt;
-    const auto content = begin + needle.size();
-    const auto end = json.find('"', content);
-    if (end == std::string_view::npos) return std::nullopt;
-    return std::string(json.substr(content, end - content));
-}
+// The checkpoint's fields (core::json). A field that is missing or of another type reads as
+// nothing, so a checkpoint of another shape is dropped instead of half applied.
+namespace checkpoint_json {
 
-std::optional<int> JsonInt(std::string_view json, std::string_view key) {
-    const std::string needle = "\"" + std::string(key) + "\":";
-    const auto begin = json.find(needle);
-    if (begin == std::string_view::npos) return std::nullopt;
-    const auto content = begin + needle.size();
-    int value = 0;
-    const auto parsed = std::from_chars(json.data() + content, json.data() + json.size(), value);
-    if (parsed.ec != std::errc()) return std::nullopt;
+namespace wdj = winrt::Windows::Data::Json;
+
+std::optional<wdj::IJsonValue> Field(const core::json::Object& o, const wchar_t* key, wdj::JsonValueType type) {
+    if (!o.HasKey(key)) return std::nullopt;
+    auto value = o.GetNamedValue(key);
+    if (value.ValueType() != type) return std::nullopt;
     return value;
 }
 
-std::optional<bool> JsonBool(std::string_view json, std::string_view key) {
-    const std::string needle = "\"" + std::string(key) + "\":";
-    const auto begin = json.find(needle);
-    if (begin == std::string_view::npos) return std::nullopt;
-    const auto content = begin + needle.size();
-    if (json.substr(content, 4) == "true") return true;
-    if (json.substr(content, 5) == "false") return false;
-    return std::nullopt;
+std::optional<std::int64_t> Integer(const core::json::Object& o, const wchar_t* key) {
+    const auto value = Field(o, key, wdj::JsonValueType::Number);
+    if (!value) return std::nullopt;
+    const double number = value->GetNumber();
+    if (number != std::floor(number) || std::abs(number) > 9007199254740992.0) return std::nullopt;
+    return static_cast<std::int64_t>(number);
 }
 
-std::optional<std::vector<std::size_t>> JsonArray(std::string_view json, std::string_view key) {
-    const std::string needle = "\"" + std::string(key) + "\":[";
-    const auto begin = json.find(needle);
-    if (begin == std::string_view::npos) return std::nullopt;
-    const auto content = begin + needle.size();
-    const auto end = json.find(']', content);
-    if (end == std::string_view::npos) return std::nullopt;
-    std::vector<std::size_t> values;
-    std::size_t at = content;
-    while (at < end) {
-        while (at < end && (json[at] == ',' || json[at] == ' '))
-            ++at;
-        if (at == end) break;
-        std::size_t value = 0;
-        const auto parsed = std::from_chars(json.data() + at, json.data() + end, value);
-        if (parsed.ec != std::errc()) return std::nullopt;
-        values.push_back(value);
-        at = static_cast<std::size_t>(parsed.ptr - json.data());
-    }
-    return values;
+std::optional<bool> Boolean(const core::json::Object& o, const wchar_t* key) {
+    const auto value = Field(o, key, wdj::JsonValueType::Boolean);
+    return value ? std::optional<bool>(value->GetBoolean()) : std::nullopt;
 }
+
+std::optional<std::string> Text(const core::json::Object& o, const wchar_t* key) {
+    const auto value = Field(o, key, wdj::JsonValueType::String);
+    return value ? std::optional<std::string>(core::Utf8(std::wstring(value->GetString()))) : std::nullopt;
+}
+
+// An array of row indices (whole numbers from 0).
+std::optional<std::vector<std::size_t>> Indices(const core::json::Object& o, const wchar_t* key) {
+    const auto value = Field(o, key, wdj::JsonValueType::Array);
+    if (!value) return std::nullopt;
+    std::vector<std::size_t> out;
+    for (const auto& item : value->GetArray()) {
+        if (item.ValueType() != wdj::JsonValueType::Number) return std::nullopt;
+        const double number = item.GetNumber();
+        if (number < 0 || number != std::floor(number) || number > 9007199254740992.0) return std::nullopt;
+        out.push_back(static_cast<std::size_t>(number));
+    }
+    return out;
+}
+
+wdj::JsonArray IndexArray(const std::vector<std::size_t>& values) {
+    wdj::JsonArray array;
+    for (const auto value : values) array.Append(wdj::JsonValue::CreateNumberValue(static_cast<double>(value)));
+    return array;
+}
+
+} // namespace checkpoint_json
 
 // foobar2000's playback queue as it is now.
 std::vector<t_playback_queue_item> CoreQueueSnapshot() {
@@ -1718,29 +1722,22 @@ void PlaybackScheduler::Impl::SaveCheckpoint(bool force) {
     }
     if (state.current && !physicalIndexOf(*state.current, currentIndex)) return;
 
-    const auto appendArray = [](std::ostringstream& json, const char* name,
-                                const std::vector<std::size_t>& values) {
-        json << ",\"" << name << "\":[";
-        for (std::size_t i = 0; i < values.size(); ++i) {
-            if (i) json << ',';
-            json << values[i];
-        }
-        json << ']';
-    };
-
-    std::ostringstream json;
-    json << "{\"version\":3,\"shuffle\":" << (state.shuffle ? "true" : "false")
-         << ",\"repeat\":" << static_cast<int>(state.repeat) << ",\"fingerprint\":\"" << fingerprint
-         << "\",\"current\":" << (currentIndex ? static_cast<std::int64_t>(*currentIndex) : -1);
-    appendArray(json, "canonical", canonical);
-    appendArray(json, "projection", projection);
-    appendArray(json, "history", history);
-    appendArray(json, "future", future);
-    appendArray(json, "priority", priority);
-    appendArray(json, "prioritySizes", prioritySizes);
-    appendArray(json, "pending", pending);
-    json << '}';
-    auto text = json.str();
+    using namespace checkpoint_json;
+    core::json::Object json;
+    json.SetNamedValue(L"version", wdj::JsonValue::CreateNumberValue(kCheckpointVersion));
+    json.SetNamedValue(L"shuffle", wdj::JsonValue::CreateBooleanValue(state.shuffle));
+    json.SetNamedValue(L"repeat", wdj::JsonValue::CreateNumberValue(static_cast<int>(state.repeat)));
+    json.SetNamedValue(L"fingerprint", wdj::JsonValue::CreateStringValue(core::Wide(fingerprint)));
+    json.SetNamedValue(L"current", wdj::JsonValue::CreateNumberValue(
+                                       currentIndex ? static_cast<double>(*currentIndex) : -1.0));
+    json.SetNamedValue(L"canonical", IndexArray(canonical));
+    json.SetNamedValue(L"projection", IndexArray(projection));
+    json.SetNamedValue(L"history", IndexArray(history));
+    json.SetNamedValue(L"future", IndexArray(future));
+    json.SetNamedValue(L"priority", IndexArray(priority));
+    json.SetNamedValue(L"prioritySizes", IndexArray(prioritySizes));
+    json.SetNamedValue(L"pending", IndexArray(pending));
+    auto text = core::Utf8(core::json::Stringify(json));
     if (text != savedCheckpoint) cfg_checkpoint = text.c_str();
     savedFingerprint = fingerprint;
     savedState = state;
@@ -1750,46 +1747,48 @@ void PlaybackScheduler::Impl::SaveCheckpoint(bool force) {
 }
 
 bool PlaybackScheduler::Impl::LoadCheckpoint(const metadb_handle_list& items) {
-    const std::string json(cfg_checkpoint.get().c_str());
-    if (json.empty()) return false;
-    const auto version = JsonInt(json, "version");
-    const auto shuffle = JsonBool(json, "shuffle");
-    const auto repeat = JsonInt(json, "repeat");
-    const auto fingerprint = JsonString(json, "fingerprint");
-    const auto currentIndex = JsonInt(json, "current");
-    const auto canonical = JsonArray(json, "canonical");
-    const auto projection = JsonArray(json, "projection");
-    const auto history = JsonArray(json, "history");
-    const auto future = JsonArray(json, "future");
-    const auto priority = JsonArray(json, "priority");
-    const auto prioritySizes = JsonArray(json, "prioritySizes");
-    const auto pending = JsonArray(json, "pending");
-    if (!version || *version != 3 || !shuffle || !repeat || !IsValidRepeat(*repeat) || !fingerprint ||
-        !currentIndex || !canonical || !projection || !history || !future || !priority || !prioritySizes ||
-        !pending || *fingerprint != QueueFingerprint(items) || canonical->size() != items.get_count() ||
-        projection->size() != items.get_count()) {
+    const std::string text(cfg_checkpoint.get().c_str());
+    if (text.empty()) return false;
+    // A checkpoint that does not fit the queue as it is now is dropped.
+    const auto reject = [this] {
         cfg_checkpoint = "";
         checkpointValid = false;
         checkpointDirty = false;
         return false;
+    };
+    using namespace checkpoint_json;
+    const auto parsed = core::json::Parse(text);
+    if (!parsed) return reject();
+    const auto& json = *parsed;
+    const auto version = Integer(json, L"version");
+    const auto shuffle = Boolean(json, L"shuffle");
+    const auto repeat = Integer(json, L"repeat");
+    const auto fingerprint = Text(json, L"fingerprint");
+    const auto currentIndex = Integer(json, L"current");
+    const auto canonical = Indices(json, L"canonical");
+    const auto projection = Indices(json, L"projection");
+    const auto history = Indices(json, L"history");
+    const auto future = Indices(json, L"future");
+    const auto priority = Indices(json, L"priority");
+    const auto prioritySizes = Indices(json, L"prioritySizes");
+    const auto pending = Indices(json, L"pending");
+    if (!version || *version != kCheckpointVersion || !shuffle || !repeat || !IsValidRepeat(static_cast<int>(*repeat)) || !fingerprint ||
+        !currentIndex || !canonical || !projection || !history || !future || !priority || !prioritySizes ||
+        !pending || *fingerprint != QueueFingerprint(items) || canonical->size() != items.get_count() ||
+        projection->size() != items.get_count()) {
+        return reject();
     }
     std::vector<bool> seen(canonical->size(), false);
     for (const auto index : *canonical) {
         if (index >= seen.size() || seen[index]) {
-            cfg_checkpoint = "";
-            checkpointValid = false;
-            checkpointDirty = false;
-            return false;
+            return reject();
         }
         seen[index] = true;
     }
     std::fill(seen.begin(), seen.end(), false);
     for (const auto index : *projection) {
         if (index >= seen.size() || seen[index]) {
-            cfg_checkpoint = "";
-            checkpointValid = false;
-            checkpointDirty = false;
-            return false;
+            return reject();
         }
         seen[index] = true;
     }
@@ -1818,58 +1817,40 @@ bool PlaybackScheduler::Impl::LoadCheckpoint(const metadb_handle_list& items) {
     state.repeat = static_cast<PlaybackRepeatMode>(*repeat);
     if (!idsOf(*projection, state.projectionOrder) || !idsOf(*history, state.history) ||
         !idsOf(*future, state.ordinaryFuture) || !idsOf(*pending, state.pendingCycle)) {
-        cfg_checkpoint = "";
-        checkpointValid = false;
-        checkpointDirty = false;
-        return false;
+        return reject();
     }
     if (*currentIndex >= 0) {
         if (static_cast<std::size_t>(*currentIndex) >= physicalOccurrences.size()) {
-            cfg_checkpoint = "";
-            checkpointValid = false;
-            checkpointDirty = false;
-            return false;
+            return reject();
         }
         state.current = physicalOccurrences[static_cast<std::size_t>(*currentIndex)];
     } else if (*currentIndex < -1) {
-        cfg_checkpoint = "";
-        checkpointValid = false;
-        checkpointDirty = false;
-        return false;
+        return reject();
     }
 
     std::size_t priorityAt = 0;
     for (const auto size : *prioritySizes) {
         if (priorityAt + size > priority->size()) {
-            cfg_checkpoint = "";
-            checkpointValid = false;
-            checkpointDirty = false;
-            return false;
+            return reject();
         }
         std::vector<PlaybackOccurrenceId> block;
         std::vector<std::size_t> blockIndices(priority->begin() + static_cast<std::ptrdiff_t>(priorityAt),
                                               priority->begin() +
                                                   static_cast<std::ptrdiff_t>(priorityAt + size));
         if (!idsOf(blockIndices, block)) {
-            cfg_checkpoint = "";
-            checkpointValid = false;
-            checkpointDirty = false;
-            return false;
+            return reject();
         }
         state.priorityBlocks.push_back(std::move(block));
         priorityAt += size;
     }
     if (priorityAt != priority->size() || !schedule.RestoreSnapshot(state, NextSeed())) {
-        cfg_checkpoint = "";
-        checkpointValid = false;
-        checkpointDirty = false;
-        return false;
+        return reject();
     }
     cfg_shuffle = state.shuffle ? 1 : 0;
     cfg_repeat = static_cast<int>(state.repeat);
     savedState = std::move(state);
     savedFingerprint = *fingerprint;
-    savedCheckpoint = json;
+    savedCheckpoint = text;
     checkpointValid = true;
     checkpointDirty = false;
     return true;
@@ -1983,11 +1964,13 @@ std::uint64_t PlaybackSchedulerProbeAccess::ContentGeneration() {
 
 bool PlaybackSchedulerProbeAccess::CheckpointUsesCurrentSchema() {
     PFC_ASSERT(core_api::is_main_thread());
-    const std::string json(cfg_checkpoint.get().c_str());
-    const auto version = JsonInt(json, "version");
-    return version && *version == 3 && JsonArray(json, "canonical") && JsonArray(json, "projection") &&
-           JsonArray(json, "history") && JsonArray(json, "future") && JsonArray(json, "priority") &&
-           JsonArray(json, "prioritySizes") && JsonArray(json, "pending");
+    using namespace checkpoint_json;
+    const auto json = core::json::Parse(std::string(cfg_checkpoint.get().c_str()));
+    if (!json) return false;
+    const auto version = Integer(*json, L"version");
+    return version && *version == kCheckpointVersion && Indices(*json, L"canonical") &&
+           Indices(*json, L"projection") && Indices(*json, L"history") && Indices(*json, L"future") &&
+           Indices(*json, L"priority") && Indices(*json, L"prioritySizes") && Indices(*json, L"pending");
 }
 
 bool PlaybackSchedulerProbeAccess::AdvanceOccurrence(PlaybackOccurrenceId occurrence, bool from_history) {
