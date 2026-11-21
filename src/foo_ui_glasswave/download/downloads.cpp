@@ -549,7 +549,6 @@ void Run(uint64_t id, stream::Provider& provider, abort_callback& abort) {
     stream::DownloadSource source = provider.ResolveDownload(track, abort);
 
     std::wstring path;
-    bool replace = false;
     {
         std::lock_guard lock(g_mutex);
         Entry* e = Find(id);
@@ -565,7 +564,6 @@ void Run(uint64_t id, stream::Provider& provider, abort_callback& abort) {
             e->item.path = chosen.wstring();
         }
         path = e->item.path;
-        replace = e->replace;
     }
     Changed(true);
 
@@ -577,7 +575,10 @@ void Run(uint64_t id, stream::Provider& provider, abort_callback& abort) {
         throw pfc::exception(Utf8(why.empty() ? std::wstring(L"The download engine cannot run.") : why).c_str());
     FetchAria2(id, source, part, abort);
     const uint64_t received = FileSize(part);
-    if (!MoveFileExW(part.c_str(), path.c_str(), replace ? MOVEFILE_REPLACE_EXISTING : 0))
+    // Always replacing: UniquePath chose a name that was free, so a file already there is this
+    // item's own from an earlier run whose tagging was interrupted (a pause, quitting), and
+    // refusing it made every retry fail with this message.
+    if (!MoveFileExW(part.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING))
         throw pfc::exception("Cannot rename the downloaded file.");
     try {
         WriteTags(path, source.tags, abort);
@@ -616,7 +617,9 @@ void Worker() {
                     running += e.item.state == State::Running;
                 if (running >= SongsAtOnce()) return false;
                 for (auto& e : g_entries)
-                    if (e.item.state == State::Waiting) {
+                    // Not while its previous worker is still unwinding from a pause (abort is
+                    // reset when it is done): a second worker would run the item twice on one .part.
+                    if (e.item.state == State::Waiting && !e.abort) {
                         next = &e;
                         return true;
                     }
