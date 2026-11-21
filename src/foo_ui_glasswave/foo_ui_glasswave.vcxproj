@@ -148,7 +148,9 @@
     <ClCompile Include="stream\art_extractor.cpp" />
     <ClCompile Include="stream\atmos_renderer.cpp" />
     <ClCompile Include="stream\encoded_input.cpp" />
-    <ClCompile Include="applemusic\login.cpp" />
+    <ClCompile Include="applemusic\login.cpp">
+      <ObjectFileName>$(IntDir)applemusic_login.obj</ObjectFileName>
+    </ClCompile>
     <ClCompile Include="applemusic\probe.cpp" />
     <ClCompile Include="applemusic\library_probe.cpp" />
     <ClCompile Include="applemusic\provider_probe.cpp" />
@@ -200,7 +202,9 @@
     <ClCompile Include="ui\text.cpp" />
     <ClCompile Include="ui\list_view.cpp" />
     <ClCompile Include="ui\nav_pane.cpp" />
-    <ClCompile Include="netease\login.cpp" />
+    <ClCompile Include="netease\login.cpp">
+      <ObjectFileName>$(IntDir)netease_login.obj</ObjectFileName>
+    </ClCompile>
     <ClCompile Include="ui\text_prompt.cpp" />
     <ClCompile Include="ui\song_table.cpp" />
     <ClCompile Include="ui\remote_grids.cpp" />
