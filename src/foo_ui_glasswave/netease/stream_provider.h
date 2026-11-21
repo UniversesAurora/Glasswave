@@ -26,6 +26,7 @@ class StreamProvider final : public stream::Provider {
     stream::Capabilities Offers() const override;
     std::vector<stream::ListKind> CatalogSearchKinds() const override;
     std::vector<settings::Field> SettingFields() override;
+    std::wstring_view TextContext() const override { return L"NetEase Cloud Music"; }
     std::string PlaybackSettings() const override;
 
     bool SignedIn() const override;

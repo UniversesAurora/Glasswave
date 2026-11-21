@@ -3851,7 +3851,7 @@ std::vector<MenuAction> MainWindow::ProviderSectionsMenu(stream::Provider& provi
     for (const auto& section : provider.Sections())
         if (!section.id.empty()) out.push_back({Tr(section.label), go(SectionView(provider, section))});
     if (provider.Can(stream::Capability::CatalogSearch))
-        out.push_back({Tr(L"Search " + provider.Name()), [this, key = std::wstring(provider.Key())] {
+        out.push_back({provider.NamedText(L"Search {0}"), [this, key = std::wstring(provider.Key())] {
                            BeginSearch({SearchScope::Kind::Provider, key});
                        }});
     return out;
@@ -5522,7 +5522,7 @@ void MainWindow::ShowRemoteNavMenu(const NavPane::Item& item, POINT screen) {
         return;
     default:
         if (item.target == NavPane::Target::LibraryRemote && provider.Can(stream::Capability::CatalogSearch))
-            actions.push_back({Tr(L"Search " + provider.Name()), [this, key = std::wstring(provider.Key())] {
+            actions.push_back({provider.NamedText(L"Search {0}"), [this, key = std::wstring(provider.Key())] {
                                    BeginSearch({SearchScope::Kind::Provider, key});
                                }});
         if (provider.Can(stream::Capability::CreatePlaylists) && provider.AccountVerified() &&
@@ -5531,7 +5531,7 @@ void MainWindow::ShowRemoteNavMenu(const NavPane::Item& item, POINT screen) {
              (item.target == NavPane::Target::RemoteSection &&
               item.sectionKind == stream::SectionKind::PlaylistShelf &&
               item.sectionShelf == stream::Shelf::Created)))
-            actions.push_back({Tr(L"New " + provider.Name() + L" playlist"),
+            actions.push_back({provider.NamedText(L"New {0} playlist"),
                                [this, &provider] { CreateRemotePlaylist(*this, provider); }});
         if (item.target == NavPane::Target::LibraryRemote) {
             if (provider.AccountVerified())

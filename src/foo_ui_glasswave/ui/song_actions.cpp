@@ -78,7 +78,7 @@ void AddRemotePlaylistMenu(std::vector<MenuAction>& actions, stream::Provider& p
         }
     }
     if (targets.empty()) targets.push_back({provider.Text(L"No created playlists"), nullptr});
-    actions.push_back({Tr(L"Add to " + provider.Name() + L" playlist"), nullptr, std::move(targets)});
+    actions.push_back({provider.NamedText(L"Add to {0} playlist"), nullptr, std::move(targets)});
 }
 
 void AddBulkActions(std::vector<MenuAction>& actions, SongsFetch songs, stream::Provider* remote,

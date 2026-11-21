@@ -189,6 +189,10 @@ class Provider {
     // translation. A new term needs no interface change, and a new source only overrides the
     // words that differ.
     std::wstring Text(std::wstring_view english) const;
+    // Text() of a template that names the source: "{0}" becomes Name() in the UI language
+    // ("New {0} playlist"). The language file words it per source when the languages differ in
+    // more than the name (an "Apple Music | New {0} playlist" entry).
+    std::wstring NamedText(std::wstring_view english) const;
     // The source's own English term for a common one. Default: the common term.
     virtual std::wstring Wording(std::wstring_view english) const { return std::wstring(english); }
     // Translation context of this source's terms. Empty: only the common translations.

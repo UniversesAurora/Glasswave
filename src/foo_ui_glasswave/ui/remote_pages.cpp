@@ -1489,7 +1489,7 @@ class ShelfPage final : public PagedPage {
 
     void AddPageSpecificActions(std::vector<MenuAction>& actions) override {
         if (m_view.shelf == Shelf::Created && m_provider.Can(stream::Capability::CreatePlaylists))
-            actions.push_back({Tr(L"New " + m_provider.Name() + L" playlist"),
+            actions.push_back({m_provider.NamedText(L"New {0} playlist"),
                                [this] { CreateRemotePlaylist(m_host, m_provider); }});
     }
 
@@ -2884,7 +2884,7 @@ void CreateRemotePlaylist(PageHost& host, stream::Provider& provider) {
         if (!provider.SessionRestoring()) provider.SignIn(host.Owner());
         return;
     }
-    const std::wstring title = Tr(L"New " + provider.Name() + L" playlist");
+    const std::wstring title = provider.NamedText(L"New {0} playlist");
     const stream::NavigationSection section = CreatedPlaylistSection(provider);
     PromptText(host.Owner(), title, ProviderPlaylistText(provider, L"Playlist name"), title,
                [&host, &provider, section](std::wstring name) {

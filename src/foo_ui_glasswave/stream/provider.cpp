@@ -72,11 +72,16 @@ std::wstring Provider::Text(std::wstring_view english) const {
     return context.empty() ? ui::Tr(term) : ui::Tr(term, context);
 }
 
-std::wstring Provider::SignInRequiredMessage() const {
-    std::wstring text = ui::Tr(L"Please sign in to {0}.");
-    const size_t mark = text.find(L"{0}");
-    if (mark != std::wstring::npos) text.replace(mark, 3, ui::Tr(Name()));
+std::wstring Provider::NamedText(std::wstring_view english) const {
+    std::wstring text = Text(english);
+    const std::wstring name = ui::Tr(Name());
+    for (size_t mark = text.find(L"{0}"); mark != std::wstring::npos; mark = text.find(L"{0}", mark + name.size()))
+        text.replace(mark, 3, name);
     return text;
+}
+
+std::wstring Provider::SignInRequiredMessage() const {
+    return NamedText(L"Please sign in to {0}.");
 }
 
 bool Provider::ReadAlbumSaved(const Id& album) const {
