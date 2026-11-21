@@ -827,7 +827,23 @@ wuc::CompositionNineGridBrush NineGrid(int wPx, int hPx, float scale, float inse
 
 } // namespace
 
-PlayerWindow::PlayerWindow(PlayerHost& host) : m_host(host) {}
+PlayerWindow::PlayerWindow(PlayerHost& host) : m_host(host) {
+    m_deviceReplaced = gfx::CompositionHost::Get().OnDeviceReplaced([this] { OnDeviceReplaced(); });
+}
+
+// Every surface came back empty. The scale-keyed "already painted" marks are forgotten, and
+// what UpdateLayout and the widgets paint is painted again (retained surfaces made under the
+// old device are recreated by their Repaint). A hidden window does this when it is shown.
+void PlayerWindow::OnDeviceReplaced() {
+    m_coverPainted = {};
+    m_framePainted = 0;
+    m_paneGlassScale = 0;
+    m_frostScale = 0;
+    if (!m_shown || !m_hwnd) return;
+    PaintSideHighlights();
+    UpdateLayout(false);
+    for (auto& w : m_widgets) w->Invalidate();
+}
 
 PlayerWindow::~PlayerWindow() {
     if (auto* cache = ArtCache::Existing()) cache->Unsubscribe(m_artToken);

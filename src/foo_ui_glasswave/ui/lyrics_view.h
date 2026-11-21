@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/signal.h"
 #include "lyrics/lyrics_service.h"
 #include "ui/pane_common.h"
 #include "ui/spring.h"
@@ -103,6 +104,7 @@ private:
     winrt::Windows::UI::Composition::ContainerVisual m_dots{nullptr};
     std::array<winrt::Windows::UI::Composition::CompositionColorBrush, 3> m_dotBrush{nullptr, nullptr, nullptr};
     winrt::com_ptr<ID2D1DeviceContext> m_dc;
+    core::Signal<>::Connection m_deviceReplaced; // the context belongs to the rendering device
     RECT m_bounds{};
     float m_scale = 1.0f;
     bool m_visible = false;

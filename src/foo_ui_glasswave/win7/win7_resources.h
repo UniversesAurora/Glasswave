@@ -11,6 +11,8 @@
 // proportions and is resampled (high-quality cubic) at other scales.
 // Main thread only.
 
+#include "core/signal.h"
+
 namespace glasswave::win7 {
 
 // AeroAtlas is the DWM image atlas inside aero.msstyles (STREAM resource 971).
@@ -61,6 +63,7 @@ private:
     std::map<std::pair<int, std::wstring>, winrt::com_ptr<IWICBitmap>> m_decoded;  // nullptr = known missing
     std::map<std::pair<int, std::wstring>, winrt::com_ptr<ID2D1Bitmap>> m_device;
     std::map<std::wstring, winrt::com_ptr<ID2D1Bitmap>> m_pieces;
+    core::Signal<>::Connection m_deviceReplaced;
 };
 
 // Draw a whole resource with its top-left corner at `at` (DIP). False if missing.

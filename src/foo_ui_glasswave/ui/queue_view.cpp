@@ -85,6 +85,12 @@ QueueView::QueueView(const wuc::ContainerVisual& parent) {
     auto& host = gfx::CompositionHost::Get();
     const auto& comp = host.Compositor();
     m_dc = host.CreateDeviceContext();
+    m_deviceReplaced = host.OnDeviceReplaced([this] {
+        m_dc = gfx::CompositionHost::Get().CreateDeviceContext();
+        if (!m_visible) return; // the next showing lays out and draws everything again
+        SetVisible(false);
+        SetVisible(true);
+    });
     // Keep the clip fixed while m_root slides during the lyrics/queue transition.
     m_viewport = comp.CreateContainerVisual();
     m_viewport.Clip(comp.CreateInsetClip());

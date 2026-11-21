@@ -1,6 +1,7 @@
 #pragma once
 
 #include "aero/glass_material.h"
+#include "core/signal.h"
 #include "aero/shadow_frame.h"
 #include "gfx/frame_clock.h"
 #include "lyrics/lyrics.h"
@@ -92,6 +93,7 @@ class PlayerWindow {
     }
 
   private:
+    void OnDeviceReplaced(); // the rendering device was lost: every surface is empty
     void UpdateMotion(); // wall and light run only while there is something to see
 
   public:
@@ -208,6 +210,7 @@ class PlayerWindow {
         m_menuSweep{nullptr}, m_menuAfter{nullptr}, m_menuInk{nullptr}, m_seek{nullptr}, m_slider{nullptr},
         m_paneCard{nullptr}, m_menuInkWhite{nullptr}, m_volumeFlyout{nullptr};
     gfx::RetainedSurface m_flyoutBacking;
+    core::Signal<>::Connection m_deviceReplaced;
     winrt::Windows::UI::Composition::SpriteVisual m_paneGlass{nullptr}; // full screen: the card's glass
     winrt::Windows::UI::Composition::CompositionRoundedRectangleGeometry m_paneGlassShape{nullptr};
     float m_paneGlassScale = 0;

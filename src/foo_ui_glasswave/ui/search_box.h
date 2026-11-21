@@ -1,5 +1,7 @@
 #pragma once
 
+#include "core/signal.h"
+
 namespace glasswave::ui {
 
 // Self-drawn WMP 12 search field. Text input arrives as WM_CHAR. The owner forwards IME
@@ -71,6 +73,7 @@ private:
     void Copy(HWND owner) const;
 
     winrt::Windows::UI::Composition::SpriteVisual m_visual{nullptr}, m_caret{nullptr};
+    core::Signal<>::Connection m_deviceReplaced; // its surface is empty after a device loss
     std::wstring m_text;
     std::wstring m_token;
     std::wstring m_composition;

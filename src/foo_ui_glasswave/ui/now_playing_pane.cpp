@@ -76,6 +76,14 @@ NowPlayingPane::NowPlayingPane(const wuc::ContainerVisual& parent)
     auto& host = gfx::CompositionHost::Get();
     const auto& comp = host.Compositor();
     m_dc = host.CreateDeviceContext();
+    m_deviceReplaced = host.OnDeviceReplaced([this] {
+        m_dc = gfx::CompositionHost::Get().CreateDeviceContext();
+        // The header and the switch are painted again by the next Tick.
+        m_painted = {};
+        m_paintedScale = 0;
+        m_paintRetries = 0;
+        if (m_visible) StartFrames();
+    });
     m_tint = comp.CreateSpriteVisual();
     m_tint.Brush(comp.CreateColorBrush(winrt::Windows::UI::ColorHelper::FromArgb(
         static_cast<uint8_t>(std::lround(pane::kPaneTint * 255)), 0, 0, 0)));

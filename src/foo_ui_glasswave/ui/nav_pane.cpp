@@ -148,6 +148,7 @@ int CategoryIcon(media::GroupKind kind) {
 NavPane::NavPane(const winrt::Windows::UI::Composition::ContainerVisual& parent) {
     m_visual = gfx::CompositionHost::Get().Compositor().CreateSpriteVisual();
     parent.Children().InsertAtTop(m_visual);
+    m_deviceReplaced = gfx::CompositionHost::Get().OnDeviceReplaced([this] { Paint(); });
     Rebuild();
     m_artToken = ArtCache::Get().Subscribe([this] { Paint(); });
 }

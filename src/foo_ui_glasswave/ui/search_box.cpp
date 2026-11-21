@@ -17,6 +17,7 @@ constexpr float kIconRoom = 25.0f; // the clear button plate (WMP 12 WW_CLEAR)
 
 SearchBox::SearchBox(const winrt::Windows::UI::Composition::ContainerVisual& parent) {
     const auto& comp = gfx::CompositionHost::Get().Compositor();
+    m_deviceReplaced = gfx::CompositionHost::Get().OnDeviceReplaced([this] { Paint(); });
     m_visual = comp.CreateSpriteVisual();
     m_caret = comp.CreateSpriteVisual();
     m_caret.Brush(comp.CreateColorBrush(winrt::Windows::UI::Color{255, 0, 0, 0}));

@@ -1,4 +1,5 @@
 #pragma once
+#include "core/signal.h"
 #include "wmp/wmp_painter.h"
 #include "media/library_model.h"
 #include "stream/provider.h"
@@ -100,6 +101,7 @@ private:
     void Paint();
 
     winrt::Windows::UI::Composition::SpriteVisual m_visual{nullptr};
+    core::Signal<>::Connection m_deviceReplaced; // its surface is empty after a device loss
     std::vector<Item> m_items;
     std::set<std::wstring> m_collapsed;  // ExpandKey of the groups the user closed
     std::vector<ProviderSection> m_providers;

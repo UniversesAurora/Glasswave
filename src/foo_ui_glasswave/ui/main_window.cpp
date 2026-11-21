@@ -2344,6 +2344,21 @@ void MainWindow::PaintCapsule() {
                                         [left, right](ID2D1DeviceContext* dc) { wt::CapsuleSpan(dc, left, right); });
 }
 
+// Every surface came back empty: what is painted once and kept (the frame, the bars, the
+// capsule, the now-playing block, the widgets) is painted again, the scale-keyed marks first
+// forgotten. The panes and views repaint themselves on the same notification.
+void MainWindow::OnDeviceReplaced() {
+    m_capsulePaintedScale = 0;
+    m_npPaintedWidth = -1;
+    m_timePaintedW = 0;
+    RepaintScaleDependent();
+    UpdateLayout();
+    for (auto& w : m_widgets) w->Invalidate();
+    m_seekPaint.Request();
+    FlushPlaybackPaints();
+    RepaintNowPlaying();
+}
+
 void MainWindow::RepaintScaleDependent() {
     const float s = m_scale;
     m_glass->SetScale(s);
@@ -6964,6 +6979,7 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
         InitComposition();
         CreateWidgets();
         RepaintScaleDependent();
+        m_deviceReplaced = gfx::CompositionHost::Get().OnDeviceReplaced([this] { OnDeviceReplaced(); });
         m_shadow.Create(hwnd);
         media::EnsureSpecialPlaylists(false); // queue, Favorites (protected), smart playlists
         if (m_nav) m_nav->Rebuild();

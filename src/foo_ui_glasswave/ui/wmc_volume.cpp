@@ -62,6 +62,7 @@ bool OutlineNineGrid(ID2D1DeviceContext* dc, D2D1_RECT_F dst) {
 
 WmcVolume::WmcVolume(const wuc::ContainerVisual& parent, Kind kind) : m_kind(kind) {
     const auto comp = gfx::CompositionHost::Get().Compositor();
+    m_deviceReplaced = gfx::CompositionHost::Get().OnDeviceReplaced([this] { Paint(); });
     m_root = comp.CreateContainerVisual();
     m_root.Opacity(0.0f);
     m_root.IsVisible(false);

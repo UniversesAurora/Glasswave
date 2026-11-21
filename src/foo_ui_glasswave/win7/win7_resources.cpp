@@ -39,6 +39,11 @@ Resources& Resources::Get() {
 void Resources::Shutdown() { g_resources.reset(); }
 
 Resources::Resources() : m_folder(ProfileFolder()) {
+    // The bitmaps belong to the rendering device; the decoded images do not.
+    m_deviceReplaced = gfx::CompositionHost::Get().OnDeviceReplaced([this] {
+        m_pieces.clear();
+        m_device.clear();
+    });
     if (m_folder.empty()) return;
     for (size_t i = 0; i < m_modules.size(); ++i) {
         const std::wstring path = m_folder + kModules[i].file;

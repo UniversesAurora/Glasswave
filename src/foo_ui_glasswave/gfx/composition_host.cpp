@@ -79,6 +79,19 @@ CompositionHost::CompositionHost() {
 }
 
 void CompositionHost::CreateDevices() {
+    CreateRenderingDevices();
+    auto interop = m_compositor.as<abi_comp::ICompositorInterop>();
+    winrt::check_hresult(interop->CreateGraphicsDevice(
+        m_d2dDevice.get(), reinterpret_cast<abi_comp::ICompositionGraphicsDevice**>(winrt::put_abi(m_graphics))));
+    // The compositor says when it has dropped its device (the one we gave it is gone).
+    m_replacedRevoker = m_graphics.RenderingDeviceReplaced(winrt::auto_revoke, [](auto&&, auto&&) {
+        fb2k::inMainThread([] {
+            if (g_host) g_host->QueueRecovery();
+        });
+    });
+}
+
+void CompositionHost::CreateRenderingDevices() {
     const D3D_FEATURE_LEVEL levels[] = {D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_10_1,
                                         D3D_FEATURE_LEVEL_10_0};
     UINT flags = D3D11_CREATE_DEVICE_BGRA_SUPPORT;
@@ -93,10 +106,51 @@ void CompositionHost::CreateDevices() {
     }
     auto dxgi = m_d3d.as<IDXGIDevice>();
     winrt::check_hresult(m_d2dFactory->CreateDevice(dxgi.get(), m_d2dDevice.put()));
+}
 
-    auto interop = m_compositor.as<abi_comp::ICompositorInterop>();
-    winrt::check_hresult(interop->CreateGraphicsDevice(
-        m_d2dDevice.get(), reinterpret_cast<abi_comp::ICompositionGraphicsDevice**>(winrt::put_abi(m_graphics))));
+void CompositionHost::NoteDeviceError(HRESULT hr) {
+    if (hr != DXGI_ERROR_DEVICE_REMOVED && hr != DXGI_ERROR_DEVICE_RESET && hr != DXGI_ERROR_DEVICE_HUNG &&
+        hr != D2DERR_RECREATE_TARGET)
+        return;
+    m_deviceSuspect = true;
+    QueueRecovery();
+}
+
+void CompositionHost::QueueRecovery() {
+    if (m_recoveryQueued) return;
+    m_recoveryQueued = true;
+    fb2k::inMainThread([] {
+        if (g_host) g_host->RecoverDevices();
+    });
+}
+
+// A lost device: new D3D and D2D devices go to the compositor, which keeps its surfaces (now
+// empty), and everyone who drew with the old one is told to paint again. If the device turns
+// out to be healthy (the compositor replaced its own), only the listeners run.
+void CompositionHost::RecoverDevices() {
+    m_recoveryQueued = false;
+    if (m_drawDepth > 0) { // inside a draw: later
+        QueueRecovery();
+        return;
+    }
+    const HRESULT removed = m_d3d ? m_d3d->GetDeviceRemovedReason() : DXGI_ERROR_DEVICE_REMOVED;
+    if (FAILED(removed) || m_deviceSuspect) {
+        m_deviceSuspect = false;
+        wchar_t line[96];
+        swprintf_s(line, L"device: lost (hr 0x%08X), creating a new one", static_cast<unsigned>(removed));
+        core::Log(line);
+        try {
+            CreateRenderingDevices();
+            auto interop = m_graphics.as<abi_comp::ICompositionGraphicsDeviceInterop>();
+            winrt::check_hresult(interop->SetRenderingDevice(m_d2dDevice.get()));
+        } catch (const winrt::hresult_error& e) {
+            ReportFailure("device recovery", e.code(), 0, 0);
+            return;
+        }
+    }
+    m_unclean.clear(); // they belonged to the old device
+    ++m_deviceGeneration;
+    m_deviceReplaced.Emit();
 }
 
 wuc::CompositionDrawingSurface CompositionHost::CreateSurface(int widthPx, int heightPx) {
@@ -108,6 +162,7 @@ wuc::CompositionDrawingSurface CompositionHost::CreateSurface(int widthPx, int h
 }
 
 void CompositionHost::ReportFailure(const char* step, HRESULT hr, int widthPx, int heightPx) {
+    NoteDeviceError(hr);
     if (++m_failures > 40) return;
     console::printf("Glasswave: surface %s failed, hr 0x%08X, %dx%d px%s", step, static_cast<unsigned>(hr), widthPx,
                     heightPx, m_failures == 40 ? " (further failures not reported)" : "");
@@ -328,6 +383,10 @@ void CompositionHost::Repaint(const wuc::SpriteVisual& visual, RetainedSurface& 
     widthPx = std::max(widthPx, 1);
     heightPx = std::max(heightPx, 1);
     try {
+        if (retained.m_generation != m_deviceGeneration) { // made under a device that is gone
+            retained.Clear();
+            retained.m_generation = m_deviceGeneration;
+        }
         const auto update = retained.Prepare(widthPx, heightPx);
         switch (update) {
         case SurfaceReusePolicy::Update::Create:

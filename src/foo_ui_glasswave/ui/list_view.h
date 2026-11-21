@@ -1,4 +1,5 @@
 #pragma once
+#include "core/signal.h"
 #include "media/list_sources.h"
 
 #include <memory>
@@ -352,6 +353,7 @@ private:
         uint64_t version = 0;  // ArtCache::Version when this bitmap was decoded
     };
     std::map<std::wstring, ArtBitmap> m_artBitmaps;
+    core::Signal<>::Connection m_deviceReplaced; // the bitmaps belong to the rendering device
     uint64_t m_artClock = 0;
 };
 

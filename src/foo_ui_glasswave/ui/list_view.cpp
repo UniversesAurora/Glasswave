@@ -581,6 +581,10 @@ ListView::ListView(const wuc::ContainerVisual& parent) {
     m_iconToken = SubscribeSourceIcons([this] {
         if (m_mode == Mode::Tiles) PaintRows();
     });
+    m_deviceReplaced = gfx::CompositionHost::Get().OnDeviceReplaced([this] {
+        m_artBitmaps.clear();
+        PaintRows();
+    });
     m_downloadToken = download::Subscribe([this] {
         if (m_source && m_mode != Mode::Tiles)
             for (const auto& column : m_source->Columns())

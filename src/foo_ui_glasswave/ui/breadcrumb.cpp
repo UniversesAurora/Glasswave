@@ -34,6 +34,11 @@ float NameWidth(const Breadcrumb::Level& level) {
 
 } // namespace
 
+void Breadcrumb::SetVisual(winrt::Windows::UI::Composition::SpriteVisual visual) {
+    m_visual = std::move(visual);
+    m_deviceReplaced = gfx::CompositionHost::Get().OnDeviceReplaced([this] { Paint(); });
+}
+
 void Breadcrumb::SetPath(std::vector<Level> path) {
     // An arrow always has a menu: a level the path gives none lists at least the next one.
     for (size_t i = 0; i + 1 < path.size(); ++i) {

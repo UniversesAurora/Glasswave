@@ -44,6 +44,7 @@ class WmcVolume {
     winrt::Windows::UI::Composition::SpriteVisual m_glass{nullptr};   // blurred glass under it
     winrt::Windows::UI::Composition::CompositionRoundedRectangleGeometry m_glassShape{nullptr};
     winrt::Windows::UI::Composition::SpriteVisual m_visual{nullptr};
+    core::Signal<>::Connection m_deviceReplaced; // its surface is empty after a device loss
     gfx::RetainedSurface m_backing;
     // The panel's lit bar, over the rest, cut at the level by its clip, which springs there.
     winrt::Windows::UI::Composition::SpriteVisual m_barOn{nullptr};

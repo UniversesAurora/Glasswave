@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/signal.h"
 #include "ui/main_menu.h"
 
 #include <functional>
@@ -32,7 +33,7 @@ class Breadcrumb {
     // `frames` keeps calling Animate() (the window's animation timer) until it returns false.
     explicit Breadcrumb(std::function<void()> frames) : m_frames(std::move(frames)) {}
 
-    void SetVisual(winrt::Windows::UI::Composition::SpriteVisual visual) { m_visual = std::move(visual); }
+    void SetVisual(winrt::Windows::UI::Composition::SpriteVisual visual);
     void SetPath(std::vector<Level> path);
     // Where it stands in the window (client px) and the window's scale; repaints.
     void SetBounds(const RECT& bounds, float scale);
@@ -56,6 +57,7 @@ class Breadcrumb {
 
     std::function<void()> m_frames;
     winrt::Windows::UI::Composition::SpriteVisual m_visual{nullptr};
+    core::Signal<>::Connection m_deviceReplaced; // its surface is empty after a device loss
     std::vector<Level> m_path;
     std::vector<Placed> m_placed; // what shows: the root, then the levels that fit
     RECT m_bounds{};

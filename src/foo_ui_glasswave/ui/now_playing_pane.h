@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/signal.h"
 #include "lyrics/lyrics_service.h"
 #include "ui/lyrics_view.h"
 #include "ui/pane_common.h"
@@ -108,6 +109,7 @@ class NowPlayingPane {
     std::array<winrt::Windows::UI::Composition::SpriteVisual, 2> m_segLight{nullptr, nullptr},
         m_segDark{nullptr, nullptr};
     winrt::com_ptr<ID2D1DeviceContext> m_dc;
+    core::Signal<>::Connection m_deviceReplaced; // the context belongs to the rendering device
     LyricsView m_lyrics;
     QueueView m_queue;
     RECT m_bounds{};

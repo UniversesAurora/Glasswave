@@ -1,6 +1,7 @@
 #pragma once
 #include "aero/glass_material.h"
 #include "aero/shadow_frame.h"
+#include "core/signal.h"
 #include "gfx/frame_clock.h"
 #include "lyrics/lyrics_service.h"
 #include "media/library_model.h"
@@ -195,6 +196,7 @@ class MainWindow : public PageHost, public PlayerHost {
     void CreateWidgets();
     void UpdateLayout();
     void RepaintScaleDependent();
+    void OnDeviceReplaced(); // the rendering device was lost: every surface is empty
     void RepaintTitle();
     void RefreshNowPlayingArt(bool refreshText = false);
     // The glass's colour from Preferences (a Win7 colour, or the playing cover's) and intensity.
@@ -390,6 +392,7 @@ class MainWindow : public PageHost, public PlayerHost {
     metadb_handle_ptr m_panePlayingTrack;
     uint64_t m_paneScheduleRevision = 0;
     uint64_t m_scheduleListener = 0;
+    core::Signal<>::Connection m_deviceReplaced;
     std::unordered_map<size_t, media::ScheduledUpcomingEntry> m_paneUpcoming;
     bool m_queueRefreshPending = false, m_queueFollowPending = false;
     RECT m_npTitleRect{}, m_npArtistRect{}, m_npStarRect{}; // client px, for clicks

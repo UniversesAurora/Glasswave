@@ -6,6 +6,8 @@
 //  - helpers for drawing surfaces, painting and animations.
 // Main thread only.
 
+#include "core/signal.h"
+
 #include <algorithm>
 #include <functional>
 #include <utility>
@@ -105,6 +107,7 @@ private:
     wuc::CompositionDrawingSurface m_surface{nullptr};
     wuc::CompositionSurfaceBrush m_brush{nullptr};
     SurfaceReusePolicy m_policy;
+    uint64_t m_generation = 0; // CompositionHost::DeviceGeneration() it was made under
 };
 
 // Coalesces repaint requests while presentation is unavailable.
@@ -132,6 +135,16 @@ public:
     ID2D1Factory1* D2DFactory() const { return m_d2dFactory.get(); }
     IDWriteFactory* DWrite() const { return m_dwrite.get(); }
     IWICImagingFactory* Wic() const { return m_wic.get(); }
+
+    // The rendering device was lost and replaced (a GPU reset, a driver update, an adapter
+    // removed). Every drawing surface came back empty and every device resource of ours - a
+    // context from CreateDeviceContext, a bitmap, an effect, a command list - belongs to the
+    // dead device: listeners drop them and paint again. Retained surfaces made before it are
+    // recreated by their next Repaint. Emitted on the UI thread, never inside a draw.
+    uint64_t DeviceGeneration() const { return m_deviceGeneration; }
+    core::Signal<>::Connection OnDeviceReplaced(std::function<void()> listener) {
+        return m_deviceReplaced.Connect(std::move(listener));
+    }
 
     // Create a premultiplied BGRA drawing surface, size in device pixels.
     wuc::CompositionDrawingSurface CreateSurface(int widthPx, int heightPx);
@@ -170,6 +183,10 @@ public:
 private:
     CompositionHost();
     void CreateDevices();
+    void CreateRenderingDevices(); // D3D11 and D2D devices
+    void NoteDeviceError(HRESULT hr);
+    void QueueRecovery();
+    void RecoverDevices();
     bool ClearAfterFailure(const wuc::CompositionDrawingSurface& surface);
     void ReportFailure(const char* step, HRESULT hr, int widthPx, int heightPx);
     // A surface whose BeginDraw failed cannot be cleared there and then: it waits here and is
@@ -185,6 +202,11 @@ private:
     std::vector<wuc::CompositionDrawingSurface> m_unclean;
     bool m_drainQueued = false;
     int m_uncleanRetries = 0;
+    uint64_t m_deviceGeneration = 1;
+    bool m_deviceSuspect = false; // a draw failed the way a lost device does
+    bool m_recoveryQueued = false;
+    core::Signal<> m_deviceReplaced;
+    wuc::CompositionGraphicsDevice::RenderingDeviceReplaced_revoker m_replacedRevoker;
 
     winrt::Windows::System::DispatcherQueueController m_queueController{nullptr};
     wuc::Compositor m_compositor{nullptr};
