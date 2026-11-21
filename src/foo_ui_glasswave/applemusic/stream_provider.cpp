@@ -2121,6 +2121,11 @@ StreamProvider& StreamProvider::Get() {
     return provider;
 }
 
+StreamProvider::StreamProvider()
+    : m_snapshots("apple", m_exec, kTasks,
+                  {[this] { return SnapshotEligible(); },
+                   [this](cache::provider_snapshot::Snapshot& payload) { return FillSnapshot(payload); }}) {}
+
 StreamProvider::~StreamProvider() {
     Shutdown();
 }
@@ -2131,6 +2136,38 @@ namespace {
 constexpr wchar_t kRequestDropped[] = L"Apple Music stopped or changed accounts before the request finished.";
 
 } // namespace
+
+void StreamProvider::ResetSessionLocked(bool authPending) {
+    m_account = {};
+    m_gate.Reset(authPending);
+    m_lastAuthError.clear();
+    m_cachedAccountName.clear();
+    m_cachedStorefront.clear();
+    m_snapshots.Reset();
+    m_drm = {};
+    m_refreshInFlight = false;
+    m_refreshGeneration = 0;
+    ++m_refreshSequence;
+    m_refreshPreservePlaylistDetails = false;
+    m_refreshInvalidatesLists = false;
+    m_displayChangePosted = false;
+    m_refreshWaiters.clear();
+    m_artistCountsInFlight = false;
+    m_artistVerificationCondition.notify_all();
+    ++m_playlistDetailEpoch;
+    ++m_libraryMutationEpoch;
+    m_libraryMutationSequence = 0;
+    m_appliedLibraryMutationSequence = 0;
+    m_albumMutations.clear();
+    m_playlistMutations.clear();
+    m_artistPreferenceMutations.clear();
+    ++m_artistPreferenceEpoch;
+    m_artistPreferenceSequence = 0;
+    m_appliedArtistPreferenceSequence = 0;
+    ClearLibraryLocked();
+    ++m_favoriteBindingEpoch;
+    m_favoritePageWaiters.clear();
+}
 
 void StreamProvider::ClearLibraryLocked() {
     m_createdPlaylists.clear();
@@ -2326,43 +2363,7 @@ void StreamProvider::Start() {
         m_started = true;
         generation = m_exec.Start({3, 1, 2, 1});
         m_locale = CurrentLocale();
-        m_account = {};
-        m_accountVerified = false;
-        m_authPending = true;
-        m_sessionRestoring = false;
-        m_lastAuthError.clear();
-        m_cachedAccountBound = false;
-        m_cachedAccountId.clear();
-        m_cachedAccountName.clear();
-        m_cachedStorefront.clear();
-        m_snapshotSavePosted = false;
-        m_snapshotSaveDirty = false;
-        m_drm = {};
-        m_refreshInFlight = false;
-        m_refreshGeneration = 0;
-        ++m_refreshSequence;
-        m_refreshPreservePlaylistDetails = false;
-        m_refreshInvalidatesLists = false;
-        m_displayChangePosted = false;
-        m_refreshWaiters.clear();
-        m_artistCountsInFlight = false;
-        m_librarySnapshotLoaded = false;
-        m_librarySnapshotValidUntil = {};
-        m_playlistDetailEpoch = 0;
-        m_libraryMutationEpoch = 0;
-        m_libraryMutationSequence = 0;
-        m_appliedLibraryMutationSequence = 0;
-        m_albumMutations.clear();
-        m_playlistMutations.clear();
-        m_artistPreferenceMutations.clear();
-        m_artistPreferenceEpoch = 0;
-        m_artistPreferenceSequence = 0;
-        m_appliedArtistPreferenceSequence = 0;
-        ClearLibraryLocked();
-        m_favoriteBindingState = FavoriteBindingState::Unknown;
-        ++m_favoriteBindingEpoch;
-        m_favoriteBindingReadInFlight = false;
-        m_favoritePageWaiters.clear();
+        ResetSessionLocked(true);
     }
     SetAppleLocale(ui::UsingChinese());
     DisplayMetadata::Get().SetSourceStorefront({});
@@ -2388,86 +2389,14 @@ void StreamProvider::Start() {
 }
 
 void StreamProvider::Shutdown() {
-    std::optional<cache::provider_snapshot::Snapshot> finalSnapshot;
-    std::string finalAccountScope;
-    uint64_t finalAccountRevision = 0;
-    {
-        cache::provider_snapshot::Snapshot payload;
-        AppleMusicDisplayRegion region = AppleMusicDisplayRegion::Account;
-        std::wstring locale;
-        bool save = false;
-        {
-            std::lock_guard lock(m_mutex);
-            save = m_started && m_accountVerified && m_account.signedIn && !m_account.accountId.empty() &&
-                   !m_sessionRestoring;
-            if (save) {
-                region = GetAppleMusicDisplayRegion();
-                locale = m_locale;
-                payload.provider = "apple";
-                payload.locale = Utf8(m_locale);
-                payload.accountId = Utf8(m_account.accountId);
-                payload.accountName = Utf8(m_account.name);
-                payload.sourceStorefront = Utf8(m_account.storefront);
-                payload.displayRegion = static_cast<int>(region);
-                if (!m_favoritePlaylistId.empty())
-                    payload.bindings.push_back({"favorites", Utf8(m_favoritePlaylistId)});
-            }
-        }
-        if (save) {
-            try {
-                payload.sourceOrigin = BridgeSourceIdentity();
-                payload.context = SnapshotContext(region, locale);
-                payload.created = RawPlaylists(stream::Shelf::Created);
-                payload.saved = RawPlaylists(stream::Shelf::Saved);
-                finalAccountScope = cache::AccountScope("apple");
-                finalAccountRevision = cache::AccountRevision("apple");
-                finalSnapshot = std::move(payload);
-            } catch (...) {
-            }
-        }
-    }
+    const auto finalSnapshot = m_snapshots.Prepare();
 
     {
         std::lock_guard lock(m_mutex);
         if (!m_started && !m_exec.Running()) return;
         m_started = false;
         m_exec.Stop();
-        m_account = {};
-        m_accountVerified = false;
-        m_authPending = false;
-        m_sessionRestoring = false;
-        m_lastAuthError.clear();
-        m_cachedAccountBound = false;
-        m_snapshotSavePosted = false;
-        m_snapshotSaveDirty = false;
-        m_cachedAccountId.clear();
-        m_cachedAccountName.clear();
-        m_cachedStorefront.clear();
-        m_drm = {};
-        m_refreshInFlight = false;
-        m_refreshGeneration = 0;
-        ++m_refreshSequence;
-        m_refreshPreservePlaylistDetails = false;
-        m_refreshInvalidatesLists = false;
-        m_displayChangePosted = false;
-        m_refreshWaiters.clear();
-        m_artistCountsInFlight = false;
-        m_libraryMutationEpoch = 0;
-        m_libraryMutationSequence = 0;
-        m_appliedLibraryMutationSequence = 0;
-        m_albumMutations.clear();
-        m_playlistMutations.clear();
-        m_artistPreferenceMutations.clear();
-        m_artistPreferenceEpoch = 0;
-        m_artistPreferenceSequence = 0;
-        m_appliedArtistPreferenceSequence = 0;
-        m_librarySnapshotLoaded = false;
-        m_librarySnapshotValidUntil = {};
-        ClearLibraryLocked();
-        m_favoriteBindingState = FavoriteBindingState::Unknown;
-        ++m_favoriteBindingEpoch;
-        m_favoriteBindingReadInFlight = false;
-        m_favoritePageWaiters.clear();
+        ResetSessionLocked(false);
     }
     m_artistVerificationCondition.notify_all();
     m_exec.Join();
@@ -2475,15 +2404,7 @@ void StreamProvider::Shutdown() {
         std::lock_guard lock(m_mutex);
         m_artistExistence.clear();
     }
-    if (finalSnapshot) {
-        try {
-            if (cache::AccountRevision("apple") == finalAccountRevision &&
-                cache::AccountScope("apple") == finalAccountScope) {
-                cache::provider_snapshot::Save(cache::GetStore(), finalAccountScope, *finalSnapshot);
-            }
-        } catch (...) {
-        }
-    }
+    if (finalSnapshot) m_snapshots.Commit(*finalSnapshot);
 }
 
 namespace {
@@ -2541,7 +2462,7 @@ void StreamProvider::SaveFavoriteIdsAsync() {
     int64_t checkedAt = 0;
     {
         std::lock_guard lock(m_mutex);
-        if (!m_started || !m_accountVerified) return;
+        if (!m_started || !m_gate.verified) return;
         generation = m_exec.Generation();
         ids = m_favoriteIds;
         checkedAt = m_favoriteIdsCheckedAt;
@@ -2558,15 +2479,13 @@ void StreamProvider::SaveFavoriteIdsAsync() {
 
 void StreamProvider::LoadBootstrapSnapshot(uint64_t generation) {
     std::string sourceOrigin;
-    std::string accountScope;
     std::string context;
     try {
         sourceOrigin = BridgeSourceIdentity();
-        accountScope = cache::AccountScope("apple");
         std::wstring locale;
         {
             std::lock_guard lock(m_mutex);
-            if (!m_started || generation != m_exec.Generation() || m_accountVerified) return;
+            if (!m_started || generation != m_exec.Generation() || m_gate.verified) return;
             locale = m_locale;
         }
         context = SnapshotContext(GetAppleMusicDisplayRegion(), locale);
@@ -2574,16 +2493,18 @@ void StreamProvider::LoadBootstrapSnapshot(uint64_t generation) {
         return;
     }
 
-    const auto cached =
-        cache::provider_snapshot::Load(cache::GetStore(), accountScope, "apple", sourceOrigin, context);
-    if (!cached || cached->accountId.empty() || cached->sourceStorefront.size() != 2) return;
+    const auto loaded = m_snapshots.Load(sourceOrigin, context);
+    if (!loaded) return;
+    const auto& cached = loaded->snapshot;
+    const std::string& accountScope = loaded->scope;
+    if (cached.sourceStorefront.size() != 2) return;
 
-    std::wstring accountId = Wide(cached->accountId);
-    std::wstring accountName = Wide(cached->accountName);
-    std::wstring storefront = Wide(cached->sourceStorefront);
+    std::wstring accountId = Wide(cached.accountId);
+    std::wstring accountName = Wide(cached.accountName);
+    std::wstring storefront = Wide(cached.sourceStorefront);
     if (accountId.empty() || storefront.size() != 2) return;
     stream::Id favoritePlaylist;
-    for (const auto& binding : cached->bindings) {
+    for (const auto& binding : cached.bindings) {
         if (binding.key != "favorites") continue;
         const stream::Id candidate = Wide(binding.resourceId);
         if (IsLibraryId(candidate) && !candidate.empty() && candidate[0] == L'p')
@@ -2599,17 +2520,15 @@ void StreamProvider::LoadBootstrapSnapshot(uint64_t generation) {
     std::wstring sourceStorefront;
     {
         std::lock_guard lock(m_mutex);
-        if (!m_started || generation != m_exec.Generation() || m_accountVerified) return;
+        if (!m_started || generation != m_exec.Generation() || m_gate.verified) return;
         m_favoriteIds = std::move(favoriteIds);
         m_favoriteIdsCheckedAt = favoriteIdsCheckedAt;
-        m_cachedAccountId = std::move(accountId);
+        m_gate.BeginRestore(std::move(accountId));
         m_cachedAccountName = std::move(accountName);
         m_cachedStorefront = std::move(storefront);
         sourceStorefront = m_cachedStorefront;
-        m_cachedAccountBound = true;
-        m_sessionRestoring = true;
-        m_createdPlaylists = cached->created;
-        m_savedPlaylists = cached->saved;
+        m_createdPlaylists = cached.created;
+        m_savedPlaylists = cached.saved;
         m_favoritePlaylistId = std::move(favoritePlaylist);
         m_favoriteBindingState =
             m_favoritePlaylistId.empty() ? FavoriteBindingState::Unknown : FavoriteBindingState::Ready;
@@ -2624,26 +2543,24 @@ void StreamProvider::LoadBootstrapSnapshot(uint64_t generation) {
     NotifyLibraryChanged();
 }
 
-void StreamProvider::QueueSnapshotSave() {
-    cache::provider_snapshot::Snapshot payload;
-    uint64_t generation = 0;
-    uint64_t accountRevision = 0;
-    std::string accountScope;
+bool StreamProvider::SnapshotEligible() const {
+    std::lock_guard lock(m_mutex);
+    return SnapshotEligibleLocked();
+}
+
+bool StreamProvider::SnapshotEligibleLocked() const {
+    return m_started && m_gate.verified && m_account.signedIn && !m_account.accountId.empty() &&
+           !m_gate.restoring;
+}
+
+bool StreamProvider::FillSnapshot(cache::provider_snapshot::Snapshot& payload) const {
     AppleMusicDisplayRegion region = AppleMusicDisplayRegion::Account;
     std::wstring locale;
     {
         std::lock_guard lock(m_mutex);
-        if (!m_started || !m_accountVerified || !m_account.signedIn || m_account.accountId.empty() ||
-            m_sessionRestoring)
-            return;
-        m_snapshotSaveDirty = true;
-        if (m_snapshotSavePosted) return;
-        m_snapshotSavePosted = true;
-        m_snapshotSaveDirty = false;
-        generation = m_exec.Generation();
-        locale = m_locale;
+        if (!SnapshotEligibleLocked()) return false;
         region = GetAppleMusicDisplayRegion();
-        payload.provider = "apple";
+        locale = m_locale;
         payload.locale = Utf8(m_locale);
         payload.accountId = Utf8(m_account.accountId);
         payload.accountName = Utf8(m_account.name);
@@ -2652,50 +2569,11 @@ void StreamProvider::QueueSnapshotSave() {
         if (!m_favoritePlaylistId.empty())
             payload.bindings.push_back({"favorites", Utf8(m_favoritePlaylistId)});
     }
-
-    try {
-        accountScope = cache::AccountScope("apple");
-        accountRevision = cache::AccountRevision("apple");
-        payload.sourceOrigin = BridgeSourceIdentity();
-    } catch (...) {
-        std::lock_guard lock(m_mutex);
-        if (generation == m_exec.Generation()) m_snapshotSavePosted = false;
-        return;
-    }
+    payload.sourceOrigin = BridgeSourceIdentity();
     payload.context = SnapshotContext(region, locale);
     payload.created = RawPlaylists(stream::Shelf::Created);
     payload.saved = RawPlaylists(stream::Shelf::Saved);
-
-    m_exec.Post(kTasks, generation, [this, generation, accountRevision, accountScope = std::move(accountScope),
-                      payload = std::move(payload)]() mutable {
-        bool allowed = false;
-        {
-            std::lock_guard lock(m_mutex);
-            allowed = m_started && generation == m_exec.Generation() && m_accountVerified && m_account.signedIn &&
-                      !m_sessionRestoring && cache::AccountRevision("apple") == accountRevision;
-        }
-        if (allowed) {
-            try {
-                if (cache::AccountScope("apple") == accountScope)
-                    cache::provider_snapshot::Save(cache::GetStore(), accountScope, payload);
-            } catch (...) {
-            }
-        }
-        fb2k::inMainThread([this, generation] { CompleteSnapshotSave(generation); });
-    });
-}
-
-void StreamProvider::CompleteSnapshotSave(uint64_t generation) {
-    bool rerun = false;
-    {
-        std::lock_guard lock(m_mutex);
-        if (generation != m_exec.Generation()) return;
-        m_snapshotSavePosted = false;
-        rerun = m_snapshotSaveDirty && m_started && m_accountVerified && m_account.signedIn &&
-                !m_sessionRestoring;
-        if (!rerun) m_snapshotSaveDirty = false;
-    }
-    if (rerun) QueueSnapshotSave();
+    return true;
 }
 
 void StreamProvider::StartFavoriteBindingRead(uint64_t generation, uint64_t bindingEpoch) {
@@ -2776,7 +2654,7 @@ void StreamProvider::CompleteFavoriteBinding(uint64_t generation, uint64_t bindi
             waiter.done(std::move(empty), {});
         }
     }
-    if (complete) QueueSnapshotSave();
+    if (complete) m_snapshots.Queue();
 }
 
 stream::Capabilities StreamProvider::Offers() const {
@@ -2998,17 +2876,17 @@ bool StreamProvider::SignedIn() const {
 
 bool StreamProvider::SessionRestoring() const {
     std::lock_guard lock(m_mutex);
-    return m_sessionRestoring || m_authPending;
+    return m_gate.Waiting();
 }
 
 bool StreamProvider::AccountVerified() const {
     std::lock_guard lock(m_mutex);
-    return m_accountVerified;
+    return m_gate.verified;
 }
 
 std::wstring StreamProvider::SessionRestoreError() const {
     std::lock_guard lock(m_mutex);
-    return m_accountVerified ? std::wstring() : m_lastAuthError;
+    return m_gate.verified ? std::wstring() : m_lastAuthError;
 }
 
 bool StreamProvider::RetrySessionRestore(Done done) {
@@ -3032,7 +2910,7 @@ bool StreamProvider::RetrySessionRestore(Done done) {
 std::wstring StreamProvider::AccountName() const {
     std::lock_guard lock(m_mutex);
     if (!m_account.name.empty()) return m_account.name;
-    if (m_sessionRestoring) return m_cachedAccountName;
+    if (m_gate.restoring) return m_cachedAccountName;
     return m_account.storefront.empty() ? std::wstring() : m_account.storefront;
 }
 
@@ -3433,7 +3311,7 @@ void StreamProvider::ApplyDisplayMetadataChange() {
     // Rotate only the display epoch so old async jobs cannot publish into the new projection.
     DisplayMetadata::Get().BeginTransition();
     NotifyDisplayChanged();
-    QueueSnapshotSave();
+    m_snapshots.Queue();
 }
 
 void StreamProvider::SignIn(HWND owner) {
@@ -3443,7 +3321,7 @@ void StreamProvider::SignIn(HWND owner) {
             std::lock_guard lock(m_mutex);
             if (!m_started) return;
             generation = m_exec.Generation();
-            m_authPending = true;
+            m_gate.authPending = true;
             m_lastAuthError.clear();
             ++m_libraryMutationEpoch;
             m_libraryMutationSequence = 0;
@@ -3467,31 +3345,7 @@ void StreamProvider::SignOut() {
         std::lock_guard lock(m_mutex);
         if (!m_started) return;
         generation = m_exec.Bump();
-        m_account = {};
-        m_accountVerified = false;
-        m_authPending = false;
-        m_sessionRestoring = false;
-        m_lastAuthError.clear();
-        m_drm = {};
-        m_refreshInFlight = false;
-        m_refreshGeneration = 0;
-        ++m_refreshSequence;
-        m_refreshPreservePlaylistDetails = false;
-        m_refreshInvalidatesLists = false;
-        m_refreshWaiters.clear();
-        m_artistCountsInFlight = false;
-        m_artistVerificationCondition.notify_all();
-        ++m_libraryMutationEpoch;
-        m_libraryMutationSequence = 0;
-        m_appliedLibraryMutationSequence = 0;
-        m_albumMutations.clear();
-        m_playlistMutations.clear();
-        m_artistPreferenceMutations.clear();
-        ++m_artistPreferenceEpoch;
-        m_artistPreferenceSequence = 0;
-        m_appliedArtistPreferenceSequence = 0;
-        ClearLibraryLocked();
-        m_favoritePageWaiters.clear();
+        ResetSessionLocked(false);
     }
     cache::RotateAccountScope(Utf8(Key()));
     Catalog::Get().Clear();
@@ -3710,17 +3564,17 @@ uint64_t StreamProvider::ApplyVerifiedAccount(uint64_t generation, uint64_t refr
             return 0;
 
         const AccountState previous = m_account;
-        const bool firstVerification = !m_accountVerified;
-        const bool restoringCachedAccount = m_sessionRestoring && m_cachedAccountBound;
+        const bool firstVerification = !m_gate.verified;
+        const bool restoringCachedAccount = m_gate.restoring;
         const bool sameCachedAccount = firstVerification && restoringCachedAccount &&
-                                       !m_cachedAccountId.empty() && account.signedIn &&
-                                       account.accountId == m_cachedAccountId;
+                                       !m_gate.cachedId.empty() && account.signedIn &&
+                                       account.accountId == m_gate.cachedId;
         const bool cachedIdentityMismatch = firstVerification && restoringCachedAccount && !sameCachedAccount;
         const bool verifiedIdentityChanged =
-            m_accountVerified && previous.signedIn && !SameAccountState(previous, account);
+            m_gate.verified && previous.signedIn && !SameAccountState(previous, account);
         const bool identityChanged = cachedIdentityMismatch || verifiedIdentityChanged;
         accountChanged = !sameCachedAccount && (firstVerification || previous.signedIn != account.signedIn ||
-                                                (m_accountVerified && !SameAccountState(previous, account)));
+                                                (m_gate.verified && !SameAccountState(previous, account)));
         const bool storefrontChanged =
             previous.signedIn && account.signedIn && previous.storefront != account.storefront;
         accountObserved = firstVerification || storefrontChanged;
@@ -3732,8 +3586,7 @@ uint64_t StreamProvider::ApplyVerifiedAccount(uint64_t generation, uint64_t refr
             clearCatalog = true;
             DisplayMetadata::Get().Clear();
             cache::RotateAccountScope("apple");
-            m_snapshotSavePosted = false;
-            m_snapshotSaveDirty = false;
+            m_snapshots.Reset();
             m_albumMutations.clear();
             m_playlistMutations.clear();
             currentGeneration = m_exec.Bump();
@@ -3745,12 +3598,8 @@ uint64_t StreamProvider::ApplyVerifiedAccount(uint64_t generation, uint64_t refr
 
         m_account = account;
         DisplayMetadata::Get().SetSourceStorefront(account.signedIn ? account.storefront : std::wstring());
-        m_accountVerified = true;
-        m_authPending = false;
-        m_sessionRestoring = false;
+        m_gate.Verify();
         m_lastAuthError.clear();
-        m_cachedAccountBound = false;
-        m_cachedAccountId.clear();
         m_cachedAccountName.clear();
         m_cachedStorefront.clear();
         if (!account.signedIn) {
@@ -3804,14 +3653,14 @@ void StreamProvider::CompleteRefresh(uint64_t generation, Snapshot snapshot, std
         m_refreshInvalidatesLists = false;
         waiters.swap(m_refreshWaiters);
         const AccountState previous = m_account;
-        const bool previouslyVerified = m_accountVerified && previous.signedIn;
-        const bool restoringCachedAccount = m_sessionRestoring && m_cachedAccountBound;
-        const bool firstVerification = snapshot.accountVerified && !m_accountVerified;
+        const bool previouslyVerified = m_gate.verified && previous.signedIn;
+        const bool restoringCachedAccount = m_gate.restoring;
+        const bool firstVerification = snapshot.accountVerified && !m_gate.verified;
         const bool sameCachedAccount = firstVerification && restoringCachedAccount &&
-                                       !m_cachedAccountId.empty() && snapshot.account.signedIn &&
-                                       snapshot.account.accountId == m_cachedAccountId;
+                                       !m_gate.cachedId.empty() && snapshot.account.signedIn &&
+                                       snapshot.account.accountId == m_gate.cachedId;
         const bool cachedIdentityMismatch = firstVerification && restoringCachedAccount && !sameCachedAccount;
-        const bool verifiedIdentityChanged = m_accountVerified && snapshot.accountVerified &&
+        const bool verifiedIdentityChanged = m_gate.verified && snapshot.accountVerified &&
                                              previous.signedIn &&
                                              !SameAccountState(previous, snapshot.account);
         accountChanged = snapshot.accountVerified && !sameCachedAccount &&
@@ -3834,8 +3683,7 @@ void StreamProvider::CompleteRefresh(uint64_t generation, Snapshot snapshot, std
             clearCatalog = true;
             DisplayMetadata::Get().Clear();
             cache::RotateAccountScope("apple");
-            m_snapshotSavePosted = false;
-            m_snapshotSaveDirty = false;
+            m_snapshots.Reset();
             m_albumMutations.clear();
             m_playlistMutations.clear();
             m_exec.Bump();
@@ -3849,10 +3697,10 @@ void StreamProvider::CompleteRefresh(uint64_t generation, Snapshot snapshot, std
         const bool verifiedSignOut = snapshot.accountVerified && !snapshot.account.signedIn;
         const bool preserveLibrary =
             (restoringCachedAccount && !identityChanged && !verifiedSignOut && !snapshotReady) ||
-            (m_accountVerified && previous.signedIn && !verifiedSignOut && !identityChanged &&
+            (m_gate.verified && previous.signedIn && !verifiedSignOut && !identityChanged &&
              !snapshotReady);
         const bool keepPlaylistDetails = preservePlaylistDetails && snapshotReady && !identityChanged &&
-                                         m_accountVerified && previous.signedIn &&
+                                         m_gate.verified && previous.signedIn &&
                                          previous.name == snapshot.account.name &&
                                          previous.storefront == snapshot.account.storefront;
         std::unordered_map<stream::Id, std::vector<stream::Track>> previousPlaylistTracks;
@@ -3868,11 +3716,8 @@ void StreamProvider::CompleteRefresh(uint64_t generation, Snapshot snapshot, std
             m_account = snapshot.account;
             DisplayMetadata::Get().SetSourceStorefront(snapshot.account.signedIn ? snapshot.account.storefront
                                                                                  : std::wstring());
-            m_accountVerified = snapshot.accountVerified;
-            m_authPending = !snapshot.accountVerified;
-            m_sessionRestoring = false;
-            m_cachedAccountBound = false;
-            m_cachedAccountId.clear();
+            m_gate.Reset(!snapshot.accountVerified);
+            m_gate.verified = snapshot.accountVerified;
             m_cachedAccountName.clear();
             m_cachedStorefront.clear();
             m_drm = snapshot.drm;
@@ -3883,11 +3728,7 @@ void StreamProvider::CompleteRefresh(uint64_t generation, Snapshot snapshot, std
                 m_account = snapshot.account;
                 DisplayMetadata::Get().SetSourceStorefront(
                     snapshot.account.signedIn ? snapshot.account.storefront : std::wstring());
-                m_accountVerified = true;
-                m_authPending = false;
-                m_sessionRestoring = false;
-                m_cachedAccountBound = false;
-                m_cachedAccountId.clear();
+                m_gate.Verify();
                 m_cachedAccountName.clear();
                 m_cachedStorefront.clear();
                 m_drm = snapshot.drm;
@@ -4023,7 +3864,7 @@ void StreamProvider::CompleteRefresh(uint64_t generation, Snapshot snapshot, std
     if (accountChanged) NotifyAccountChanged();
     if (favoritesChanged) NotifyFavoritesChanged();
     NotifyLibraryChanged();
-    if (snapshotReady) QueueSnapshotSave();
+    if (snapshotReady) m_snapshots.Queue();
     for (auto& waiter : waiters)
         if (waiter) waiter(error);
     if (snapshotReady) {
@@ -4104,7 +3945,7 @@ std::wstring StreamProvider::Lyrics(const stream::Id& track, abort_callback& abo
     std::wstring locale;
     {
         std::lock_guard lock(m_mutex);
-        if (!m_started || !m_accountVerified || !m_account.signedIn) return {};
+        if (!m_started || !m_gate.verified || !m_account.signedIn) return {};
         locale = m_locale;
     }
     lyrics_protocol::Request request;
@@ -4385,7 +4226,7 @@ std::optional<bool> StreamProvider::PlaylistSavedState(const stream::Id& playlis
 }
 
 std::optional<bool> StreamProvider::PlaylistSavedStateLocked(const stream::Id& playlist) const {
-    if (!m_accountVerified || !m_account.signedIn) return std::nullopt;
+    if (!m_gate.verified || !m_account.signedIn) return std::nullopt;
     const auto mutation =
         std::find_if(m_playlistMutations.begin(), m_playlistMutations.end(), [&playlist](const auto& entry) {
             return entry.first == playlist || entry.second.catalogId == playlist ||
@@ -4492,7 +4333,7 @@ std::optional<bool> StreamProvider::SongsSavedState(const std::vector<stream::Id
     for (const auto& track : tracks)
         songs.push_back(Catalog::Get().FindSong(track));
     std::lock_guard lock(m_mutex);
-    if (!m_accountVerified || !m_account.signedIn) return std::nullopt;
+    if (!m_gate.verified || !m_account.signedIn) return std::nullopt;
     std::unordered_set<stream::Id> listed; // the library's songs as last read, by catalog id
     if (m_librarySongsLoaded)
         for (const auto& song : m_librarySongs)

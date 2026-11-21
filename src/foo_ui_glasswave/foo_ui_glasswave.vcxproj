@@ -213,6 +213,7 @@
     <ClCompile Include="ui\settings_page.cpp" />
     <ClCompile Include="stream\provider.cpp" />
     <ClCompile Include="stream\executor.cpp" />
+    <ClCompile Include="stream\snapshot_saver.cpp" />
     <ClCompile Include="stream\playback_source.cpp" />
     <ClCompile Include="netease\stream_provider.cpp" />
     <ClCompile Include="ui\taskbar.cpp" />
@@ -346,6 +347,8 @@
     <ClInclude Include="applemusic\login.h" />
     <ClInclude Include="stream\provider.h" />
     <ClInclude Include="stream\executor.h" />
+    <ClInclude Include="stream\snapshot_saver.h" />
+    <ClInclude Include="stream\account_gate.h" />
     <ClInclude Include="stream\playback_source.h" />
     <ClInclude Include="netease\stream_provider.h" />
     <ClInclude Include="ui\taskbar.h" />

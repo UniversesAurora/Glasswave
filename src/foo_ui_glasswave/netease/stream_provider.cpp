@@ -635,11 +635,6 @@ struct StreamProvider::IdSnapshotStore {
     std::unordered_map<Key, Iterator, KeyHash> m_index;
 };
 
-StreamProvider& StreamProvider::Get() {
-    static StreamProvider provider;
-    return provider;
-}
-
 namespace {
 
 // The executor's only queue: reads, home and station calls, and the snapshot save.
@@ -647,28 +642,32 @@ constexpr size_t kReadQueue = 0;
 
 } // namespace
 
+StreamProvider::StreamProvider()
+    : m_snapshots("ncm", m_exec, kReadQueue,
+                  {[this] { return SnapshotEligible(); },
+                   [this](cache::provider_snapshot::Snapshot& payload) { return FillSnapshot(payload); }}) {}
+
+StreamProvider& StreamProvider::Get() {
+    static StreamProvider provider;
+    return provider;
+}
+
 void StreamProvider::Start() {
     if (m_exec.Running()) return;
     Ncm().Initialize();
     m_exec.Start({1});
     m_idSnapshots = std::make_shared<IdSnapshotStore>();
-    ++m_generation;
-    m_accountVerified = false;
-    m_sessionRestoring = false;
-    m_snapshotSavePosted = false;
-    m_snapshotSaveDirty = false;
-    m_accountId.clear();
-    m_cachedAccountId.clear();
-    m_cachedCreated.clear();
-    m_cachedSaved.clear();
-    m_signedIn = Ncm().LoggedIn();
-    m_authPending = m_signedIn;
+    {
+        std::lock_guard lock(m_cacheMutex);
+        m_signedIn = Ncm().LoggedIn();
+        ResetSessionLocked(m_signedIn);
+    }
     // The session reports sign-in changes and account refreshes the same way; only a
     // changed sign-in state is an account change, the rest refreshes library lists.
     Ncm().SetStateCallback([this] { OnSessionChanged(); });
     Ncm().SetLibraryCallback([this] {
         NotifyLibraryChanged();
-        if (AccountVerified()) QueueSnapshotSave();
+        if (AccountVerified()) m_snapshots.Queue();
     });
     Ncm().SetLikesCallback([this] { NotifyFavoritesChanged(); });
     if (m_signedIn) LoadBootstrapSnapshot();
@@ -676,37 +675,7 @@ void StreamProvider::Start() {
 }
 
 void StreamProvider::Shutdown() {
-    std::optional<cache::provider_snapshot::Snapshot> finalSnapshot;
-    std::string finalAccountScope;
-    uint64_t finalAccountRevision = 0;
-    {
-        cache::provider_snapshot::Snapshot payload;
-        bool save = false;
-        std::wstring accountId;
-        {
-            std::lock_guard lock(m_cacheMutex);
-            save = m_exec.Running() && m_accountVerified && !m_accountId.empty();
-            if (save) accountId = m_accountId;
-        }
-        const Account account = Ncm().CurrentAccount();
-        if (save) {
-            try {
-                payload.provider = "ncm";
-                payload.sourceOrigin = SourceIdentity();
-                payload.context = SnapshotContext();
-                payload.locale = ui::UsingChinese() ? "zh-Hans-CN" : "en-US";
-                payload.accountId = Utf8(accountId);
-                payload.accountName = Utf8(account.nickname);
-                payload.sourceStorefront = "CN";
-                payload.created = ToPlaylists(Ncm().CreatedPlaylists());
-                payload.saved = ToPlaylists(Ncm().CollectedPlaylists());
-                finalAccountScope = cache::AccountScope("ncm");
-                finalAccountRevision = cache::AccountRevision("ncm");
-                finalSnapshot = std::move(payload);
-            } catch (...) {
-            }
-        }
-    }
+    const auto finalSnapshot = m_snapshots.Prepare();
 
     m_exec.Shutdown();
     Catalog::Get().FlushPendingSave();
@@ -718,127 +687,72 @@ void StreamProvider::Shutdown() {
     Ncm().Shutdown(); // stops the helper and its workers
     {
         std::lock_guard lock(m_cacheMutex);
-        ++m_generation;
-        m_accountVerified = false;
-        m_authPending = false;
-        m_sessionRestoring = false;
-        m_snapshotSavePosted = false;
-        m_snapshotSaveDirty = false;
-        m_accountId.clear();
-        m_cachedAccountId.clear();
-        m_cachedCreated.clear();
-        m_cachedSaved.clear();
+        ResetSessionLocked(false);
     }
-    if (finalSnapshot) {
-        try {
-            if (cache::AccountRevision("ncm") == finalAccountRevision &&
-                cache::AccountScope("ncm") == finalAccountScope) {
-                cache::provider_snapshot::Save(cache::GetStore(), finalAccountScope, *finalSnapshot);
-            }
-        } catch (...) {
-        }
-    }
+    if (finalSnapshot) m_snapshots.Commit(*finalSnapshot);
 }
 
 void StreamProvider::LoadBootstrapSnapshot() {
-    std::string accountScope;
     std::string sourceOrigin;
     try {
-        accountScope = cache::AccountScope("ncm");
         sourceOrigin = SourceIdentity();
     } catch (...) {
         return;
     }
-    const std::string context = SnapshotContext();
-    const auto cached =
-        cache::provider_snapshot::Load(cache::GetStore(), accountScope, "ncm", sourceOrigin, context);
-    if (!cached || cached->accountId.empty()) return;
-    std::wstring accountId = Wide(cached->accountId);
+    const auto loaded = m_snapshots.Load(sourceOrigin, SnapshotContext());
+    if (!loaded) return;
+    const auto& cached = loaded->snapshot;
+    std::wstring accountId = Wide(cached.accountId);
     if (accountId.empty()) return;
 
     {
         std::lock_guard lock(m_cacheMutex);
-        if (!m_exec.Running() || !m_signedIn || m_accountVerified) return;
-        m_cachedAccountId = std::move(accountId);
-        m_cachedCreated = cached->created;
-        m_cachedSaved = cached->saved;
-        m_sessionRestoring = true;
+        if (!m_exec.Running() || !m_signedIn || m_gate.verified) return;
+        m_gate.BeginRestore(std::move(accountId));
+        m_cachedCreated = cached.created;
+        m_cachedSaved = cached.saved;
     }
-    for (const auto& playlist : cached->created)
+    for (const auto& playlist : cached.created)
         Catalog::Get().Restore(FromPlaylist(playlist));
-    for (const auto& playlist : cached->saved)
+    for (const auto& playlist : cached.saved)
         Catalog::Get().Restore(FromPlaylist(playlist));
     NotifyLibraryChanged();
 }
 
-void StreamProvider::QueueSnapshotSave() {
-    cache::provider_snapshot::Snapshot payload;
-    uint64_t generation = 0;
-    uint64_t accountRevision = 0;
-    std::string accountScope;
+void StreamProvider::ResetSessionLocked(bool authPending) {
+    m_gate.Reset(authPending);
+    m_snapshots.Reset();
+    m_accountId.clear();
+    m_cachedCreated.clear();
+    m_cachedSaved.clear();
+}
+
+bool StreamProvider::SnapshotEligible() const {
+    std::lock_guard lock(m_cacheMutex);
+    return SnapshotEligibleLocked();
+}
+
+bool StreamProvider::SnapshotEligibleLocked() const {
+    return m_exec.Running() && m_gate.verified && !m_accountId.empty() && !m_gate.restoring;
+}
+
+bool StreamProvider::FillSnapshot(cache::provider_snapshot::Snapshot& payload) const {
     std::wstring accountId;
     {
         std::lock_guard lock(m_cacheMutex);
-        if (!m_exec.Running() || !m_accountVerified || m_accountId.empty() || m_sessionRestoring) return;
-        m_snapshotSaveDirty = true;
-        if (m_snapshotSavePosted) return;
-        m_snapshotSavePosted = true;
-        m_snapshotSaveDirty = false;
-        generation = m_generation;
+        if (!SnapshotEligibleLocked()) return false;
         accountId = m_accountId;
     }
     const Account account = Ncm().CurrentAccount();
-    try {
-        accountScope = cache::AccountScope("ncm");
-        accountRevision = cache::AccountRevision("ncm");
-        payload.provider = "ncm";
-        payload.sourceOrigin = SourceIdentity();
-        payload.context = SnapshotContext();
-        payload.locale = ui::UsingChinese() ? "zh-Hans-CN" : "en-US";
-        payload.accountId = Utf8(accountId);
-        payload.accountName = Utf8(account.nickname);
-        payload.sourceStorefront = "CN";
-        payload.created = ToPlaylists(Ncm().CreatedPlaylists());
-        payload.saved = ToPlaylists(Ncm().CollectedPlaylists());
-    } catch (...) {
-        std::lock_guard lock(m_cacheMutex);
-        if (generation == m_generation) m_snapshotSavePosted = false;
-        return;
-    }
-    if (m_exec.Running()) {
-        m_exec.Post(kReadQueue, m_exec.Generation(), [this, generation, accountRevision, accountScope = std::move(accountScope),
-                           payload = std::move(payload)]() mutable {
-            bool allowed = false;
-            {
-                std::lock_guard lock(m_cacheMutex);
-                allowed = generation == m_generation && m_accountVerified &&
-                          cache::AccountRevision("ncm") == accountRevision;
-            }
-            if (allowed) {
-                try {
-                    if (cache::AccountScope("ncm") == accountScope)
-                        cache::provider_snapshot::Save(cache::GetStore(), accountScope, payload);
-                } catch (...) {
-                }
-            }
-            fb2k::inMainThread([this, generation] { CompleteSnapshotSave(generation); });
-        });
-    } else {
-        std::lock_guard lock(m_cacheMutex);
-        m_snapshotSavePosted = false;
-    }
-}
-
-void StreamProvider::CompleteSnapshotSave(uint64_t generation) {
-    bool rerun = false;
-    {
-        std::lock_guard lock(m_cacheMutex);
-        if (generation != m_generation) return;
-        m_snapshotSavePosted = false;
-        rerun = m_snapshotSaveDirty && m_exec.Running() && m_accountVerified && !m_sessionRestoring;
-        if (!rerun) m_snapshotSaveDirty = false;
-    }
-    if (rerun) QueueSnapshotSave();
+    payload.sourceOrigin = SourceIdentity();
+    payload.context = SnapshotContext();
+    payload.locale = ui::UsingChinese() ? "zh-Hans-CN" : "en-US";
+    payload.accountId = Utf8(accountId);
+    payload.accountName = Utf8(account.nickname);
+    payload.sourceStorefront = "CN";
+    payload.created = ToPlaylists(Ncm().CreatedPlaylists());
+    payload.saved = ToPlaylists(Ncm().CollectedPlaylists());
+    return true;
 }
 
 stream::Capabilities StreamProvider::Offers() const {
@@ -1171,17 +1085,17 @@ std::vector<settings::Field> StreamProvider::SettingFields() {
 
 bool StreamProvider::SignedIn() const {
     std::lock_guard lock(m_cacheMutex);
-    return m_accountVerified;
+    return m_gate.verified;
 }
 
 bool StreamProvider::SessionRestoring() const {
     std::lock_guard lock(m_cacheMutex);
-    return m_sessionRestoring || m_authPending;
+    return m_gate.Waiting();
 }
 
 bool StreamProvider::AccountVerified() const {
     std::lock_guard lock(m_cacheMutex);
-    return m_accountVerified;
+    return m_gate.verified;
 }
 
 std::wstring StreamProvider::AccountName() const {
@@ -1194,7 +1108,7 @@ void StreamProvider::SignIn(HWND owner) {
         cache::RotateAccountScope("ncm");
         {
             std::lock_guard lock(m_cacheMutex);
-            m_authPending = true;
+            m_gate.authPending = true;
         }
         OnSessionChanged();
     });
@@ -1208,33 +1122,21 @@ void StreamProvider::OnSessionChanged() {
     bool accountObserved = false;
     {
         std::lock_guard lock(m_cacheMutex);
-        const bool restoring = m_sessionRestoring;
-        const bool verified = m_accountVerified;
+        const bool restoring = m_gate.restoring;
+        const bool verified = m_gate.verified;
         if (!signedIn || accountId.empty()) {
             accountChanged = restoring || verified || m_signedIn != signedIn;
-        } else if (restoring && accountId != m_cachedAccountId) {
+        } else if (restoring && accountId != m_gate.cachedId) {
             accountChanged = true;
         } else if (verified && accountId != m_accountId) {
             accountChanged = true;
         }
         if (accountChanged) {
-            ++m_generation;
-            m_accountVerified = false;
-            m_authPending = signedIn && accountId.empty();
-            m_sessionRestoring = false;
-            m_snapshotSavePosted = false;
-            m_snapshotSaveDirty = false;
-            m_accountId.clear();
-            m_cachedAccountId.clear();
-            m_cachedCreated.clear();
-            m_cachedSaved.clear();
+            ResetSessionLocked(signedIn && accountId.empty());
         } else if (signedIn) {
             accountObserved = !verified || restoring;
-            m_accountVerified = true;
-            m_authPending = false;
-            m_sessionRestoring = false;
+            m_gate.Verify();
             m_accountId = accountId;
-            m_cachedAccountId.clear();
             m_cachedCreated.clear();
             m_cachedSaved.clear();
         }
@@ -1243,13 +1145,12 @@ void StreamProvider::OnSessionChanged() {
     if (accountChanged) {
         ClearIdSnapshots();
         cache::RotateAccountScope("ncm");
-        stream::ResetSourceAvailability();
         NotifyAccountChanged();
         return;
     }
     if (accountObserved) NotifyAccountObserved();
     NotifyLibraryChanged();
-    if (signedIn) QueueSnapshotSave();
+    if (signedIn) m_snapshots.Queue();
 }
 
 void StreamProvider::SignOut() {
@@ -1418,7 +1319,7 @@ std::vector<stream::Playlist> StreamProvider::Playlists(stream::Shelf shelf) con
         auto rows = ToPlaylists(Ncm().CreatedPlaylists());
         if (rows.empty()) {
             std::lock_guard lock(m_cacheMutex);
-            if (m_sessionRestoring) return m_cachedCreated;
+            if (m_gate.restoring) return m_cachedCreated;
         }
         return rows;
     }
@@ -1426,7 +1327,7 @@ std::vector<stream::Playlist> StreamProvider::Playlists(stream::Shelf shelf) con
         auto rows = ToPlaylists(Ncm().CollectedPlaylists());
         if (rows.empty()) {
             std::lock_guard lock(m_cacheMutex);
-            if (m_sessionRestoring) return m_cachedSaved;
+            if (m_gate.restoring) return m_cachedSaved;
         }
         return rows;
     }

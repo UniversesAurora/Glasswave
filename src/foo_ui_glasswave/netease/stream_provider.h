@@ -1,8 +1,10 @@
 #pragma once
 
+#include "stream/account_gate.h"
 #include "stream/executor.h"
 #include "netease/types.h"
 #include "stream/provider.h"
+#include "stream/snapshot_saver.h"
 
 #include <memory>
 #include <mutex>
@@ -77,10 +79,15 @@ class StreamProvider final : public stream::Provider {
   private:
     struct IdSnapshotStore;
 
-    StreamProvider() = default;
+    StreamProvider();
     void LoadBootstrapSnapshot();
-    void QueueSnapshotSave();
-    void CompleteSnapshotSave(uint64_t generation);
+    // Back to "nothing known" for a new session; `authPending`: a check of the account is
+    // expected next. Called with m_cacheMutex held at Start, Shutdown and on an account change.
+    void ResetSessionLocked(bool authPending);
+    // What the snapshot saver asks of this provider (m_snapshots).
+    bool SnapshotEligible() const;
+    bool SnapshotEligibleLocked() const;
+    bool FillSnapshot(cache::provider_snapshot::Snapshot& payload) const;
     void OnSessionChanged();
     void PostListPage(stream::ListPageDone done, stream::ListPage page, std::vector<Song> songs,
                       std::wstring error, std::shared_ptr<std::atomic_bool> cancelled);
@@ -88,18 +95,13 @@ class StreamProvider final : public stream::Provider {
     void ClearIdSnapshots();
 
     bool m_signedIn = false;
-    bool m_accountVerified = false;
-    bool m_authPending = false;
-    bool m_sessionRestoring = false;
-    bool m_snapshotSavePosted = false;
-    bool m_snapshotSaveDirty = false;
-    uint64_t m_generation = 0;
+    stream::AccountGate m_gate;
     mutable std::mutex m_cacheMutex;
     std::wstring m_accountId;
-    std::wstring m_cachedAccountId;
     std::vector<stream::Playlist> m_cachedCreated;
     std::vector<stream::Playlist> m_cachedSaved;
     stream::Executor m_exec; // one queue: every blocking read and the snapshot save
+    stream::SnapshotSaver m_snapshots;
     std::shared_ptr<IdSnapshotStore> m_idSnapshots;
     std::atomic<int64_t> m_heartbeatSeed{0}; // heartbeat mode's next seed: the last song it sent
 };

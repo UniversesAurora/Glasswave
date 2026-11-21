@@ -2,8 +2,10 @@
 
 #include "applemusic/catalog.h"
 #include "applemusic/client.h"
+#include "stream/account_gate.h"
 #include "stream/executor.h"
 #include "stream/provider.h"
+#include "stream/snapshot_saver.h"
 
 #include <chrono>
 #include <condition_variable>
@@ -107,7 +109,7 @@ class StreamProvider final : public stream::Provider {
     void OnLanguageChanged() override;
 
   private:
-    StreamProvider() = default;
+    StreamProvider();
     ~StreamProvider() override;
     StreamProvider(const StreamProvider&) = delete;
     StreamProvider& operator=(const StreamProvider&) = delete;
@@ -150,14 +152,20 @@ class StreamProvider final : public stream::Provider {
     uint64_t ApplyVerifiedAccount(uint64_t generation, uint64_t refreshToken, const AccountState& account);
     void CompleteRefresh(uint64_t generation, Snapshot snapshot, std::wstring error);
     void LoadBootstrapSnapshot(uint64_t generation);
-    void QueueSnapshotSave();
-    void CompleteSnapshotSave(uint64_t generation);
+    // What the snapshot saver asks of this provider (m_snapshots).
+    bool SnapshotEligible() const;
+    bool SnapshotEligibleLocked() const;
+    bool FillSnapshot(cache::provider_snapshot::Snapshot& payload) const;
     void StartFavoriteBindingRead(uint64_t generation, uint64_t bindingEpoch);
     void CompleteFavoriteBinding(uint64_t generation, uint64_t bindingEpoch, stream::Id playlist,
                                  bool complete, std::wstring error);
     std::vector<stream::Playlist> RawPlaylists(stream::Shelf shelf) const;
     bool VerifyCatalogArtist(uint64_t generation, std::wstring_view storefront, std::wstring_view catalogId,
                              abort_callback& abort);
+    // Back to "nothing known" for a new session: the account, the library, everything in flight.
+    // `authPending`: a check of the account is expected next (start-up). Called with m_mutex held
+    // at Start, Shutdown and SignOut.
+    void ResetSessionLocked(bool authPending);
     void ClearLibraryLocked();
     void ClearPlaylistDetailsLocked();
     bool PutIfCurrent(uint64_t generation, const Song& song);
@@ -239,15 +247,10 @@ class StreamProvider final : public stream::Provider {
     mutable std::mutex m_mutex;
     std::condition_variable m_artistVerificationCondition;
     bool m_started = false;
-    // True after the helper returns a successful account snapshot. The initial
-    // signed-out placeholder is not an identity and must not invalidate startup work.
-    bool m_accountVerified = false;
-    bool m_authPending = false;
-    bool m_sessionRestoring = false;
+    // Verified once the helper returns a successful account snapshot; the initial signed-out
+    // placeholder is not an identity and must not invalidate startup work.
+    stream::AccountGate m_gate;
     std::wstring m_lastAuthError;
-    bool m_cachedAccountBound = false;
-    bool m_snapshotSavePosted = false;
-    bool m_snapshotSaveDirty = false;
     bool m_refreshInFlight = false;
     uint64_t m_refreshGeneration = 0;
     uint64_t m_refreshSequence = 0;
@@ -259,8 +262,8 @@ class StreamProvider final : public stream::Provider {
     bool m_librarySnapshotLoaded = false;
     std::chrono::steady_clock::time_point m_librarySnapshotValidUntil{};
     stream::Executor m_exec;
+    stream::SnapshotSaver m_snapshots;
     AccountState m_account;
-    std::wstring m_cachedAccountId;
     std::wstring m_cachedAccountName;
     std::wstring m_cachedStorefront;
     DrmState m_drm;
