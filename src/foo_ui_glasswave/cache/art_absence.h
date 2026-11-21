@@ -28,7 +28,12 @@ struct Invalidation {
 inline std::mutex mutex;
 inline std::map<std::string, Entry> entries;
 inline std::vector<Invalidation> invalidations; // oldest first, bounded
-inline std::atomic_uint64_t generation = 0;     // the sequence of the latest invalidation
+// The invalidations dropped to keep the list bounded, summed up as if they had covered every key:
+// an answer asked for before the newest of them and a disk record written before it are not
+// trusted. That costs one more question for such a picture and never keeps a stale answer.
+inline uint64_t droppedThrough = 0; // the sequence of the newest dropped invalidation
+inline int64_t droppedAt = 0;       // and its time
+inline std::atomic_uint64_t generation = 0; // the sequence of the latest invalidation
 // A worker captures this before it asks the service; an answer is kept only if no invalidation
 // of its own key has been made since (one of another cover or service does not discard it).
 inline uint64_t Epoch() {
@@ -36,12 +41,13 @@ inline uint64_t Epoch() {
 }
 // Under `mutex`.
 inline bool InvalidatedSinceLocked(std::string_view artKey, uint64_t epoch) {
+    if (epoch < droppedThrough) return true;
     for (const auto& item : invalidations)
         if (item.sequence > epoch && ArtKeyHasPrefix(artKey, item.prefix)) return true;
     return false;
 }
 inline int64_t InvalidatedAtLocked(std::string_view artKey) {
-    int64_t at = 0;
+    int64_t at = droppedAt;
     for (const auto& item : invalidations)
         if (ArtKeyHasPrefix(artKey, item.prefix)) at = std::max(at, item.at);
     return at;
@@ -144,10 +150,14 @@ inline void Invalidate(std::string_view prefix) {
     std::lock_guard lock(mutex);
     invalidations.push_back({std::string(prefix), ++generation, Store::Now()});
     constexpr size_t kMaxInvalidations = 256;
-    if (invalidations.size() > kMaxInvalidations)
-        invalidations.erase(invalidations.begin(),
-                            invalidations.begin() +
-                                static_cast<std::ptrdiff_t>(invalidations.size() - kMaxInvalidations));
+    if (invalidations.size() > kMaxInvalidations) {
+        const auto drop = invalidations.begin() + static_cast<std::ptrdiff_t>(invalidations.size() - kMaxInvalidations);
+        for (auto it = invalidations.begin(); it != drop; ++it) {
+            droppedThrough = std::max(droppedThrough, it->sequence);
+            droppedAt = std::max(droppedAt, it->at);
+        }
+        invalidations.erase(invalidations.begin(), drop);
+    }
     for (auto& [key, entry] : entries)
         if (ArtKeyHasPrefix(key, prefix)) entry.invalidated = true;
 }
