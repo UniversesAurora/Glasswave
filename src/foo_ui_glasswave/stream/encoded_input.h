@@ -103,7 +103,7 @@ class EncodedInputBase : public input_stubs {
     virtual void OnReady() {}
     virtual void OnComplete() {}
     // Tags of the decoder's own dynamic info are replaced by the source's.
-    virtual void ApplyDynamicMetadata(file_info&) const {}
+    virtual void ApplyDynamicMetadata(file_info&) {}
     virtual void ReportFailure(std::string_view /*stage*/, std::string_view /*errorClass*/,
                                std::string_view /*what*/) noexcept {}
     virtual stream::atmos::OutputTarget AtmosTarget() const { return stream::atmos::OutputTarget::StereoSpeakers; }
