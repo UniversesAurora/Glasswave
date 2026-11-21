@@ -385,6 +385,7 @@ void LyricsView::SetVisible(bool visible) {
         m_lastNowAt = Clock::now();
         m_focus = -2;  // recomputed by Tick
         m_lastFrame = Clock::now();
+        m_idle = false;
         Tick();
         for (auto& l : m_lines) {
             l->y.Snap(l->y.Target());
@@ -449,6 +450,7 @@ void LyricsView::SetResult(const lyrics::Result& result) {
     // New lyrics fly in from below, line after line.
     m_lastNow = Now();
     m_lastNowAt = Clock::now();
+    m_idle = false;
     Tick();
     const float H = (m_bounds.bottom - m_bounds.top) / m_scale;
     for (auto& l : m_lines) l->y.Snap(l->y.Target() + H * 0.6f);
@@ -474,11 +476,16 @@ void LyricsView::StartFrames() {
     if (onFrames) onFrames();
 }
 
-void LyricsView::Resync() {
-    if (!m_visible || !m_idle || !m_lyrics || !m_lyrics->synced || !m_playing || m_paused) return;
-    const double now = Now();
+// Whether a sleeping view has something to show again: the time jumped (a seek, also one made
+// while paused) or reached the next line's start or end.
+bool LyricsView::WakeDue(double now) const {
+    if (!m_playing || m_paused) return std::abs(now - m_lastNow) > 0.001;
     const double expected = m_lastNow + std::chrono::duration<double>(Clock::now() - m_lastNowAt).count();
-    if (std::abs(now - expected) > 0.6 || static_cast<int>(now * 1000) >= m_nextEventMs) StartFrames();
+    return std::abs(now - expected) > 0.6 || static_cast<int>(now * 1000) >= m_nextEventMs;
+}
+
+void LyricsView::Resync() {
+    if (m_visible && m_idle && m_lyrics && m_lyrics->synced && WakeDue(Now())) StartFrames();
 }
 
 // A line-timed song changes nothing between one line's start or end and the next: frames
@@ -761,6 +768,10 @@ bool LyricsView::NeedsFrames() const {
 
 bool LyricsView::Tick() {
     if (!m_visible) return false;
+    // Asleep while the window's frames run for something else (its seek head ticks through the
+    // whole song): nothing here changes until the time jumps or the next line starts or ends,
+    // so the frame is neither rendered nor answered with another wake-up.
+    if (m_idle && !WakeDue(Now())) return false;
     const auto frame = Clock::now();
     const float dt = std::clamp(std::chrono::duration<float>(frame - m_lastFrame).count(), 0.0f, 0.1f);
     m_lastFrame = frame;

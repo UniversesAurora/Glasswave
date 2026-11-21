@@ -50,7 +50,7 @@ public:
     bool Tick();
     bool NeedsFrames() const;
     // The playback position moved (the core's time or seek callback): an idle view takes up
-    // a seek, or an event it has slept past, on the next frame.
+    // a seek (also one made while paused), or an event it has slept past, on the next frame.
     void Resync();
 
     // Mouse input in client pixels; the window routes events here while the point is inside.
@@ -88,6 +88,7 @@ private:
     double Now() const;  // playback position, seconds
     void StartFrames();
     void SleepUntilNextEvent(); // idle: wake when the next line starts or ends
+    bool WakeDue(double now) const;
     float ContentTop() const;  // DIP: top of the lyrics (0: the view starts below the pane header)
     float AnchorY() const;     // DIP: where the focused line's top sits
     float TopSpace(float lineH) const; // DIP above a focused line this high (AnchorY's rule)
