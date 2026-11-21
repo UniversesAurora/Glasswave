@@ -5,10 +5,15 @@
 #include <ctime>
 #include <cwchar>
 #include <cwctype>
+#include <dbt.h>
 #include <set>
 #include <unordered_map>
 #include <unordered_set>
 #include "ui/main_window.h"
+#include "download/downloads.h"
+#include "ui/downloads_page.h"
+#include "ui/home_page.h"
+#include "media/radio.h"
 #include "netease/log.h"
 #include "aero/aero_atlas.h"
 #include "aero/aero_metrics.h"
@@ -99,6 +104,8 @@ enum WidgetId {
     kDetailAction,
     kDetailBriefToggle,
     kRefresh,
+    kDownloadAll,
+    kLocalPlay, // Play on a local album's or playlist's command bar
     kLyricsToggle,
     kVolArrow, // a narrow window's arrow beside the speaker: the volume flyout
     kCmdMore,  // the command bar's » for the buttons that no longer fit
@@ -1125,7 +1132,49 @@ void MainWindow::CreateWidgets() {
             dc->DrawTextLayout({0, 0}, layout.get(), ink.get());
         },
         {})
-        ->onClick = [this] { RefreshCurrentPage(); };
+        ->onClick = [this] {
+        if (m_page) m_page->SaveAction();
+    };
+    if (Widget* save = WidgetById(kRefresh)) save->enabled = [this] { return !m_detail.saveBusy; };
+    // Play on a local album's or playlist's command bar (they have no detail band): the green
+    // triangle and the label, as the band's Play draws them.
+    add(kLocalPlay,
+        [](auto* dc, D2D1_SIZE_F s, Layer l) {
+            wp::CommandButton(dc, s, l, L"", false); // plate only
+            auto layout = MakeText(Tr(L"Play"), 12.0f, DWRITE_FONT_WEIGHT_NORMAL, s.width, s.height);
+            DWRITE_TEXT_METRICS tm{};
+            layout->GetMetrics(&tm);
+            const float icon = 14.0f, gap = 5.0f;
+            const float x = std::round((s.width - tm.width - icon - gap) / 2);
+            const float top = std::round((s.height - icon) / 2);
+            wp::GreenPlay(dc, {x, top, x + icon, top + icon});
+            com_ptr<ID2D1SolidColorBrush> ink;
+            dc->CreateSolidColorBrush(Hex(0x1E395B), ink.put());
+            dc->DrawTextLayout({x + icon + gap, 0}, layout.get(), ink.get());
+        },
+        {})
+        ->onClick = [this] {
+        if (!m_source) return;
+        metadb_handle_list items; // the list as shown, filtered and sorted
+        for (size_t row = 0; row < m_source->Count(); ++row)
+            if (const auto track = m_source->Item(row); track.is_valid()) items.add_item(track);
+        if (items.get_count()) media::PlayQueue(items, 0); // a playlist is recorded as played
+    };
+
+    // Download all, right of Collect: the page's songs go to Downloads.
+    add(kDownloadAll,
+        [this](auto* dc, D2D1_SIZE_F s, Layer l) {
+            wp::CommandButton(dc, s, l, L"", false); // plate only
+            auto layout = MakeText(m_detail.downloadLabel, 12.0f, DWRITE_FONT_WEIGHT_NORMAL, s.width, s.height,
+                                   DWRITE_TEXT_ALIGNMENT_CENTER);
+            com_ptr<ID2D1SolidColorBrush> ink;
+            dc->CreateSolidColorBrush(Hex(0x1E395B), ink.put());
+            dc->DrawTextLayout({0, 0}, layout.get(), ink.get());
+        },
+        {})
+        ->onClick = [this] {
+        if (m_page) m_page->DownloadAction();
+    };
     // Split buttons (WMP 12): one control; the main part acts at once, the arrow part opens a
     // menu. m_splitPart says which half the mouse is over.
     add(kViewOptions,
@@ -1556,22 +1605,34 @@ void MainWindow::UpdateLayout() {
         L.viewOptions = {};
     }
     {
-        // Refresh sits left of the view options (or the search box), only on pages whose
-        // data can be re-read. Its width follows the centred label.
-        if (CanRefreshPage()) {
-            const float w = fit(L"Refresh", false);
-            const int right =
-                (L.viewOptions.right > L.viewOptions.left ? L.viewOptions.left : L.search.left) - PxI(8);
+        // The page's command (Collect) sits left of the view options (or the search box), only
+        // on pages that have one. Its width follows the centred label.
+        const DetailInfo detail = m_page ? m_page->Detail() : DetailInfo{};
+        int right = (L.viewOptions.right > L.viewOptions.left ? L.viewOptions.left : L.search.left) - PxI(8);
+        L.download = {};
+        if (!detail.downloadLabel.empty()) {
+            const float w = fit(detail.downloadLabel.c_str(), false);
+            L.download = {right - PxI(w), cbcy - PxI(11), right, cbcy + PxI(11)};
+            right = L.download.left - PxI(2);
+        }
+        if (!detail.saveLabel.empty()) {
+            const float w = fit(detail.saveLabel.c_str(), false);
             L.refresh = {right - PxI(w), cbcy - PxI(11), right, cbcy + PxI(11)};
+            right = L.refresh.left - PxI(2);
         } else {
             L.refresh = {};
+        }
+        L.localPlay = {};
+        if (LocalPlayShown()) {
+            const float w = fit(L"Play", false) + 14 + 5; // the triangle and its gap
+            L.localPlay = {right - PxI(w), cbcy - PxI(11), right, cbcy + PxI(11)};
         }
     }
     // Then the buttons on the left that would run into the right group go, last first, behind
     // a » after the ones that stay (WMP 12); Organize always stays.
     {
         LONG rightGroup = L.search.left;
-        for (const RECT* r : {&L.viewOptions, &L.refresh})
+        for (const RECT* r : {&L.viewOptions, &L.refresh, &L.download, &L.localPlay})
             if (r->right > r->left) rightGroup = std::min(rightGroup, r->left);
         const int moreW = PxI(22);
         m_cmdHidden.clear();
@@ -1960,6 +2021,12 @@ void MainWindow::UpdateLayout() {
             break;
         case kRefresh:
             r = &L.refresh;
+            break;
+        case kDownloadAll:
+            r = &L.download;
+            break;
+        case kLocalPlay:
+            r = &L.localPlay;
             break;
         case kDetailAction:
             r = &L.detailAction;
@@ -3424,13 +3491,24 @@ std::vector<MenuAction> MainWindow::AllSectionsMenu() {
     View most;
     most.library = View::Library::All;
     most.kind = View::Kind::AllMostPlayed;
+    View downloads;
+    downloads.library = View::Library::All;
+    downloads.kind = View::Kind::Downloads;
     View playlists;
     playlists.library = View::Library::All;
     playlists.kind = View::Kind::Playlists;
     return {{L"Favorites", go(favorites)},
             {L"Recently Played", go(recent)},
             {L"Most Played", go(most)},
+            {L"Downloads", go(downloads)},
             {L"Playlists", go(playlists)}};
+}
+
+// A local album's or (not the queue's) playlist's page: Play on the command bar.
+bool MainWindow::LocalPlayShown() const {
+    if (m_page || !m_source) return false;
+    return (m_view.kind == View::Kind::Group && m_view.group == media::GroupKind::Album) ||
+           (m_view.kind == View::Kind::Playlist && !media::IsQueue(m_view.playlist));
 }
 
 std::vector<MenuAction> MainWindow::LocalSectionsMenu() {
@@ -3672,14 +3750,18 @@ std::vector<MainWindow::Crumb> MainWindow::BuildCrumbPath() {
         home.library = View::Library::All;
         home.kind = View::Kind::AllMusic;
         path.push_back({L"All Music", go(home), [this] { return AllSectionsMenu(); }});
-        if (m_view.kind == View::Kind::AllFavorites) {
-            path.push_back({L"Favorites", go(m_view), {}});
-        } else if (m_view.kind == View::Kind::AllRecentPlayed) {
-            path.push_back({L"Recently Played", go(m_view), {}});
-        } else if (m_view.kind == View::Kind::AllMostPlayed) {
-            path.push_back({L"Most Played", go(m_view), {}});
-        } else if (m_view.kind == View::Kind::Playlists) {
-            path.push_back({L"Playlists", go(m_view), [this] { return PlaylistListMenu(false); }});
+        if (view.kind == View::Kind::AllFavorites) {
+            path.push_back({L"Favorites", go(view), {}});
+        } else if (view.kind == View::Kind::AllRecentPlayed) {
+            path.push_back({L"Recently Played", go(view), {}});
+        } else if (view.kind == View::Kind::AllMostPlayed) {
+            path.push_back({L"Most Played", go(view), {}});
+        } else if (view.kind == View::Kind::Downloads) {
+            path.push_back({L"Downloads", go(view), {}});
+        } else if (view.kind == View::Kind::Search) {
+            path.push_back({Tr(L"Search results") + L" (" + view.remoteId + L")", go(view), {}, true});
+        } else if (view.kind == View::Kind::Playlists) {
+            path.push_back({L"Playlists", go(view), [this] { return PlaylistListMenu(false); }});
         }
         break;
     }
@@ -3711,143 +3793,86 @@ std::vector<MainWindow::Crumb> MainWindow::BuildCrumbPath() {
     return path;
 }
 
-void MainWindow::PaintBreadcrumb() {
-    auto& host = gfx::CompositionHost::Get();
-    const int w = PxI(900), h = PxI(NavBarHeight() - 1);
-    host.Repaint(m_breadcrumb, w, h, m_scale, [&](ID2D1DeviceContext* dc) {
-        // Plates 21 DIP high (owner: 17 was too low), centred with the text in the bar.
-        const float H = h / m_scale, top = std::round((H - 21) / 2 * m_scale) / m_scale, bottom = top + 21;
-        com_ptr<ID2D1SolidColorBrush> ink, divider;
-        dc->CreateSolidColorBrush(Hex(0x1E395B), ink.put());
-        dc->CreateSolidColorBrush(Hex(0x8DB2E3, 0.8f), divider.put());
-        for (int i = 0; i < static_cast<int>(m_crumbs.size()); ++i) {
-            const Crumb& c = m_crumbs[i];
-            const bool hasArrow = c.children || i + 1 < static_cast<int>(m_crumbs.size());
-            const bool hot = i == m_crumbHot, open = i == m_crumbOpen;
-            // Hover lights the whole crumb. WMP 12 art (WMP_BREADCRUMB_MAINBUTTON / _SPLITBUTTON,
-            // states empty / hot / pressed / grey): the part under the mouse is hot, the
-            // other half grey, the arrow pressed while its menu is open.
-            const bool crumbArt =
-                win7::Resources::Get().Has(win7::Module::Wmploc, L"WMP_BREADCRUMB_MAINBUTTON.PNG");
-            if ((hot || open) && crumbArt) {
-                const int nameState = open || m_crumbHotPart == 1 ? 3 : 1;
-                const int arrowState = open ? 2 : m_crumbHotPart == 1 ? 1 : 3;
-                if (!c.text.empty()) {
-                    // MAINBUTTON is the left half of a split button and has no right edge; a
-                    // level without an arrow is closed with the split part's last 3 px.
-                    const float px = 1.0f / m_scale, edge = c.children ? 0 : 3 * px;
-                    win7::DrawNineGrid(dc, win7::Module::Wmploc, L"WMP_BREADCRUMB_MAINBUTTON.PNG",
-                                       {16.0f * nameState, 0, 16.0f * nameState + 16, 22}, {3, 3, 3, 3},
-                                       {c.x0, top, c.split - edge, bottom});
-                    if (!c.children)
-                        win7::DrawNineGrid(dc, win7::Module::Wmploc, L"WMP_BREADCRUMB_SPLITBUTTON.PNG",
-                                           {10.0f * nameState + 7, 0, 10.0f * nameState + 10, 22},
-                                           {0, 3, 0, 3}, {c.split - edge, top, c.split, bottom});
-                }
-                if (c.children)
-                    win7::DrawNineGrid(dc, win7::Module::Wmploc, L"WMP_BREADCRUMB_SPLITBUTTON.PNG",
-                                       {10.0f * arrowState, 0, 10.0f * arrowState + 10, 22}, {3, 3, 3, 3},
-                                       {c.split, top, c.x1, bottom});
-            } else if (hot || open) {
-                wp::RowPlate(dc, {c.x0, top, c.x1, bottom}, wp::RowState::Hot, true);
-                if (open || m_crumbHotPart == 1) {
-                    if (c.children && (open || hot))
-                        wp::RowPlate(dc, {c.split, top, c.x1, bottom}, wp::RowState::Selected, true);
-                } else if (!c.text.empty()) {
-                    wp::RowPlate(dc, {c.x0, top, c.split, bottom}, wp::RowState::SelectedHot, true);
-                }
-                if (!c.text.empty() && c.children) {
-                    const float px = 1.0f / m_scale;
-                    dc->FillRectangle({c.split, top + 1, c.split + px, bottom - 1}, divider.get());
-                }
-            }
-            if (!c.text.empty()) {
-                auto t = MakeText(c.literal ? c.text : Tr(c.text), 12.0f, DWRITE_FONT_WEIGHT_NORMAL,
-                                  c.split - c.x0, H);
-                t->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER); // centered in the bar, like WMP
-                dc->DrawTextLayout({c.x0 + 4, 0}, t.get(), ink.get());
-            }
-            if (hasArrow) { // small black triangle: right, or down while the menu is open
-                const float cx = std::round(((c.split + c.x1) / 2) * m_scale) / m_scale;
-                const float cy = std::round((H / 2) * m_scale) / m_scale;
-                com_ptr<ID2D1Factory> f;
-                dc->GetFactory(f.put());
-                com_ptr<ID2D1PathGeometry> tri;
-                com_ptr<ID2D1GeometrySink> sink;
-                f->CreatePathGeometry(tri.put());
-                tri->Open(sink.put());
-                if (open) {
-                    sink->BeginFigure({cx - 3.5f, cy - 1.5f}, D2D1_FIGURE_BEGIN_FILLED);
-                    sink->AddLine({cx + 3.5f, cy - 1.5f});
-                    sink->AddLine({cx, cy + 2.5f});
-                } else {
-                    sink->BeginFigure({cx - 1.5f, cy - 3.5f}, D2D1_FIGURE_BEGIN_FILLED);
-                    sink->AddLine({cx + 2.5f, cy});
-                    sink->AddLine({cx - 1.5f, cy + 3.5f});
-                }
-                sink->EndFigure(D2D1_FIGURE_END_CLOSED);
-                sink->Close();
-                com_ptr<ID2D1SolidColorBrush> arrow;
-                dc->CreateSolidColorBrush(Hex(0x1E3250), arrow.put()); // WMP's dark navy, as a vector
-                dc->FillGeometry(tri.get(), arrow.get());
-            }
-        }
-    });
-}
-
-bool MainWindow::CrumbAt(POINT pt, int* index, int* part) const {
-    if (!PtInRect(&m_layout.breadcrumb, pt)) return false;
-    const float x = (pt.x - m_layout.breadcrumb.left) / m_scale;
-    for (int i = 0; i < static_cast<int>(m_crumbs.size()); ++i) {
-        const Crumb& c = m_crumbs[i];
-        if (x >= c.x0 && x < c.x1) {
-            *index = i;
-            *part = x >= c.split ? 1 : 0;
-            return true;
-        }
-    }
-    return false;
-}
-
-void MainWindow::UpdateCrumbHover(POINT pt) {
-    int index = -1, part = 0;
-    if (!CrumbAt(pt, &index, &part)) index = -1;
-    if (index == m_crumbHot && (index < 0 || part == m_crumbHotPart)) return;
-    m_crumbHot = index;
-    m_crumbHotPart = part;
-    PaintBreadcrumb();
-}
-
-void MainWindow::OnCrumbClick(POINT pt) {
-    int index = -1, part = 0;
-    if (!CrumbAt(pt, &index, &part)) return;
-    const Crumb c = m_crumbs[index]; // navigation rebuilds m_crumbs
-    if (part == 0 && c.open) {
-        c.open();
-        return;
-    }
-    if (!c.children) return;
-    m_crumbOpen = index;
-    PaintBreadcrumb();
-    POINT screen{m_layout.breadcrumb.left + static_cast<LONG>(std::lround(c.split * m_scale)),
-                 m_layout.breadcrumb.top + PxI(23)};
-    ClientToScreen(m_hwnd, &screen);
-    const auto items = c.children();
-    ShowActionMenu(m_hwnd, screen, items); // runs the chosen action
-    m_crumbOpen = -1;
-    m_crumbHot = -1;
-    PaintBreadcrumb();
+// The breadcrumb: the place of the page it was opened from (and so on up), then this page; or,
+// opened from no page, its own place. A page adds only its own level: everything above it is
+// its opener's path, unchanged (owner, 2026-11-20: a playlist opened from Home showed "my
+// playlists" above it).
+std::vector<MainWindow::Crumb> MainWindow::BuildCrumbPath(const View& view) {
+    if (!view.from) return PlacePath(view);
+    std::vector<Crumb> path = BuildCrumbPath(*view.from);
+    View own = view;
+    own.from = nullptr;
+    auto place = PlacePath(own);
+    if (place.size() < 2) return path;
+    Crumb level = std::move(place.back());
+    level.open = [this, view] { Navigate(view, true); }; // back here, with its own path
+    path.push_back(std::move(level));
+    return path;
 }
 
 // ---- Navigation --------------------------------------------------------------------------
 
+namespace {
+// A section of the navigation pane (or a page it lists directly): it always stands in its own
+// place, whatever page links to it.
+bool SectionPage(const View& view) {
+    switch (view.kind) {
+    case View::Kind::Home:
+    case View::Kind::AllMusic:
+    case View::Kind::Playlists:
+    case View::Kind::SmartPlaylists:
+    case View::Kind::AllFavorites:
+    case View::Kind::AllRecentPlayed:
+    case View::Kind::AllMostPlayed:
+    case View::Kind::Downloads:
+    case View::Kind::Category:
+    case View::Kind::AudioCd:
+    case View::Kind::RemoteFavorites:
+    case View::Kind::RemoteShelf:
+    case View::Kind::RemoteArtists:
+    case View::Kind::RemoteAlbums:
+    case View::Kind::RemoteSectionTracks:
+    case View::Kind::RemoteGroups:
+        return true;
+    case View::Kind::Playlist:
+        return media::IsQueue(view.playlist);
+    default:
+        return false;
+    }
+}
+} // namespace
+
+void MainWindow::Open(const View& view) {
+    View next = view;
+    if (!next.from && !SectionPage(next)) {
+        // Opened from the page on screen. A page already on its path (a link back up) is
+        // reached the way it was: the path is cut there, never looped.
+        std::shared_ptr<const View> from = std::make_shared<View>(m_view);
+        for (auto at = from; at; at = at->from)
+            if (SameView(*at, next)) {
+                from = at->from;
+                break;
+            }
+        next.from = std::move(from);
+    }
+    Navigate(next, true);
+}
+
+void MainWindow::Replace(const View& view) {
+    View next = view;
+    if (!next.from) next.from = m_view.from;
+    Navigate(next, false);
+}
+
+
 // The page that was open when the window closed, and its top row:
 // version, library, kind, playlist, name, group, key, provider, shelf, shelfKnown,
-// remoteId, parentId, parentName, sectionId, groupId, top row; tab-separated.
+// remoteId, sectionId, groupId, top row; tab-separated. (Where it was opened from is not kept:
+// restored, a page shows its own place.)
 void MainWindow::SaveLastView() {
     if (!m_list) return;
     const size_t top = m_list->TopRow();
-    std::wstring text = L"3";
+    std::wstring text = L"4";
     auto add = [&text](const std::wstring& value) {
         text += L'\t';
         text += CleanConfigField(value);
@@ -4030,11 +4055,43 @@ void MainWindow::Navigate(const View& requested, bool push) {
         }
     }
     switch (view.kind) {
+    case View::Kind::Search:
+        m_page = MakeSearchPage(*this, view);
+        if (!provider)
+            target = view.library == View::Library::All ? NavPane::Target::LibraryAll : NavPane::Target::LibraryLocal;
+        break;
     case View::Kind::AllFavorites:
         m_page = MakeAllFavoritesPage(*this, view);
         target = NavPane::Target::AllFavorites;
         break;
-    case View::Kind::AllRecentPlayed:
+    case View::Kind::AudioCd: {
+        const wchar_t letter = static_cast<wchar_t>(view.playlist);
+        // A drive not read yet (auto-loading off) is read when shown; one found empty only when
+        // its row is clicked again (OnNavItem), not on every refresh this page gets.
+        if (const auto* unread = cd::FindDrive(letter); unread && unread->state == cd::CdDrive::State::Unread)
+            cd::ReadDrive(letter);
+        const auto* drive = cd::FindDrive(letter);
+        const bool reading = drive && drive->state == cd::CdDrive::State::Reading;
+        view.name = m_view.name = drive ? cd::DriveTitle(*drive) : Tr(L"Audio CD");
+        source = std::make_unique<DiscSource>(
+            drive && drive->state == cd::CdDrive::State::Loaded ? drive->tracks : metadb_handle_list(),
+            reading ? L"Reading the disc..." : L"No disc in the drive.");
+        target = NavPane::Target::AudioCd;
+        navIndex = view.playlist;
+        break;
+    }
+    case View::Kind::AllRecentPlayed: // songs, albums and playlists tabs (ui/recent_page.h)
+        m_page = MakeRecentPage(*this, view);
+        target = NavPane::Target::AllRecentPlayed;
+        break;
+    case View::Kind::Home: // the sources' home pages (ui/home_page.h)
+        m_page = MakeHomePage(*this, view);
+        target = NavPane::Target::Home;
+        break;
+    case View::Kind::Downloads: // downloading and downloaded tabs (ui/downloads_page.h)
+        m_page = MakeDownloadsPage(*this, view);
+        target = NavPane::Target::AllDownloads;
+        break;
     case View::Kind::AllMostPlayed: {
         const bool recent = view.kind == View::Kind::AllRecentPlayed;
         const size_t rows = static_cast<size_t>(settings::PlayHistoryRows());
@@ -4646,16 +4703,17 @@ std::vector<ContextAction> MainWindow::BuildContextActions(metadb_handle_list_cr
         AddRemotePlaylistMenu(actions, *provider, Ready(selected),
                               onPlaylist ? m_view.remoteId : stream::Id());
     }
+    AddDownloadActions(actions, selected, m_hwnd);
 
-    // One song of a source that has song details: its page.
-    if (provider && selected.get_count() == 1 && provider->Can(stream::Capability::SongDetails) &&
-        !(m_view.kind == View::Kind::RemoteSong && m_view.remoteId == provider->TrackId(selected[0]))) {
-        const stream::Id id = provider->TrackId(selected[0]);
-        const auto known = provider->FindTrack(id);
-        const std::wstring title = known ? known->title : std::wstring();
-        if (!id.empty())
-            actions.push_back({L"Song info", [this, provider, id, title] { Navigate(SongView(*provider, id, title), true); }});
-    }
+    // Searches name what they look for (owner, 2026-11-21: a song offered only 搜索此唱片集).
+    actions.push_back({});
+    const auto quoted = [](const std::wstring& name) { return L" \u201C" + name + L"\u201D"; };
+    if (!title.empty() && selected.get_count() == 1)
+        actions.push_back({Tr(L"Search for song") + quoted(title), [this, title] { Search(title); }});
+    for (const auto& artist : artistNames)
+        actions.push_back({Tr(L"Search for artist") + quoted(artist), [this, artist] { Search(artist); }});
+    if (!albumName.empty())
+        actions.push_back({Tr(L"Search for album") + quoted(albumName), [this, albumName] { Search(albumName); }});
 
     // Removals that belong to the page go last.
     std::vector<MenuAction> page;
@@ -4774,6 +4832,7 @@ void MainWindow::ShowPageContextMenu(POINT screen) {
             if (const auto track = m_source->Item(row); track.is_valid()) items.add_item(track);
         if (items.get_count()) {
             AddBulkActions(actions, Ready(items), nullptr, {}, localPlaylist ? m_view.playlist : SIZE_MAX);
+            if (download::AnyDownloadable(items)) AddBulkDownloadActions(actions, Ready(items), m_hwnd);
             actions.push_back({});
         }
     }
@@ -5303,6 +5362,14 @@ void MainWindow::OnNavItem(const NavPane::Item& item) {
     case NavPane::Target::AllMostPlayed:
         v.library = View::Library::All;
         v.kind = View::Kind::AllMostPlayed;
+        break;
+    case NavPane::Target::AllDownloads:
+        v.library = View::Library::All;
+        v.kind = View::Kind::Downloads;
+        break;
+    case NavPane::Target::Home:
+        v.library = View::Library::All;
+        v.kind = View::Kind::Home;
         break;
     case NavPane::Target::LibraryLocal:
         v.library = View::Library::Local;
@@ -6868,7 +6935,14 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
                 case NavPane::Target::AllFavorites:
                 case NavPane::Target::AllRecentPlayed:
                 case NavPane::Target::AllMostPlayed:
+                case NavPane::Target::AllDownloads:
+                case NavPane::Target::Home:
                     // Page actions live on the list's own empty area; nothing applies to the row.
+                    return 0;
+                case NavPane::Target::AudioCd:
+                    ShowDiscMenu(static_cast<wchar_t>(item->playlist), screen);
+                    return 0;
+                case NavPane::Target::DiscsHeader:
                     return 0;
                 default:
                     break;

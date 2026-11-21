@@ -79,6 +79,10 @@ std::optional<bool> Provider::ArtistPreferenceState(const Id&) const {
     return std::nullopt;
 }
 
+DownloadSource Provider::ResolveDownload(const Id&, abort_callback&) {
+    throw pfc::exception("This source cannot download songs.");
+}
+
 std::wstring Provider::ArtistTracksLabel(const Id&) const {
     return L"Hot songs";
 }

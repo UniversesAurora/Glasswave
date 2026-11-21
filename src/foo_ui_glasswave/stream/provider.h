@@ -54,6 +54,11 @@ enum class Capability {
     SearchSuggestions, // completions and top results while typing
     NativeLyrics,      // the service has its own lyrics for its tracks
     SongDetails,       // FetchSongDetails: a song's details, credits or similar songs
+    TrackPopularity,   // Track::popularity is a 0-100 score worth a column
+    SimilarArtists,    // ListKind::ArtistSimilarArtists (the default artist sections offer it)
+    Download,          // ResolveDownload: a song's file can be saved (download::Service)
+    Home,              // FetchHome: the service's home page (featured cards, recommended rows)
+    Stations,          // FetchStationTracks: stations, endless streams of songs (radio mode)
     Count
 };
 
@@ -71,6 +76,37 @@ class Capabilities {
         return uint64_t{1} << static_cast<unsigned>(capability);
     }
     uint64_t m_bits = 0;
+};
+
+// What a downloaded file is tagged with: the song as the service describes it. Empty fields
+// and zero numbers are left out of the file.
+struct DownloadTags {
+    std::wstring title, album, albumArtist;
+    std::vector<std::wstring> artists; // in credit order, one ARTIST value each
+    int disc = 0, number = 0;
+    std::wstring date;  // "YYYY-MM-DD" or "YYYY"
+    std::vector<std::wstring> genres;
+    std::wstring coverUrl; // the front cover at the largest size the service offers
+};
+
+// Where a song's file is: an HTTP(S) address and the request headers it needs. The server must
+// answer range requests: the download engine fetches parts of the file over several
+// connections and resumes it later.
+struct DownloadLink {
+    std::wstring url;
+    std::vector<std::pair<std::wstring, std::wstring>> headers; // name, value
+};
+
+// One song's file as the service delivers it (Capability::Download). The download service
+// names, fetches, writes and tags the file; the source only says where the bytes are.
+struct DownloadSource {
+    std::string extension; // the file's, without the dot ("flac", "mp3", "m4a")
+    std::wstring format;   // shown in the downloads list ("FLAC", "MP3 320 kbps"), untranslated
+    DownloadTags tags;
+    // The file's address; any worker thread, blocking. renew: the last address stopped working
+    // (links expire), so the source asks its service again, and throws when the service now
+    // gives a different file, which would not continue the same download.
+    std::function<DownloadLink(bool renew, abort_callback& abort)> link;
 };
 
 class Provider {
@@ -225,6 +261,12 @@ class Provider {
     // worker thread (lyrics::Service). Empty when the provider has none.
     // Asked only of a source with Capability::NativeLyrics.
     virtual std::wstring Lyrics(const Id& /*track*/, abort_callback& /*abort*/) { return {}; }
+
+    // ---- downloads (Capability::Download) ---------------------------------------------
+    // Where one of its songs' file comes from, at the source's download quality. Blocking, on
+    // a download worker thread; throws (std::exception, a message for the user) when the song
+    // cannot be downloaded: not signed in, no rights, only a preview.
+    virtual DownloadSource ResolveDownload(const Id& track, abort_callback& abort);
 
     // ---- library snapshot (last fetched; cheap) ----------------------------------------
     // A song being favorited or unfavorited reads as its new state from the click on, until

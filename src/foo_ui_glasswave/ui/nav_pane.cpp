@@ -73,6 +73,48 @@ bool DrawWmpIcon(ID2D1DeviceContext* dc, D2D1_POINT_2F center, wmp::paint::NavIc
     return true;
 }
 
+// WMP 12's download arrow (wmploc 45221, the activity strip's last frame, 16 x 16 at x 288, y 9)
+// in vectors, for every scale: measured outline through the pixel centres (stem x 4.5 - 8.5 from
+// y 2.5, head x 1.5 - 11.5 at y 9.5, tip 6.5, 14.5), a one-pixel rim #1666A5 on the left to
+// #2F7EB8 on the right, a fill lit on both sides (#7FCFF6 / #46B3EB | #26ACEE | #7CCEF4 /
+// #94CDEE) darkening towards the tip (#1D9ADF).
+void DownloadArrow(ID2D1DeviceContext* dc, D2D1_POINT_2F origin) {
+    winrt::com_ptr<ID2D1Factory> factory;
+    dc->GetFactory(factory.put());
+    winrt::com_ptr<ID2D1PathGeometry> path;
+    winrt::com_ptr<ID2D1GeometrySink> sink;
+    factory->CreatePathGeometry(path.put());
+    path->Open(sink.put());
+    const auto p = [&](float x, float y) { return D2D1_POINT_2F{origin.x + x, origin.y + y}; };
+    sink->BeginFigure(p(4.5f, 2.5f), D2D1_FIGURE_BEGIN_FILLED);
+    for (const auto& point : {p(8.5f, 2.5f), p(8.5f, 9.5f), p(11.5f, 9.5f), p(6.5f, 14.5f), p(1.5f, 9.5f),
+                              p(4.5f, 9.5f)})
+        sink->AddLine(point);
+    sink->EndFigure(D2D1_FIGURE_END_CLOSED);
+    sink->Close();
+    const auto linear = [&](D2D1_POINT_2F a, D2D1_POINT_2F b, std::initializer_list<D2D1_GRADIENT_STOP> stops) {
+        winrt::com_ptr<ID2D1GradientStopCollection> list;
+        dc->CreateGradientStopCollection(stops.begin(), static_cast<UINT32>(stops.size()), list.put());
+        winrt::com_ptr<ID2D1LinearGradientBrush> brush;
+        dc->CreateLinearGradientBrush({a, b}, list.get(), brush.put());
+        return brush;
+    };
+    dc->FillGeometry(path.get(), linear(p(1.5f, 0), p(11.5f, 0),
+                                        {{0.0f, D2D1::ColorF(0x7FCFF6)},
+                                         {0.28f, D2D1::ColorF(0x46B3EB)},
+                                         {0.5f, D2D1::ColorF(0x26ACEE)},
+                                         {0.72f, D2D1::ColorF(0x7CCEF4)},
+                                         {1.0f, D2D1::ColorF(0x94CDEE)}})
+                                     .get());
+    dc->FillGeometry(path.get(), linear(p(0, 9.5f), p(0, 14.5f),
+                                        {{0.0f, D2D1::ColorF(0x1D9ADF, 0.0f)}, {1.0f, D2D1::ColorF(0x1D9ADF, 0.8f)}})
+                                     .get());
+    dc->DrawGeometry(path.get(),
+                     linear(p(1.5f, 0), p(11.5f, 0), {{0.0f, D2D1::ColorF(0x1666A5)}, {1.0f, D2D1::ColorF(0x2F7EB8)}})
+                         .get(),
+                     1.0f);
+}
+
 wp::NavIcon SectionIcon(stream::SectionKind kind) {
     switch (kind) {
     case stream::SectionKind::Favorites: return wp::NavIcon::Playlist;
@@ -121,8 +163,10 @@ std::wstring NavPane::ItemKey(const Item& item) {
     case Target::AllFavorites: return L"favorites";
     case Target::AllRecentPlayed: return L"recent";
     case Target::AllMostPlayed: return L"mostplayed";
+    case Target::AllDownloads: return L"downloads";
     case Target::PlaylistsHeader: return L"playlists";
     case Target::SmartHeader: return L"smart";
+    case Target::DiscsHeader: return L"discs";
     case Target::RemoteSection: return item.sectionId;
     default: return {};
     }
@@ -278,6 +322,7 @@ void NavPane::Rebuild() {
         m_items.push_back({Target::AllFavorites, 0, 1, L"Favorites", wp::NavIcon::Playlist, false});
         m_items.push_back({Target::AllRecentPlayed, 0, 1, L"Recently Played", wp::NavIcon::Playlist, false});
         m_items.push_back({Target::AllMostPlayed, 0, 1, L"Most Played", wp::NavIcon::Playlist, false});
+        m_items.push_back({Target::AllDownloads, 0, 1, L"Downloads", wp::NavIcon::Playlist, false});
         m_items.push_back({Target::PlaylistsHeader, 0, 1, L"Playlists", wp::NavIcon::Playlist, true});
         if (Expanded(m_items.back())) {
             pfc::string8 name;
@@ -679,6 +724,11 @@ void NavPane::Paint() {
                         drewCover = true;
                     }
                 }
+            }
+            // Downloads: WMP's download activity arrow at rest, in vectors (sharp at any scale).
+            if (!drewCover && it.target == Target::AllDownloads) {
+                DownloadArrow(dc, {std::round((x + 8 + 1.5f) * s) / s, std::round((y + rowH / 2 - 8) * s) / s});
+                drewCover = true;
             }
             if (!drewCover && !DrawWmpIcon(dc, {x + 16, y + rowH / 2}, it.icon, autoPlaylist, s, special))
                 wp::NavGlyph(dc, {x + 16, y + rowH / 2}, it.icon);

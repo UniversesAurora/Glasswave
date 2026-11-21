@@ -107,6 +107,10 @@ protected:
     // Removes rows and returns how many disappeared.
     size_t RemoveRows(const std::function<bool(const SongTableRow&)>& remove);
     void ShowPlayCount();  // the Count column is on by default (Most Played)
+    void ShowLyric();      // the Lyrics column (a lyrics search)
+    void OfferDownloads(); // the Download column (a source that can download its songs)
+    // The provider scores its tracks 0-100: the column is offered, on by default when `shown`.
+    void OfferPopularity(bool shown);
 
 private:
     struct PresentationState {
@@ -149,6 +153,9 @@ private:
     bool m_sortDescending = false;
     bool m_showSource = false;
     bool m_showPlayCount = false;
+    bool m_showLyric = false;
+    bool m_offerDownloads = false;
+    bool m_offerPopularity = false, m_popularityShown = false;
     bool m_grouping = true;
     ActivateHandler m_activate;
 };

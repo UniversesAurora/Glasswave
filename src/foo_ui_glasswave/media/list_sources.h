@@ -20,6 +20,15 @@ struct Column {
 // Cover thumbnail column (Apple Music style); the list draws the row's front cover in it.
 inline constexpr const char* kArtFormat = "<art>";
 Column ArtColumn(bool hidden);
+// The cell text is a 0-100 score; the list draws it as a bar (NetEase's 热度 column).
+inline constexpr const char* kPopularityFormat = "<popularity>";
+// The cell text is "<permille> <state>" (state: n normal, r running: with the moving glow, p
+// paused, e error); the list draws
+// Windows 7's progress bar (aero.msstyles PROGRESS: trough 648, fills 656 / 658 / 657).
+inline constexpr const char* kProgressFormat = "<progress>";
+// A song's download (download::StateOf): the list draws a round download mark, a progress ring
+// while it downloads, and acts on a click (download, or remove the download).
+inline constexpr const char* kDownloadFormat = "<download>";
 
 // Where a line of the album column leads, like WMP's hyperlinks.
 struct Link {

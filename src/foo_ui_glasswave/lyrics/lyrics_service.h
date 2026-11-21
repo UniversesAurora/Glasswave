@@ -138,6 +138,15 @@ class Service {
     void Research(const metadb_handle_ptr& track, std::function<void(const Result&)> done);
     void Cancel();
     void Shutdown();
+    // The lyrics `track` shows, for a copy of them (a downloaded file's tags and .lrc): the
+    // owner's selection, else the automatic answer, searched for when nothing is known yet.
+    // Independent of Request (the lyrics on screen go on). `done` runs once, on the main
+    // thread, with Found or NotFound.
+    void Lookup(const metadb_handle_ptr& track, std::function<void(const Result&)> done);
+    // Main-thread notice that the lyrics a track shows were changed: another selection, none,
+    // back to automatic, a new automatic search, another offset.
+    uint64_t SubscribeChanges(std::function<void(const metadb_handle_ptr& track)> listener);
+    void UnsubscribeChanges(uint64_t token);
     static Query QueryFor(const metadb_handle_ptr& track);
     // Stable identity for request/callback ownership. Provider tracks use the provider's
     // opaque id; local files use foobar2000's path and subsong.

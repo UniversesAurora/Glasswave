@@ -123,8 +123,9 @@ class MainWindow : public PageHost, public PlayerHost {
         RECT caption{}, client{}, clientEdge{}, navBar{}, cmdBar{}, content{}, transport{};
         RECT capMin{}, capMax{}, capClose{}, icon{}, title{};
         RECT back{}, forward{}, breadcrumb{}, navGroove{};
-        RECT organize{}, addFiles{}, addFolder{}, newPlaylist{}, search{}, viewOptions{}, refresh{};
+        RECT organize{}, addFiles{}, addFolder{}, newPlaylist{}, search{}, viewOptions{}, refresh{}, download{}, localPlay{};
         RECT navPane{}, list{};
+        RECT tabs{}; // the page's tabs (the search page), above the list
         RECT detailHeader{}, detailAction{}; // NetEase detail pages: artist, album, playlist
         RECT detailBriefToggle{};
         RECT detailBriefArea{}; // text area of the description (wheel), client px

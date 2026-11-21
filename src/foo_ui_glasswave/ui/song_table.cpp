@@ -15,7 +15,21 @@ namespace glasswave::ui {
 
 namespace {
 
-enum SongField { kAlbumColumn, kNumber, kArt, kTitle, kLength, kArtist, kAlbum, kPlayCount, kSource, kFavorite };
+enum SongField {
+    kAlbumColumn,
+    kNumber,
+    kArt,
+    kTitle,
+    kLength,
+    kArtist,
+    kAlbum,
+    kPopularity,
+    kPlayCount,
+    kSource,
+    kFavorite,
+    kLyric,
+    kDownload
+};
 
 int CompareText(const std::wstring& a, const std::wstring& b) {
     return CompareStringEx(LOCALE_NAME_USER_DEFAULT, LINGUISTIC_IGNORECASE | SORT_DIGITSASNUMBERS, a.c_str(),
@@ -331,6 +345,21 @@ void SongTableSource::SetViewStyle(media::ViewStyle style) {
                      {L"Length", 56, false, true}, {L"Artist", 170}, {L"Album", 170}};
         m_fields = {kNumber, kArt, kTitle, kLength, kArtist, kAlbum};
     }
+    if (m_showLyric) {  // a lyrics search: the line that matched, right after the title
+        const size_t at = static_cast<size_t>(std::find(m_fields.begin(), m_fields.end(), kTitle) - m_fields.begin()) + 1;
+        m_columns.insert(m_columns.begin() + static_cast<std::ptrdiff_t>(at), {L"Lyrics", 260});
+        m_fields.insert(m_fields.begin() + static_cast<std::ptrdiff_t>(at), kLyric);
+    }
+    if (m_offerDownloads) { // Apple Music's place for it: before the length
+        const size_t at = static_cast<size_t>(std::find(m_fields.begin(), m_fields.end(), kLength) - m_fields.begin());
+        m_columns.insert(m_columns.begin() + static_cast<std::ptrdiff_t>(at),
+                         {L"Download", 32, false, false, false, media::kDownloadFormat});
+        m_fields.insert(m_fields.begin() + static_cast<std::ptrdiff_t>(at), kDownload);
+    }
+    if (m_offerPopularity) {
+        m_columns.push_back({L"Popularity", 90, false, false, !m_popularityShown, media::kPopularityFormat});
+        m_fields.push_back(kPopularity);
+    }
     if (m_showSource) {
         m_columns.push_back({L"Source", 140});
         m_fields.push_back(kSource);
@@ -370,6 +399,22 @@ bool SongTableSource::NeedsAlbumIdentity() const {
 
 void SongTableSource::ShowPlayCount() {
     m_showPlayCount = true;
+    SetViewStyle(m_style);
+}
+
+void SongTableSource::ShowLyric() {
+    m_showLyric = true;
+    SetViewStyle(m_style);
+}
+
+void SongTableSource::OfferDownloads() {
+    m_offerDownloads = true;
+    SetViewStyle(m_style);
+}
+
+void SongTableSource::OfferPopularity(bool shown) {
+    m_offerPopularity = true;
+    m_popularityShown = shown;
     SetViewStyle(m_style);
 }
 
@@ -861,11 +906,37 @@ size_t SongTableSource::FindRowByIdentity(const std::wstring& identity) const {
 
 // ---- concrete tables ----------------------------------------------------------------------
 
-RemoteSongSource::RemoteSongSource(stream::Provider& provider, const std::vector<stream::Track>& tracks,
-                                   std::wstring emptyText, size_t count)
+namespace {
+
+// The part of a remote list's column key that names its kind of page.
+const wchar_t* ListKindKey(stream::ListKind kind) {
+    switch (kind) {
+    case stream::ListKind::PlaylistTracks: return L"playlist";
+    case stream::ListKind::Favorites: return L"favorites";
+    case stream::ListKind::AlbumTracks: return L"album";
+    case stream::ListKind::SectionTracks: return L"section";
+    case stream::ListKind::ArtistTopTracks: return L"artist-top";
+    case stream::ListKind::ArtistAlbums: return L"artist-albums";
+    case stream::ListKind::SavedAlbums: return L"saved-albums";
+    case stream::ListKind::Groups: return L"group";
+    case stream::ListKind::CatalogSearch:
+    case stream::ListKind::CatalogSearchTopResults: return L"search";
+    default: return L"songs";
+    }
+}
+
+}  // namespace
+
+RemoteSongSource::RemoteSongSource(stream::Provider& provider, stream::ListKind kind,
+                                   const std::vector<stream::Track>& tracks, std::wstring emptyText, size_t count)
     : SongTableSource(TrackRows(provider, tracks, 0, count), false, std::move(emptyText),
-                      L"stream-songs"),
-      m_provider(provider) {}
+                      L"stream-" + std::wstring(provider.Key()) + L"-" + ListKindKey(kind)),
+      m_provider(provider) {
+    // NetEase shows its 热度 bars on album pages only; elsewhere they are a column to choose.
+    if (provider.Can(stream::Capability::TrackPopularity))
+        OfferPopularity(kind == stream::ListKind::AlbumTracks);
+    if (provider.Can(stream::Capability::Download)) OfferDownloads();
+}
 
 void RemoteSongSource::AppendTracks(const std::vector<stream::Track>& tracks, size_t begin, size_t end) {
     begin = std::min(begin, tracks.size());
@@ -902,6 +973,47 @@ void AllFavoritesSource::ReplaceFavorites(const std::vector<metadb_handle_ptr>& 
 PlayStatsSource::PlayStatsSource(const std::vector<media::PlayRecord>& records, std::wstring emptyText)
     : SongTableSource(PlayStatRows(records), true, std::move(emptyText), L"all-play-stats") {
     ShowPlayCount();
+}
+
+namespace {
+
+std::vector<SongTableRow> SearchRows(const std::vector<SearchSongSource::Hit>& hits) {
+    std::vector<SongTableRow> rows;
+    rows.reserve(hits.size());
+    for (const auto& hit : hits) {
+        if (hit.provider) {
+            SongTableRow row = TrackRow(*hit.provider, hit.track);
+            row.lyric = hit.track.lyricMatch;
+            row.lyricText = hit.track.lyricText;
+            rows.push_back(std::move(row));
+        } else if (hit.local.is_valid()) {
+            rows.push_back(LocalRow(hit.local, L"search:"));
+        }
+    }
+    return rows;
+}
+
+}  // namespace
+
+SearchSongSource::SearchSongSource(const std::vector<Hit>& hits, bool showSource, bool lyrics, std::wstring emptyText)
+    : SongTableSource(SearchRows(hits), showSource, std::move(emptyText),
+                      std::wstring(L"search-songs") + (showSource ? L"-all" : L"") + (lyrics ? L"-lyrics" : L"")) {
+    if (lyrics) ShowLyric();
+    for (auto* provider : stream::Providers())
+        if (provider->Can(stream::Capability::Download)) {
+            OfferDownloads();
+            break;
+        }
+}
+
+void SearchSongSource::ReplaceHits(const std::vector<Hit>& hits) {
+    ReplaceRows(SearchRows(hits));
+}
+
+std::wstring SearchSongSource::LyricsOf(const metadb_handle_ptr& item) const {
+    for (const auto& row : AllRows())
+        if (row.handle == item && !row.lyricText.empty()) return row.lyricText;
+    return {};
 }
 
 }  // namespace glasswave::ui

@@ -1,10 +1,14 @@
 #include "pch.h"
+#include "ui/downloads_page.h"
 #include "ui/remote_pages.h"
 #include "media/favorites.h"
 #include "media/playback_scheduler.h"
+#include "media/recent_lists.h"
 #include "media/special_playlists.h"
 #include "ui/art_cache.h"
+#include "ui/artist_overview.h"
 #include "ui/i18n.h"
+#include "ui/item_menu.h"
 #include "ui/remote_grids.h"
 #include "ui/song_actions.h"
 #include "ui/song_table.h"
@@ -1097,16 +1101,23 @@ class PlaylistPage final : public TrackPagedPage {
         }
         d.artKey = m_provider.ArtKey(stream::ArtKind::Playlist, m_view.remoteId);
         d.artItem = m_provider.ArtItem(stream::ArtKind::Playlist, m_view.remoteId);
+        d.action = DetailInfo::Action::Play;
+        d.actionLabel = Tr(L"Play");
         if (!Own() && m_provider.AccountVerified() && m_provider.Can(stream::Capability::SavePlaylists)) {
-            d.action = DetailInfo::Action::Save;
-            d.actionOn = Saved();
-            d.actionBusy = m_busy;
-            d.actionLabel = m_provider.Text(d.actionOn ? L"Collected" : L"Collect");
+            d.saveLabel = m_provider.Text(Saved() ? L"Collected" : L"Collect");
+            d.saveBusy = m_busy;
         }
+        if (m_provider.Can(stream::Capability::Download)) d.downloadLabel = Tr(L"Download all");
         return d;
     }
 
-    void DetailAction() override {
+    // Download all: every song of the page, read to the end first.
+    void DownloadAction() override { DownloadSongs(AllSongsFetch(), m_host.Owner()); }
+
+    // The band's Play: every song of the playlist, from the first.
+    void DetailAction() override { PlayRemotePlaylist(m_provider, m_view.remoteId); }
+
+    void SaveAction() override {
         if (m_busy || !VerifiedOrPrompt()) return;
         const bool next = !Saved();
         m_busy = true;
@@ -1244,16 +1255,23 @@ class AlbumPage final : public TrackPagedPage {
         }
         d.artKey = m_provider.ArtKey(stream::ArtKind::Album, m_view.remoteId);
         d.artItem = m_provider.ArtItem(stream::ArtKind::Album, m_view.remoteId);
+        d.action = DetailInfo::Action::Play;
+        d.actionLabel = Tr(L"Play");
         if (m_provider.AccountVerified() && m_provider.Can(stream::Capability::SaveAlbums)) {
-            d.action = DetailInfo::Action::Save;
-            d.actionOn = IsSavedAlbum(m_provider, m_view.remoteId);
-            d.actionBusy = m_busy;
-            d.actionLabel = m_provider.Text(d.actionOn ? L"Collected" : L"Collect");
+            d.saveLabel = m_provider.Text(IsSavedAlbum(m_provider, m_view.remoteId) ? L"Collected" : L"Collect");
+            d.saveBusy = m_busy;
         }
+        if (m_provider.Can(stream::Capability::Download)) d.downloadLabel = Tr(L"Download all");
         return d;
     }
 
-    void DetailAction() override {
+    // Download all: every song of the page, read to the end first.
+    void DownloadAction() override { DownloadSongs(AllSongsFetch(), m_host.Owner()); }
+
+    // The band's Play: every song of the album, from the first.
+    void DetailAction() override { PlayRemoteAlbum(m_provider, m_view.remoteId); }
+
+    void SaveAction() override {
         if (m_busy || !VerifiedOrPrompt()) return;
         m_busy = true;
         m_host.ChromeChanged();
@@ -1305,6 +1323,55 @@ class TopTracksPage final : public TrackPagedPage {
     void AddTrackPageActions(std::vector<MenuAction>& actions) override {
         if (m_provider.AccountVerified() && SupportsArtistPreference(m_provider))
             actions.push_back(FollowAction(m_provider, m_view.remoteId, {}));
+    }
+};
+
+// ---- a home card's daily song list -----------------------------------------------------------
+
+// The songs of a home card's list (每日推荐, a style's daily songs): fixed for the day, so a list
+// page as a playlist's is (shown from the cache at once, read again behind it), with its name and
+// how it is made in the band, and the first song's cover.
+class HomeListPage final : public TrackPagedPage {
+  public:
+    HomeListPage(PageHost& host, stream::Provider& provider, View view)
+        : TrackPagedPage(host, provider, view, IdQuery(stream::ListKind::HomeList, view.remoteId), L"No songs.") {}
+
+    DetailInfo Detail() const override {
+        DetailInfo d;
+        d.visible = true;
+        const auto& info = m_state.playlist;
+        d.title = info && !info->name.empty() ? info->name : m_view.name;
+        d.tagline = info ? info->tagline : std::wstring();
+        const auto& tracks = CurrentRows<stream::Track>();
+        if (!tracks.empty()) {
+            d.subtitle = std::to_wstring(tracks.size()) + Tr(L" songs");
+            d.artItem = m_provider.TrackItem(tracks.front().id);
+            d.artKey = ArtCache::SourceKey(d.artItem);
+        }
+        // These lists have no cover of their own (nor in their clients): one is made from the
+        // first song's, with the day for a daily list and the list's name.
+        d.artCaption = d.title;
+        if (m_view.remoteId == L"daily") {
+            SYSTEMTIME today{};
+            GetLocalTime(&today);
+            d.artBadge = std::to_wstring(today.wDay);
+        }
+        d.action = DetailInfo::Action::Play;
+        d.actionLabel = Tr(L"Play");
+        if (m_provider.Can(stream::Capability::Download)) d.downloadLabel = Tr(L"Download all");
+        return d;
+    }
+
+    void DetailAction() override { // every song, from the first
+        EnsureAllSongs(Guard([this](bool complete) {
+            if (auto* source = SongSource(); complete && source && source->Count()) source->PlayFrom(0);
+        }));
+    }
+    void DownloadAction() override { DownloadSongs(AllSongsFetch(), m_host.Owner()); }
+
+  protected:
+    void ApplyTrackState() override {
+        if (const auto& info = m_state.playlist; info && !info->name.empty()) m_host.SetPageName(info->name);
     }
 };
 

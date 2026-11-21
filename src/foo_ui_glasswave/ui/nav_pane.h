@@ -14,15 +14,21 @@ int CategoryIcon(media::GroupKind kind);
 
 // Navigation pane: the play queue (Now Playing), All Music (Favorites, the cross-source
 // Recently Played / Most Played lists and the user's playlists), Local Music (the Smart
-// playlists section and its categories) and one section per streaming provider.
+// playlists section, its categories and the CD drives), one section per streaming provider.
 class NavPane {
 public:
     // Category: a way to browse Local Music; playlist holds its media::GroupKind.
     enum class Target {
-        None, Queue, PlaylistsHeader, Playlist, SmartHeader, Category,
-        LibraryAll, AllFavorites, AllRecentPlayed, AllMostPlayed, LibraryLocal,
+        None, Home, Queue, PlaylistsHeader, Playlist, SmartHeader, Category,
+        LibraryAll, AllFavorites, AllRecentPlayed, AllMostPlayed, AllDownloads, LibraryLocal,
         // a provider's section (Item::provider): its root, pages, playlists and account row
-        LibraryRemote, RemoteSection, RemotePlaylist
+        LibraryRemote, RemoteSection, RemotePlaylist,
+        // Local Music's Discs group, and a CD drive in it (Item::playlist: the drive letter)
+        DiscsHeader, AudioCd
+    };
+    struct DiscRow {
+        wchar_t drive = 0;
+        std::wstring title;
     };
     // What the pane shows for a provider.
     struct ProviderSection {

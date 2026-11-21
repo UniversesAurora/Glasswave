@@ -86,7 +86,8 @@ class NcmArtInstance : public album_art_extractor_instance_v2 {
                                                               rendition.version};
         if (albumOfSong)
             request.alternates.push_back({"ncm", ArtKindName(kind), std::to_string(id), rendition.version});
-        request.resolve = [kind, id, albumOfSong, rendition, identity = request.identity,
+        auto noAddress = std::make_shared<std::atomic_bool>(false); // why a download failed, for the log
+        request.resolve = [kind, id, albumOfSong, rendition, noAddress, identity = request.identity,
                            epoch = cache::art_absence::Epoch(),
                            account = cache::AccountRevision("ncm")](abort_callback& workerAbort,
                                                                     unsigned attempt) {
@@ -136,15 +137,24 @@ class NcmArtInstance : public album_art_extractor_instance_v2 {
             return std::optional<cache::HttpSource>(std::move(source));
         };
 
+        std::wstring reason;
         try {
             if (auto result = cache::Images::Get().Open(std::move(request), abort))
                 return album_art_data_impl::g_create(result->bytes.data(), result->bytes.size());
+            reason = noAddress->load() ? L"no cover address known" : L"no picture";
         } catch (const exception_aborted&) {
             throw;
+        } catch (const std::exception& e) {
+            reason = pfc::stringcvt::string_wide_from_utf8(e.what()).get_ptr();
         } catch (...) {
+            reason = L"unknown error";
         }
         if (!abort.is_aborting()) {
-            Log(L"art: cover download failed");
+            const auto wide = [](const char* text) {
+                return std::wstring(pfc::stringcvt::string_wide_from_utf8(text ? text : "").get_ptr());
+            };
+            Log(L"art: cover download failed: " + wide(ArtKindName(kind)) + L" " + std::to_wstring(id) + L" (" +
+                wide(rendition.version) + L"): " + reason);
         }
         throw exception_album_art_not_found();
     }

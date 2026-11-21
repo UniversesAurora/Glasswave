@@ -183,9 +183,50 @@ private:
     float m_topOffsetDip = 0; // pixel scroll into m_top, used to anchor status-band changes
     std::wstring m_statusText;
     size_t m_hot = SIZE_MAX;
+    bool m_hotDownload = false; // the mouse is on the hot row's download mark
+    float m_downloadHot = 0; // the hot row's mark lighting under the mouse
     size_t m_hotGroup = SIZE_MAX;
     size_t m_hotGroupHeader = SIZE_MAX;  // group bar under the mouse: outline only, no fill
     size_t m_hotLinkGroup = SIZE_MAX, m_hotLinkLine = 0;
+    // Shelves paged sideways, by group key: where each stands and its slide (ease-out).
+    struct Shelf {
+        float pos = 0, from = 0, target = 0;
+        ULONGLONG start = 0;
+    };
+    std::map<std::wstring, Shelf> m_shelves;
+    // The shelf sliding now: its tiles drawn into m_slide, moved by the compositor.
+    winrt::Windows::UI::Composition::ContainerVisual m_slideClip{nullptr};
+    winrt::Windows::UI::Composition::SpriteVisual m_slide{nullptr};
+    std::wstring m_slideKey; // empty: none
+    ULONGLONG m_slideEnd = 0;
+    float m_slideTop = 0; // the content's scroll when it started
+    void FinishSlide();
+    // The shelves of cards (TileStyle::Card) on screen, given whole to the card layer; a shelf
+    // paging (m_cardSlideGroup, set before the repaint) slides from m_cardSlideFrom (columns).
+    void LayoutCards();
+    size_t m_cardSlideGroup = SIZE_MAX;
+    float m_cardSlideFrom = 0;
+    int m_cardSlideMs = 0;
+    bool IsCard(size_t row) const { return m_source && row != SIZE_MAX && m_source->Card(row) != nullptr; }
+    std::unique_ptr<CardLayer> m_cards;
+    size_t m_cardPress = SIZE_MAX; // the card held down
+    size_t m_playPress = SIZE_MAX; // the tile whose play orb is held down (it plays on release)
+    size_t m_hotShelf = SIZE_MAX, m_hotShelfSide = 0; // the arrow under the mouse
+    float m_shelfPlate = 0;                           // its plate fading in
+    size_t m_shelfPressedGroup = SIZE_MAX, m_shelfPressedSide = 0; // the arrow held down
+    float m_shelfPress = 0;                           // its pressed plate fading in
+    // Windows 7's progress glow sweeping over running downloads' bars: on while one is painted.
+    bool m_glowing = false, m_glowSeen = false;
+    ULONGLONG m_glowPainted = 0;
+    // A shelf's show-all ball: the one under the mouse lit (and the last one fading), held.
+    size_t m_moreGroup = SIZE_MAX, m_moreOldGroup = SIZE_MAX, m_morePressedGroup = SIZE_MAX;
+    float m_moreHot = 0, m_moreOldHot = 0, m_morePress = 0;
+    std::wstring m_shelfUnder;                        // the shelf under the mouse: arrows shown
+    std::map<std::wstring, float> m_shelfShown;       // each shelf's arrows, fading
+    // The tile play button: shown on the hot tile, fading in; the last one fading out.
+    size_t m_playRow = SIZE_MAX, m_playOldRow = SIZE_MAX;
+    float m_playBlend = 0, m_playOldBlend = 0, m_playHotBlend = 0;
+    bool m_playHot = false; // the mouse is on the button itself
     size_t m_hotHeader = SIZE_MAX;  // display index of the hovered header cell
     size_t m_anchor = SIZE_MAX;
     int m_scrollHot = 0;      // 1 up, 2 down, 3 track, 4 thumb
@@ -206,6 +247,8 @@ private:
     D2D1_POINT_2F m_marqueeFrom{}, m_marqueeTo{};  // content coordinates
     std::vector<size_t> m_marqueeBase;              // selection kept with Ctrl
     int m_artToken = 0;
+    int m_iconToken = 0; // SubscribeSourceIcons
+    uint64_t m_downloadToken = 0; // download::Subscribe: the Download column follows
     // Decoded covers, kept across paints (bounded): a new cover arriving repaints the whole
     // view, and recreating every already-visible D2D bitmap each time made the list stutter.
     struct ArtBitmap {

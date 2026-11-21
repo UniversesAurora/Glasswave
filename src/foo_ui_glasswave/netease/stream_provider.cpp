@@ -774,7 +774,264 @@ stream::Capabilities StreamProvider::Offers() const {
             FollowArtists,    LibraryAlbums,        SaveAlbums,           LibraryPlaylists,
             SavePlaylists,    CreatePlaylists,      AppendPlaylistTracks, RemovePlaylistTracks,
             RenamePlaylists,  DeletePlaylists,      ReorderPlaylists,     RecommendedPlaylists,
-            NativeLyrics,     SongDetails};
+            NativeLyrics,     SongDetails,          TrackPopularity,      SimilarArtists,
+            CatalogSearch,    SearchSuggestions,    Download,             Home,
+            Stations};
+}
+
+std::vector<stream::ListKind> StreamProvider::CatalogSearchKinds() const {
+    using enum stream::ListKind;
+    return {CatalogSearchTopResults, CatalogSearch,       CatalogSearchArtists,
+            CatalogSearchAlbums,     CatalogSearchPlaylists, CatalogSearchLyrics};
+}
+
+void StreamProvider::FetchCatalogSearchSuggestions(CatalogSearchSuggestionQuery query,
+                                                   CatalogSearchSuggestionsDone done) {
+    if (ListCancelled(query.cancelled)) return;
+    if (query.term.empty() || !m_started || !m_listTasks || !m_abort) {
+        if (done) done({}, {});
+        return;
+    }
+    m_listTasks->Post([this, query = std::move(query), done = std::move(done)]() mutable {
+        if (ListCancelled(query.cancelled) || m_abort->is_aborting()) return;
+        std::wstring error;
+        SearchSuggestions found;
+        if (Ncm().Service().EnsureStarted(*m_abort, &error))
+            Ncm().Api().SearchSuggest(query.term, *m_abort, found, error);
+        if (m_abort->is_aborting() || ListCancelled(query.cancelled)) return;
+        CatalogSearchSuggestions suggestions;
+        for (auto& term : found.terms)
+            suggestions.ordered.emplace_back(CatalogSearchSuggestionTerm{term, term});
+        // The suggested songs are summaries (no cover, no quality); they are shown, and opened
+        // through the song page, but never written over a known song's record.
+        for (auto& hit : found.items) {
+            std::visit(
+                [&](auto& row) {
+                    using Row = std::decay_t<decltype(row)>;
+                    if constexpr (std::is_same_v<Row, Song>)
+                        suggestions.ordered.emplace_back(ToTrack(row));
+                    else if constexpr (std::is_same_v<Row, Artist>)
+                        suggestions.ordered.emplace_back(ToArtist(row));
+                    else if constexpr (std::is_same_v<Row, Album>)
+                        suggestions.ordered.emplace_back(ToAlbum(row));
+                    else
+                        suggestions.ordered.emplace_back(ToPlaylist(row));
+                },
+                hit);
+        }
+        if (!suggestions.ordered.empty()) error.clear();
+        fb2k::inMainThread([this, cancelled = query.cancelled, done = std::move(done), found = std::move(found),
+                            suggestions = std::move(suggestions),
+                            error = error.empty() ? std::wstring() : ErrorOf(std::move(error))]() mutable {
+            if (!m_started || ListCancelled(cancelled)) return;
+            // Opening a suggested artist, album or playlist finds it in the catalog.
+            for (const auto& hit : found.items)
+                std::visit(
+                    [](const auto& row) {
+                        if constexpr (!std::is_same_v<std::decay_t<decltype(row)>, Song>) Catalog::Get().Put(row);
+                    },
+                    hit);
+            if (done) done(std::move(suggestions), std::move(error));
+        });
+    });
+}
+
+namespace {
+
+// A card of the PC client's home page as the UI shows it, or nothing for kinds it cannot show
+// (podcasts). Personal FM, heartbeat mode and the similar-song / similar-artist mixes keep no
+// target until radio mode comes; the daily songs play.
+// The home cards' song lists (ListKind::HomeList): today's songs, and a style's daily songs
+// ("style:<category>:<tag>:<the card's first songs>").
+constexpr std::wstring_view kDailyList = L"daily", kStyleList = L"style:";
+constexpr std::wstring_view kPersonalFm = L"fm", kHeartbeat = L"heart";
+// The personal FM seeded by the card's songs or artists: "similar:<JSON array of ids>".
+constexpr std::wstring_view kSimilar = L"similar:";
+
+// A parameter of the client's action address ("...?tab=style&categoryId=1000&..."), as written.
+std::wstring QueryValue(std::wstring_view url, std::wstring_view name) {
+    const size_t query = url.find(L'?');
+    if (query == std::wstring_view::npos) return {};
+    for (size_t at = query + 1; at < url.size();) {
+        const size_t end = std::min(url.find(L'&', at), url.size());
+        const std::wstring_view pair = url.substr(at, end - at);
+        if (pair.size() > name.size() && pair.substr(0, name.size()) == name && pair[name.size()] == L'=')
+            return std::wstring(pair.substr(name.size() + 1));
+        at = end + 1;
+    }
+    return {};
+}
+
+std::optional<stream::HomeCard> ToHomeCard(const HomeCard& card) {
+    if (card.resourceType == L"musicPodcast" || card.resourceType == L"podcast" ||
+        card.moduleType.find(L"podcast") != std::wstring::npos)
+        return std::nullopt;
+    stream::HomeCard out;
+    out.key = card.moduleType + L":" + card.resourceType + L":" + card.resourceId;
+    out.label = card.label;
+    out.title = card.title;
+    out.subtitle = card.subtitle;
+    out.imageUrl = card.coverUrl;
+    if (card.resourceType == L"dailySongs" && card.subResourceType == L"dailySong") {
+        // "每日推荐 | 从「…」听起" under the date "11-15": the date's day goes on the picture.
+        out.label = L"每日推荐";
+        if (const size_t bar = out.title.find(L" | "); bar != std::wstring::npos) out.title.erase(0, bar + 3);
+        if (const size_t dash = card.label.rfind(L'-'); dash != std::wstring::npos)
+            out.badge = card.label.substr(dash + 1);
+        out.list = std::wstring(kDailyList);
+    } else if (card.resourceType == L"dailySongs" && card.subResourceType == L"style_dailySong") {
+        // A style's daily songs: the list its client opens (orpheus://songrcmd?tab=style&...).
+        const auto value = [&](std::wstring_view name) { return QueryValue(card.targetUrl, name); };
+        const std::wstring category = value(L"categoryId"), tag = value(L"tagId"), songs = value(L"songId");
+        if (!category.empty() && !tag.empty())
+            out.list = std::wstring(kStyleList) + category + L":" + tag + L":" + songs;
+    } else if (card.resourceType == L"fm") {
+        out.station = std::wstring(kPersonalFm);
+    } else if (card.resourceType == L"star") {
+        out.station = std::wstring(kHeartbeat);
+    } else if ((card.resourceType == L"similarSong" || card.resourceType == L"similarArtist") &&
+               card.resourceId.starts_with(L"[")) {
+        out.station = std::wstring(kSimilar) + card.resourceId;
+    } else if (card.resourceType == L"playList" && !card.resourceId.empty()) {
+        stream::Playlist playlist;
+        playlist.id = card.resourceId;
+        playlist.name = card.label;
+        playlist.coverUrl = card.coverUrl;
+        out.target = stream::CatalogSearchItem(std::move(playlist));
+    }
+    return out;
+}
+
+} // namespace
+
+void StreamProvider::FetchHome(HomeDone done) {
+    if (!m_started || !m_listTasks || !m_abort) {
+        if (done) done({}, L"NetEase Cloud Music is not running.");
+        return;
+    }
+    m_listTasks->Post([this, done = std::move(done)]() mutable {
+        if (m_abort->is_aborting()) return;
+        std::wstring error;
+        std::vector<HomeCard> cards;
+        std::vector<HomeBlock> blocks;
+        if (Ncm().Service().EnsureStarted(*m_abort, &error)) {
+            std::wstring blockError;
+            if (!Ncm().Api().HomeCards(*m_abort, cards, error)) cards.clear();
+            if (!Ncm().Api().HomeBlocks(*m_abort, blocks, blockError) && error.empty()) error = blockError;
+        }
+        if (m_abort->is_aborting()) return;
+        if (!cards.empty() || !blocks.empty()) error.clear();
+        // Playlists the cards and rows name are known before anything opens them; a summary never
+        // replaces a richer record.
+        for (const auto& card : cards)
+            if (card.resourceType == L"playList" && !card.resourceId.empty()) {
+                Playlist playlist;
+                playlist.id = _wtoi64(card.resourceId.c_str());
+                playlist.name = card.label;
+                playlist.coverUrl = card.coverUrl;
+                playlist.creatorId = -1;
+                if (playlist.id) Catalog::Get().Restore(playlist);
+            }
+        for (auto& block : blocks)
+            for (auto& playlist : block.playlists) {
+                playlist.creatorId = -1;
+                Catalog::Get().Restore(playlist);
+            }
+        stream::Home home;
+        for (const auto& card : cards)
+            if (auto mapped = ToHomeCard(card)) home.cards.push_back(std::move(*mapped));
+        std::vector<Song> songs;
+        for (const auto& block : blocks) {
+            stream::HomeShelf shelf;
+            shelf.id = block.code;
+            shelf.title = block.title;
+            for (const auto& playlist : block.playlists) {
+                const auto known = Catalog::Get().FindPlaylist(playlist.id);
+                shelf.items.emplace_back(ToPlaylist(known ? *known : playlist));
+            }
+            for (const auto& song : block.songs) {
+                shelf.items.emplace_back(ToTrack(song));
+                songs.push_back(song);
+                // The rows show a song by its album's cover: the album must be known with it.
+                if (song.albumId && !song.coverUrl.empty()) {
+                    Album album;
+                    album.id = song.albumId;
+                    album.name = song.album;
+                    album.coverUrl = song.coverUrl;
+                    Catalog::Get().Restore(album);
+                }
+            }
+            if (!shelf.items.empty()) home.shelves.push_back(std::move(shelf));
+        }
+        fb2k::inMainThread([this, done = std::move(done), home = std::move(home), songs = std::move(songs),
+                            error = error.empty() ? std::wstring() : ErrorOf(std::move(error))]() mutable {
+            if (!m_started) return;
+            if (!songs.empty()) Catalog::Get().PutAndHint(songs);
+            if (done) done(std::move(home), std::move(error));
+        });
+    });
+}
+
+// The stations: the personal FM (私人漫游, three songs a call, 不感兴趣 for its songs) and heartbeat
+// mode (心动模式: songs like the last one, from and around the liked songs).
+void StreamProvider::FetchStationTracks(const stream::Id& station, TracksDone done) {
+    if (!m_started || !m_listTasks || !m_abort ||
+        (station != kPersonalFm && station != kHeartbeat && !station.starts_with(kSimilar))) {
+        if (done) done({}, L"This station is unavailable.");
+        return;
+    }
+    m_listTasks->Post([this, station, done = std::move(done)]() mutable {
+        if (m_abort->is_aborting()) return;
+        std::wstring error;
+        std::vector<Song> songs;
+        Client& client = Ncm().Api();
+        if (!Ncm().LoggedIn()) {
+            error = L"Please sign in to NetEase Cloud Music.";
+        } else if (Ncm().Service().EnsureStarted(*m_abort, &error)) {
+            if (station == kPersonalFm) {
+                client.PersonalFm(*m_abort, songs, error);
+            } else if (station.starts_with(kSimilar)) {
+                client.FmMode(L"FAMILIAR", std::wstring_view(station).substr(kSimilar.size()), *m_abort, songs, error);
+            } else {
+                // The first seed is one of the liked songs; later ones, the last song played.
+                int64_t seed = m_heartbeatSeed.load();
+                if (!seed) {
+                    std::vector<int64_t> liked;
+                    if (client.Likelist(Ncm().CurrentAccount().userId, *m_abort, liked, error) && !liked.empty())
+                        seed = liked[GetTickCount64() % std::min<size_t>(liked.size(), 50)];
+                }
+                if (seed && client.Heartbeat(seed, Ncm().LikedPlaylistId(), *m_abort, songs, error) && !songs.empty())
+                    m_heartbeatSeed = songs.back().id;
+            }
+        }
+        if (m_abort->is_aborting()) return;
+        fb2k::inMainThread([this, done = std::move(done), songs = std::move(songs),
+                            error = error.empty() ? std::wstring() : ErrorOf(std::move(error))]() mutable {
+            if (!m_started) return;
+            if (!songs.empty()) Catalog::Get().PutAndHint(songs);
+            if (done) done(ToTracks(songs), songs.empty() ? std::move(error) : std::wstring());
+        });
+    });
+}
+
+// The FM's songs (its own and the similar-song mixes) take 不感兴趣.
+bool StreamProvider::CanDislike(const stream::Id& station) const {
+    return station == kPersonalFm || station.starts_with(kSimilar);
+}
+
+void StreamProvider::DislikeStationTrack(const stream::Id& station, const stream::Id& track, Done done) {
+    if (!CanDislike(station) || !m_started || !m_listTasks || !m_abort) {
+        if (done) done(L"This station does not take feedback.");
+        return;
+    }
+    m_listTasks->Post([this, id = Num(track), done = std::move(done)]() mutable {
+        if (m_abort->is_aborting()) return;
+        std::wstring error;
+        if (Ncm().Service().EnsureStarted(*m_abort, &error)) Ncm().Api().FmTrash(id, *m_abort, error);
+        fb2k::inMainThread([done = std::move(done), error = error.empty() ? std::wstring() : ErrorOf(std::move(error))] {
+            if (done) done(error);
+        });
+    });
 }
 
 std::vector<settings::Field> StreamProvider::SettingFields() {
@@ -808,7 +1065,17 @@ std::vector<settings::Field> StreamProvider::SettingFields() {
     quality.defaultValue = static_cast<int>(Quality::Auto);
     quality.get = [] { return static_cast<int>(GetQuality()); };
     quality.set = [](int value) { SetQuality(static_cast<Quality>(value)); };
+    const auto qualityChoices = quality.choices;
     fields.push_back(std::move(quality));
+
+    Field download;
+    download.kind = Field::Kind::Choice;
+    download.label = L"Download quality";
+    download.choices = qualityChoices;
+    download.defaultValue = static_cast<int>(Quality::Auto);
+    download.get = [] { return static_cast<int>(GetDownloadQuality()); };
+    download.set = [](int value) { SetDownloadQuality(static_cast<Quality>(value)); };
+    fields.push_back(std::move(download));
 
     Field service;
     service.kind = Field::Kind::Text;
@@ -924,6 +1191,119 @@ std::wstring StreamProvider::Lyrics(const Id& track, abort_callback& abort) {
     std::wstring lrc, error;
     if (const int64_t id = Num(track)) Session::Get().Api().GetLyrics(id, abort, lrc, error);
     return lrc;
+}
+
+namespace {
+
+std::wstring LowerAscii(std::wstring text) {
+    for (auto& c : text)
+        if (c >= L'A' && c <= L'Z') c = static_cast<wchar_t>(c + L'a' - L'A');
+    return text;
+}
+
+// A song link with the headers the CDN expects (as the input opens it).
+stream::DownloadLink SongLink(const std::wstring& url) {
+    return {url,
+            {{L"User-Agent",
+              L"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Glasswave/0.1"},
+             {L"Referer", L"https://music.163.com/"}}};
+}
+
+std::wstring LevelName(const std::wstring& level) {
+    if (level == L"hires") return L"Hi-Res";
+    if (level == L"lossless") return L"Lossless";
+    return {};
+}
+
+} // namespace
+
+// The song's link at the download quality, the first level the service has; a preview clip
+// is refused (it is not the song). Tags from the song's detail.
+stream::DownloadSource StreamProvider::ResolveDownload(const Id& track, abort_callback& abort) {
+    const int64_t id = Num(track);
+    if (!id) throw pfc::exception("Not a NetEase song.");
+    auto& session = Session::Get();
+    if (!session.LoggedIn()) throw pfc::exception("Sign in to NetEase Cloud Music to download songs.");
+    std::wstring error;
+    if (!session.Service().EnsureStarted(abort, &error))
+        throw pfc::exception(Utf8(error.empty() ? L"NetEase service is unavailable." : error).c_str());
+
+    SongUrl url;
+    auto status = stream::SourceStatus::Unavailable;
+    std::wstring failure;
+    for (const auto& level : QualityLevels(GetDownloadQuality())) {
+        const auto result = session.Api().GetSongUrl(id, level, abort, url, error);
+        status = stream::CombineSourceStatus(status, result);
+        if (result == stream::SourceStatus::Playable) break;
+        if (failure.empty()) failure = error;
+    }
+    if (status != stream::SourceStatus::Playable)
+        throw pfc::exception(Utf8(failure.empty() ? L"This song cannot be downloaded." : failure).c_str());
+    if (url.trial) throw pfc::exception("Only a preview of this song is available.");
+
+    stream::DownloadSource source;
+    const std::wstring type = LowerAscii(url.type);
+    source.extension = type == L"flac" ? "flac" : type == L"m4a" || type == L"mp4" ? "m4a" : "mp3";
+    std::wstring format = source.extension == "flac" ? L"FLAC" : source.extension == "m4a" ? L"AAC" : L"MP3";
+    if (source.extension != "flac" && url.bitrate > 0) format += L" " + std::to_wstring((url.bitrate + 500) / 1000) + L" kbps";
+    if (const std::wstring level = LevelName(LowerAscii(url.level)); !level.empty()) format += L" (" + level + L")";
+    source.format = std::move(format);
+
+    // Tags: the song's detail (disc, number, date, style); the catalog's record if that fails.
+    SongInfo info;
+    std::wstring ignored;
+    Song song;
+    if (session.Api().GetSongInfo(id, abort, info, ignored)) {
+        song = info.song;
+        source.tags.disc = info.disc;
+        source.tags.number = info.number;
+        if (info.publishTime > 0) {
+            const time_t seconds = static_cast<time_t>(info.publishTime / 1000);
+            tm local{};
+            if (localtime_s(&local, &seconds) == 0) {
+                wchar_t date[16];
+                swprintf_s(date, L"%04d-%02d-%02d", local.tm_year + 1900, local.tm_mon + 1, local.tm_mday);
+                source.tags.date = date;
+            }
+        }
+        source.tags.genres = info.styles;
+    } else if (auto known = Catalog::Get().FindSong(id)) {
+        song = *known;
+    }
+    source.tags.title = song.title;
+    source.tags.album = song.album;
+    source.tags.albumArtist = song.albumArtist;
+    source.tags.artists = song.artists;
+    source.tags.coverUrl = song.coverUrl.substr(0, song.coverUrl.find(L'?')); // the full-size picture
+
+    // Links expire (about 20 minutes): a renewal asks for the same level again, and refuses a
+    // different codec or bitrate, which would not continue the same file.
+    struct Link {
+        std::mutex mutex;
+        SongUrl url;
+    };
+    auto link = std::make_shared<Link>();
+    link->url = url;
+    source.link = [link, id](bool renew, abort_callback& abort) {
+        std::wstring address;
+        {
+            std::lock_guard lock(link->mutex);
+            if (renew) {
+                SongUrl renewed;
+                std::wstring error;
+                if (Session::Get().Api().GetSongUrl(id, link->url.level, abort, renewed, error) !=
+                    stream::SourceStatus::Playable)
+                    throw pfc::exception(Utf8(error.empty() ? L"Cannot renew the download link." : error).c_str());
+                if (LowerAscii(renewed.type) != LowerAscii(link->url.type) || renewed.bitrate != link->url.bitrate ||
+                    renewed.trial)
+                    throw pfc::exception("NetEase renewed the link with a different file.");
+                link->url = renewed;
+            }
+            address = link->url.url;
+        }
+        return SongLink(address);
+    };
+    return source;
 }
 
 metadb_handle_ptr StreamProvider::TrackItem(const Id& track) const {

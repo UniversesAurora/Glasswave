@@ -26,10 +26,26 @@ struct DetailInfo {
     std::wstring artKey;
     metadb_handle_ptr artItem;
     bool artIsArtist = false;
+    // A cover made for a list that has none of its own (每日推荐): the picture above (its first
+    // song's cover; a gradient without one) under a shade, with a big mark at its top left (the
+    // day of the month) and a caption at its foot. Empty: the picture alone.
+    std::wstring artBadge, artCaption;
     Action action = Action::None;
     bool actionOn = false;    // following / in the library
     bool actionBusy = false;  // a write is in flight
     std::wstring actionLabel;
+    // A page command on the command bar's right (owner, 2026-11-15: an album's or a playlist's
+    // Collect moves there, its Play takes the band's button). Empty label: none.
+    std::wstring saveLabel;
+    bool saveBusy = false;
+    // Download all, right of it, on pages whose songs can be downloaded. Empty label: none.
+    std::wstring downloadLabel;
+};
+
+// One of a page's tabs (the search page's categories), drawn above its list.
+struct PageTab {
+    std::wstring key;
+    std::wstring label; // translated
 };
 
 // What a page needs from the window.
@@ -74,7 +90,13 @@ public:
     // to switch between demand loading and a background full-list drain.
     virtual void OnPresentationChanged() {}
     virtual DetailInfo Detail() const { return {}; }
+    // Tabs over the list; empty: none. Tab(): the key of the one shown.
+    virtual std::vector<PageTab> Tabs() const { return {}; }
+    virtual std::wstring Tab() const { return {}; }
+    virtual void SelectTab(const std::wstring& key) { (void)key; }
     virtual void DetailAction() {}
+    virtual void SaveAction() {} // the command bar's page command (DetailInfo::saveLabel)
+    virtual void DownloadAction() {} // DetailInfo::downloadLabel
     // Commands for the page as a whole (empty list area, detail band).
     virtual void AddPageActions(std::vector<MenuAction>& actions) { (void)actions; }
     // Extra commands for songs selected on this page.

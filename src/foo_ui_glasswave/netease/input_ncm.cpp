@@ -1,6 +1,7 @@
 #include "pch.h"
 #include "netease/catalog.h"
 #include "cache/audio.h"
+#include "download/downloads.h"
 #include "netease/config.h"
 #include "netease/handle.h"
 #include "netease/log.h"
@@ -193,12 +194,32 @@ public:
     }
 
     void get_info(file_info& p_info, abort_callback& p_abort) {
-        (void)p_abort;
         const auto song = Catalog::Get().FindSong(m_id);
         if (!song) {
-            p_info.meta_set("title", ("NetEase song " + std::to_string(m_id)).c_str());
+            // A downloaded song the catalog has not seen this run: its file's tags.
+            if (const auto local = download::LocalFile(L"ncm", std::to_wstring(m_id))) {
+                try {
+                    service_ptr_t<input_info_reader> reader;
+                    input_entry::g_open_for_info_read(reader, nullptr, ("file://" + Utf8(*local)).c_str(), p_abort,
+                                                      true);
+                    reader->get_info(0, p_info, p_abort);
+                    return;
+                } catch (const exception_aborted&) {
+                    throw;
+                } catch (...) {
+                }
+            }
+            // Its last known tags (stream/track_snapshot.h); a stand-in only for a song never
+            // seen. Either way the record is reported once the catalog has it.
+            m_reportWhenKnown = true;
+            if (!stream::KnownTags(Catalog::Get().Handle(m_id), p_info)) {
+                p_info.meta_set("title", ("NetEase song " + std::to_string(m_id)).c_str());
+                p_info.info_set(stream::kPlaceholderInfo, "1");
+            }
+            TechInfo(p_info, p_abort);
             return;
         }
+        m_reportWhenKnown = false;
         p_info.meta_set("title", Utf8(song->title).c_str());
         const std::wstring artists = JoinArtists(song->artists);
         if (!artists.empty()) p_info.meta_set("artist", Utf8(artists).c_str());
@@ -217,8 +238,24 @@ public:
 
     void decode_initialize(unsigned p_flags, abort_callback& p_abort) {
         if (m_decoder.is_valid()) return;
+        m_techReported = false;
         stream::AnnouncePlaybackOpening(m_path, p_flags);
         try {
+            // A downloaded song plays from its file while the file exists (download::Service).
+            if (const auto local = download::LocalFile(L"ncm", std::to_wstring(m_id))) {
+                if (cache::audio::IsPrefetchThread()) return; // nothing to fetch ahead
+                const std::string location = "file://" + Utf8(*local);
+                input_entry::g_open_for_decoding(m_decoder, nullptr, location.c_str(), p_abort, true);
+                m_decoder->initialize(0, p_flags, p_abort);
+                file_info_impl actual;
+                m_decoder->get_info(0, actual, p_abort);
+                m_flags = p_flags;
+                m_decodePath = location;
+                m_positionSeconds = 0;
+                m_durationSeconds = actual.get_length();
+                Log(L"input: song " + std::to_wstring(m_id) + L" from its downloaded file");
+                return;
+            }
             const auto epoch = stream::SourcePlaybackEpoch();
             Log(L"input: decoding song " + std::to_wstring(m_id));
             auto& provider = Session::Get();  // started by the component's initquit, on the main thread

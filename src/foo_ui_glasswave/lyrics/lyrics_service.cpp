@@ -406,7 +406,25 @@ void Service::Research(const metadb_handle_ptr& track, std::function<void(const 
         std::error_code ec;
         std::filesystem::remove(CacheFile(MakeQuery(track)), ec);
     }
-    Start(track, false, std::move(done));
+    // The new answer changes what the track shows (copies such as downloaded files follow).
+    Start(track, false, [this, track, done = std::move(done)](const Result& result) {
+        done(result);
+        if (result.status == Status::Found || result.status == Status::NotFound) NotifyChanged(track);
+    });
+}
+
+uint64_t Service::SubscribeChanges(std::function<void(const metadb_handle_ptr&)> listener) {
+    const uint64_t token = m_nextChangeListener++;
+    m_changeListeners[token] = std::move(listener);
+    return token;
+}
+
+void Service::UnsubscribeChanges(uint64_t token) { m_changeListeners.erase(token); }
+
+void Service::NotifyChanged(const metadb_handle_ptr& track) {
+    const auto listeners = m_changeListeners; // a listener may unsubscribe
+    for (const auto& [token, listener] : listeners)
+        if (m_changeListeners.count(token)) listener(track);
 }
 
 void Service::CancelSearch() {

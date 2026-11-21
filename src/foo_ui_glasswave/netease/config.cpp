@@ -9,6 +9,9 @@ namespace {
 
 // {3B8E6C21-9F4A-4D7C-A251-6E8B3D1F7C90}
 cfg_var_modern::cfg_int cfg_quality({0x3b8e6c21, 0x9f4a, 0x4d7c, {0xa2, 0x51, 0x6e, 0x8b, 0x3d, 0x1f, 0x7c, 0x90}}, 0);
+// {3B8E6C22-9F4A-4D7C-A251-6E8B3D1F7C90}
+cfg_var_modern::cfg_int cfg_downloadQuality({0x3b8e6c22, 0x9f4a, 0x4d7c, {0xa2, 0x51, 0x6e, 0x8b, 0x3d, 0x1f, 0x7c, 0x90}},
+                                            0);
 // {7C4D2E91-3A6B-4F18-9D72-5E1C8A4B6F23}
 cfg_var_modern::cfg_string cfg_service_url({0x7c4d2e91, 0x3a6b, 0x4f18, {0x9d, 0x72, 0x5e, 0x1c, 0x8a, 0x4b, 0x6f, 0x23}}, "");
 // {1F9A7C53-6E2D-4B80-853F-2A7D9C510E64}
@@ -40,6 +43,26 @@ void SetQuality(Quality quality) {
     if (changed) fb2k::inMainThread([] {
         if (auto* host = cache::PrefetchHost::Existing()) host->NotifyContextChanged();
     });
+}
+
+Quality GetDownloadQuality() {
+    const int64_t v = cfg_downloadQuality.get();
+    if (v < static_cast<int64_t>(Quality::Auto) || v > static_cast<int64_t>(Quality::Standard))
+        return Quality::Auto;
+    return static_cast<Quality>(v);
+}
+
+void SetDownloadQuality(Quality quality) { cfg_downloadQuality.set(static_cast<int64_t>(quality)); }
+
+std::vector<std::wstring> QualityLevels(Quality quality) {
+    switch (quality) {
+    case Quality::Lossless: return {L"lossless"};
+    case Quality::Hires: return {L"hires", L"lossless", L"exhigh", L"higher", L"standard"};
+    case Quality::Exhigh: return {L"exhigh", L"higher", L"standard"};
+    case Quality::Standard: return {L"standard"};
+    case Quality::Auto:
+    default: return {L"lossless", L"exhigh", L"higher", L"standard"};
+    }
 }
 
 std::wstring GetServiceUrlOverride() { return Wide(cfg_service_url.get()); }

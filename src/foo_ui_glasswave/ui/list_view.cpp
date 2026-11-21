@@ -2,14 +2,18 @@
 #include "ui/list_view.h"
 #include "gfx/composition_host.h"
 #include "ui/art_cache.h"
+#include "ui/card_layer.h"
 #include "ui/text.h"
 #include "win7/win7_resources.h"
 #include "ui/win7_menu.h"
+#include "download/downloads.h"
 #include "media/favorites.h"
 #include "app/settings.h"
 #include "stream/provider.h"
 #include "ui/i18n.h"
+#include "ui/source_badge.h"
 #include "wmp/wmp_painter.h"
+#include "wmp/wmp_transport.h"
 
 namespace glasswave::ui {
 
@@ -48,12 +52,15 @@ cfg_var_modern::cfg_int cfg_showGroups({0x5e8b2c48, 0x9a1d, 0x4f63, {0xb0, 0xe2,
                                        1);
 
 // Columns drawn as controls instead of text.
-enum class CellKind { Text, Rating, Favorite, Art };
+enum class CellKind { Text, Rating, Favorite, Art, Popularity, Progress, Download };
 CellKind KindOf(const media::Column& c) {
     if (!c.format) return CellKind::Text;
     if (std::strcmp(c.format, "[%rating%]") == 0) return CellKind::Rating;
     if (std::strcmp(c.format, "<favorite>") == 0) return CellKind::Favorite;
     if (std::strcmp(c.format, media::kArtFormat) == 0) return CellKind::Art;
+    if (std::strcmp(c.format, media::kPopularityFormat) == 0) return CellKind::Popularity;
+    if (std::strcmp(c.format, media::kProgressFormat) == 0) return CellKind::Progress;
+    if (std::strcmp(c.format, media::kDownloadFormat) == 0) return CellKind::Download;
     return CellKind::Text;
 }
 constexpr float kStar = 13;  // STARS.PNG cell width (13x16)
@@ -158,6 +165,337 @@ float TextWidth(const std::wstring& text, float maxW) {
     layout->GetMetrics(&m);
     return std::min(m.width, maxW);
 }
+// A shelf's "show all": aero.msstyles' expando button (IMAGE 693 / 694 / 695 at rest, 696 - 698
+// lit, 699 - 701 held, for 96 / 120 / 144 DPI) in vectors, measured on the 144-DPI bitmaps (a
+// 29 px disc about (14.5, 15.5)): a metallic disc, flat on top and shading down from the middle,
+// a light ring inside a one-pixel rim, and a #333333 chevron with a white edge. The chevron
+// points right; it keeps the bitmap's offset of one pixel towards its point (the optical centre).
+// `hot` and `pressed` (0..1) fade in the lit and held looks.
+namespace expando {
+struct Stop {
+    float y; // bitmap rows (pixel centres)
+    uint32_t rgb;
+};
+struct Look {
+    std::initializer_list<Stop> body, ring;
+    uint32_t rim;
+};
+const Look kLooks[3] = {
+    {{{11.5f, 0xF4F4F4}, {12.5f, 0xF0F0F0}, {13.5f, 0xEBEBEB}, {14.5f, 0xE5E5E5}, {15.5f, 0xDEDEDE}, {16.5f, 0xD9D8D8},
+      {17.5f, 0xD5D4D4}, {18.5f, 0xD1D0D0}, {19.5f, 0xCDCCCC}, {20.5f, 0xCAC9C9}, {21.5f, 0xC7C5C5}, {22.5f, 0xC4C3C3},
+      {23.5f, 0xC2C0C0}, {24.5f, 0xC1BFBF}},
+     {{2.5f, 0xFBFBFB}, {9.5f, 0xFAFAFA}, {15.5f, 0xF1F1F1}, {20.5f, 0xEAE9E9}, {25.5f, 0xE1E0DF}, {28.5f, 0xE9E9E8}},
+     0x8C8C8C},
+    {{{4.5f, 0xEEF7FD}, {10.5f, 0xECF7FD}, {11.5f, 0xEAF7FD}, {12.5f, 0xE5F5FD}, {13.5f, 0xDFF2FC}, {14.5f, 0xD8EEFA},
+      {15.5f, 0xCFE9F7}, {16.5f, 0xC5E3F4}, {17.5f, 0xBDDFF2}, {18.5f, 0xB7DCF0}, {19.5f, 0xB2D9EF}, {20.5f, 0xACD6ED},
+      {21.5f, 0xA8D4EC}, {22.5f, 0xA4D1EA}, {23.5f, 0xA0D0E9}, {24.5f, 0x9FCFE9}},
+     {{2.5f, 0xF9FCFE}, {9.5f, 0xF6FBFE}, {15.5f, 0xDFF0FA}, {20.5f, 0xE0F0F8}, {24.5f, 0xD0E8F4}, {28.5f, 0xDDEEF7}},
+     0x3C7FB1},
+    {{{2.5f, 0xDEF0F9}, {5.5f, 0xDAEEF7}, {8.5f, 0xD7EBF5}, {10.5f, 0xD3E9F4}, {11.5f, 0xD0E7F2}, {12.5f, 0xCAE3F0},
+      {13.5f, 0xC3DFED}, {14.5f, 0xBAD9EA}, {15.5f, 0xABD1E4}, {16.5f, 0x97C6DE}, {17.5f, 0x86BCD9}, {18.5f, 0x79B5D4},
+      {19.5f, 0x6DAFD1}, {20.5f, 0x64AACE}, {21.5f, 0x61A8CD}},
+     {},
+     0x2C628B},
+};
+// The down chevron as the bitmap draws it (pixel edges).
+constexpr D2D1_POINT_2F kChevron[] = {{7, 12},    {10, 12}, {14.5f, 16.5f}, {19, 12},
+                                      {22, 12},   {22, 13.5f}, {14.5f, 21},  {7, 13.5f}};
+constexpr float kSize = 29, kCx = 14.5f, kCy = 15.5f, kTop = 1;
+}  // namespace expando
+
+void RoundChevron(ID2D1DeviceContext* dc, D2D1_RECT_F box, float hot, float pressed) {
+    winrt::com_ptr<ID2D1Factory> factory;
+    dc->GetFactory(factory.put());
+    const float k = (box.right - box.left) / expando::kSize; // DIP per bitmap pixel
+    const D2D1_POINT_2F c{(box.left + box.right) / 2, (box.top + box.bottom) / 2};
+    const auto rowY = [&](float row) { return c.y + (row - expando::kCy) * k; };
+    const auto gradient = [&](std::initializer_list<expando::Stop> stops, float opacity) {
+        std::vector<D2D1_GRADIENT_STOP> v;
+        const float y0 = rowY(expando::kTop), y1 = rowY(expando::kTop + expando::kSize);
+        for (const auto& st : stops) v.push_back({(rowY(st.y) - y0) / (y1 - y0), Hex(st.rgb)});
+        winrt::com_ptr<ID2D1GradientStopCollection> collection;
+        dc->CreateGradientStopCollection(v.data(), static_cast<UINT32>(v.size()), collection.put());
+        winrt::com_ptr<ID2D1LinearGradientBrush> brush;
+        dc->CreateLinearGradientBrush({{0, y0}, {0, y1}}, collection.get(), brush.put());
+        brush->SetOpacity(opacity);
+        return brush;
+    };
+    const float R = expando::kSize / 2 * k;
+    const float weights[3] = {1.0f, hot, pressed};
+    for (int i = 0; i < 3; ++i) {
+        if (weights[i] <= 0) continue;
+        const auto& look = expando::kLooks[i];
+        dc->FillEllipse(D2D1::Ellipse(c, R, R), gradient(look.body, weights[i]).get());
+        if (look.ring.size())
+            dc->DrawEllipse(D2D1::Ellipse(c, R - 1.75f * k, R - 1.75f * k), gradient(look.ring, weights[i]).get(),
+                            1.8f * k);
+        dc->DrawEllipse(D2D1::Ellipse(c, R - 0.5f * k, R - 0.5f * k), Brush(dc, look.rim, weights[i]).get(), 1.0f * k);
+    }
+    // The chevron, turned to point right about the disc's centre; held, it sinks a little.
+    winrt::com_ptr<ID2D1PathGeometry> glyph;
+    winrt::com_ptr<ID2D1GeometrySink> sink;
+    factory->CreatePathGeometry(glyph.put());
+    glyph->Open(sink.put());
+    for (size_t i = 0; i < std::size(expando::kChevron); ++i) {
+        const float u = expando::kChevron[i].x - expando::kCx, v = expando::kChevron[i].y - expando::kCy;
+        const D2D1_POINT_2F q{c.x + v * k, c.y - u * k + 0.5f * pressed};
+        if (i == 0)
+            sink->BeginFigure(q, D2D1_FIGURE_BEGIN_FILLED);
+        else
+            sink->AddLine(q);
+    }
+    sink->EndFigure(D2D1_FIGURE_END_CLOSED);
+    sink->Close();
+    dc->DrawGeometry(glyph.get(), Brush(dc, 0xFFFFFF).get(), 2.0f * k); // its white edge, one pixel outside
+    dc->FillGeometry(glyph.get(), Brush(dc, 0x333333).get());
+}
+
+// A shelf's paging arrow, tall as Apple Music's: a thin chevron, shown while the mouse is over
+// the shelf (`shown`), and the command bar's glass button plate (aero Toolbar BUTTON 849) round it
+// while the mouse is on it: hot (`plate`), and sunk in while held (`press`, the pressed state, the
+// chevron half a DIP lower).
+void ShelfArrowButton(ID2D1DeviceContext* dc, D2D1_RECT_F box, bool right, float shown, float plate, float press) {
+    if (shown <= 0 && plate <= 0 && press <= 0) return;
+    const float hot = plate * (1 - press);
+    if (hot > 0 && !win7::DrawNineGrid(dc, win7::Module::Aero, 849, {0, 26, 7, 52}, {3, 3, 3, 3}, box, hot)) {
+        dc->FillRoundedRectangle({box, 3, 3}, Brush(dc, 0xEBF3FC, hot).get());
+        dc->DrawRoundedRectangle({box, 3, 3}, Brush(dc, 0xA1A8B0, hot).get(), 1.0f);
+    }
+    if (press > 0 && !win7::DrawNineGrid(dc, win7::Module::Aero, 849, {0, 52, 7, 78}, {3, 3, 3, 3}, box, press)) {
+        dc->FillRoundedRectangle({box, 3, 3}, Brush(dc, 0xD6E5F5, press).get());
+        dc->DrawRoundedRectangle({box, 3, 3}, Brush(dc, 0x8E9AA6, press).get(), 1.0f);
+    }
+    if (shown <= 0) return;
+    const float w = box.right - box.left, h = box.bottom - box.top;
+    const float cx = box.left + w / 2, cy = box.top + h / 2 + press * 0.5f, half = h * 0.22f, depth = half * 0.55f;
+    const float tip = right ? cx + depth / 2 : cx - depth / 2, back = right ? cx - depth / 2 : cx + depth / 2;
+    winrt::com_ptr<ID2D1Factory> factory;
+    dc->GetFactory(factory.put());
+    winrt::com_ptr<ID2D1StrokeStyle> round;
+    factory->CreateStrokeStyle(D2D1::StrokeStyleProperties(D2D1_CAP_STYLE_ROUND, D2D1_CAP_STYLE_ROUND,
+                                                           D2D1_CAP_STYLE_ROUND, D2D1_LINE_JOIN_ROUND),
+                               nullptr, 0, round.put());
+    winrt::com_ptr<ID2D1PathGeometry> path;
+    winrt::com_ptr<ID2D1GeometrySink> sink;
+    factory->CreatePathGeometry(path.put());
+    path->Open(sink.put());
+    sink->BeginFigure({back, cy - half}, D2D1_FIGURE_BEGIN_HOLLOW);
+    sink->AddLine({tip, cy});
+    sink->AddLine({back, cy + half});
+    sink->EndFigure(D2D1_FIGURE_END_OPEN);
+    sink->Close();
+    dc->DrawGeometry(path.get(), Brush(dc, 0x1E395B, shown).get(), 2.2f, round.get());
+}
+
+// A song card's play button: a triangle in Aero's blue (after wmploc's 16 px play arrow, 5346),
+// rounded corners, a white rim and a soft shadow; brighter under the mouse.
+// A song's download mark after Apple Music's: a 16 DIP disc with a white arrow of round strokes
+// (a stem and an open head). `hot` (0..1, fading) is the mouse on it. Downloaded: Apple's grey
+// disc, darker under the mouse. The offer to download (a hovered row) is a glass ball in the
+// colours of WMP 12's play orb (wmploc 4153 at rest, 4155 lit, sampled down its middle): a deep
+// navy body from a sharp horizon (#0C3E90) brightening to a cyan foot (#2BAAEA, #44CAFA), a pale
+// gloss over the upper part, a navy rim. Lit it glows: the body turns azure (#0060B1 at the
+// horizon), the foot nearly white cyan (#7AF0FC), the rim blue (#0372C0) and a blue halo
+// (#23A4EF) shines round it, as the orb's does.
+void DownloadMark(ID2D1DeviceContext* dc, D2D1_POINT_2F c, bool offer, float hot, float opacity) {
+    if (opacity <= 0) return;
+    const float r = 8;
+    const auto colour = [&](uint32_t rgb, float a = 1.0f) { return D2D1::ColorF(rgb, a * opacity); };
+    const auto gradient = [&](D2D1_POINT_2F from, D2D1_POINT_2F to,
+                              std::initializer_list<std::pair<float, D2D1_COLOR_F>> stops) {
+        std::vector<D2D1_GRADIENT_STOP> list;
+        for (const auto& [at, value] : stops)
+            list.push_back({at, value});
+        winrt::com_ptr<ID2D1GradientStopCollection> collection;
+        dc->CreateGradientStopCollection(list.data(), static_cast<UINT32>(list.size()), collection.put());
+        winrt::com_ptr<ID2D1LinearGradientBrush> brush;
+        dc->CreateLinearGradientBrush({from, to}, collection.get(), brush.put());
+        return brush;
+    };
+    const auto mix = [](uint32_t a, uint32_t b, float t) {
+        const auto ch = [&](int shift) {
+            const float x = ((a >> shift) & 0xFF) * (1 - t) + ((b >> shift) & 0xFF) * t;
+            return static_cast<uint32_t>(std::lround(x)) << shift;
+        };
+        return ch(16) | ch(8) | ch(0);
+    };
+    const D2D1_ELLIPSE disc{c, r, r};
+    if (offer) {
+        // The halo of the lit orb, round the disc.
+        if (hot > 0) {
+            D2D1_GRADIENT_STOP haloStops[] = {{0.0f, colour(0x23A4EF, 0.0f)},
+                                              {0.72f, colour(0x23A4EF, 0.55f * hot)},
+                                              {1.0f, colour(0x23A4EF, 0.0f)}};
+            winrt::com_ptr<ID2D1GradientStopCollection> haloList;
+            dc->CreateGradientStopCollection(haloStops, 3, haloList.put());
+            winrt::com_ptr<ID2D1RadialGradientBrush> halo;
+            dc->CreateRadialGradientBrush({c, {0, 0}, r + 3, r + 3}, haloList.get(), halo.put());
+            dc->FillEllipse({c, r + 3, r + 3}, halo.get());
+        }
+        // The body, top to foot.
+        dc->FillEllipse(disc, gradient({c.x, c.y - r}, {c.x, c.y + r},
+                                       {{0.0f, colour(mix(0x1A4E9E, 0x2A7CC4, hot))},
+                                        {0.45f, colour(mix(0x0C3E90, 0x0060B1, hot))},
+                                        {0.62f, colour(mix(0x0C55A3, 0x0A7ACA, hot))},
+                                        {0.8f, colour(mix(0x0C85D8, 0x38ADE6, hot))},
+                                        {0.9f, colour(mix(0x2BAAEA, 0x5FD1F7, hot))},
+                                        {1.0f, colour(mix(0x44CAFA, 0x7AF0FC, hot))}})
+                                  .get());
+        // The foot's glow, near white when lit.
+        D2D1_GRADIENT_STOP glowStops[] = {{0.0f, colour(mix(0x5FD6FF, 0xC8FFFF, hot), 0.55f + 0.35f * hot)},
+                                          {1.0f, colour(0x5FD6FF, 0)}};
+        winrt::com_ptr<ID2D1GradientStopCollection> glowList;
+        dc->CreateGradientStopCollection(glowStops, 2, glowList.put());
+        winrt::com_ptr<ID2D1RadialGradientBrush> glow;
+        dc->CreateRadialGradientBrush({{c.x, c.y + r * 0.85f}, {0, 0}, r * 0.75f, r * 0.45f}, glowList.get(),
+                                      glow.put());
+        dc->FillEllipse(disc, glow.get());
+        // The gloss: pale over the upper part, ending in a sharp horizon.
+        dc->FillEllipse({{c.x, c.y - r * 0.5f}, r * 0.8f, r * 0.46f},
+                        gradient({c.x, c.y - r * 0.96f}, {c.x, c.y - r * 0.04f},
+                                 {{0.0f, colour(0xFFFFFF, 0.78f)}, {1.0f, colour(0xFFFFFF, 0.28f)}})
+                            .get());
+        winrt::com_ptr<ID2D1SolidColorBrush> rim;
+        dc->CreateSolidColorBrush(colour(mix(0x0A3478, 0x0372C0, hot), 0.95f), rim.put());
+        dc->DrawEllipse({c, r - 0.4f, r - 0.4f}, rim.get(), 0.8f);
+    } else {
+        winrt::com_ptr<ID2D1SolidColorBrush> grey;
+        dc->CreateSolidColorBrush(colour(mix(0xC4C4C4, 0xA0A0A0, hot)), grey.put());
+        dc->FillEllipse(disc, grey.get());
+    }
+    // The arrow: round strokes, a stem and an open head.
+    winrt::com_ptr<ID2D1Factory> factory;
+    dc->GetFactory(factory.put());
+    winrt::com_ptr<ID2D1StrokeStyle> round;
+    factory->CreateStrokeStyle(D2D1::StrokeStyleProperties(D2D1_CAP_STYLE_ROUND, D2D1_CAP_STYLE_ROUND,
+                                                           D2D1_CAP_STYLE_ROUND, D2D1_LINE_JOIN_ROUND),
+                               nullptr, 0, round.put());
+    winrt::com_ptr<ID2D1PathGeometry> arrow;
+    winrt::com_ptr<ID2D1GeometrySink> sink;
+    factory->CreatePathGeometry(arrow.put());
+    arrow->Open(sink.put());
+    sink->BeginFigure({c.x, c.y - 4.2f}, D2D1_FIGURE_BEGIN_HOLLOW);
+    sink->AddLine({c.x, c.y + 3.6f});
+    sink->EndFigure(D2D1_FIGURE_END_OPEN);
+    sink->BeginFigure({c.x - 3.3f, c.y + 0.4f}, D2D1_FIGURE_BEGIN_HOLLOW);
+    sink->AddLine({c.x, c.y + 3.7f});
+    sink->AddLine({c.x + 3.3f, c.y + 0.4f});
+    sink->EndFigure(D2D1_FIGURE_END_OPEN);
+    sink->Close();
+    if (offer) { // a soft shadow lifts it off the glass
+        D2D1_MATRIX_3X2_F current;
+        dc->GetTransform(&current);
+        dc->SetTransform(D2D1::Matrix3x2F::Translation(0, 0.6f) * current);
+        winrt::com_ptr<ID2D1SolidColorBrush> shadow;
+        dc->CreateSolidColorBrush(colour(0x061E4A, 0.45f), shadow.put());
+        dc->DrawGeometry(arrow.get(), shadow.get(), 1.7f, round.get());
+        dc->SetTransform(current);
+    }
+    winrt::com_ptr<ID2D1SolidColorBrush> white;
+    dc->CreateSolidColorBrush(colour(0xFFFFFF), white.put());
+    dc->DrawGeometry(arrow.get(), white.get(), 1.7f, round.get());
+}
+
+// A download in progress: a ring (16 DIP) filling clockwise from the top in Windows 7's progress
+// colours (green, yellow paused, red failed) over a grey track; waiting: the track alone.
+void ProgressRing(ID2D1DeviceContext* dc, D2D1_POINT_2F c, float share, download::State state) {
+    const float r = 6.5f, width = 3.0f;
+    dc->DrawEllipse({c, r, r}, Brush(dc, 0xDADADA).get(), width);
+    share = std::clamp(share, 0.0f, 1.0f);
+    if (share <= 0) return;
+    const uint32_t light = state == download::State::Failed ? 0xF08080
+                           : state == download::State::Paused ? 0xFFE27A
+                                                               : 0x7EEB86;
+    const uint32_t dark = state == download::State::Failed ? 0xC81E1E
+                          : state == download::State::Paused ? 0xD49B00
+                                                              : 0x0AB526;
+    D2D1_GRADIENT_STOP gradient[2] = {{0.0f, D2D1::ColorF(light)}, {1.0f, D2D1::ColorF(dark)}};
+   winrt::com_ptr<ID2D1GradientStopCollection> collection;
+    dc->CreateGradientStopCollection(gradient, 2, collection.put());
+   winrt::com_ptr<ID2D1LinearGradientBrush> ink;
+    dc->CreateLinearGradientBrush({{c.x - r, c.y - r}, {c.x + r, c.y + r}}, collection.get(), ink.put());
+    if (share >= 0.999f) {
+        dc->DrawEllipse({c, r, r}, ink.get(), width);
+        return;
+    }
+   winrt::com_ptr<ID2D1Factory> factory;
+    dc->GetFactory(factory.put());
+   winrt::com_ptr<ID2D1PathGeometry> arc;
+   winrt::com_ptr<ID2D1GeometrySink> sink;
+    factory->CreatePathGeometry(arc.put());
+    arc->Open(sink.put());
+    const float angle = share * 6.2831853f;
+    sink->BeginFigure({c.x, c.y - r}, D2D1_FIGURE_BEGIN_HOLLOW);
+    sink->AddArc({{c.x + r * std::sin(angle), c.y - r * std::cos(angle)},
+                  {r, r},
+                  0,
+                  D2D1_SWEEP_DIRECTION_CLOCKWISE,
+                  share > 0.5f ? D2D1_ARC_SIZE_LARGE : D2D1_ARC_SIZE_SMALL});
+    sink->EndFigure(D2D1_FIGURE_END_OPEN);
+    sink->Close();
+   winrt::com_ptr<ID2D1StrokeStyle> round;
+    factory->CreateStrokeStyle(D2D1::StrokeStyleProperties(D2D1_CAP_STYLE_ROUND, D2D1_CAP_STYLE_ROUND), nullptr, 0,
+                               round.put());
+    dc->DrawGeometry(arc.get(), ink.get(), width, round.get());
+}
+
+void PlayTriangle(ID2D1DeviceContext* dc, D2D1_RECT_F box, float hot, float opacity) {
+    if (opacity <= 0) return;
+    winrt::com_ptr<ID2D1Factory> factory;
+    dc->GetFactory(factory.put());
+    const float w = box.right - box.left, h = box.bottom - box.top;
+    const D2D1_POINT_2F p[3] = {{box.left + w * 0.18f, box.top + h * 0.08f},
+                                {box.left + w * 0.18f, box.top + h * 0.92f},
+                                {box.left + w * 0.92f, box.top + h * 0.5f}};
+    const float r = w * 0.12f;
+    const auto toward = [](D2D1_POINT_2F a, D2D1_POINT_2F b, float d) {
+        const float len = std::hypot(b.x - a.x, b.y - a.y);
+        return D2D1_POINT_2F{a.x + (b.x - a.x) * d / len, a.y + (b.y - a.y) * d / len};
+    };
+    const auto build = [&](D2D1_POINT_2F offset) {
+        winrt::com_ptr<ID2D1PathGeometry> path;
+        winrt::com_ptr<ID2D1GeometrySink> sink;
+        factory->CreatePathGeometry(path.put());
+        path->Open(sink.put());
+        for (int i = 0; i < 3; ++i) {
+            const D2D1_POINT_2F prev = p[(i + 2) % 3], at = p[i], next = p[(i + 1) % 3];
+            D2D1_POINT_2F in = toward(at, prev, r), out = toward(at, next, r);
+            in = {in.x + offset.x, in.y + offset.y};
+            out = {out.x + offset.x, out.y + offset.y};
+            if (i == 0)
+                sink->BeginFigure(in, D2D1_FIGURE_BEGIN_FILLED);
+            else
+                sink->AddLine(in);
+            sink->AddQuadraticBezier({{at.x + offset.x, at.y + offset.y}, out});
+        }
+        sink->EndFigure(D2D1_FIGURE_END_CLOSED);
+        sink->Close();
+        return path;
+    };
+    dc->PushLayer(D2D1::LayerParameters1(D2D1::InfiniteRect(), nullptr, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
+                                         D2D1::IdentityMatrix(), opacity),
+                  nullptr);
+    auto shadow = build({0.6f, 1.0f});
+    dc->FillGeometry(shadow.get(), Brush(dc, 0x000000, 0.28f).get());
+    auto shape = build({0, 0});
+    const auto mix = [hot](uint32_t a, uint32_t b) {
+        const auto ch = [&](int shift) {
+            const int x = (a >> shift) & 0xFF, y = (b >> shift) & 0xFF;
+            return static_cast<uint32_t>(std::lround(x + (y - x) * hot)) << shift;
+        };
+        return ch(16) | ch(8) | ch(0);
+    };
+    const D2D1_GRADIENT_STOP stops[] = {{0.0f, Hex(mix(0x5BB6FF, 0x8ED0FF))},
+                                        {0.5f, Hex(mix(0x1A84EC, 0x3C9DF5))},
+                                        {1.0f, Hex(mix(0x0A4FC0, 0x1C67D6))}};
+    winrt::com_ptr<ID2D1GradientStopCollection> collection;
+    winrt::com_ptr<ID2D1LinearGradientBrush> fill;
+    if (SUCCEEDED(dc->CreateGradientStopCollection(stops, 3, collection.put())) &&
+        SUCCEEDED(dc->CreateLinearGradientBrush({{0, box.top}, {0, box.bottom}}, collection.get(), fill.put())))
+        dc->FillGeometry(shape.get(), fill.get());
+    dc->DrawGeometry(shape.get(), Brush(dc, 0xFFFFFF).get(), std::max(1.2f, w / 16.0f));
+    dc->PopLayer();
+}
 }  // namespace
 
 ListView::ListView(const wuc::ContainerVisual& parent) {
@@ -179,10 +517,23 @@ ListView::ListView(const wuc::ContainerVisual& parent) {
     m_artToken = ArtCache::Get().Subscribe([this] {
         if (m_mode != Mode::Plain || ArtColumnVisible()) PaintRows();
     });
+    m_iconToken = SubscribeSourceIcons([this] {
+        if (m_mode == Mode::Tiles) PaintRows();
+    });
+    m_downloadToken = download::Subscribe([this] {
+        if (m_source && m_mode != Mode::Tiles)
+            for (const auto& column : m_source->Columns())
+                if (KindOf(column) == CellKind::Download) {
+                    PaintRows();
+                    return;
+                }
+    });
 }
 
 ListView::~ListView() {
+    download::Unsubscribe(m_downloadToken);
     if (auto* cache = ArtCache::Existing()) cache->Unsubscribe(m_artToken);
+    UnsubscribeSourceIcons(m_iconToken);
 }
 
 // ---- Geometry -------------------------------------------------------------------------------
@@ -859,13 +1210,107 @@ void ListView::PaintCells(ID2D1DeviceContext* dc, size_t row, float y, float row
             if (fav) Text(dc, L"★", {c.x + kCellPad, y + 0.5f, c.x + c.w - kCellPad, y + 0.5f + rowH}, 0xD4A017,
                           DWRITE_TEXT_ALIGNMENT_CENTER);
             continue;
+        } else if (kind == CellKind::Popularity) {
+            // NetEase's 热度: a short rounded bar, the score's share of the column, on a
+            // track in the list's group-rule tint. No bar for an unscored song.
+            const int score = std::clamp(_wtoi(m_source->Cell(row, c.src).c_str()), 0, 100);
+            if (score == 0) continue;
+            auto snap = [&](float v) { return std::round(v * m_scale) / m_scale; };
+            const float left = snap(c.x + kCellPad), right = snap(c.x + c.w - kCellPad);
+            const float h = 4, top = snap(y + (rowH - h) / 2);
+            if (right - left < h * 2) continue;
+            const float fill = std::max(h, snap((right - left) * score / 100.0f));
+            dc->FillRoundedRectangle({{left, top, right, top + h}, h / 2, h / 2}, Brush(dc, kGroupRule).get());
+            dc->FillRoundedRectangle({{left, top, left + fill, top + h}, h / 2, h / 2},
+                                     Brush(dc, isPlaying ? kPlayingInk : 0x3C7FB1).get());
+            continue;
+        } else if (kind == CellKind::Download) {
+            // Downloaded: the mark always; downloading: its ring; else the offer on the hovered row.
+            const metadb_handle_ptr item = m_source->Item(row);
+            if (!item.is_valid()) continue;
+            const D2D1_POINT_2F centre{std::round((c.x + c.w / 2) * m_scale) / m_scale,
+                                       std::round((y + rowH / 2) * m_scale) / m_scale};
+            if (const auto state = download::StateOf(item)) {
+                if (state->state == download::State::Done)
+                    DownloadMark(dc, centre, false, row == m_hot ? m_downloadHot : 0.0f, 1.0f);
+                else
+                    ProgressRing(dc, centre, state->progress, state->state);
+            } else if (row == m_hot && download::Downloadable(item)) {
+                DownloadMark(dc, centre, true, m_downloadHot, 1.0f); // at once with the row
+            }
+            continue;
+        } else if (kind == CellKind::Progress) {
+            // Windows 7's progress bar at its own 14 DIP height: the grey trough, then the
+            // fill's share of it, green (yellow paused, red failed), cut off at the share. A
+            // running one ('r') has Windows 7's glow (aero 664, the move overlay) sweeping from
+            // the bar's start to the fill's end: 1.7 s across, 0.7 s rest.
+            const std::wstring cell = m_source->Cell(row, c.src);
+            if (cell.empty()) continue;
+            const float share = std::clamp(static_cast<float>(_wtoi(cell.c_str())) / 1000.0f, 0.0f, 1.0f);
+            const wchar_t state = cell.back();
+            auto snap = [&](float v) { return std::round(v * m_scale) / m_scale; };
+            const float left = snap(c.x + kCellPad), right = snap(c.x + c.w - kCellPad);
+            const float h = 14, top = snap(y + (rowH - h) / 2);
+            if (right - left < 20) continue;
+            const D2D1_RECT_F bar{left, top, right, top + h};
+            win7::DrawNineGrid(dc, win7::Module::Aero, 648, {0, 0, 19, 14}, {3, 3, 3, 3}, bar);
+            const float fill = snap((right - left) * share);
+            if (fill > 0) {
+                const int id = state == L'e' ? 657 : state == L'p' ? 658 : 656;
+                dc->PushAxisAlignedClip({left, top, left + fill, top + h}, D2D1_ANTIALIAS_MODE_ALIASED);
+                win7::DrawNineGrid(dc, win7::Module::Aero, id, {0, 0, 51, 14}, {7, 3, 7, 3},
+                                   {left, top, left + std::max(fill, 14.0f), top + h});
+                if (state == L'r') {
+                    m_glowSeen = true;
+                    constexpr ULONGLONG kSweep = 1700, kCycle = 2400;
+                    const ULONGLONG t = GetTickCount64() % kCycle;
+                    if (t < kSweep) {
+                        const float glow = 127.0f * h / 18.0f; // the overlay at the bar's height
+                        const float x = left - glow + (fill + glow) * static_cast<float>(t) / kSweep;
+                        win7::DrawPartTo(dc, win7::Module::Aero, 664, {0, 0, 127, 18}, {x, top, x + glow, top + h});
+                    }
+                }
+                dc->PopAxisAlignedClip();
+            }
+            continue;
         }
         const bool primary = col.flex;
-        Text(dc, m_source->Cell(row, c.src), {c.x + kCellPad, y + 0.5f, c.x + c.w - kCellPad, y + 0.5f + rowH},
-             isPlaying ? kPlayingInk : (primary ? kInk : kSecondaryInk),
-             col.rightAlign ? DWRITE_TEXT_ALIGNMENT_TRAILING : DWRITE_TEXT_ALIGNMENT_LEADING,
-             isPlaying && primary ? DWRITE_FONT_WEIGHT_SEMI_BOLD : DWRITE_FONT_WEIGHT_NORMAL);
+        D2D1_RECT_F box{c.x + kCellPad, y + 0.5f, c.x + c.w - kCellPad, y + 0.5f + rowH};
+        const std::wstring text = m_source->Cell(row, c.src);
+        // Tags stand before the text, as NetEase puts 原唱 before the singer (owner, 2026-11-21).
+        if (!col.rightAlign) box.left = PaintBadges(dc, m_source->CellBadges(row, c.src), box.left, y + rowH / 2, box.right);
+        const DWRITE_FONT_WEIGHT weight =
+            isPlaying && primary ? DWRITE_FONT_WEIGHT_SEMI_BOLD : DWRITE_FONT_WEIGHT_NORMAL;
+        Text(dc, text, box, isPlaying ? kPlayingInk : (primary ? kInk : kSecondaryInk),
+             col.rightAlign ? DWRITE_TEXT_ALIGNMENT_TRAILING : DWRITE_TEXT_ALIGNMENT_LEADING, weight);
+        // A note follows the text in grey, "(note)", where the text leaves room for it.
+        if (const std::wstring note = m_source->CellNote(row, c.src); !note.empty() && !col.rightAlign) {
+            auto layout = MakeText(text, 12.0f, weight, box.right - box.left, rowH);
+            DWRITE_TEXT_METRICS m{};
+            layout->GetMetrics(&m);
+            const float x = box.left + m.widthIncludingTrailingWhitespace + 4;
+            if (x + 12 < box.right) Text(dc, L"(" + note + L")", {x, box.top, box.right, box.bottom}, kNoteInk);
+        }
     }
+}
+
+// A tag, as NetEase draws 原唱: its text in red inside a thin red rounded outline, a little
+// smaller than the row's text, centred on `cy`. Returns its width; 0 when it does not fit before
+// `right`.
+float ListView::PaintBadge(ID2D1DeviceContext* dc, const std::wstring& text, float x, float cy, float right) {
+    return DrawTag(dc, text, x, cy, right, Hex(kBadgeInk), 10.0f, m_scale);
+}
+
+// Tags (untranslated keys) from `x` on; returns where the text after them starts.
+float ListView::PaintBadges(ID2D1DeviceContext* dc, const std::vector<std::wstring>& badges, float x, float cy,
+                            float right) {
+    if (!settings::SongTagsShown()) return x; // Preferences: tags such as 原唱 off
+    for (const auto& badge : badges) {
+        const float w = PaintBadge(dc, Tr(badge), x, cy, right);
+        if (w <= 0) break;
+        x += w + 5;
+    }
+    return x;
 }
 
 void ListView::PaintPlain(ID2D1DeviceContext* dc, D2D1_SIZE_F size) {
@@ -1119,20 +1564,61 @@ bool ListView::AnimateScrollBar() {
         if (blend != target) active = true;
     }
     if (changed) PaintScrollBar();
+    // Shelves slide to their page (ease-out cubic); play buttons fade.
+    bool rows = false;
+    const ULONGLONG now = GetTickCount64();
+    if (!m_slideKey.empty()) {
+        if (now >= m_slideEnd)
+            FinishSlide();
+        else
+            active = true;
+    }
+    const auto step = [&](float& value, float target, float up, float down) {
+        const float next = value < target ? std::min(target, value + up) : std::max(target, value - down);
+        if (next == value) return;
+        value = next;
+        rows = true;
+        if (value != target) active = true;
+    };
+    step(m_playBlend, m_playRow != SIZE_MAX ? 1.0f : 0.0f, 0.2f, 0.2f);
+    step(m_playOldBlend, 0.0f, 0.15f, 0.15f);
+    step(m_playHotBlend, m_playHot ? 1.0f : 0.0f, 0.25f, 0.12f);
+    step(m_shelfPlate, m_hotShelf != SIZE_MAX ? 1.0f : 0.0f, 0.2f, 0.2f);
+    step(m_downloadHot, m_hotDownload ? 1.0f : 0.0f, 0.15f, 0.08f);
+    step(m_shelfPress,
+         m_shelfPressedGroup != SIZE_MAX && m_shelfPressedGroup == m_hotShelf && m_shelfPressedSide == m_hotShelfSide
+             ? 1.0f
+             : 0.0f,
+         0.35f, 0.15f);
+    step(m_moreHot, m_moreGroup != SIZE_MAX ? 1.0f : 0.0f, 0.2f, 0.1f);
+    step(m_moreOldHot, 0.0f, 0.1f, 0.1f);
+    step(m_morePress, m_morePressedGroup != SIZE_MAX && m_morePressedGroup == m_moreGroup ? 1.0f : 0.0f, 0.35f, 0.15f);
+    if (m_source && m_source->Groups())
+        for (const auto& g : *m_source->Groups())
+            if (g.carousel) step(m_shelfShown[g.key], g.key == m_shelfUnder ? 1.0f : 0.0f, 0.15f, 0.1f);
+    if (m_playOldBlend == 0) m_playOldRow = SIZE_MAX;
+    if (m_glowing) { // about 30 frames a second for the glow
+        active = true;
+        if (now - m_glowPainted >= 33) {
+            m_glowPainted = now;
+            rows = true;
+        }
+    }
+    if (rows) PaintRows();
     return active;
 }
 
 bool ListView::OnScrollRepeat() {
-    const size_t page = std::max<size_t>(VisibleLines(), 1) - 1;
+    const float page = std::max(RowsHeightDip() - 24.0f, 24.0f);
     switch (m_scrollPressed) {
     case 1:
-        if (m_top == 0) return false;
-        ScrollTo(m_top > 3 ? m_top - 3 : 0);
-        return m_top > 0;
+        if (ContentTopDip() <= 0) return false;
+        ScrollBy(-kScrollStep);
+        return ContentTopDip() > 0;
     case 2:
-        if (m_top >= MaxTop()) return false;
-        ScrollTo(m_top + 3);
-        return m_top < MaxTop();
+        if (ContentTopDip() >= MaxScrollDip()) return false;
+        ScrollBy(kScrollStep);
+        return ContentTopDip() < MaxScrollDip();
     case 3: {
         float top = 0, height = 0;
         if (!ThumbGeometry(&top, &height)) return false;
@@ -1345,7 +1831,26 @@ void ListView::OnMouseMove(POINT pt) {
         PaintRows();
     }
     const size_t linkGroup = hit.part == Part::Link ? hit.group : SIZE_MAX;
+    // A shelf's show-all ball lights under the mouse (fading, AnimateScrollBar).
+    const size_t moreGroup = hit.part == Part::Link && hit.line == kMoreLink ? hit.group : SIZE_MAX;
+    if (moreGroup != m_moreGroup) {
+        m_moreOldGroup = m_moreGroup;
+        m_moreOldHot = m_moreHot;
+        m_moreGroup = moreGroup;
+        m_moreHot = 0;
+        if (onScrollAnim) onScrollAnim();
+    }
     const size_t linkLine = hit.part == Part::Link ? hit.line : 0;
+    // The download mark darkens under the mouse.
+    const bool hotDownload = hit.part == Part::Row && CellAt(pt, nullptr) == static_cast<int>(CellKind::Download);
+    if (hotDownload != m_hotDownload) {
+        m_hotDownload = hotDownload;
+        if (onScrollAnim) onScrollAnim(); // the plate fades
+    }
+    if (hot != m_hot) { // another row's mark starts unlit, and lights if the mouse is on it
+        m_downloadHot = 0;
+        if (hotDownload && onScrollAnim) onScrollAnim();
+    }
     if (hot != m_hot || hotGroup != m_hotGroup || linkGroup != m_hotLinkGroup || linkLine != m_hotLinkLine) {
         m_hot = hot;
         m_hotGroup = hotGroup;
@@ -1366,10 +1871,32 @@ void ListView::OnMouseMove(POINT pt) {
 
 void ListView::OnMouseLeave() {
     if (m_drag != Drag::None) return;
+    m_cards->SetHot(m_source, SIZE_MAX, false);
     if (m_hotHeader != SIZE_MAX) {
         m_hotHeader = SIZE_MAX;
         PaintHeader();
     }
+    if (m_playRow != SIZE_MAX) {
+        m_playOldRow = m_playRow;
+        m_playOldBlend = m_playBlend;
+        m_playRow = SIZE_MAX;
+        m_playHot = false;
+        if (onScrollAnim) onScrollAnim();
+    }
+    if (m_moreGroup != SIZE_MAX) {
+        m_moreOldGroup = m_moreGroup;
+        m_moreOldHot = m_moreHot;
+        m_moreGroup = SIZE_MAX;
+        if (onScrollAnim) onScrollAnim();
+    }
+    if (m_hotShelf != SIZE_MAX || !m_shelfUnder.empty()) {
+        m_hotShelf = SIZE_MAX;
+        m_shelfUnder.clear();
+        if (onScrollAnim) onScrollAnim();
+        PaintRows();
+    }
+    m_hotDownload = false;
+    m_downloadHot = 0;
     if (m_hot != SIZE_MAX || m_hotGroup != SIZE_MAX || m_hotGroupHeader != SIZE_MAX || m_hotLinkGroup != SIZE_MAX) {
         m_hot = SIZE_MAX;
         m_hotGroup = SIZE_MAX;
@@ -1458,12 +1985,48 @@ void ListView::OnLButtonDown(POINT pt, bool ctrl, bool shift) {
                                       "Rating");
         } else if (kind == static_cast<int>(CellKind::Favorite)) {
             if (const auto item = m_source->Item(hit.row); item.is_valid()) media::ToggleFavorite(item);
+        } else if (kind == static_cast<int>(CellKind::Download)) {
+            // Not downloaded: download it; downloaded: remove the download (asked first).
+            if (const auto item = m_source->Item(hit.row); item.is_valid()) {
+                if (const auto state = download::StateOf(item)) {
+                    if (state->state == download::State::Done &&
+                        MessageBoxW(core_api::get_main_window(),
+                                    Tr(L"Remove this download? Its file goes to the Recycle Bin.").c_str(),
+                                    Tr(L"Download").c_str(), MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) == IDYES)
+                        download::Forget({state->id}, true);
+                } else if (download::Downloadable(item)) {
+                    metadb_handle_list items;
+                    items.add_item(item);
+                    download::Add(items);
+                }
+            }
         }
         MoveFocus(hit.row, ctrl, shift);
         break;
     }
+    case Part::Carousel: // held down: the pressed plate; it pages when released on it
+        m_drag = Drag::ShelfButton;
+        m_shelfPressedGroup = hit.group;
+        m_shelfPressedSide = hit.line;
+        if (onScrollAnim) onScrollAnim();
+        break;
+    case Part::TilePlay: // held: the orb's pressed look; it plays when released on it
+        m_drag = Drag::PlayPress;
+        m_playPress = hit.row;
+        if (IsCard(hit.row)) m_cards->SetPressed(m_source, hit.row);
+        PaintRows();
+        break;
     case Part::Link:
-        if (onLink) onLink(hit.group, hit.line);
+        if (hit.line == kMoreLink && m_source->Groups() && hit.group < m_source->Groups()->size() &&
+            (*m_source->Groups())[hit.group].carousel) {
+            // The show-all ball: held while the button is down, acting when it comes up on it.
+            m_drag = Drag::MoreButton;
+            m_morePressedGroup = hit.group;
+            if (onScrollAnim) onScrollAnim();
+        } else if (hit.line == kMoreLink)
+            m_source->ShowGroupMore(hit.group);
+        else if (onLink)
+            onLink(hit.group, hit.line);
         break;
     case Part::Empty: {
         // Empty space: start a rubber band. Without Ctrl the click clears the selection.

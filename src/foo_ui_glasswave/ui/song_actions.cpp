@@ -1,4 +1,5 @@
 #include "pch.h"
+#include "ui/downloads_page.h"
 #include "ui/song_actions.h"
 #include "media/favorites.h"
 #include "media/special_playlists.h"
@@ -92,6 +93,8 @@ void AddBulkActions(std::vector<MenuAction>& actions, SongsFetch songs, stream::
     }
     if (local.empty()) local.push_back({Tr(L"No playlists"), nullptr});
     actions.push_back({L"Add to playlist", nullptr, std::move(local)});
+    if (remote && remote->Can(stream::Capability::Download))
+        AddBulkDownloadActions(actions, songs, core_api::get_main_window());
     if (remote) AddRemotePlaylistMenu(actions, *remote, std::move(songs), excludeRemote);
 }
 

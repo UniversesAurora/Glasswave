@@ -18,8 +18,14 @@ struct View {
         Playlist, AllMusic, Category, Group, Playlists, SmartPlaylists, AllFavorites, AllRecentPlayed, AllMostPlayed,
         // a provider's pages
         RemoteFavorites, RemoteShelf, RemotePlaylist, RemoteArtists, RemoteAlbums, RemoteArtist, RemoteAlbum,
-        RemoteTopTracks, RemoteSearch, RemoteSectionTracks, RemoteGroups, RemoteGroupTracks,
-        RemoteSong // one song's details (remoteId: the track id)
+        RemoteTopTracks,
+        Search, // a catalog search of any library (remoteId: the term; sectionId: the tab)
+        RemoteSectionTracks, RemoteGroups, RemoteGroupTracks,
+        RemoteSong, // one song's details (remoteId: the track id)
+        AudioCd,    // an audio CD in a drive (playlist: the drive letter)
+        Downloads,  // All Music > Downloads (sectionId: the tab)
+        Home,       // the sources' home pages in one (ui/home_page.h)
+        RemoteHomeList // a home card's daily song list (remoteId: the list id, stream::HomeCard::list)
     };
     Library library = Library::Local;
     Kind kind = Kind::AllMusic;

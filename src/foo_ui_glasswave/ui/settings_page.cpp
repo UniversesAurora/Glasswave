@@ -1,12 +1,16 @@
 #include "pch.h"
+#include "aero/aero_colorization.h"
 #include "app/setting_fields.h"
 #include "app/settings.h"
 #include "cache/config.h"
 #include "cache/store.h"
+#include "cd/discs.h"
 #include "media/play_stats.h"
 #include "lyrics/scripts.h"
 #include "stream/provider.h"
 #include "stream/list_session.h"
+#include "download/downloads.h"
+#include "ui/downloads_page.h"
 #include "ui/art_cache.h"
 #include "ui/i18n.h"
 #include "ui/main_window.h"
@@ -134,6 +138,55 @@ std::vector<Section> BuildSections() {
         fields.push_back(std::move(swap));
         for (auto& field : lyrics::scripts::SettingFields()) fields.push_back(std::move(field));
         sections.push_back({L"Lyrics", std::move(fields)});
+    }
+    {
+        // Where downloads go and how they are named (NetEase's 下载目录, 音乐命名格式 and
+        // 文件智能分类); each source sets its own download quality below.
+        Field folder;
+        folder.kind = Field::Kind::Note;
+        folder.label = L"Download folder";
+        folder.note = [] { return download::Folder(); };
+        Field naming;
+        naming.kind = Field::Kind::Choice;
+        naming.label = L"File names";
+        naming.choices = {L"Title", L"Artist - Title", L"Title - Artist"}; // download::Naming in order
+        naming.defaultValue = static_cast<int>(download::Naming::ArtistTitle);
+        naming.get = [] { return static_cast<int>(download::GetNaming()); };
+        naming.set = [](int value) { download::SetNaming(static_cast<download::Naming>(value)); };
+        Field folders;
+        folders.kind = Field::Kind::Choice;
+        folders.label = L"Sort into folders";
+        folders.choices = {L"No folders", L"By artist", L"By artist and album"}; // download::Folders in order
+        folders.get = [] { return static_cast<int>(download::GetFolders()); };
+        folders.set = [](int value) { download::SetFolders(static_cast<download::Folders>(value)); };
+        Field lyricsMode;
+        lyricsMode.kind = Field::Kind::Choice;
+        lyricsMode.label = L"Lyrics in downloaded files";
+        lyricsMode.choices = {L"Don't save", L"Embed in the file", L"Save a .lrc file beside it",
+                              L"Embed and save a .lrc file"}; // download::LyricsMode in order
+        lyricsMode.defaultValue = static_cast<int>(download::LyricsMode::Embed);
+        lyricsMode.get = [] { return static_cast<int>(download::GetLyricsMode()); };
+        lyricsMode.set = [](int value) { download::SetLyricsMode(static_cast<download::LyricsMode>(value)); };
+        Field engine;
+        engine.kind = Field::Kind::Note;
+        engine.label = L"Download engine";
+        engine.note = [] { return download::Engine(); };
+        sections.push_back({L"Downloads",
+                            {std::move(folder), Button(L"Change folder...", [](HWND owner) {
+                                 if (const auto chosen = PickDownloadFolder(owner); !chosen.empty())
+                                     download::SetFolder(chosen);
+                             }),
+                             Button(L"Open download folder", [](HWND) {
+                                 const std::wstring dir = download::Folder();
+                                 CreateDirectoryW(dir.c_str(), nullptr);
+                                 ShellExecuteW(nullptr, L"open", dir.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+                             }),
+                             std::move(naming), std::move(folders), std::move(lyricsMode),
+                             Number(L"Songs downloaded at once", L"songs", download::kSongsAtOnce,
+                                    download::SongsAtOnce, download::SetSongsAtOnce),
+                             Number(L"Connections per song", L"", download::kConnections, download::Connections,
+                                    download::SetConnections),
+                             engine}});
     }
     for (auto* provider : stream::Providers())
         if (auto fields = provider->SettingFields(); !fields.empty()) sections.push_back({provider->Name(), std::move(fields)});
