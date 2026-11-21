@@ -39,6 +39,7 @@ enum class Capability {
     FavoriteArtists, // the artist relation is "favorite"
     LibraryAlbums,
     SaveAlbums, // add albums to and remove them from the library
+    SaveSongs,  // add single songs to and remove them from the library (Apple Music)
     LibraryPlaylists,
     SavePlaylists, // add other users' playlists to and remove them from the library
     // The user's own playlists.
@@ -207,6 +208,9 @@ class Provider {
         return Can(favorite ? Capability::AddFavorite : Capability::RemoveFavorite);
     }
     virtual bool IsAlbumSaved(const Id& album) const;
+    // Capability::SaveSongs: true when every one of `tracks` is in the library, false when one
+    // is known not to be, nothing while that is not known yet.
+    virtual std::optional<bool> SongsSavedState(const std::vector<Id>& tracks) const;
     virtual std::optional<bool> PlaylistSavedState(const Id& playlist) const;
     virtual std::optional<bool> ArtistPreferenceState(const Id& artist) const;
     // The provider's own rows on the preferences page (quality, caches, account, ...).
@@ -378,6 +382,8 @@ class Provider {
     void SetFavorite(const Id& track, bool favorite, Done done = {});
     virtual void SetFollowed(const Id& artist, bool follow, Done done = {}) = 0;
     virtual void SetAlbumSaved(const Id& album, bool saved, Done done = {}) = 0;
+    // Capability::SaveSongs: the songs themselves, not their albums.
+    virtual void SetSongsSaved(std::vector<Id> tracks, bool saved, Done done = {});
     virtual void SetPlaylistSaved(const Id& playlist, bool saved, Done done = {}) = 0;
     virtual void AddToPlaylist(const Id& playlist, std::vector<Id> tracks, Done done = {}) = 0;
     virtual void RemoveFromPlaylist(const Id& playlist, std::vector<Id> tracks, Done done = {}) = 0;

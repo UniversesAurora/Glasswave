@@ -5098,6 +5098,23 @@ std::vector<ContextAction> MainWindow::BuildContextActions(metadb_handle_list_cr
         actions.push_back({favorite ? L"Remove from Favorites" : L"Add to Favorites",
                            [selected, favorite] { media::SetFavorite(selected, !favorite); }});
     }
+    // A source whose library takes single songs (Apple Music's Add to Library): the songs
+    // themselves, never their albums. Remove only when every one is known to be there.
+    if (provider && provider->AccountVerified() && provider->Can(stream::Capability::SaveSongs)) {
+        std::vector<stream::Id> ids;
+        for (size_t i = 0; i < selected.get_count(); ++i)
+            if (stream::ProviderOf(selected[i]) == provider)
+                if (stream::Id id = provider->TrackId(selected[i]); !id.empty()) ids.push_back(std::move(id));
+        if (!ids.empty()) {
+            const bool saved = provider->SongsSavedState(ids).value_or(false);
+            actions.push_back({provider->Text(saved ? L"Remove from Library" : L"Add to Library"),
+                               [provider, ids, saved] {
+                                   provider->SetSongsSaved(ids, !saved, [provider](std::wstring error) {
+                                       if (!error.empty()) ShowProviderError(*provider, error);
+                                   });
+                               }});
+        }
+    }
     // A foobar2000 playlist takes local and provider tracks alike; a provider's own
     // playlists only its tracks.
     std::vector<MenuAction> local;

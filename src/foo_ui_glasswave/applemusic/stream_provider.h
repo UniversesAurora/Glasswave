@@ -35,6 +35,7 @@ class StreamProvider final : public stream::Provider {
     std::vector<stream::ListKind> CatalogSearchKinds() const override;
     stream::Capabilities Offers() const override;
     bool IsAlbumSaved(const stream::Id& album) const override;
+    std::optional<bool> SongsSavedState(const std::vector<stream::Id>& tracks) const override;
     std::optional<bool> PlaylistSavedState(const stream::Id& playlist) const override;
     std::optional<bool> ArtistPreferenceState(const stream::Id& artist) const override;
     std::vector<settings::Field> SettingFields() override;
@@ -103,6 +104,7 @@ class StreamProvider final : public stream::Provider {
     void WriteFavorite(const stream::Id& track, bool favorite, Done done) override;
     void SetFollowed(const stream::Id& artist, bool follow, Done done = {}) override;
     void SetAlbumSaved(const stream::Id& album, bool saved, Done done = {}) override;
+    void SetSongsSaved(std::vector<stream::Id> tracks, bool saved, Done done = {}) override;
     void SetPlaylistSaved(const stream::Id& playlist, bool saved, Done done = {}) override;
     void AddToPlaylist(const stream::Id& playlist, std::vector<stream::Id> tracks, Done done = {}) override;
     void RemoveFromPlaylist(const stream::Id& playlist, std::vector<stream::Id> tracks,
@@ -332,6 +334,11 @@ class StreamProvider final : public stream::Provider {
     std::vector<FavoritePageWaiter> m_favoritePageWaiters;
     std::vector<Song> m_librarySongs;
     std::chrono::steady_clock::time_point m_librarySongsAt{}; // when m_librarySongs was read
+    // Songs added to or removed from the library here, by every id they are known by (catalog,
+    // library, the track's own): Apple lists a change only after a while, and these win until
+    // the account changes.
+    std::unordered_map<stream::Id, bool> m_songLibraryEdits;
+    bool SongRemovedHereLocked(const Song& song) const;
     // RequestUnknownSong: ids waiting for the next batch, and when each was last asked for.
     mutable std::mutex m_unknownMutex;
     mutable std::set<stream::Id> m_unknownSongs;

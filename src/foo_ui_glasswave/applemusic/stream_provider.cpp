@@ -2210,6 +2210,7 @@ void StreamProvider::ClearLibraryLocked() {
     m_favoriteBindingState = FavoriteBindingState::Unknown;
     m_favoriteBindingReadInFlight = false;
     m_librarySongs.clear();
+    m_songLibraryEdits.clear();
     m_favoriteSongs.clear();
     m_favoriteIds.clear();
     m_librarySongsLoaded = false;
@@ -2852,7 +2853,8 @@ stream::Capabilities StreamProvider::Offers() const {
             FavoriteArtists,   LibraryAlbums,   SaveAlbums,           LibraryPlaylists,
             SavePlaylists,     CreatePlaylists, AppendPlaylistTracks, RemovePlaylistTracks,
             RenamePlaylists,   DeletePlaylists, CatalogSearch,        SearchSuggestions,
-            NativeLyrics,      SongDetails,     Home,                 Stations};
+            NativeLyrics,      SongDetails,     Home,                 Stations,
+            SaveSongs};
 }
 
 // Apple Music keeps things in a "library" and marks artists as favorites; its playlists are
@@ -4540,10 +4542,15 @@ std::optional<std::vector<stream::Track>> StreamProvider::CachedAlbum(const stre
 }
 
 std::vector<Song> StreamProvider::RecentLibrarySongs(uint64_t generation, abort_callback& abort) {
+    // Songs removed here stay out while Apple still lists them.
+    const auto removed = [this](const Song& song) { return SongRemovedHereLocked(song); };
     {
         std::lock_guard lock(m_mutex);
-        if (m_librarySongsLoaded && std::chrono::steady_clock::now() - m_librarySongsAt < kLibrarySnapshotTtl)
-            return m_librarySongs;
+        if (m_librarySongsLoaded && std::chrono::steady_clock::now() - m_librarySongsAt < kLibrarySnapshotTtl) {
+            std::vector<Song> songs = m_librarySongs;
+            std::erase_if(songs, removed);
+            return songs;
+        }
     }
     std::vector<Song> songs = LoadLibrarySongs(abort);
     std::lock_guard lock(m_mutex);
@@ -4552,7 +4559,129 @@ std::vector<Song> StreamProvider::RecentLibrarySongs(uint64_t generation, abort_
         m_librarySongsLoaded = true;
         m_librarySongsAt = std::chrono::steady_clock::now();
     }
+    std::erase_if(songs, removed);
     return songs;
+}
+
+bool StreamProvider::SongRemovedHereLocked(const Song& song) const {
+    for (const stream::Id* key : {&song.track.id, &song.catalogId, &song.libraryId}) {
+        if (key->empty()) continue;
+        const auto edit = m_songLibraryEdits.find(*key);
+        if (edit != m_songLibraryEdits.end()) return !edit->second;
+    }
+    return false;
+}
+
+std::optional<bool> StreamProvider::SongsSavedState(const std::vector<stream::Id>& tracks) const {
+    if (tracks.empty()) return std::nullopt;
+    std::vector<std::optional<Song>> songs;
+    songs.reserve(tracks.size());
+    for (const auto& track : tracks)
+        songs.push_back(Catalog::Get().FindSong(track));
+    std::lock_guard lock(m_mutex);
+    if (!m_accountVerified || !m_account.signedIn) return std::nullopt;
+    std::unordered_set<stream::Id> listed; // the library's songs as last read, by catalog id
+    if (m_librarySongsLoaded)
+        for (const auto& song : m_librarySongs)
+            if (!song.catalogId.empty()) listed.insert(song.catalogId);
+    bool unknown = false;
+    for (size_t i = 0; i < tracks.size(); ++i) {
+        const auto& song = songs[i];
+        std::optional<bool> saved;
+        for (const stream::Id& key : {tracks[i], song ? song->catalogId : stream::Id(),
+                                      song ? song->libraryId : stream::Id()}) {
+            if (key.empty()) continue;
+            if (const auto edit = m_songLibraryEdits.find(key); edit != m_songLibraryEdits.end()) {
+                saved = edit->second;
+                break;
+            }
+        }
+        // A library song (i.…) is in the library by what it is; a catalog song once it is listed.
+        if (!saved && ((IsLibraryId(tracks[i]) && tracks[i][0] == L'i') || (song && !song->libraryId.empty())))
+            saved = true;
+        if (!saved && m_librarySongsLoaded) {
+            const stream::Id catalogId = song && !song->catalogId.empty() ? song->catalogId : tracks[i];
+            saved = listed.contains(catalogId);
+        }
+        if (saved == false) return false;
+        if (!saved) unknown = true;
+    }
+    if (unknown) return std::nullopt;
+    return true;
+}
+
+void StreamProvider::SetSongsSaved(std::vector<stream::Id> tracks, bool saved, Done done) {
+    std::wstring signInError;
+    if (!RequireSignedIn(signInError)) {
+        if (done) done(signInError);
+        return;
+    }
+    struct Target {
+        stream::Id track, catalogId, libraryId;
+    };
+    std::vector<Target> targets;
+    for (auto& track : tracks) {
+        const auto song = Catalog::Get().FindSong(track);
+        Target target{track};
+        target.catalogId = song ? song->catalogId : stream::Id();
+        target.libraryId = song ? song->libraryId : stream::Id();
+        if (target.catalogId.empty() && !IsLibraryId(track)) target.catalogId = track;
+        if (target.libraryId.empty() && IsLibraryId(track) && track[0] == L'i') target.libraryId = track;
+        if (!target.catalogId.empty() || !target.libraryId.empty()) targets.push_back(std::move(target));
+    }
+    if (targets.empty()) {
+        if (done) done(L"These songs have no Apple Music id.");
+        return;
+    }
+    uint64_t generation = 0;
+    {
+        std::lock_guard lock(m_mutex);
+        generation = m_generation;
+    }
+    const std::wstring storefront = Storefront();
+    PostMutation(generation, [this, generation, targets = std::move(targets), saved, storefront,
+                              done = std::move(done)]() mutable {
+        std::wstring error;
+        try {
+            if (saved) {
+                // A song known only by its library id (an upload) is in the library already.
+                std::vector<stream::Id> catalogIds;
+                for (const auto& target : targets)
+                    if (!target.catalogId.empty()) catalogIds.push_back(target.catalogId);
+                if (!catalogIds.empty())
+                    Apple(L"/v1/me/library?ids[songs]=" + Encode(JoinedIds(catalogIds)), *m_abort, L"POST");
+            } else {
+                for (auto& target : targets) {
+                    if (target.libraryId.empty())
+                        target.libraryId =
+                            ResolveLibraryIdFromCatalog(L"songs", L'i', target.catalogId, storefront, *m_abort);
+                    Apple(L"/v1/me/library/songs/" + Encode(target.libraryId), *m_abort, L"DELETE");
+                }
+            }
+        } catch (const exception_aborted&) {
+            return;
+        } catch (const std::exception& exception) {
+            error = Wide(exception.what());
+        }
+        PostMain(generation, [this, targets = std::move(targets), saved, done = std::move(done),
+                              error = std::move(error)]() mutable {
+            if (!error.empty()) {
+                if (done) done(std::move(error));
+                return;
+            }
+            {
+                std::lock_guard lock(m_mutex);
+                for (const auto& target : targets)
+                    for (const stream::Id* key : {&target.track, &target.catalogId, &target.libraryId})
+                        if (!key->empty()) m_songLibraryEdits[*key] = saved;
+                // The library's songs are read again when next wanted (an added one joins them).
+                m_librarySongsAt = {};
+            }
+            NotifyListChanged();
+            NotifyLibraryChanged();
+            if (done) done({});
+        });
+    });
 }
 
 void StreamProvider::RefreshLibrarySongsAsync(uint64_t generation, TracksDone done) {
@@ -6129,6 +6258,13 @@ void StreamProvider::FetchListPage(const stream::ListQuery& sourceQuery, const s
                     if (const auto data = json::GetArray(response, L"data")) objects = json::Objects(*data);
                     songs = ParseSongs(objects);
                     page.total = CollectionTotal(response);
+                    {
+                        // Songs removed here stay out while Apple still lists them.
+                        std::lock_guard lock(m_mutex);
+                        const size_t erased =
+                            std::erase_if(songs, [this](const Song& song) { return SongRemovedHereLocked(song); });
+                        if (page.total) page.total = *page.total - std::min(*page.total, erased);
+                    }
                     setNext(
                         response, expected,
                         [&queryParameters, pageLimit](std::wstring path) {

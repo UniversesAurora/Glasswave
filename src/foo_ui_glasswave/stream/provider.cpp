@@ -73,6 +73,14 @@ bool Provider::IsAlbumSaved(const Id& album) const {
                        [&album](const Album& item) { return item.id == album; });
 }
 
+std::optional<bool> Provider::SongsSavedState(const std::vector<Id>&) const {
+    return std::nullopt;
+}
+
+void Provider::SetSongsSaved(std::vector<Id>, bool, Done done) {
+    if (done) done(L"This source cannot add single songs to its library.");
+}
+
 std::optional<bool> Provider::PlaylistSavedState(const Id&) const {
     return std::nullopt;
 }
