@@ -323,11 +323,13 @@ uint64_t Provider::LibraryEditMark() const {
     return m_editSerial;
 }
 
-void Provider::ConfirmLibraryEdits(uint64_t mark) {
+bool Provider::ConfirmLibraryEdits(uint64_t mark) {
     std::lock_guard lock(m_editsMutex);
     std::erase_if(m_pendingEdits, [mark](const auto& entry) {
         return entry.second.ackSerial != 0 && entry.second.ackSerial <= mark;
     });
+    return std::any_of(m_pendingEdits.begin(), m_pendingEdits.end(),
+                       [mark](const auto& entry) { return entry.second.ackSerial > mark; });
 }
 
 void Provider::SetFollowed(const Id& artist, bool follow, Done done) {

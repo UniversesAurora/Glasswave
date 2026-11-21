@@ -426,10 +426,15 @@ void StreamProvider::Start() {
     // The session reports sign-in changes and account refreshes the same way; only a
     // changed sign-in state is an account change, the rest refreshes library lists.
     Ncm().SetStateCallback([this] { OnSessionChanged(); });
+    // Only a whole library read confirms the users' changes, with the mark taken when it began:
+    // a refresh that was already running when a change was answered can land after the write's
+    // own update of the session's lists and put the old state back. The change then keeps
+    // showing, and the library is read once more.
+    Ncm().SetLibraryReadCallbacks([this] { return LibraryEditMark(); },
+                                  [this](uint64_t mark) {
+                                      if (ConfirmLibraryEdits(mark)) Ncm().RefreshAccount({});
+                                  });
     Ncm().SetLibraryCallback([this] {
-        // The session updates its lists before it answers a write, so what it shows is what the
-        // user changed: the changes acknowledged so far need not override it any more.
-        ConfirmLibraryEdits(LibraryEditMark());
         NotifyLibraryChanged();
         if (AccountVerified()) m_snapshots.Queue();
     });

@@ -448,8 +448,8 @@ class Provider {
     // The service's writes behind SetFollowed, SetAlbumSaved, SetPlaylistSaved and SetSongsSaved;
     // `done` may run on any thread, once. A completion that is dropped unrun (the source shut
     // down, the account changed) must still run with an error (GuardDone), so a change it was
-    // carrying is taken back. A source that has updated its own snapshot by the time it
-    // answers calls ConfirmLibraryEdits after that; one that refreshes later does it then.
+    // carrying is taken back. Only a library read confirms the change (ConfirmLibraryEdits), never
+    // the write itself: a read that began earlier can still land after the write's answer.
     virtual void WriteFollowed(const Id& artist, bool follow, Done done) = 0;
     virtual void WriteAlbumSaved(const Id& album, bool saved, Done done) = 0;
     // Capability::SaveSongs. Default: an error.
@@ -457,12 +457,15 @@ class Provider {
     virtual void WritePlaylistSaved(const Id& playlist, bool saved, Done done) = 0;
 
     // A change the service has acknowledged keeps showing as the user made it until the source's
-    // own state shows it too. A source takes the mark before it reads its library and calls
-    // Confirm after a successful read: the changes acknowledged before the mark are in what it
-    // read, so they stop overriding it. (A change that is never confirmed stops overriding after
-    // a while, as a favorite does.)
+    // own state shows it too. A source takes the mark when a library read begins (before its first
+    // request) and calls Confirm with that mark after the read succeeded: the changes acknowledged
+    // before the mark are in what it read, so they stop overriding it, and a read that began
+    // before a change was acknowledged neither confirms nor drops that change. Confirm returns
+    // true when such later changes remain: what was read does not show them, so the source reads
+    // its library once more to confirm them. (A change that is never confirmed stops overriding
+    // after a while, as a favorite does.)
     uint64_t LibraryEditMark() const;
-    void ConfirmLibraryEdits(uint64_t mark);
+    bool ConfirmLibraryEdits(uint64_t mark);
 
   private:
     struct PendingFavorite {

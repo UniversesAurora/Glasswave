@@ -186,6 +186,12 @@ void Session::SetLibraryCallback(std::function<void()> callback) {
     m_libraryCallback = std::move(callback);
 }
 
+void Session::SetLibraryReadCallbacks(std::function<uint64_t()> mark, std::function<void(uint64_t)> read) {
+    std::lock_guard lock(m_mutex);
+    m_libraryReadMark = std::move(mark);
+    m_libraryReadCallback = std::move(read);
+}
+
 void Session::SetLikesCallback(std::function<void()> callback) {
     std::lock_guard lock(m_mutex);
     m_likesCallback = std::move(callback);
@@ -356,6 +362,15 @@ void Session::RefreshAccount(DoneCallback done) {
         if (m_stopping) return;
         abort_callback& abort = m_abort;
         std::wstring error;
+        // Before the first request: the users' changes acknowledged after this are not in it.
+        std::function<uint64_t()> markOf;
+        std::function<void(uint64_t)> readCallback;
+        {
+            std::lock_guard lock(m_mutex);
+            markOf = m_libraryReadMark;
+            readCallback = m_libraryReadCallback;
+        }
+        const uint64_t readMark = markOf ? markOf() : 0;
         // A sign-out or a new sign-in while this ran: what was read belongs to the old account.
         const auto superseded = [&] {
             PostMain([done] {
@@ -473,6 +488,7 @@ void Session::RefreshAccount(DoneCallback done) {
         core::Log(L"account: saved lists: " + std::to_wstring(followedCount) + L" artists, " +
                   std::to_wstring(albumCount) + L" albums, " + std::to_wstring(recommendedCount) +
                   L" recommended");
+        if (readCallback) PostMain([readCallback = std::move(readCallback), readMark] { readCallback(readMark); });
         PostMain([done = std::move(done)] {
             if (done) done(true, {});
         });

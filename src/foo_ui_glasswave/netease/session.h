@@ -28,6 +28,10 @@ public:
     // Called on the main thread after a playlist/album cache update that changes covers,
     // names or counts but does not need the open page to be re-read.
     void SetLibraryCallback(std::function<void()> callback);
+    // A whole library read (RefreshAccount) takes `mark()` before its first request and, once
+    // it has stored what it read, calls `read(mark)` on the main thread (before the state
+    // callback that reports the refresh). The provider confirms its users' changes with it.
+    void SetLibraryReadCallbacks(std::function<uint64_t()> mark, std::function<void(uint64_t)> read);
     // Called on the main thread after a like/unlike; only the favorite flags of the open
     // rows change, so the page must not be re-read.
     void SetLikesCallback(std::function<void()> callback);
@@ -115,6 +119,8 @@ private:
     mutable std::mutex m_mutex;
     std::function<void()> m_stateCallback;
     std::function<void()> m_libraryCallback;
+    std::function<uint64_t()> m_libraryReadMark;
+    std::function<void(uint64_t)> m_libraryReadCallback;
     std::function<void()> m_likesCallback;
     Account m_account;
     std::vector<stream::Playlist> m_createdPlaylists;
