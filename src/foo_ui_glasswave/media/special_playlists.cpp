@@ -165,16 +165,17 @@ bool PendingPlay() { return g_pendingPlay != 0; }
 
 void CancelPendingPlay() { g_pendingPlay = 0; }
 
-void PlayQueue(const metadb_handle_list& items, size_t start) {
-    if (items.get_count() == 0) return;
+bool PlayQueue(const metadb_handle_list& items, size_t start) {
+    if (items.get_count() == 0) return false;
     g_pendingPlay = 0; // whatever was being read to play, this is what plays now
     const t_size p = QueuePlaylist(true);
     Protect(p);
     if (PlaybackScheduler::Get().PlayQueue(items, start)) {
         if (g_playQueueListener) g_playQueueListener();
-        return;
+        return true;
     }
     console::print("Glasswave: PlayQueue request rejected; queue left unchanged.");
+    return false;
 }
 
 void PlayNext(const metadb_handle_list& items) {

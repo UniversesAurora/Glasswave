@@ -251,12 +251,13 @@ namespace {
 // callback, which may run before the scheduler's own).
 void ListenToSchedule() {
     if (g_scheduleListener) return;
-    if (auto* scheduler = PlaybackScheduler::Existing())
-        g_scheduleListener = scheduler->AddListener([] {
-            if (!g_state.active) return;
-            TopUp();
-            Notify(); // the buttons follow where the station stands
-        });
+    // Get(), not Existing(): a station needs the queue, so the scheduler exists from here on and
+    // the station always follows its schedule.
+    g_scheduleListener = PlaybackScheduler::Get().AddListener([] {
+        if (!g_state.active) return;
+        TopUp();
+        Notify(); // the buttons follow where the station stands
+    });
 }
 } // namespace
 
@@ -286,7 +287,15 @@ void Play(stream::Provider& provider, const stream::Id& station, std::wstring na
         const metadb_handle_list items = Items(*g_state.provider, now);
         for (size_t i = 0; i < items.get_count(); ++i) g_state.queued.push_back(items[i]);
         g_state.playing = 0;
-        PlayQueue(items, 0);
+        if (!PlayQueue(items, 0)) {
+            // None of the songs could be put in the queue (no playable item, or the queue
+            // refused): not a station that is playing.
+            const std::wstring name = g_state.name;
+            g_state = {};
+            Notify();
+            popup_message::g_show(Utf8(L"The station sent no songs.").c_str(), Utf8(name).c_str());
+            return;
+        }
         g_state.generation = QueueContentGeneration();
         g_state.active = true;
         Save();

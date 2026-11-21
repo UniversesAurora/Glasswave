@@ -45,7 +45,9 @@ t_size AddSmartPreset(const SmartPreset& preset);
 // A new empty auto playlist with foobar2000's query dialog open.
 t_size NewSmartPlaylist();
 
-void PlayQueue(const metadb_handle_list& items, size_t start); // replace and play a fresh source
+// Replace and play a fresh source. False when nothing was played (no items, or the scheduler
+// refused the request): the queue is left as it was.
+bool PlayQueue(const metadb_handle_list& items, size_t start);
 // Playing a list that must be read first (a service's playlist or album from its card or page).
 // Asking stops what plays at once; until the list is read, Play does not bring the old queue
 // back (owner, 2026-11-20: the old song went on for 15 s after a card's play was pressed). A
