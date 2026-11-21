@@ -93,6 +93,9 @@ class PlaybackScheduler final {
     // queue first; ScheduleRevision changes when either side changes.
     std::optional<std::size_t> ScheduledNextIndex();
     std::uint64_t ScheduleRevision() const;
+    // The song playback is starting towards (on_playback_starting): the next or previous one for
+    // Next / Previous, the one asked for when a list starts; null when unknown.
+    metadb_handle_ptr StartingTrack(play_control::t_track_command command);
     // Stable feed token for a list currently projected into Now Playing.
     std::uint64_t ContentGeneration() const;
 

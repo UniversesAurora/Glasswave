@@ -10,10 +10,13 @@
 #include "net/http.h"
 #include "netease/json.h"
 #include "stream/playback_source.h"
+#include "stream/track_snapshot.h"
 
 #include <SDK/input_impl.h>
 
+#include <algorithm>
 #include <cmath>
+#include <mutex>
 
 namespace glasswave::applemusic {
 namespace {
@@ -667,9 +670,15 @@ class AppleInput : public input_stubs {
             if (!m_decoder.is_valid() && song->track.durationMs > 0)
                 out.set_length(static_cast<double>(song->track.durationMs) / 1000.0);
         } else {
-            // Read in the background and published to the metadata of every view showing it.
+            // Read in the background and published to the metadata of every view showing it;
+            // meanwhile the song's last known tags (stream/track_snapshot.h), and a stand-in
+            // only for a song never seen. Either way the record is reported once it is known.
             StreamProvider::Get().RequestUnknownSong(m_id);
-            if (!out.meta_get("title", 0)) out.meta_set("title", Utf8(L"Apple Music " + m_id).c_str());
+            m_reportWhenKnown = true;
+            if (!stream::KnownTags(Catalog::Get().Handle(m_id), out) && !out.meta_get("title", 0)) {
+                out.meta_set("title", Utf8(L"Apple Music " + m_id).c_str());
+                out.info_set(stream::kPlaceholderInfo, "1");
+            }
         }
     }
 

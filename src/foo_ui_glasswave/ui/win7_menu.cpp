@@ -442,7 +442,7 @@ void SetContextActionProvider(std::function<std::vector<ContextAction>(metadb_ha
     g_contextActions = std::move(provider);
 }
 
-void RunContextMenu(HWND owner, metadb_handle_list_cref items, POINT pt) {
+void RunContextMenu(HWND owner, metadb_handle_list_cref items, POINT pt, bool nowPlaying) {
     if (items.get_count() == 0) return;
     auto cm = contextmenu_manager::get();
     cm->init_context(items, contextmenu_manager::flag_show_shortcuts);

@@ -107,6 +107,7 @@
     </ClCompile>
     <ClCompile Include="stream\list_session.cpp" />
     <ClCompile Include="stream\list_session_probe.cpp" />
+    <ClCompile Include="stream\track_snapshot.cpp" />
     <ClCompile Include="media\playback_schedule.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
     </ClCompile>
@@ -319,6 +320,7 @@
     <ClInclude Include="cache\lists.h" />
     <ClInclude Include="stream\list.h" />
     <ClInclude Include="stream\list_session.h" />
+    <ClInclude Include="stream\track_snapshot.h" />
     <ClInclude Include="media\playback_schedule.h" />
     <ClInclude Include="media\playback_scheduler.h" />
     <ClInclude Include="applemusic\catalog.h" />

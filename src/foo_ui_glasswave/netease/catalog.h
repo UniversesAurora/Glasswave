@@ -63,8 +63,13 @@ public:
 private:
     Catalog() = default;
     void Hint(const std::vector<Song>& songs);
+    // Under m_mutex: stores a record; true when a flush of queued metadb hints must be posted.
+    bool StoreLocked(const Song& song);
+    void FlushHints(); // main thread
 
     mutable std::mutex m_mutex;
+    std::vector<int64_t> m_hintQueue; // records new or shown differently, for metadb
+    bool m_hintPosted = false;
     std::unordered_map<int64_t, Song> m_songs;
     std::unordered_map<int64_t, Playlist> m_playlists;
     std::unordered_map<int64_t, std::wstring> m_preferredCovers;

@@ -20,6 +20,10 @@ public:
     void SetFavorite(bool favorite);
     std::function<void()> onFavorite;
 
+    // Taskbar thumbnail: the playing song's front cover, as WMP 12 shows it. An invalid
+    // track, or one without a cover, gives the ordinary window thumbnail back.
+    void SetCoverTrack(const metadb_handle_ptr& track);
+
     // Jump list tasks. Written only when this process has no explicit AppUserModelID, i.e.
     // the jump list belongs to this foobar2000 installation alone.
     static void SetupJumpList();
@@ -27,8 +31,17 @@ public:
 private:
     void AddButtons();
     void UpdateButtons();
+    void UseCover(bool on);
+    void SendCoverThumbnail(int maxWidth, int maxHeight);
+    void SendLivePreview();
 
     HWND m_hwnd;
+    metadb_handle_ptr m_coverTrack;
+    std::wstring m_coverKey;
+    int m_coverSize = 0;              // the last size DWM asked for, in pixels
+    uint64_t m_coverVersion = 0;      // ArtCache version of the picture last sent
+    int m_artToken = -1;
+    bool m_coverOn = false;
     UINT m_createdMsg = 0;
     winrt::com_ptr<ITaskbarList3> m_list;
     HIMAGELIST m_images = nullptr;

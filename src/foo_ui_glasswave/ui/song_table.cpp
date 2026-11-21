@@ -122,6 +122,23 @@ std::wstring LocalAlbumKey(const std::wstring& prefix, const SongTableRow& row, 
     return prefix + media::Lower(row.album) + L'\x1f' + media::Lower(albumArtist);
 }
 
+// A local file's row; `artPrefix` keeps the page's covers apart from other pages' keys.
+SongTableRow LocalRow(const metadb_handle_ptr& track, const wchar_t* artPrefix) {
+    SongTableRow row;
+    row.handle = track;
+    row.title = LocalField(track, "$if2(%title%,%filename%)");
+    row.artist = LocalField(track, "[%artist%]");
+    row.album = LocalField(track, "[%album%]");
+    row.lengthMs = _wtoi(LocalField(track, "%length_seconds%").c_str()) * 1000;
+    row.source = Tr(L"Local Music");
+    const std::wstring albumArtist = LocalField(track, "[%album artist%]");
+    row.albumKey = LocalAlbumKey(L"l:", row, albumArtist, track);
+    row.artKey = LocalAlbumKey(artPrefix, row, albumArtist, track);
+    row.favorite = media::IsFavorite(track);
+    FinishRow(row);
+    return row;
+}
+
 std::vector<SongTableRow> FavoriteRows(const std::vector<metadb_handle_ptr>& local,
                                        const AllFavoritesSource::RemoteFavorites& remote) {
     std::vector<SongTableRow> rows;

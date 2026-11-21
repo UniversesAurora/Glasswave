@@ -73,6 +73,15 @@ class Catalog {
     // pass false because the generic list cache owns their persistence.
     void PutAndHint(const std::vector<Song>& songs, bool persist = true);
 
+    // An uploaded song's length as delivered for playback. Apple computes a library length
+    // from the upload, and it can be wrong (an MP3 measured at twice its length); the
+    // delivered length replaces it in every record put here, across library reloads and
+    // restarts. 0 when none was measured.
+    int MeasuredLength(const stream::Id& songId) const;
+    // Main thread: records a delivered length that disagrees with the library's, and
+    // publishes it to the song's record and metadb.
+    void PutMeasuredLength(const stream::Id& songId, int durationMs);
+
     // Restart cache. ReadCacheFile is worker-safe and has no side effects; InstallCached
     // merges only records not already present, then publishes their metadb hints.
     std::vector<Song> ReadCacheFile() const;

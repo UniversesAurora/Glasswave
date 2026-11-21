@@ -2359,7 +2359,21 @@ void MainWindow::RefreshNowPlayingArt(bool refreshText) {
         ++m_artGeneration;
     }
     if (m_pane) m_pane->SetTrack(m_trackTitle, m_trackArtist, m_lyricsArt);
+    {
+        // The cover's colour: under the lyrics at once (clear while it loads, the window's
+        // tint showing), and on the glass when the tint follows the cover - there the last
+        // cover's colour stays until the next one has loaded.
+        const std::optional<uint32_t> tint = CoverTint(m_art.get());
+        if (m_pane) m_pane->SetCoverTint(tint);
+        if (tint && tint != m_windowCoverRgb) {
+            m_windowCoverRgb = tint;
+            ApplyTint(true);
+        }
+    }
     RepaintNowPlaying();
+    const metadb_handle_ptr cover = m_artTrackIdentity.empty() ? metadb_handle_ptr() : now;
+    if (m_taskbar) m_taskbar->SetCoverTrack(cover);
+    if (m_playerTaskbar) m_playerTaskbar->SetCoverTrack(cover);
 }
 
 bool MainWindow::PlaybackPaintAllowed() const {
@@ -2866,6 +2880,9 @@ void MainWindow::AdoptPlayerWindow(HWND window) {
     };
     m_playerTaskbar->SetPlayState(m_playing, m_paused);
     m_playerTaskbar->SetFavorite(m_npFavorite);
+    metadb_handle_ptr now;
+    if (!m_artTrackIdentity.empty() && playback_control::get()->get_now_playing(now))
+        m_playerTaskbar->SetCoverTrack(now);
 }
 
 bool MainWindow::PlayerWindowMessage(UINT msg, WPARAM wp, LPARAM lp) {
@@ -3171,6 +3188,13 @@ void MainWindow::ConnectPaneQueue() {
                            }});
         ShowActionMenu(m_hwnd, screen, actions);
     };
+}
+
+void MainWindow::ShowNowPlayingSongMenu(POINT screen) {
+    const HWND owner = m_player && m_player->Shown() ? m_player->Hwnd() : m_hwnd;
+    metadb_handle_ptr now;
+    if (!playback_control::get()->get_now_playing(now)) return;
+    RunContextMenu(owner, pfc::list_single_ref_t<metadb_handle_ptr>(now), screen, true);
 }
 
 void MainWindow::ShowLyricsMenu(POINT screen) {
@@ -5968,6 +5992,115 @@ void MainWindow::OnPlaybackStateChanged() {
     if (playing && !paused && m_npLyrics && m_npLyrics->synced) StartLyricsFrames();
     StartSeekFrames();
     OnTrackChanged(); // paused resume still has codec/bitrate information
+}
+
+// A track's title and artist as the lists show them: the provider's record, a repaired cue sheet.
+void MainWindow::TrackText(const metadb_handle_ptr& track, std::wstring& title, std::wstring& artist) const {
+    if (auto* provider = stream::ProviderOf(track)) {
+        if (const auto record = provider->FindTrack(provider->TrackId(track))) {
+            if (!record->title.empty()) title = record->title;
+            if (!record->artists.empty()) artist = stream::JoinArtists(record->artists);
+        }
+    }
+    if (const media::RepairedText* r = media::CueCatalog::Get().Repair(track)) { // mis-decoded cue sheet
+        if (!r->title.empty()) title = r->title;
+        if (!r->artist.empty()) artist = r->artist;
+    }
+}
+
+// Shows a song: with its cover at once when the cover is at hand (or known missing), else the
+// song shown before stays whole until the cover has come or kArtHoldMs has passed.
+void MainWindow::ShowTrack(const metadb_handle_ptr& track, std::wstring title, std::wstring artist, bool starting) {
+    HeldTrack next{track, lyrics::Service::TrackIdentity(track), std::move(title), std::move(artist)};
+    if (next.identity == m_artTrackIdentity && !starting) return;
+    winrt::com_ptr<IWICBitmapSource> art;
+    const auto state = ArtCache::Get().Find(track, std::max(PxI(TransportHeight()), PxI(64)), &art);
+    const bool shownBefore = !m_artTrackIdentity.empty();
+    if (state == ArtCache::State::Pending && !art && shownBefore) {
+        const bool already = m_held.track.is_valid();
+        m_held = std::move(next);
+        if (!already) SetTimer(m_hwnd, kArtHoldTimer, kArtHoldMs, nullptr);
+        return;
+    }
+    if (m_held.track.is_valid()) {
+        KillTimer(m_hwnd, kArtHoldTimer);
+        m_held = {};
+    }
+    ApplyShownTrack(next, state == ArtCache::State::Missing ? nullptr : art);
+}
+
+void MainWindow::ReleaseHeldTrack(bool timedOut) {
+    if (!m_held.track.is_valid()) return;
+    winrt::com_ptr<IWICBitmapSource> art;
+    const auto state = ArtCache::Get().Find(m_held.track, std::max(PxI(TransportHeight()), PxI(64)), &art);
+    if (state == ArtCache::State::Pending && !art && !timedOut) return;
+    KillTimer(m_hwnd, kArtHoldTimer);
+    const HeldTrack held = std::move(m_held);
+    m_held = {};
+    ApplyShownTrack(held, state == ArtCache::State::Missing ? nullptr : art); // its cover, or the placeholder
+}
+
+void MainWindow::ApplyShownTrack(const HeldTrack& track, winrt::com_ptr<IWICBitmapSource> art) {
+    m_trackTitle = track.title;
+    m_trackArtist = track.artist;
+    m_artTrackIdentity = track.identity;
+    ++m_artGeneration;
+    m_art = std::move(art);
+    m_lyricsArt = m_art;
+    if (m_pane) m_pane->SetTrack(m_trackTitle, m_trackArtist, m_lyricsArt);
+    const std::optional<uint32_t> tint = CoverTint(m_art.get());
+    if (m_pane) m_pane->SetCoverTint(tint);
+    if (tint && tint != m_windowCoverRgb) {
+        m_windowCoverRgb = tint;
+        ApplyTint(true);
+    }
+    RepaintNowPlaying();
+    if (m_taskbar) m_taskbar->SetCoverTrack(track.track);
+    if (m_playerTaskbar) m_playerTaskbar->SetCoverTrack(track.track);
+    if (m_player) m_player->OnPlayback();
+    std::wstring caption = m_trackTitle.empty() ? std::wstring(kAppName)
+                                                : m_trackTitle + (m_trackArtist.empty() ? L"" : L" - " + m_trackArtist) +
+                                                      L" - " + kAppName;
+    SetWindowTextW(m_hwnd, caption.c_str());
+}
+
+// Playback is starting towards a song (Next, Previous, a list started): it shows now, while its
+// audio is still being opened.
+void MainWindow::PreviewStartingTrack(play_control::t_track_command command) {
+    auto* scheduler = media::PlaybackScheduler::Existing();
+    const metadb_handle_ptr track = scheduler ? scheduler->StartingTrack(command) : metadb_handle_ptr();
+    if (!track.is_valid()) return;
+    static titleformat_object::ptr s_title, s_artist;
+    if (!s_title) {
+        titleformat_compiler::get()->compile_safe(s_title, "$if2(%title%,%filename%)");
+        titleformat_compiler::get()->compile_safe(s_artist, "[%artist%]");
+    }
+    pfc::string8 title, artist;
+    track->format_title(nullptr, title, s_title, nullptr);
+    track->format_title(nullptr, artist, s_artist, nullptr);
+    std::wstring t = Wide(title), a = Wide(artist);
+    TrackText(track, t, a);
+    if (lyrics::Service::TrackIdentity(track) != m_artTrackIdentity) m_startingFrom = m_artTrackIdentity;
+    ShowTrack(track, std::move(t), std::move(a), true);
+}
+
+// Stopped: the song shown goes with its cover and text (owner, 2026-11-20: no placeholder under
+// the last song's name).
+void MainWindow::ClearShownTrack() {
+    KillTimer(m_hwnd, kArtHoldTimer);
+    m_held = {};
+    m_startingFrom.clear();
+    ResetLyrics();
+    m_trackTitle.clear();
+    m_trackArtist.clear();
+    m_artTrackIdentity.clear();
+    ++m_artGeneration;
+    m_art = nullptr;
+    m_lyricsArt = nullptr;
+    if (m_pane) m_pane->SetTrack({}, {}, nullptr);
+    if (m_taskbar) m_taskbar->SetCoverTrack({});
+    if (m_playerTaskbar) m_playerTaskbar->SetCoverTrack({});
+    RepaintNowPlaying();
 }
 
 void MainWindow::OnTrackChanged(bool playbackChanged) {

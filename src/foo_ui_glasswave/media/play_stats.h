@@ -28,6 +28,9 @@ public:
     static PlayStats& Get();
 
     void Record(const metadb_handle_ptr& track);  // a track started playing
+    // Takes the current tags of tracks already recorded into their snapshots (a CD tagged
+    // after it started playing).
+    void Refresh(metadb_handle_list_cref items);
     // The stored count of this track (0 when it has never been recorded).
     uint32_t CountFor(const metadb_handle_ptr& track) const;
     // Drops the last-played time (the track leaves Recently Played) but keeps the count.

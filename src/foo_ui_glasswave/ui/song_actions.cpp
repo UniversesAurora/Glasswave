@@ -77,9 +77,12 @@ void AddRemotePlaylistMenu(std::vector<MenuAction>& actions, stream::Provider& p
 }
 
 void AddBulkActions(std::vector<MenuAction>& actions, SongsFetch songs, stream::Provider* remote,
-                    const stream::Id& excludeRemote, size_t excludeLocal) {
-    actions.push_back(
-        {L"Play", [songs] { songs([](metadb_handle_list items) { media::PlayQueue(items, 0); }); }});
+                    const stream::Id& excludeRemote, size_t excludeLocal, std::function<void()> play) {
+    if (play)
+        actions.push_back({L"Play", std::move(play)});
+    else
+        actions.push_back(
+            {L"Play", [songs] { songs([](metadb_handle_list items) { media::PlayQueue(items, 0); }); }});
     actions.push_back(
         {L"Play next", [songs] { songs([](metadb_handle_list items) { media::PlayNext(items); }); }});
     actions.push_back(

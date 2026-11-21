@@ -2200,6 +2200,22 @@ std::optional<std::size_t> PlaybackScheduler::ScheduledNextIndex() {
     return m_impl->ScheduledNextIndex();
 }
 
+metadb_handle_ptr PlaybackScheduler::StartingTrack(play_control::t_track_command command) {
+    PFC_ASSERT(core_api::is_main_thread());
+    auto& impl = *m_impl;
+    if (!impl.modelInitialized) return {};
+    std::optional<PlaybackOccurrenceId> target;
+    if (command == play_control::track_command_next || command == play_control::track_command_rand)
+        target = impl.schedule.ManualNext();
+    else if (command == play_control::track_command_prev)
+        target = impl.schedule.Previous();
+    else
+        target = impl.exactStart;
+    if (!target) return {};
+    const auto found = impl.handles.find(*target);
+    return found == impl.handles.end() ? metadb_handle_ptr() : found->second;
+}
+
 std::uint64_t PlaybackScheduler::ScheduleRevision() const {
     return m_impl->schedule.revision();
 }

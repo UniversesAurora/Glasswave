@@ -10,4 +10,8 @@ winrt::com_ptr<IWICBitmapSource> DecodeArt(const album_art_data::ptr& data, int 
 // Same with an explicit WIC factory (any thread).
 winrt::com_ptr<IWICBitmapSource> DecodeArt(IWICImagingFactory* wic, const album_art_data::ptr& data, int sizePx);
 
+// "Save album art...": reads the track's front cover off the main thread, then asks where
+// to save it, as "Artist - Album" with the picture's own file type.
+void SaveAlbumArt(HWND owner, const metadb_handle_ptr& track);
+
 }  // namespace glasswave::ui

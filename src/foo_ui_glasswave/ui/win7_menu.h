@@ -18,11 +18,15 @@ namespace glasswave::ui {
 //
 // Same as TrackPopupMenuEx; pass TPM_RETURNCMD to get the chosen command.
 // icons (optional) maps command ids to slots of wmploc's 16 px icon strip 331, drawn in
-// place of a check mark; a default item (SetMenuDefaultItem) is drawn bold.
-UINT TrackWin7Menu(HMENU menu, UINT flags, int x, int y, HWND owner, const std::map<UINT, int>* icons = nullptr);
+// place of a check mark; a default item (SetMenuDefaultItem) is drawn bold. exclude (optional,
+// screen px) is an area the menu must not cover (TPMPARAMS::rcExclude).
+UINT TrackWin7Menu(HMENU menu, UINT flags, int x, int y, HWND owner, const std::map<UINT, int>* icons = nullptr,
+                   const RECT* exclude = nullptr);
 
-// foobar2000's context menu for `items` at screen point `pt`, as a Win7 menu.
-void RunContextMenu(HWND owner, metadb_handle_list_cref items, POINT pt);
+// foobar2000's context menu for `items` at screen point `pt`, as a Win7 menu. One song also
+// offers "Save album art...". nowPlaying: the playing song's own menu (on its title and cover),
+// without the play and queue commands that make no sense for it.
+void RunContextMenu(HWND owner, metadb_handle_list_cref items, POINT pt, bool nowPlaying = false);
 // foobar2000's context menu for the active playlist's selection (playlist commands included).
 void RunPlaylistContextMenu(HWND owner, POINT pt);
 

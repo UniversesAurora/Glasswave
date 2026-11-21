@@ -57,13 +57,116 @@ int AddPng(HIMAGELIST list, int id, int size) {
 
 Taskbar::Taskbar(HWND hwnd) : m_hwnd(hwnd) {
     m_createdMsg = RegisterWindowMessageW(L"TaskbarButtonCreated");
+    // A cover that finishes loading after DWM asked replaces the thumbnail.
+    m_artToken = ArtCache::Get().Subscribe([this] {
+        if (!m_coverOn || !m_coverTrack.is_valid() || m_coverSize <= 0) return;
+        if (ArtCache::Get().Version(m_coverKey, m_coverTrack, m_coverSize) != m_coverVersion)
+            DwmInvalidateIconicBitmaps(m_hwnd);
+    });
 }
 
 Taskbar::~Taskbar() {
+    if (auto* cache = ArtCache::Existing()) cache->Unsubscribe(m_artToken);
     if (m_images) ImageList_Destroy(m_images);
 }
 
-bool Taskbar::OnMessage(UINT msg, WPARAM wp, LPARAM /*lp*/) {
+void Taskbar::SetCoverTrack(const metadb_handle_ptr& track) {
+    const std::wstring key = track.is_valid() ? ArtCache::SourceKey(track) : std::wstring();
+    if (track == m_coverTrack && key == m_coverKey) return;
+    m_coverTrack = track;
+    m_coverKey = key;
+    m_coverVersion = 0;
+    UseCover(track.is_valid());
+    if (m_coverOn) DwmInvalidateIconicBitmaps(m_hwnd);
+}
+
+void Taskbar::UseCover(bool on) {
+    if (on == m_coverOn) return;
+    m_coverOn = on;
+    const BOOL value = on;
+    DwmSetWindowAttribute(m_hwnd, DWMWA_FORCE_ICONIC_REPRESENTATION, &value, sizeof(value));
+    DwmSetWindowAttribute(m_hwnd, DWMWA_HAS_ICONIC_BITMAP, &value, sizeof(value));
+}
+
+void Taskbar::SendCoverThumbnail(int maxWidth, int maxHeight) {
+    const int side = std::min(maxWidth, maxHeight);
+    if (side <= 0 || !m_coverTrack.is_valid()) return;
+    m_coverSize = side;
+    winrt::com_ptr<IWICBitmapSource> art;
+    const auto state = ArtCache::Get().Find(m_coverKey, m_coverTrack, side, &art);
+    if (state == ArtCache::State::Missing) {  // no cover: the window itself again
+        UseCover(false);
+        return;
+    }
+    // DWM sizes the thumbnail frame from the first bitmap it gets and stretches every later
+    // one into it, so each answer is the same square: the cover fitted in it, centred. While
+    // the cover loads (nothing yet, or the cache's 1x1 clear stand-in) the square stays clear;
+    // the subscription asks DWM again once it is there.
+    UINT w = 0, h = 0;
+    if (art) art->GetSize(&w, &h);
+    const bool loading = !art || w <= 1 || h <= 1;
+    if (!loading) m_coverVersion = ArtCache::Get().Version(m_coverKey, m_coverTrack, side);
+
+    BITMAPINFO bi{};
+    bi.bmiHeader = {sizeof(BITMAPINFOHEADER), side, -side, 1, 32, BI_RGB};
+    void* bits = nullptr;
+    HBITMAP bmp = CreateDIBSection(nullptr, &bi, DIB_RGB_COLORS, &bits, nullptr, 0);
+    if (!bmp) return;
+    const UINT stride = static_cast<UINT>(side) * 4;
+    std::memset(bits, 0, static_cast<size_t>(stride) * side);
+    bool drawn = loading;
+    if (!loading) {
+        const double fit = std::min(static_cast<double>(side) / w, static_cast<double>(side) / h);
+        const int tw = std::clamp(static_cast<int>(std::lround(w * fit)), 1, side);
+        const int th = std::clamp(static_cast<int>(std::lround(h * fit)), 1, side);
+        auto* wic = gfx::CompositionHost::Get().Wic();
+        winrt::com_ptr<IWICBitmapScaler> scaler;
+        winrt::com_ptr<IWICFormatConverter> conv;
+        if (SUCCEEDED(wic->CreateBitmapScaler(scaler.put())) &&
+            SUCCEEDED(scaler->Initialize(art.get(), tw, th, WICBitmapInterpolationModeHighQualityCubic)) &&
+            SUCCEEDED(wic->CreateFormatConverter(conv.put())) &&
+            SUCCEEDED(conv->Initialize(scaler.get(), GUID_WICPixelFormat32bppPBGRA, WICBitmapDitherTypeNone,
+                                       nullptr, 0, WICBitmapPaletteTypeCustom))) {
+            const size_t offset = static_cast<size_t>((side - th) / 2) * stride + static_cast<size_t>((side - tw) / 2) * 4;
+            const WICRect all{0, 0, tw, th};
+            const UINT room = static_cast<UINT>(static_cast<size_t>(stride) * side - offset);
+            drawn = SUCCEEDED(conv->CopyPixels(&all, stride, room, static_cast<BYTE*>(bits) + offset));
+        }
+    }
+    if (drawn) DwmSetIconicThumbnail(m_hwnd, bmp, 0);
+    DeleteObject(bmp);
+}
+
+void Taskbar::SendLivePreview() {
+    // Peek still shows the window: its current content, composition visuals included.
+    RECT rc{};
+    if (!GetWindowRect(m_hwnd, &rc) || IsIconic(m_hwnd)) return;
+    const int w = rc.right - rc.left, h = rc.bottom - rc.top;
+    if (w <= 0 || h <= 0) return;
+    BITMAPINFO bi{};
+    bi.bmiHeader = {sizeof(BITMAPINFOHEADER), w, -h, 1, 32, BI_RGB};
+    void* bits = nullptr;
+    HDC screen = GetDC(nullptr);
+    HDC dc = CreateCompatibleDC(screen);
+    ReleaseDC(nullptr, screen);
+    HBITMAP bmp = CreateDIBSection(dc, &bi, DIB_RGB_COLORS, &bits, nullptr, 0);
+    if (bmp) {
+        HGDIOBJ old = SelectObject(dc, bmp);
+        if (PrintWindow(m_hwnd, dc, PW_RENDERFULLCONTENT)) {
+            // GDI leaves alpha at 0: make the capture opaque.
+            auto* px = static_cast<uint32_t*>(bits);
+            for (size_t i = 0, n = static_cast<size_t>(w) * h; i < n; ++i) px[i] |= 0xFF000000u;
+            SelectObject(dc, old);
+            DwmSetIconicLivePreviewBitmap(m_hwnd, bmp, nullptr, 0);
+        } else {
+            SelectObject(dc, old);
+        }
+        DeleteObject(bmp);
+    }
+    DeleteDC(dc);
+}
+
+bool Taskbar::OnMessage(UINT msg, WPARAM wp, LPARAM lp) {
     if (msg == m_createdMsg && m_createdMsg) {  // (re)created, e.g. after Explorer restarts
         m_added = false;
         AddButtons();

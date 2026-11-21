@@ -161,6 +161,8 @@ class Service {
     // NotFound when they did not come from a readable file.
     Result Reencode(const metadb_handle_ptr& track, const Lyrics& shown, unsigned codePage);
     // Explicitly removes the owner's per-track selection.
+    // No lyrics for the track, kept like any selection until UseAutomatic.
+    Result SelectNone(const metadb_handle_ptr& track);
     void UseAutomatic(const metadb_handle_ptr& track);
     void ClearCache();
 
@@ -181,6 +183,9 @@ class Service {
 
   private:
     Service() = default;
+    void NotifyChanged(const metadb_handle_ptr& track);
+    std::map<uint64_t, std::function<void(const metadb_handle_ptr&)>> m_changeListeners;
+    uint64_t m_nextChangeListener = 1;
     void Start(const metadb_handle_ptr& track, bool useCache, std::function<void(const Result&)> done);
     void Remember(const Query& query, const std::vector<Candidate>& candidates);
     std::wstring m_candidatesFor; // the track the candidates are for (path and subsong)

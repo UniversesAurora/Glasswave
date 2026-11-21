@@ -2,6 +2,7 @@
 #include "netease/catalog.h"
 #include "netease/handle.h"
 #include "netease/profile.h"
+#include "stream/track_snapshot.h"
 
 #include <SDK/file_info_impl.h>
 
@@ -105,16 +106,60 @@ Catalog& Catalog::Get() {
     return catalog;
 }
 
+namespace {
+// What Hint writes to metadb: a record that differs here is shown differently.
+bool SameTags(const Song& a, const Song& b) {
+    if (a.title != b.title || a.album != b.album || a.albumArtist != b.albumArtist ||
+        a.durationMs != b.durationMs || a.codec != b.codec || a.bitrate != b.bitrate ||
+        a.sampleRate != b.sampleRate || a.bitsPerSample != b.bitsPerSample)
+        return false;
+    return a.artists == b.artists;
+}
+} // namespace
+
+// Every record that is new or shown differently goes to metadb as well, whoever put it (as in
+// the Apple Music catalog): a song known only here must not keep another title in the lists.
+bool Catalog::StoreLocked(const Song& song) {
+    const auto found = m_songs.find(song.id);
+    const bool shown = found != m_songs.end() && SameTags(found->second, song);
+    m_songs[song.id] = song;
+    if (shown) return false;
+    m_hintQueue.push_back(song.id);
+    return !std::exchange(m_hintPosted, true);
+}
+
+void Catalog::FlushHints() {
+    std::vector<Song> songs;
+    {
+        std::lock_guard lock(m_mutex);
+        m_hintPosted = false;
+        std::unordered_set<int64_t> seen;
+        for (const int64_t id : m_hintQueue)
+            if (seen.insert(id).second)
+                if (const auto found = m_songs.find(id); found != m_songs.end()) songs.push_back(found->second);
+        m_hintQueue.clear();
+    }
+    Hint(songs);
+}
+
 void Catalog::Put(const Song& song) {
     if (!song.id) return;
-    std::lock_guard lock(m_mutex);
-    m_songs[song.id] = song;
+    bool post = false;
+    {
+        std::lock_guard lock(m_mutex);
+        post = StoreLocked(song);
+    }
+    if (post) fb2k::inMainThread([] { Catalog::Get().FlushHints(); });
 }
 
 void Catalog::Put(const std::vector<Song>& songs) {
-    std::lock_guard lock(m_mutex);
-    for (const auto& song : songs)
-        if (song.id) m_songs[song.id] = song;
+    bool post = false;
+    {
+        std::lock_guard lock(m_mutex);
+        for (const auto& song : songs)
+            if (song.id) post = StoreLocked(song) || post;
+    }
+    if (post) fb2k::inMainThread([] { Catalog::Get().FlushHints(); });
 }
 
 void Catalog::Put(const Playlist& playlist) {
@@ -249,7 +294,7 @@ std::wstring Catalog::AlbumCover(int64_t albumId) const {
 
 void Catalog::PutAndHint(const std::vector<Song>& songs) {
     Put(songs);
-    Hint(songs);
+    FlushHints(); // at once (main thread), with whatever else was waiting
     Save();
 }
 
@@ -291,8 +336,7 @@ void Catalog::Hint(const std::vector<Song>& songs) {
         if (song.bitsPerSample > 0) info.info_set_int("bitspersample", song.bitsPerSample);
         info.info_set_int("channels", 2);
         if (song.codec == L"FLAC") info.info_set("encoding", "lossless");
-        t_filestats stats;
-        hints->add_hint(Handle(song.id), info, stats, true);
+        stream::HintTags(hints, Handle(song.id), info); // keeps what playback measured
     }
     hints->on_done();
 }

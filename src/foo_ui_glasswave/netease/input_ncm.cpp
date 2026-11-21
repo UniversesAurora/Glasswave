@@ -7,6 +7,7 @@
 #include "netease/log.h"
 #include "netease/profile.h"
 #include "netease/session.h"
+#include "stream/track_snapshot.h"
 
 #include <SDK/input_impl.h>
 

@@ -2,6 +2,7 @@
 #include "applemusic/catalog.h"
 #include "applemusic/display_metadata.h"
 #include "netease/profile.h"
+#include "stream/track_snapshot.h"
 
 #include <SDK/file_info_impl.h>
 
@@ -395,7 +396,7 @@ std::wstring Catalog::CoverUrl(stream::ArtKind kind, const stream::Id& id) const
 
 void Catalog::PutAndHint(const std::vector<Song>& songs, bool persist) {
     Put(songs);
-    Hint(songs);
+    FlushHints(); // at once (main thread), with whatever else was waiting
     if (persist) Save();
 }
 
@@ -435,7 +436,8 @@ void Catalog::Hint(const std::vector<Song>& songs) const {
         }
         if (display.track.durationMs > 0)
             info.set_length(static_cast<double>(display.track.durationMs) / 1000.0);
-        hints->add_hint(Handle(display.track.id), info, t_filestats(), true);
+        // Tags only: the technical info playback measured (bit rate, codec...) stays.
+        stream::HintTags(hints, Handle(display.track.id), info);
     }
     hints->on_done();
 }

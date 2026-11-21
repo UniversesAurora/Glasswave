@@ -865,12 +865,27 @@ Result Service::Reencode(const metadb_handle_ptr& track, const Lyrics& shown, un
     return Select(track, candidate);
 }
 
+Result Service::SelectNone(const metadb_handle_ptr& track) {
+    if (!track.is_valid()) return {Status::NotFound, nullptr};
+    Cancel();
+    {
+        std::lock_guard lock(g_cacheMutex);
+        if (!WriteFile(SelectedFile(MakeQuery(track)), Utf8(cache_format::ManualNone())))
+            console::print("Glasswave lyrics: unable to save lyric selection");
+    }
+    NotifyChanged(track);
+    return {Status::NotFound, nullptr};
+}
+
 void Service::UseAutomatic(const metadb_handle_ptr& track) {
     if (!track.is_valid()) return;
     Cancel();
-    std::lock_guard lock(g_cacheMutex);
-    std::error_code ec;
-    std::filesystem::remove(SelectedFile(MakeQuery(track)), ec);
+    {
+        std::lock_guard lock(g_cacheMutex);
+        std::error_code ec;
+        std::filesystem::remove(SelectedFile(MakeQuery(track)), ec);
+    }
+    NotifyChanged(track);
 }
 
 void Service::ClearCache() {
