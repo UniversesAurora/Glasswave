@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "wmp/wmp_painter.h"
+#include "gfx/d2d_util.h"
 #include "ui/text.h"
 #include "ui/i18n.h"
 #include "win7/win7_resources.h"
@@ -10,68 +11,14 @@ namespace {
 
 using winrt::com_ptr;
 
-D2D1_COLOR_F Hex(uint32_t rgb, float a = 1.0f) {
-    return D2D1::ColorF(((rgb >> 16) & 0xFF) / 255.0f, ((rgb >> 8) & 0xFF) / 255.0f, (rgb & 0xFF) / 255.0f, a);
-}
-
-com_ptr<ID2D1SolidColorBrush> Solid(ID2D1DeviceContext* dc, D2D1_COLOR_F c) {
-    com_ptr<ID2D1SolidColorBrush> b;
-    winrt::check_hresult(dc->CreateSolidColorBrush(c, b.put()));
-    return b;
-}
-
-com_ptr<ID2D1LinearGradientBrush> Vertical(ID2D1DeviceContext* dc, float y0, float y1,
-                                           std::initializer_list<std::pair<float, D2D1_COLOR_F>> stops) {
-    std::vector<D2D1_GRADIENT_STOP> v;
-    for (auto& [p, c] : stops) v.push_back({p, c});
-    com_ptr<ID2D1GradientStopCollection> coll;
-    winrt::check_hresult(dc->CreateGradientStopCollection(v.data(), static_cast<UINT32>(v.size()), coll.put()));
-    com_ptr<ID2D1LinearGradientBrush> b;
-    winrt::check_hresult(dc->CreateLinearGradientBrush({{0, y0}, {0, y1}}, coll.get(), b.put()));
-    return b;
-}
-
-com_ptr<ID2D1LinearGradientBrush> Horizontal(ID2D1DeviceContext* dc, float x0, float x1,
-                                             std::initializer_list<std::pair<float, D2D1_COLOR_F>> stops) {
-    std::vector<D2D1_GRADIENT_STOP> v;
-    for (auto& [p, c] : stops) v.push_back({p, c});
-    com_ptr<ID2D1GradientStopCollection> coll;
-    winrt::check_hresult(dc->CreateGradientStopCollection(v.data(), static_cast<UINT32>(v.size()), coll.put()));
-    com_ptr<ID2D1LinearGradientBrush> b;
-    winrt::check_hresult(dc->CreateLinearGradientBrush({{x0, 0}, {x1, 0}}, coll.get(), b.put()));
-    return b;
-}
-
-float Hairline(ID2D1DeviceContext* dc) {
-    float dx = 96, dy = 96;
-    dc->GetDpi(&dx, &dy);
-    const float s = dx / 96.0f;
-    return std::max(1.0f, std::floor(s)) / s;
-}
-
-float Snap(ID2D1DeviceContext* dc, float v) {
-    float dx = 96, dy = 96;
-    dc->GetDpi(&dx, &dy);
-    const float s = dx / 96.0f;
-    return std::round(v * s) / s;
-}
-
-D2D1_RECT_F Inset(D2D1_RECT_F r, float d) { return {r.left + d, r.top + d, r.right - d, r.bottom - d}; }
-
-com_ptr<ID2D1PathGeometry> Polygon(ID2D1DeviceContext* dc, std::initializer_list<D2D1_POINT_2F> pts) {
-    com_ptr<ID2D1Factory> f;
-    dc->GetFactory(f.put());
-    com_ptr<ID2D1PathGeometry> g;
-    winrt::check_hresult(f->CreatePathGeometry(g.put()));
-    com_ptr<ID2D1GeometrySink> s;
-    winrt::check_hresult(g->Open(s.put()));
-    auto it = pts.begin();
-    s->BeginFigure(*it, D2D1_FIGURE_BEGIN_FILLED);
-    for (++it; it != pts.end(); ++it) s->AddLine(*it);
-    s->EndFigure(D2D1_FIGURE_END_CLOSED);
-    winrt::check_hresult(s->Close());
-    return g;
-}
+using gfx::Hairline;
+using gfx::Hex;
+using gfx::Horizontal;
+using gfx::Inset;
+using gfx::Polygon;
+using gfx::Snap;
+using gfx::Solid;
+using gfx::Vertical;
 
 }  // namespace
 
@@ -297,9 +244,9 @@ void CommandButton(ID2D1DeviceContext* dc, D2D1_SIZE_F size, Layer layer, std::w
         const bool pressed = layer == Layer::Pressed;
         const D2D1_ROUNDED_RECT rr{Inset(rc, L / 2), 2.5f, 2.5f};
         dc->FillRoundedRectangle(rr, Vertical(dc, rc.top, rc.bottom,
-                                              pressed ? std::initializer_list<std::pair<float, D2D1_COLOR_F>>{
+                                              pressed ? std::initializer_list<gfx::Stop>{
                                                             {0.0f, Hex(0xC9DCF0)}, {1.0f, Hex(0xB4CDE8)}}
-                                                      : std::initializer_list<std::pair<float, D2D1_COLOR_F>>{
+                                                      : std::initializer_list<gfx::Stop>{
                                                             {0.0f, Hex(0xFBFDFF)}, {0.5f, Hex(0xEBF3FC)},
                                                             {0.5f, Hex(0xDDEBFA)}, {1.0f, Hex(0xE9F3FE)}})
                                          .get());

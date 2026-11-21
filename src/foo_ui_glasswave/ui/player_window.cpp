@@ -10,6 +10,7 @@
 #include "aero/aero_painter.h"
 #include "app/settings.h"
 #include "gfx/composition_host.h"
+#include "gfx/d2d_util.h"
 #include "gfx/effects.h"
 #include "media/favorites.h"
 #include "ui/art_cache.h"
@@ -124,7 +125,7 @@ enum Id : int {
 };
 
 winrt::Windows::UI::Color Rgba(uint32_t rgb, float alpha) {
-    return winrt::Windows::UI::ColorHelper::FromArgb(static_cast<uint8_t>(std::lround(alpha * 255)),
+    return winrt::Windows::UI::ColorHelper::FromHex(static_cast<uint8_t>(std::lround(alpha * 255)),
                                                      static_cast<uint8_t>(rgb >> 16),
                                                      static_cast<uint8_t>(rgb >> 8), static_cast<uint8_t>(rgb));
 }
@@ -248,15 +249,8 @@ constexpr GlassLook kPillLooks[3] = {
      {{0.5f, 0x3E424C}, {1.5f, 0x3A424C}, {2.5f, 0x414A63}, {3.5f, 0x4A5F83}, {4.5f, 0x293B6A}, {5.5f, 0x0E1552}, {6.5f, 0x384174}, {7.5f, 0x193C73}, {8.5f, 0x345283}},
      9}};
 
-D2D1_COLOR_F Argb(uint32_t rgb, float alpha) {
-    return D2D1::ColorF(rgb, alpha);
-}
-
-com_ptr<ID2D1GradientStopCollection> Stops(ID2D1DeviceContext* dc, const std::vector<D2D1_GRADIENT_STOP>& stops) {
-    com_ptr<ID2D1GradientStopCollection> collection;
-    dc->CreateGradientStopCollection(stops.data(), static_cast<UINT32>(stops.size()), collection.put());
-    return collection;
-}
+using gfx::Hex;
+using gfx::Stops;
 
 // Fills `area` with a gradient that is radial about the segment (x0..x1, cy): radial brushes
 // on its ends, a vertical gradient (the same stops mirrored) between them.
@@ -315,22 +309,22 @@ void PaintGlass(ID2D1DeviceContext* dc, const GlassShape& s, const GlassLook& lo
         dc->PushAxisAlignedClip(area, D2D1_ANTIALIAS_MODE_ALIASED); // the horizon stays sharp
         com_ptr<ID2D1LinearGradientBrush> base;
         dc->CreateLinearGradientBrush(D2D1::LinearGradientBrushProperties({0, y0}, {0, y1}),
-                                      Stops(dc, {{0, Argb(g.base[0], 1)}, {0.5f, Argb(g.base[1], 1)},
-                                                 {1, Argb(g.base[2], 1)}})
+                                      Stops(dc, {{0, Hex(g.base[0], 1)}, {0.5f, Hex(g.base[1], 1)},
+                                                 {1, Hex(g.base[2], 1)}})
                                           .get(),
                                       base.put());
         dc->FillRectangle(area, base.get());
         FillAboutSegment(dc, area, s.x0, s.x1, s.cy + g.ay, s.r * g.ax, s.r * g.ayr,
-                         {{0, Argb(g.ca, 0)}, {g.sA, Argb(g.ca, 0)}, {1, Argb(g.ca, g.aA)}});
+                         {{0, Hex(g.ca, 0)}, {g.sA, Hex(g.ca, 0)}, {1, Hex(g.ca, g.aA)}});
         FillAboutSegment(dc, area, s.x0, s.x1, s.cy + g.by, s.r * g.bx, s.r * g.byr,
-                         {{0, Argb(g.cb, g.aB)}, {0.5f, Argb(g.cb, g.aB * g.mB)}, {1, Argb(g.cb, 0)}});
+                         {{0, Hex(g.cb, g.aB)}, {0.5f, Hex(g.cb, g.aB * g.mB)}, {1, Hex(g.cb, 0)}});
         dc->PopAxisAlignedClip();
     }
     // The rim: one unit inside the outline, in the bitmap's outermost colour row by row.
     std::vector<D2D1_GRADIENT_STOP> rim;
     for (int i = 0; i < look.rims; ++i) {
         const float y = (look.rim[i].y - top) / (foot - top);
-        rim.push_back({std::clamp(y, 0.0f, 1.0f), Argb(look.rim[i].rgb, 0.85f)});
+        rim.push_back({std::clamp(y, 0.0f, 1.0f), Hex(look.rim[i].rgb, 0.85f)});
     }
     com_ptr<ID2D1LinearGradientBrush> rimBrush;
     dc->CreateLinearGradientBrush(D2D1::LinearGradientBrushProperties({0, top}, {0, foot}), Stops(dc, rim).get(),
@@ -409,7 +403,7 @@ void WmpPlate(ID2D1DeviceContext* dc, D2D1_RECT_F area, bool pressed) {
     const auto brush = [&](const PlateColumn (&col)[25]) {
         std::vector<D2D1_GRADIENT_STOP> stops;
         const auto at = [&](int row, float y) {
-            stops.push_back({y / 25.0f, Argb(col[row].rgb, col[row].alpha / 255.0f)});
+            stops.push_back({y / 25.0f, Hex(col[row].rgb, col[row].alpha / 255.0f)});
         };
         for (int row = 0; row < 25; ++row) {
             const bool opens = std::find(std::begin(kBreaks), std::end(kBreaks), row) != std::end(kBreaks);
@@ -748,7 +742,7 @@ void GlassFace(ID2D1DeviceContext* dc, float W, float H, float radius, float sca
                                       brush.put());
         return brush;
     };
-    const float line = std::max(1.0f, std::floor(scale)) / scale;
+    const float line = gfx::Hairline(scale);
     const D2D1_ROUNDED_RECT body{{line / 2, line / 2, W - line / 2, H - line / 2}, radius, radius};
     dc->FillRoundedRectangle(body, vertical(0, H, {{0, D2D1::ColorF(0x3F82D6, 0.78f)},
                                                    {0.5f, D2D1::ColorF(0x17489A, 0.82f)},
@@ -3145,7 +3139,7 @@ void PlayerWindow::PaintCover() {
                 dc->FillGeometry(sheen.get(), gloss.get());
             }
         }
-        const float line = std::max(1.0f, std::floor(m_scale)) / m_scale;
+        const float line = gfx::Hairline(m_scale);
         com_ptr<ID2D1SolidColorBrush> rim, glint;
         dc->CreateSolidColorBrush(black(0.55f), rim.put());
         dc->CreateSolidColorBrush(white(0.45f), glint.put());

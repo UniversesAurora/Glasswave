@@ -428,6 +428,7 @@
     <ClInclude Include="core\url.h" />
     <ClInclude Include="core\hex.h" />
     <ClInclude Include="netease\types.h" />
+    <ClInclude Include="gfx\d2d_util.h" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="$(SdkRoot)pfc\pfc.vcxproj">

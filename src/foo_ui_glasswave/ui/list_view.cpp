@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "ui/list_view.h"
+#include "gfx/d2d_util.h"
 #include "core/text.h"
 #include "gfx/composition_host.h"
 #include "ui/art_cache.h"
@@ -1501,7 +1502,7 @@ void ListView::PaintHeader() {
                     mark = c.x;
                     break;
                 }
-            const float line = 1.0f / s * std::max(1.0f, std::floor(s));
+            const float line = gfx::Hairline(s);
             dc->FillRectangle({mark - line, 0, mark + line, size.height}, Brush(dc, 0x3C7FB1).get());
             // A translucent copy of the dragged header follows the cursor, as in WMP.
             const Col& c = cols[m_dragCol];
@@ -1593,7 +1594,7 @@ void ListView::PaintRows() {
             // WMP 12 column lines, down to the bottom of the view (owner capture at 150 %): on
             // each column's last pixel a translucent blue (#75B5F4 at 15 %), a faint white
             // line just left of it.
-            const float line = std::max(1.0f, std::floor(s)) / s;
+            const float line = gfx::Hairline(s);
             auto blue = Brush(dc, 0x75B5F4, 0.15f), white = Brush(dc, 0xFFFFFF, 0.2f);
             for (const Col& c : Columns(size.width)) {
                 const float x = std::round((c.x + c.w) * s) / s;
@@ -1718,7 +1719,7 @@ void ListView::PaintCells(ID2D1DeviceContext* dc, size_t row, float y, float row
             // track in the list's group-rule tint. No bar for an unscored song.
             const int score = std::clamp(_wtoi(m_source->Cell(row, c.src).c_str()), 0, 100);
             if (score == 0) continue;
-            auto snap = [&](float v) { return std::round(v * m_scale) / m_scale; };
+            auto snap = [&](float v) { return gfx::Snap(v, m_scale); };
             const float left = snap(c.x + kCellPad), right = snap(c.x + c.w - kCellPad);
             const float h = 4, top = snap(y + (rowH - h) / 2);
             if (right - left < h * 2) continue;
@@ -1752,7 +1753,7 @@ void ListView::PaintCells(ID2D1DeviceContext* dc, size_t row, float y, float row
             if (cell.empty()) continue;
             const float share = std::clamp(static_cast<float>(_wtoi(cell.c_str())) / 1000.0f, 0.0f, 1.0f);
             const wchar_t state = cell.back();
-            auto snap = [&](float v) { return std::round(v * m_scale) / m_scale; };
+            auto snap = [&](float v) { return gfx::Snap(v, m_scale); };
             const float left = snap(c.x + kCellPad), right = snap(c.x + c.w - kCellPad);
             const float h = 14, top = snap(y + (rowH - h) / 2);
             if (right - left < 20) continue;
@@ -1863,13 +1864,13 @@ void ListView::PaintGrouped(ID2D1DeviceContext* dc, D2D1_SIZE_F size) {
             DWRITE_TEXT_METRICS tm{};
             layout->GetMetrics(&tm);
             const float lx = titleX + tm.widthIncludingTrailingWhitespace + 6;
-            const float line1 = std::floor(m_scale) / m_scale;
+            const float line1 = gfx::Hairline(m_scale);
             const float ly = std::round((y + rowH / 2 + 1) * m_scale) / m_scale;
             if (lx < viewRight - 6)
                 dc->FillRectangle({lx, ly, viewRight - 6, ly + line1}, Brush(dc, kGroupRule).get());
             // Hovering the bar shows only its outline, as WMP does (no selection fill).
             if (line.group == m_hotGroupHeader) {
-                const float px = std::max(1.0f, std::floor(m_scale)) / m_scale;
+                const float px = gfx::Hairline(m_scale);
                 dc->DrawRoundedRectangle({{2.5f, y + 1.5f, viewRight - 2.5f, y + rowH - 0.5f}, 2, 2},
                                          Brush(dc, 0x7DA2CE, 0.6f).get(), px);
             }
@@ -1960,7 +1961,7 @@ void ListView::PaintTiles(ID2D1DeviceContext* dc) {
                 DWRITE_TEXT_METRICS tm{};
                 layout->GetMetrics(&tm);
                 const float lx = titleX + tm.widthIncludingTrailingWhitespace + 8;
-                const float line1 = std::floor(m_scale) / m_scale;
+                const float line1 = gfx::Hairline(m_scale);
                 const float ly = std::round((baseY + 11) * m_scale) / m_scale;
                 if (lx < right) dc->FillRectangle({lx, ly, right, ly + line1}, Brush(dc, kGroupRule).get());
                 y += lineH;

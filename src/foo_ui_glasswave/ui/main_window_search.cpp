@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "ui/main_window.h"
+#include "gfx/d2d_util.h"
 
 #include "gfx/composition_host.h"
 #include "ui/remote_pages.h"
@@ -462,7 +463,7 @@ void MainWindow::PaintTabs() {
         const float H = h / m_scale, W = w / m_scale;
         com_ptr<ID2D1SolidColorBrush> rule;
         dc->CreateSolidColorBrush(Hex(0xD5DFEB), rule.put());
-        const float line = std::floor(m_scale) / m_scale;
+        const float line = gfx::Hairline(m_scale);
         dc->FillRectangle({0, H - line, W, H}, rule.get());
         float x = kTabLeft, barLeft = -1, barRight = -1;
         for (size_t i = 0; i < m_tabs.size(); ++i) {

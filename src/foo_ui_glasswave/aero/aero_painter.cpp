@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "aero/aero_painter.h"
+#include "gfx/d2d_util.h"
 
 // Every color and size below is traceable to docs/design/visual-spec.md.
 
@@ -9,9 +10,19 @@ namespace {
 
 using winrt::com_ptr;
 
-D2D1_COLOR_F Rgba(int r, int g, int b, float a = 1.0f) { return D2D1::ColorF(r / 255.0f, g / 255.0f, b / 255.0f, a); }
-D2D1_COLOR_F Hex(uint32_t rgb, float a = 1.0f) { return Rgba((rgb >> 16) & 0xFF, (rgb >> 8) & 0xFF, rgb & 0xFF, a); }
-D2D1_COLOR_F WithAlpha(D2D1_COLOR_F c, float a) { return D2D1::ColorF(c.r, c.g, c.b, a); }
+using gfx::FactoryOf;
+using gfx::Hex;
+using gfx::Inset;
+using gfx::Linear;
+using gfx::Polygon;
+using gfx::Radial;
+using gfx::Rgba;
+using gfx::RoundJoin;
+using gfx::Solid;
+using gfx::Stop;
+using gfx::Stops;
+using gfx::Vertical;
+using gfx::WithAlpha;
 
 // ---- Device-pixel grid -----------------------------------------------------------------
 // Win7 kept 1-pixel hairlines at 125-175% DPI. A 1-DIP line at 175% would be 1.75 px and
@@ -25,11 +36,9 @@ struct Grid {
 };
 
 Grid GridOf(ID2D1DeviceContext* dc) {
-    float dx = 96, dy = 96;
-    dc->GetDpi(&dx, &dy);
     Grid g;
-    g.s = dx / 96.0f;
-    g.L = std::max(1.0f, std::floor(g.s)) / g.s;
+    g.s = gfx::ScaleOf(dc);
+    g.L = gfx::Hairline(g.s);
     return g;
 }
 
@@ -39,53 +48,6 @@ Grid DeviceGridOf(ID2D1DeviceContext* dc) {
     Grid g = GridOf(dc);
     g.L = 1.0f / g.s;
     return g;
-}
-
-com_ptr<ID2D1Factory> FactoryOf(ID2D1DeviceContext* dc) {
-    com_ptr<ID2D1Factory> f;
-    dc->GetFactory(f.put());
-    return f;
-}
-
-com_ptr<ID2D1SolidColorBrush> Solid(ID2D1DeviceContext* dc, D2D1_COLOR_F c) {
-    com_ptr<ID2D1SolidColorBrush> b;
-    winrt::check_hresult(dc->CreateSolidColorBrush(c, b.put()));
-    return b;
-}
-
-struct Stop {
-    float pos;
-    D2D1_COLOR_F color;
-};
-
-com_ptr<ID2D1GradientStopCollection> Stops(ID2D1DeviceContext* dc, std::initializer_list<Stop> stops) {
-    std::vector<D2D1_GRADIENT_STOP> v;
-    for (auto& s : stops) v.push_back({s.pos, s.color});
-    com_ptr<ID2D1GradientStopCollection> c;
-    winrt::check_hresult(dc->CreateGradientStopCollection(v.data(), static_cast<UINT32>(v.size()), c.put()));
-    return c;
-}
-
-com_ptr<ID2D1LinearGradientBrush> Vertical(ID2D1DeviceContext* dc, float y0, float y1,
-                                           std::initializer_list<Stop> stops) {
-    com_ptr<ID2D1LinearGradientBrush> br;
-    winrt::check_hresult(dc->CreateLinearGradientBrush({{0, y0}, {0, y1}}, Stops(dc, stops).get(), br.put()));
-    return br;
-}
-
-com_ptr<ID2D1LinearGradientBrush> Linear(ID2D1DeviceContext* dc, D2D1_POINT_2F a, D2D1_POINT_2F b,
-                                         std::initializer_list<Stop> stops) {
-    com_ptr<ID2D1LinearGradientBrush> br;
-    winrt::check_hresult(dc->CreateLinearGradientBrush({a, b}, Stops(dc, stops).get(), br.put()));
-    return br;
-}
-
-com_ptr<ID2D1RadialGradientBrush> Radial(ID2D1DeviceContext* dc, D2D1_POINT_2F center, float rx, float ry,
-                                         std::initializer_list<Stop> stops) {
-    com_ptr<ID2D1RadialGradientBrush> br;
-    winrt::check_hresult(
-        dc->CreateRadialGradientBrush({center, {0, 0}, rx, ry}, Stops(dc, stops).get(), br.put()));
-    return br;
 }
 
 struct Radii {
@@ -117,8 +79,6 @@ com_ptr<ID2D1PathGeometry> RoundRect(ID2D1Factory* f, D2D1_RECT_F r, Radii rad) 
     return g;
 }
 
-D2D1_RECT_F Inset(D2D1_RECT_F r, float d) { return {r.left + d, r.top + d, r.right - d, r.bottom - d}; }
-
 // Hairline ring k (0 = outermost) of a rounded rect: covers exactly [k*L, (k+1)*L).
 com_ptr<ID2D1PathGeometry> Ring(ID2D1Factory* f, const Grid& g, D2D1_RECT_F outer, Radii rad, int k) {
     const float inset = k * g.L + g.L / 2;
@@ -136,19 +96,6 @@ void Clipped(ID2D1DeviceContext* dc, ID2D1Geometry* clip, F&& body) {
     dc->PushLayer(D2D1::LayerParameters1(D2D1::InfiniteRect(), clip, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE), nullptr);
     body();
     dc->PopLayer();
-}
-
-com_ptr<ID2D1PathGeometry> Polygon(ID2D1Factory* f, std::initializer_list<D2D1_POINT_2F> pts) {
-    com_ptr<ID2D1PathGeometry> g;
-    winrt::check_hresult(f->CreatePathGeometry(g.put()));
-    com_ptr<ID2D1GeometrySink> s;
-    winrt::check_hresult(g->Open(s.put()));
-    auto it = pts.begin();
-    s->BeginFigure(*it, D2D1_FIGURE_BEGIN_FILLED);
-    for (++it; it != pts.end(); ++it) s->AddLine(*it);
-    s->EndFigure(D2D1_FIGURE_END_CLOSED);
-    winrt::check_hresult(s->Close());
-    return g;
 }
 
 com_ptr<ID2D1Geometry> Group(ID2D1Factory* f, std::vector<com_ptr<ID2D1Geometry>> parts) {
@@ -174,13 +121,6 @@ com_ptr<ID2D1Geometry> Combine(ID2D1Factory* f, ID2D1Geometry* a, ID2D1Geometry*
     winrt::check_hresult(a->CombineWithGeometry(b, mode, nullptr, s.get()));
     winrt::check_hresult(s->Close());
     return out;
-}
-
-com_ptr<ID2D1StrokeStyle> RoundJoin(ID2D1DeviceContext* dc, D2D1_CAP_STYLE cap = D2D1_CAP_STYLE_FLAT) {
-    D2D1_STROKE_STYLE_PROPERTIES p = D2D1::StrokeStyleProperties(cap, cap, cap, D2D1_LINE_JOIN_ROUND);
-    com_ptr<ID2D1StrokeStyle> s;
-    FactoryOf(dc)->CreateStrokeStyle(p, nullptr, 0, s.put());
-    return s;
 }
 
 // White glyph with a one-hairline outline (stroke 2L centered; the fill covers the inner half).

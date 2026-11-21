@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "ui/nav_pane.h"
+#include "gfx/d2d_util.h"
 #include "core/text.h"
 #include "gfx/composition_host.h"
 #include "ui/art_cache.h"
@@ -716,7 +717,7 @@ void NavPane::Paint() {
         dc->CreateSolidColorBrush(D2D1::ColorF(0x1E395B), ink.put());
         dc->CreateSolidColorBrush(D2D1::ColorF(0xD5DFE9), sep.put());
         // Divider against the list
-        const float L = std::max(1.0f, std::floor(s)) / s;
+        const float L = gfx::Hairline(s);
         dc->FillRectangle({width - L, 0, width, h / s}, sep.get());
         auto drawRowContent = [&](const Item& it, float x, float y) {
             const bool autoPlaylist = it.target == Target::Playlist && media::IsAutoPlaylist(it.playlist);

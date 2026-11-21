@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "ui/card_layer.h"
+#include "gfx/d2d_util.h"
 #include "core/text.h"
 
 #include "cache/images.h"
@@ -603,7 +604,7 @@ void CardLayer::PaintFace(Card& card) {
         }
         // A hairline of light just inside the edge, as a glossy print catches it: the outline
         // stroked twice as wide, its outer half cut off by the shape.
-        const float line = std::max(1.0f, std::floor(m_scale)) / m_scale;
+        const float line = gfx::Hairline(m_scale);
         dc->DrawGeometry(shape.get(), Solid(dc, 0xFFFFFF, 0.10f).get(), 2 * line);
         dc->PopLayer();
     });
