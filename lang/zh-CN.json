@@ -703,16 +703,16 @@
   "Made for You": "为你推荐",
   "Nothing to show.": "没有可显示的内容。",
   "Not interested": "不感兴趣",
-  "Sign in to Apple Music or NetEase Cloud Music to see their home pages here.": "登录 Apple Music 或网易云音乐后，这里会显示它们的主页。",
   "The station sent no songs.": "电台没有发来歌曲。",
   "The request was dropped because the source stopped or its account changed.": "来源已停止或账户已更改，请求已取消。",
   "Search {0}": "搜索{0}",
-  "Apple Music | Search {0}": "搜索 {0}",
   "New {0} playlist": "新建{0}歌单",
   "Apple Music | New {0} playlist": "新建 {0} 播放列表",
   "NetEase Cloud Music | New {0} playlist": "新建网易云歌单",
   "Add to {0} playlist": "添加到{0}歌单",
   "Apple Music | Add to {0} playlist": "添加到 {0} 播放列表",
   "NetEase Cloud Music | Add to {0} playlist": "添加到网易云歌单",
-  "Apple Music | Please sign in to {0}.": "请先登录 {0}。"
+  "Sign in to {0} to see their home pages here.": "登录{0}后，这里会显示它们的主页。",
+  "{0} or {1}": "{0}或{1}",
+  "{0}, {1}": "{0}、{1}"
 }

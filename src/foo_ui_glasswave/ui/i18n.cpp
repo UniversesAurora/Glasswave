@@ -147,6 +147,49 @@ std::wstring TrMenu(const std::wstring& text) {
     return out + shortcut;
 }
 
+namespace {
+
+bool IsHan(wchar_t c) {
+    return (c >= 0x4E00 && c <= 0x9FFF) || (c >= 0x3400 && c <= 0x4DBF) || (c >= 0xF900 && c <= 0xFAFF);
+}
+
+bool IsLatinOrDigit(wchar_t c) {
+    return (c >= L'A' && c <= L'Z') || (c >= L'a' && c <= L'z') || (c >= L'0' && c <= L'9');
+}
+
+// Whether two characters that end up side by side want a space between them.
+bool NeedsSpace(wchar_t left, wchar_t right) {
+    return (IsHan(left) && IsLatinOrDigit(right)) || (IsLatinOrDigit(left) && IsHan(right));
+}
+
+}  // namespace
+
+std::wstring Fill(std::wstring_view text, std::initializer_list<std::wstring_view> values) {
+    std::wstring out;
+    out.reserve(text.size());
+    for (size_t i = 0; i < text.size();) {
+        if (text[i] == L'{' && i + 2 < text.size() && text[i + 2] == L'}' && text[i + 1] >= L'0' &&
+            static_cast<size_t>(text[i + 1] - L'0') < values.size()) {
+            const std::wstring_view value = *(values.begin() + (text[i + 1] - L'0'));
+            if (!value.empty() && !out.empty() && NeedsSpace(out.back(), value.front())) out += L' ';
+            out += value;
+            i += 3;
+            if (!value.empty() && i < text.size() && NeedsSpace(value.back(), text[i])) out += L' ';
+            continue;
+        }
+        out += text[i++];
+    }
+    return out;
+}
+
+std::wstring JoinOr(const std::vector<std::wstring>& items) {
+    if (items.empty()) return {};
+    std::wstring joined = items.front();
+    for (size_t i = 1; i < items.size(); ++i)
+        joined = Fill(Tr(i + 1 == items.size() ? L"{0} or {1}" : L"{0}, {1}"), {joined, items[i]});
+    return joined;
+}
+
 std::wstring ExportStrings(metadb_handle_list_cref sample) {
     auto& c = Get();
     std::set<std::wstring> all = c.seen;

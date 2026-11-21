@@ -73,11 +73,7 @@ std::wstring Provider::Text(std::wstring_view english) const {
 }
 
 std::wstring Provider::NamedText(std::wstring_view english) const {
-    std::wstring text = Text(english);
-    const std::wstring name = ui::Tr(Name());
-    for (size_t mark = text.find(L"{0}"); mark != std::wstring::npos; mark = text.find(L"{0}", mark + name.size()))
-        text.replace(mark, 3, name);
-    return text;
+    return ui::Fill(Text(english), {ui::Tr(Name())});
 }
 
 std::wstring Provider::SignInRequiredMessage() const {

@@ -456,8 +456,12 @@ class HomePage final : public Page, public stream::Provider::Listener {
             }
             if (!any) break;
         }
-        if (m_sources.empty())
-            m_tiles->SetEmpty(Tr(L"Sign in to Apple Music or NetEase Cloud Music to see their home pages here."));
+        if (m_sources.empty()) {
+            std::vector<std::wstring> names; // every source with a home page, signed in or not
+            for (const auto* source : stream::Providers())
+                if (source->Can(stream::Capability::Home)) names.push_back(Tr(source->Name()));
+            m_tiles->SetEmpty(Fill(Tr(L"Sign in to {0} to see their home pages here."), {JoinOr(names)}));
+        }
         else if (m_pending > 0)
             m_tiles->SetEmpty(Tr(L"Loading..."));
         else
