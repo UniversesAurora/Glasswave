@@ -622,7 +622,9 @@ class AppleInput : public input_stubs {
         } catch (const BridgeHttpError& error) {
             // Apple will not play this song here: it opens as an empty track, so the list plays
             // on to the next one without an error every time it comes round.
-            if (error.refused() && AdmitSkip(m_id)) {
+            // Not from a prefetch thread: that is no playback, and must not spend the skip budget
+            // of the real one (a refused prefetch fails and is tried again when it plays).
+            if (error.refused() && !cache::audio::IsPrefetchThread() && AdmitSkip(m_id)) {
                 cleanup_failed_initialize();
                 playback_log::Skipped(m_id, error.what());
                 return;
@@ -798,7 +800,7 @@ class AppleInput : public input_stubs {
 
   private:
     void MarkReady() noexcept {
-        EndSkipRun();
+        if (!cache::audio::IsPrefetchThread()) EndSkipRun();
         playback_log::Ready(m_id, m_positionSeconds);
     }
 
