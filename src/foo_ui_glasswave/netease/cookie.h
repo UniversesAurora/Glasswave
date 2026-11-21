@@ -9,6 +9,8 @@ namespace glasswave::netease {
 // kept in memory.
 bool LoadSessionCookie();
 std::wstring SessionCookie();
+// CookieHasMusicU(SessionCookie()), kept up to date with the cookie (asked at every request).
+bool SessionCookieHasMusicU();
 void SaveSessionCookie(std::wstring_view cookie);
 void ClearSessionCookie();
 std::wstring SessionCookiePath();

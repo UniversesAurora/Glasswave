@@ -58,7 +58,7 @@ void Session::Initialize() {
     m_stopping = false;
     m_abort.reset();
     LoadSessionCookie();
-    if (!CookieHasMusicU(SessionCookie())) ClearSessionCookie();
+    if (!SessionCookieHasMusicU()) ClearSessionCookie();
     m_service.Initialize();
     Catalog::Get().Load();
     core::Log(L"art: extractor supports ncm://song/ = " +
@@ -67,7 +67,7 @@ void Session::Initialize() {
     m_account = {};
     m_account.nickname = GetAccountName();
     m_account.userId = GetAccountId();
-    m_account.loggedIn = CookieHasMusicU(SessionCookie());
+    m_account.loggedIn = SessionCookieHasMusicU();
     if (!m_account.loggedIn) {
         m_account = {};
         ClearAccount();
@@ -95,7 +95,7 @@ void Session::Shutdown() {
     m_liked.clear();
 }
 
-bool Session::LoggedIn() const { return CookieHasMusicU(SessionCookie()); }
+bool Session::LoggedIn() const { return SessionCookieHasMusicU(); }
 
 Account Session::CurrentAccount() const {
     std::lock_guard lock(m_mutex);

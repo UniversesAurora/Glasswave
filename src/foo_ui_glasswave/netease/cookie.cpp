@@ -1,8 +1,9 @@
 #include "pch.h"
 #include "netease/cookie.h"
-#include "core/text.h"
+#include "core/file.h"
 #include "core/log.h"
 #include "core/paths.h"
+#include "core/text.h"
 
 #include <dpapi.h>
 #include <cwctype>
@@ -18,6 +19,12 @@ using core::LowerAscii;
 
 std::mutex g_mutex;
 std::wstring g_cookie;
+bool g_hasMusicU = false; // CookieHasMusicU(g_cookie), kept with it
+
+void SetCookieLocked(std::wstring cookie) {
+    g_cookie = std::move(cookie);
+    g_hasMusicU = CookieHasMusicU(g_cookie);
+}
 
 const wchar_t kEntropy[] = L"Glasswave.Netease.Session.v1";
 
@@ -29,24 +36,6 @@ std::filesystem::path SessionPath() {
 DATA_BLOB Entropy() {
     return DATA_BLOB{static_cast<DWORD>(sizeof(kEntropy)),
                      reinterpret_cast<BYTE*>(const_cast<wchar_t*>(kEntropy))};
-}
-
-bool WriteFileBytes(const std::filesystem::path& path, const std::vector<BYTE>& bytes) {
-    if (!core::EnsureDir(path.parent_path())) return false;
-    auto tmp = path;
-    tmp += L".tmp";
-    {
-        std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
-        if (!out) return false;
-        out.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
-        if (!out) return false;
-    }
-    if (!MoveFileExW(tmp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
-        std::error_code ec;
-        std::filesystem::remove(tmp, ec);
-        return false;
-    }
-    return true;
 }
 
 bool ReadFileBytes(const std::filesystem::path& path, std::vector<BYTE>& bytes) {
@@ -82,7 +71,7 @@ bool LoadSessionCookie() {
     LocalFree(out.pbData);
 
     std::lock_guard lock(g_mutex);
-    g_cookie = std::move(cookie);
+    SetCookieLocked(std::move(cookie));
     return true;
 }
 
@@ -91,10 +80,15 @@ std::wstring SessionCookie() {
     return g_cookie;
 }
 
+bool SessionCookieHasMusicU() {
+    std::lock_guard lock(g_mutex);
+    return g_hasMusicU;
+}
+
 void SaveSessionCookie(std::wstring_view cookie) {
     {
         std::lock_guard lock(g_mutex);
-        g_cookie.assign(cookie);
+        SetCookieLocked(std::wstring(cookie));
     }
     const auto path = SessionPath();
     if (path.empty()) return;
@@ -108,23 +102,24 @@ void SaveSessionCookie(std::wstring_view cookie) {
         core::Log(L"session: cannot encrypt the cookie");
         return;
     }
-    const std::vector<BYTE> bytes(out.pbData, out.pbData + out.cbData);
+    const std::string bytes(reinterpret_cast<const char*>(out.pbData), out.cbData);
     LocalFree(out.pbData);
-    if (!WriteFileBytes(path, bytes)) core::Log(L"session: cannot write the cookie file");
+    try {
+        core::WriteFileAtomic(path, bytes);
+    } catch (const std::exception&) {
+        core::Log(L"session: cannot write the cookie file");
+    }
 }
 
 void ClearSessionCookie() {
     {
         std::lock_guard lock(g_mutex);
-        g_cookie.clear();
+        SetCookieLocked({});
     }
     const auto path = SessionPath();
     if (path.empty()) return;
     std::error_code ec;
     std::filesystem::remove(path, ec);
-    auto tmp = path;
-    tmp += L".tmp";
-    std::filesystem::remove(tmp, ec);
 }
 
 std::wstring SessionCookiePath() {
@@ -177,9 +172,7 @@ std::wstring NormalizeCookie(std::wstring_view raw) {
     return out;
 }
 
-namespace {
-
-bool ScanForMusicU(std::wstring_view cookie) {
+bool CookieHasMusicU(std::wstring_view cookie) {
     const std::wstring normalized = NormalizeCookie(cookie);
     const std::wstring key = L"MUSIC_U=";
     size_t start = 0;
@@ -192,25 +185,6 @@ bool ScanForMusicU(std::wstring_view cookie) {
         start = end + 1;
     }
     return false;
-}
-
-}  // namespace
-
-bool CookieHasMusicU(std::wstring_view cookie) {
-    // Session::LoggedIn asks this at every request, input open and UI query, always about the
-    // one saved cookie: the last answer is kept per cookie value.
-    static std::mutex cacheMutex;
-    static std::wstring cachedCookie;
-    static bool cachedAnswer = false;
-    {
-        std::lock_guard lock(cacheMutex);
-        if (!cachedCookie.empty() && cachedCookie == cookie) return cachedAnswer;
-    }
-    const bool answer = ScanForMusicU(cookie);
-    std::lock_guard lock(cacheMutex);
-    cachedCookie.assign(cookie);
-    cachedAnswer = answer;
-    return answer;
 }
 
 }  // namespace glasswave::netease
