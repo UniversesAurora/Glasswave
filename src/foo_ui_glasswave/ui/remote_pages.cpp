@@ -1355,13 +1355,9 @@ class HomeListPage final : public TrackPagedPage {
             d.artKey = ArtCache::SourceKey(d.artItem);
         }
         // These lists have no cover of their own (nor in their clients): one is made from the
-        // first song's, with the day for a daily list and the list's name.
+        // first song's, with the list's name and the source's mark.
         d.artCaption = d.title;
-        if (m_view.remoteId == L"daily") {
-            SYSTEMTIME today{};
-            GetLocalTime(&today);
-            d.artBadge = std::to_wstring(today.wDay);
-        }
+        d.artBadge = m_provider.HomeListBadge(m_view.remoteId);
         d.action = DetailInfo::Action::Play;
         d.actionLabel = Tr(L"Play");
         if (m_provider.Can(stream::Capability::Download)) d.downloadLabel = Tr(L"Download all");

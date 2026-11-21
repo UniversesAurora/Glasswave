@@ -357,6 +357,13 @@ class Provider {
     virtual void FetchHome(HomeDone done) {
         if (done) done({}, L"This source has no home page.");
     }
+    // A home list (ListKind::HomeList) has no cover of its own; the UI makes one from its first
+    // song. This is the short mark drawn big on it, as the source's client draws it (NetEase: the
+    // day on 每日推荐); empty: none. Main thread.
+    virtual std::wstring HomeListBadge(const Id& list) const {
+        (void)list;
+        return {};
+    }
 
     // ---- stations (Capability::Stations) ------------------------------------------------
     // A station's next songs, a few at a time; the service decides as the songs play, so each

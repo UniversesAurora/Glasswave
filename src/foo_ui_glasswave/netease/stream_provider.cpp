@@ -664,6 +664,14 @@ std::optional<stream::HomeCard> ToHomeCard(const HomeCard& card) {
 
 } // namespace
 
+// 每日推荐 shows today's day on its cover, as the client's card does (the card's own badge).
+std::wstring StreamProvider::HomeListBadge(const Id& list) const {
+    if (list != kDailyList) return {};
+    SYSTEMTIME today{};
+    GetLocalTime(&today);
+    return std::to_wstring(today.wDay);
+}
+
 void StreamProvider::FetchHome(HomeDone done) {
     done = stream::GuardDone(std::move(done));
     if (!m_exec.Running()) {
