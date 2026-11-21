@@ -99,9 +99,8 @@ private:
     // m_viewport is fixed at the pane's content bounds; m_root is the animated child.
     winrt::Windows::UI::Composition::ContainerVisual m_viewport{nullptr}, m_root{nullptr};
     winrt::Windows::UI::Composition::SpriteVisual m_message{nullptr};
-    winrt::Windows::UI::Composition::LayerVisual m_layer{nullptr};  // the lines, with the edge fade
+    pane::FadedLayer m_layer; // the lines, with the edge fade
     pane::PlateGlass m_plateGlass; // under the hovered line's plate, outside the layer to see behind
-    winrt::Windows::UI::Composition::CompositionDrawingSurface m_maskSurface{nullptr};
     winrt::Windows::UI::Composition::CompositionEffectFactory m_blurFactory{nullptr};
     winrt::Windows::UI::Composition::ContainerVisual m_dots{nullptr};
     std::array<winrt::Windows::UI::Composition::CompositionColorBrush, 3> m_dotBrush{nullptr, nullptr, nullptr};

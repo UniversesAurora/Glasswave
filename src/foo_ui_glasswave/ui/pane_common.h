@@ -64,6 +64,41 @@ class PlateGlass {
     winrt::Windows::UI::Composition::CompositionRoundedRectangleGeometry m_shape{nullptr};
     float m_scale = 0;
 };
+// The layer the queue's rows and the lyrics' lines scroll in: its alpha multiplied on the GPU by
+// a vertical gradient, so they fade out towards its top and bottom edges (Apple Music's edge
+// fade). Where the effect cannot be made the content shows unfaded.
+class FadedLayer {
+  public:
+    void Create(const winrt::Windows::UI::Composition::ContainerVisual& parent);
+    const winrt::Windows::UI::Composition::LayerVisual& Visual() const { return m_layer; }
+    // The fades (DIP) over a layer `heightPx` tall: transparent at an edge whose fade is longer
+    // than half a DIP, opaque past it; a fade takes at most 45 % of the height.
+    void SetFades(int heightPx, float scale, float topFade, float bottomFade);
+
+  private:
+    winrt::Windows::UI::Composition::LayerVisual m_layer{nullptr};
+    winrt::Windows::UI::Composition::CompositionDrawingSurface m_mask{nullptr};
+};
+
+// A row of a pane's list (a queue song, a lyric line): a container holding a rounded hover
+// plate, inset kSideMargin from the row's sides, under the row's content sprite. Made when the
+// row comes near the view and released far from it.
+struct PlateRow {
+    winrt::Windows::UI::Composition::ContainerVisual root{nullptr};
+    winrt::Windows::UI::Composition::ShapeVisual plate{nullptr};
+    winrt::Windows::UI::Composition::CompositionRoundedRectangleGeometry shape{nullptr};
+    winrt::Windows::UI::Composition::CompositionColorBrush brush{nullptr};
+    winrt::Windows::UI::Composition::SpriteVisual content{nullptr};
+
+    explicit operator bool() const { return root != nullptr; }
+    // Made at the bottom of `layer`: a row `width` x `height` DIP whose plate is `radius` round.
+    void Create(const winrt::Windows::UI::Composition::ContainerVisual& layer, float width, float height,
+                float radius, float scale);
+    // The plate shown at `opacity`, white at `alpha`.
+    void SetPlate(float opacity, float alpha);
+    void Release();
+};
+
 // A cover cropped to fill `box` with rounded corners and a soft shadow below.
 void DrawCover(ID2D1DeviceContext* dc, ID2D1Bitmap* bitmap, D2D1_RECT_F box, float radius);
 // The current song's header: cover, title, artist (lyrics and queue share it).

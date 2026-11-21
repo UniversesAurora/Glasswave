@@ -70,11 +70,7 @@ struct QueueView::RowView {
     float hover = 0;
     float opacity = 1;
     float enterOffset = 0;
-    wuc::ContainerVisual root{nullptr};
-    wuc::ShapeVisual plate{nullptr};
-    wuc::CompositionRoundedRectangleGeometry plateShape{nullptr};
-    wuc::CompositionColorBrush plateBrush{nullptr};
-    wuc::SpriteVisual sprite{nullptr};
+    pane::PlateRow view; // the content sprite shows the row's surface
     wuc::CompositionDrawingSurface surface{nullptr};
     bool drawn = false, coverDrawn = false;
 };
@@ -98,29 +94,16 @@ QueueView::QueueView(const wuc::ContainerVisual& parent) {
     m_root = comp.CreateContainerVisual();
     m_root.IsVisible(false);
     m_viewport.Children().InsertAtTop(m_root);
-    m_layer = comp.CreateLayerVisual();
-    m_root.Children().InsertAtTop(m_layer);
+    m_layer.Create(m_root);
     m_viewport.Comment(L"queue viewport");
-    m_layer.Comment(L"queue rows");
-    try {
-        auto mask = gfx::MakeAlphaMaskEffect(wuc::CompositionEffectSourceParameter(L"source"),
-                                             wuc::CompositionEffectSourceParameter(L"mask"));
-        auto brush = comp.CreateEffectFactory(mask).CreateBrush();
-        m_maskSurface = host.CreateSurface(1, 1);
-        auto maskBrush = comp.CreateSurfaceBrush(m_maskSurface);
-        maskBrush.Stretch(wuc::CompositionStretch::Fill);
-        brush.SetSourceParameter(L"mask", maskBrush);
-        m_layer.Effect(brush);
-    } catch (...) {
-        m_maskSurface = nullptr;
-    }
+    m_layer.Visual().Comment(L"queue rows");
     for (auto* v : {&m_historyTitle, &m_upNextTitle, &m_empty, &m_shuffle, &m_repeat, &m_repeatFooter}) {
         *v = comp.CreateSpriteVisual();
-        m_layer.Children().InsertAtTop(*v);
+        m_layer.Visual().Children().InsertAtTop(*v);
     }
-    m_plateGlass.Create(m_root, m_layer);
-    m_shuffleGlass.Create(m_root, m_layer);
-    m_repeatGlass.Create(m_root, m_layer);
+    m_plateGlass.Create(m_root, m_layer.Visual());
+    m_shuffleGlass.Create(m_root, m_layer.Visual());
+    m_repeatGlass.Create(m_root, m_layer.Visual());
     m_scroll.SetParams(kScrollSpring);
     m_artToken = ArtCache::Get().Subscribe([this] {
         m_coversDirty = true;
@@ -154,23 +137,8 @@ void QueueView::SetBounds(const RECT& px, float scale) {
     m_viewport.Size(float2{w, h});
     m_root.Size(float2{w, h});
     if (!changed) return;
-    m_layer.Size(float2{w, h});
-    if (m_maskSurface && h > 0) {
-        m_maskSurface.Resize(winrt::Windows::Graphics::SizeInt32{4, static_cast<int32_t>(h)});
-        const float H = h / m_scale;
-        gfx::CompositionHost::Get().Draw(m_maskSurface, m_scale, [&](ID2D1DeviceContext* dc) {
-            const D2D1_GRADIENT_STOP s[] = {
-                {0.0f, D2D1::ColorF(1, 1, 1, 0)},
-                {std::min(0.45f, kTopFade / std::max(1.0f, H)), D2D1::ColorF(1, 1, 1, 1)},
-                {std::max(0.55f, 1.0f - kBottomFade / std::max(1.0f, H)), D2D1::ColorF(1, 1, 1, 1)},
-                {1.0f, D2D1::ColorF(1, 1, 1, 0)}};
-            com_ptr<ID2D1GradientStopCollection> stops;
-            dc->CreateGradientStopCollection(s, 4, stops.put());
-            com_ptr<ID2D1LinearGradientBrush> b;
-            dc->CreateLinearGradientBrush({{0, 0}, {0, H}}, stops.get(), b.put());
-            dc->FillRectangle({0, 0, 4 / m_scale, H}, b.get());
-        });
-    }
+    m_layer.Visual().Size(float2{w, h});
+    m_layer.SetFades(static_cast<int>(h), m_scale, kTopFade, kBottomFade);
     for (auto& r : m_rows)
         ReleaseRow(*r); // widths changed: redraw
     for (auto& r : m_retiringRows)
@@ -490,14 +458,7 @@ void QueueView::Layout() {
 }
 
 void QueueView::ReleaseRow(RowView& r) {
-    if (r.root) {
-        if (auto parent = r.root.Parent()) parent.Children().Remove(r.root);
-    }
-    r.root = nullptr;
-    r.plate = nullptr;
-    r.plateShape = nullptr;
-    r.plateBrush = nullptr;
-    r.sprite = nullptr;
+    r.view.Release();
     r.surface = nullptr;
     r.drawn = r.coverDrawn = false;
 }
@@ -513,8 +474,8 @@ void QueueView::DrawRow(RowView& r) {
         brush.Stretch(wuc::CompositionStretch::None);
         brush.HorizontalAlignmentRatio(0);
         brush.VerticalAlignmentRatio(0);
-        r.sprite.Brush(brush);
-        r.sprite.Size(float2{static_cast<float>(w), static_cast<float>(h)});
+        r.view.content.Brush(brush);
+        r.view.content.Size(float2{static_cast<float>(w), static_cast<float>(h)});
     }
     com_ptr<IWICBitmapSource> art;
     const auto state =
@@ -642,44 +603,25 @@ void QueueView::RenderRow(RowView& r) {
     const float viewH = (m_bounds.bottom - m_bounds.top) / m_scale;
     const float shown = r.y.Position() - ShownScroll();
     if (shown + kRowH < -viewH || shown > 2 * viewH) {
-        if (r.root) ReleaseRow(r);
+        if (r.view) ReleaseRow(r);
         return;
     }
-    auto& comp = gfx::CompositionHost::Get().Compositor();
     const float W = (m_bounds.right - m_bounds.left) / m_scale, s = m_scale;
-    if (!r.root) {
-        r.root = comp.CreateContainerVisual();
-        r.plate = comp.CreateShapeVisual();
-        r.plateShape = comp.CreateRoundedRectangleGeometry();
-        r.plateBrush = comp.CreateColorBrush(winrt::Windows::UI::Colors::White());
-        auto sprite = comp.CreateSpriteShape(r.plateShape);
-        sprite.FillBrush(r.plateBrush);
-        r.plate.Shapes().Append(sprite);
-        r.sprite = comp.CreateSpriteVisual();
-        r.root.Children().InsertAtTop(r.plate);
-        r.root.Children().InsertAtTop(r.sprite);
-        m_layer.Children().InsertAtBottom(r.root);
-        const float pw = (W - 2 * pane::kSideMargin) * s, ph = kRowH * s;
-        r.plate.Offset(float3{pane::kSideMargin * s, 0, 0});
-        r.plate.Size(float2{pw, ph});
-        r.plateShape.Size(float2{pw, ph});
-        r.plateShape.CornerRadius(float2{kPlateRadius * s, kPlateRadius * s});
-        r.root.CenterPoint(float3{W * s / 2, ph / 2, 0});
+    if (!r.view) {
+        r.view.Create(m_layer.Visual(), W, kRowH, kPlateRadius, s);
+        r.view.root.CenterPoint(float3{W * s / 2, kRowH * s / 2, 0});
         r.drawn = r.coverDrawn = false;
     }
     if (!r.drawn || (m_coversDirty && !r.coverDrawn)) DrawRow(r);
     const bool visible = shown + kRowH >= 0 && shown <= viewH;
-    r.root.IsVisible(visible);
-    r.root.Offset(float3{0, std::round(shown * s), 0});
-    r.root.Opacity(r.opacity);
+    r.view.root.IsVisible(visible);
+    r.view.root.Offset(float3{0, std::round(shown * s), 0});
+    r.view.root.Opacity(r.opacity);
     const bool lifted = m_reorder >= 0 && m_rows[static_cast<size_t>(m_reorder)].get() == &r;
     const float k = lifted ? 1.03f : 1.0f; // a dragged row lifts a little
-    r.root.Scale(float3{k, k, 1});
+    r.view.root.Scale(float3{k, k, 1});
     const bool pressed = m_press.row >= 0 && m_rows[static_cast<size_t>(m_press.row)].get() == &r;
-    r.plate.Opacity(lifted ? 1.0f : r.hover);
-    const float a = lifted ? 0.14f : pressed ? kPressAlpha : kHoverAlpha;
-    r.plateBrush.Color(
-        winrt::Windows::UI::ColorHelper::FromArgb(static_cast<uint8_t>(std::lround(a * 255)), 255, 255, 255));
+    r.view.SetPlate(lifted ? 1.0f : r.hover, lifted ? 0.14f : pressed ? kPressAlpha : kHoverAlpha);
 }
 
 void QueueView::Render() {
@@ -713,9 +655,9 @@ void QueueView::Render() {
     // A dragged row draws above the others.
     if (m_reorder >= 0) {
         auto& r = *m_rows[static_cast<size_t>(m_reorder)];
-        if (r.root) {
-            m_layer.Children().Remove(r.root);
-            m_layer.Children().InsertAtTop(r.root);
+        if (r.view) {
+            m_layer.Visual().Children().Remove(r.view.root);
+            m_layer.Visual().Children().InsertAtTop(r.view.root);
         }
     }
     // The glass under the plate showing most: the lifted row's, else the hovered one's.

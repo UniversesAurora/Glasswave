@@ -199,11 +199,7 @@ struct LyricsView::LineView {
     bool active = false;
 
     // Composition: the block (position, scale) holds the hover plate and the text image.
-    wuc::ContainerVisual root{nullptr};
-    wuc::ShapeVisual plate{nullptr};
-    wuc::CompositionRoundedRectangleGeometry plateShape{nullptr};
-    wuc::CompositionColorBrush plateBrush{nullptr};
-    wuc::SpriteVisual text{nullptr};
+    pane::PlateRow view;
     wuc::CompositionDrawingSurface surface{nullptr};
     wuc::CompositionSurfaceBrush surfaceBrush{nullptr};
     wuc::CompositionEffectBrush blurBrush{nullptr};
@@ -305,21 +301,8 @@ LyricsView::LyricsView(const wuc::ContainerVisual& parent) {
 
     // The lines live in a layer whose alpha is multiplied by a vertical gradient: they fade
     // out under the header and at the bottom (Apple Music's edge fade), on the GPU.
-    m_layer = comp.CreateLayerVisual();
-    m_root.Children().InsertAtTop(m_layer);
-    m_plateGlass.Create(m_root, m_layer);
-    try {
-        auto mask = gfx::MakeAlphaMaskEffect(wuc::CompositionEffectSourceParameter(L"source"),
-                                             wuc::CompositionEffectSourceParameter(L"mask"));
-        auto brush = comp.CreateEffectFactory(mask).CreateBrush();
-        m_maskSurface = host.CreateSurface(1, 1);
-        auto maskBrush = comp.CreateSurfaceBrush(m_maskSurface);
-        maskBrush.Stretch(wuc::CompositionStretch::Fill);
-        brush.SetSourceParameter(L"mask", maskBrush);
-        m_layer.Effect(brush);
-    } catch (...) {
-        m_maskSurface = nullptr;  // no fade; everything else works
-    }
+    m_layer.Create(m_root);
+    m_plateGlass.Create(m_root, m_layer.Visual());
     m_blurFactory = comp.CreateEffectFactory(
         gfx::MakeGaussianBlurEffect(L"Blur", 0, wuc::CompositionEffectSourceParameter(L"source")),
         std::vector<winrt::hstring>{L"Blur.BlurAmount"});
@@ -334,7 +317,7 @@ LyricsView::LyricsView(const wuc::ContainerVisual& parent) {
         shape.Shapes().Append(sprite);
         m_dots.Children().InsertAtTop(shape);
     }
-    m_layer.Children().InsertAtTop(m_dots);
+    m_layer.Visual().Children().InsertAtTop(m_dots);
 }
 
 LyricsView::~LyricsView() {
@@ -873,32 +856,19 @@ bool LyricsView::Tick() {
 float LyricsView::ImagePad() const { return std::max(16.0f, 0.45f * FontSize()); }
 
 void LyricsView::LayoutChrome() {
-    auto& host = gfx::CompositionHost::Get();
     const float w = static_cast<float>(std::max<LONG>(0, m_bounds.right - m_bounds.left));
     const float h = static_cast<float>(std::max<LONG>(0, m_bounds.bottom - m_bounds.top));
     const float top = std::round(ContentTop() * m_scale);
-    m_layer.Offset(float3{0, top, 0});
-    m_layer.Size(float2{w, std::max(0.0f, h - top)});
-    if (m_maskSurface && h > top) {
+    m_layer.Visual().Offset(float3{0, top, 0});
+    m_layer.Visual().Size(float2{w, std::max(0.0f, h - top)});
+    if (h > top) {
         const int mh = static_cast<int>(h - top);
-        m_maskSurface.Resize(winrt::Windows::Graphics::SizeInt32{4, mh});
         const float H = mh / m_scale;
         // The fades keep to the room above and below the focused line, so that in a low view
         // they never dim the line itself.
         const float above = TopSpace(m_referenceLineHeight);
         const float below = std::max(0.0f, H - above - m_referenceLineHeight);
-        const float topFade = std::min(kTopFade, above), bottomFade = std::min(kBottomFade, below);
-        host.Draw(m_maskSurface, m_scale, [&](ID2D1DeviceContext* dc) {
-            const D2D1_GRADIENT_STOP s[] = {{0.0f, D2D1::ColorF(1, 1, 1, topFade > 0.5f ? 0.0f : 1.0f)},
-                                            {std::min(0.45f, topFade / std::max(1.0f, H)), D2D1::ColorF(1, 1, 1, 1)},
-                                            {std::max(0.55f, 1.0f - bottomFade / std::max(1.0f, H)), D2D1::ColorF(1, 1, 1, 1)},
-                                            {1.0f, D2D1::ColorF(1, 1, 1, bottomFade > 0.5f ? 0.0f : 1.0f)}};
-            com_ptr<ID2D1GradientStopCollection> stops;
-            dc->CreateGradientStopCollection(s, 4, stops.put());
-            com_ptr<ID2D1LinearGradientBrush> b;
-            dc->CreateLinearGradientBrush({{0, 0}, {0, H}}, stops.get(), b.put());
-            dc->FillRectangle({0, 0, 4 / m_scale, H}, b.get());
-        });
+        m_layer.SetFades(mh, m_scale, std::min(kTopFade, above), std::min(kBottomFade, below));
     }
     PaintMessage();
 }
@@ -941,14 +911,7 @@ void LyricsView::PaintMessage() {
 }
 
 void LyricsView::ReleaseLine(LineView& l) {
-    if (l.root) {
-        if (auto parent = l.root.Parent()) parent.Children().Remove(l.root);
-    }
-    l.root = nullptr;
-    l.plate = nullptr;
-    l.plateShape = nullptr;
-    l.plateBrush = nullptr;
-    l.text = nullptr;
+    l.view.Release();
     l.surface = nullptr;
     l.surfaceBrush = nullptr;
     l.blurBrush = nullptr;
@@ -1002,8 +965,8 @@ void LyricsView::DrawLineImage(LineView& l, double now, bool live) {
         l.surfaceBrush.Stretch(wuc::CompositionStretch::None);
         l.surfaceBrush.HorizontalAlignmentRatio(0);
         l.surfaceBrush.VerticalAlignmentRatio(0);
-        l.text.Size(float2{static_cast<float>(w), static_cast<float>(h)});
-        l.text.Brush(l.surfaceBrush);
+        l.view.content.Size(float2{static_cast<float>(w), static_cast<float>(h)});
+        l.view.content.Brush(l.surfaceBrush);
         l.blurred = false;
         l.shownBlur = -1;
     }
@@ -1120,34 +1083,19 @@ void LyricsView::RenderLine(LineView& l, double now, float areaH) {
     const float y = l.y.Position();
     // Far off screen: no visuals, no surface.
     if (y + l.height < top - areaH || y > top + 2 * areaH) {
-        if (l.root) ReleaseLine(l);
+        if (l.view) ReleaseLine(l);
         return;
     }
-    auto& comp = gfx::CompositionHost::Get().Compositor();
     const float W = (m_bounds.right - m_bounds.left) / m_scale;
-    if (!l.root) {
-        l.root = comp.CreateContainerVisual();
-        l.plate = comp.CreateShapeVisual();
-        l.plateShape = comp.CreateRoundedRectangleGeometry();
-        l.plateBrush = comp.CreateColorBrush(winrt::Windows::UI::Colors::White());
-        auto sprite = comp.CreateSpriteShape(l.plateShape);
-        sprite.FillBrush(l.plateBrush);
-        l.plate.Shapes().Append(sprite);
-        l.text = comp.CreateSpriteVisual();
-        l.root.Children().InsertAtTop(l.plate);
-        l.root.Children().InsertAtTop(l.text);
-        m_layer.Children().InsertAtBottom(l.root);
+    if (!l.view) {
         const float s = m_scale;
-        const float pw = (W - 2 * kSideMargin) * s, ph = l.height * s;
-        l.plate.Offset(float3{kSideMargin * s, 0, 0});
-        l.plate.Size(float2{pw, ph});
-        l.plateShape.Size(float2{pw, ph});
-        l.plateShape.CornerRadius(float2{kPlateRadius * F * s, kPlateRadius * F * s});
-        l.text.Offset(float3{std::round((kSideMargin + kTextInset * F - pad) * s), std::round((kLinePadding * F - pad) * s), 0});
-        l.root.CenterPoint(float3{kSideMargin * s, ph / 2, 0});
+        l.view.Create(m_layer.Visual(), W, l.height, kPlateRadius * F, s);
+        l.view.content.Offset(float3{std::round((kSideMargin + kTextInset * F - pad) * s),
+                                     std::round((kLinePadding * F - pad) * s), 0});
+        l.view.root.CenterPoint(float3{kSideMargin * s, l.height * s / 2, 0});
     }
     const bool visible = y + l.height >= top - 40 && y <= top + areaH + 40;
-    l.root.IsVisible(visible);
+    l.view.root.IsVisible(visible);
     if (!visible) return;
 
     const bool synced = m_lyrics && m_lyrics->synced;
@@ -1162,14 +1110,12 @@ void LyricsView::RenderLine(LineView& l, double now, float areaH) {
     }
 
     const float s = m_scale;
-    l.root.Offset(float3{0, std::round((y - top) * s), 0});
+    l.view.root.Offset(float3{0, std::round((y - top) * s), 0});
     const float k = l.scale.Position() / 100.0f * l.press.Position() / 100.0f;
-    l.root.Scale(float3{k, k, 1});
+    l.view.root.Scale(float3{k, k, 1});
     const bool pressed = m_pressed >= 0 && m_lines[static_cast<size_t>(m_pressed)].get() == &l;
-    l.plate.Opacity(l.hover);
-    const uint8_t plateA = static_cast<uint8_t>(std::lround((pressed ? kPressAlpha : kHoverAlpha) * 255));
-    l.plateBrush.Color(winrt::Windows::UI::ColorHelper::FromArgb(plateA, 255, 255, 255));
-    l.text.Opacity(live ? 1.0f : (synced ? m_dim : kUnsynced) / 0.75f);
+    l.view.SetPlate(l.hover, pressed ? kPressAlpha : kHoverAlpha);
+    l.view.content.Opacity(live ? 1.0f : (synced ? m_dim : kUnsynced) / 0.75f);
 
     // Blur on the GPU: an effect brush while it shows, the plain surface otherwise. A line that
     // has just been sung blurs while it rises and shrinks, not after its glow has faded
@@ -1181,7 +1127,7 @@ void LyricsView::RenderLine(LineView& l, double now, float areaH) {
             l.blurBrush.SetSourceParameter(L"source", l.surfaceBrush);
         }
         if (!l.blurred) {
-            l.text.Brush(l.blurBrush);
+            l.view.content.Brush(l.blurBrush);
             l.blurred = true;
         }
         if (std::abs(blur - l.shownBlur) > 0.01f) {
@@ -1189,7 +1135,7 @@ void LyricsView::RenderLine(LineView& l, double now, float areaH) {
             l.shownBlur = blur;
         }
     } else if (l.blurred) {
-        l.text.Brush(l.surfaceBrush);
+        l.view.content.Brush(l.surfaceBrush);
         l.blurred = false;
         l.shownBlur = -1;
     }
@@ -1242,7 +1188,7 @@ void LyricsView::Render() {
     if (!m_visible) return;
     const float areaH = (m_bounds.bottom - m_bounds.top) / m_scale - ContentTop();
     const bool found = m_status == lyrics::Status::Found;
-    m_layer.IsVisible(found);
+    m_layer.Visual().IsVisible(found);
     if (!found) {
         m_plateGlass.Hide();
         return;

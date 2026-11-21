@@ -101,8 +101,7 @@ class QueueView {
 
     // m_viewport is fixed at the pane's content bounds; m_root is the animated child.
     winrt::Windows::UI::Composition::ContainerVisual m_viewport{nullptr}, m_root{nullptr};
-    winrt::Windows::UI::Composition::LayerVisual m_layer{nullptr};
-    winrt::Windows::UI::Composition::CompositionDrawingSurface m_maskSurface{nullptr};
+    pane::FadedLayer m_layer; // the rows, with the edge fade
     winrt::Windows::UI::Composition::SpriteVisual m_historyTitle{nullptr}, m_upNextTitle{nullptr},
         m_empty{nullptr};
     winrt::Windows::UI::Composition::SpriteVisual m_shuffle{nullptr}, m_repeat{nullptr}, m_repeatFooter{nullptr};

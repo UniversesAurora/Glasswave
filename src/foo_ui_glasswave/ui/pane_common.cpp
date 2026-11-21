@@ -283,4 +283,77 @@ void PlateGlass::Hide() {
     if (m_visual) m_visual.IsVisible(false);
 }
 
+void FadedLayer::Create(const wuc::ContainerVisual& parent) {
+    auto& host = gfx::CompositionHost::Get();
+    const auto& comp = host.Compositor();
+    m_layer = comp.CreateLayerVisual();
+    parent.Children().InsertAtTop(m_layer);
+    try {
+        auto mask = gfx::MakeAlphaMaskEffect(wuc::CompositionEffectSourceParameter(L"source"),
+                                             wuc::CompositionEffectSourceParameter(L"mask"));
+        auto brush = comp.CreateEffectFactory(mask).CreateBrush();
+        m_mask = host.CreateSurface(1, 1);
+        auto maskBrush = comp.CreateSurfaceBrush(m_mask);
+        maskBrush.Stretch(wuc::CompositionStretch::Fill);
+        brush.SetSourceParameter(L"mask", maskBrush);
+        m_layer.Effect(brush);
+    } catch (...) {
+        m_mask = nullptr; // no fade; everything else works
+    }
+}
+
+// The mask is four pixels wide, stretched over the layer.
+void FadedLayer::SetFades(int heightPx, float scale, float topFade, float bottomFade) {
+    if (!m_mask || heightPx <= 0) return;
+    m_mask.Resize(winrt::Windows::Graphics::SizeInt32{4, heightPx});
+    const float H = heightPx / scale;
+    gfx::CompositionHost::Get().Draw(m_mask, scale, [&](ID2D1DeviceContext* dc) {
+        const D2D1_GRADIENT_STOP s[] = {
+            {0.0f, D2D1::ColorF(1, 1, 1, topFade > 0.5f ? 0.0f : 1.0f)},
+            {std::min(0.45f, topFade / std::max(1.0f, H)), D2D1::ColorF(1, 1, 1, 1)},
+            {std::max(0.55f, 1.0f - bottomFade / std::max(1.0f, H)), D2D1::ColorF(1, 1, 1, 1)},
+            {1.0f, D2D1::ColorF(1, 1, 1, bottomFade > 0.5f ? 0.0f : 1.0f)}};
+        com_ptr<ID2D1GradientStopCollection> stops;
+        dc->CreateGradientStopCollection(s, 4, stops.put());
+        com_ptr<ID2D1LinearGradientBrush> b;
+        dc->CreateLinearGradientBrush({{0, 0}, {0, H}}, stops.get(), b.put());
+        dc->FillRectangle({0, 0, 4 / scale, H}, b.get());
+    });
+}
+
+void PlateRow::Create(const wuc::ContainerVisual& layer, float width, float height, float radius, float scale) {
+    const auto& comp = gfx::CompositionHost::Get().Compositor();
+    root = comp.CreateContainerVisual();
+    plate = comp.CreateShapeVisual();
+    shape = comp.CreateRoundedRectangleGeometry();
+    brush = comp.CreateColorBrush(winrt::Windows::UI::Colors::White());
+    auto sprite = comp.CreateSpriteShape(shape);
+    sprite.FillBrush(brush);
+    plate.Shapes().Append(sprite);
+    content = comp.CreateSpriteVisual();
+    root.Children().InsertAtTop(plate);
+    root.Children().InsertAtTop(content);
+    layer.Children().InsertAtBottom(root);
+    const float pw = (width - 2 * kSideMargin) * scale, ph = height * scale;
+    plate.Offset(float3{kSideMargin * scale, 0, 0});
+    plate.Size(float2{pw, ph});
+    shape.Size(float2{pw, ph});
+    shape.CornerRadius(float2{radius * scale, radius * scale});
+}
+
+void PlateRow::SetPlate(float opacity, float alpha) {
+    plate.Opacity(opacity);
+    brush.Color(winrt::Windows::UI::ColorHelper::FromArgb(static_cast<uint8_t>(std::lround(alpha * 255)), 255, 255, 255));
+}
+
+void PlateRow::Release() {
+    if (root)
+        if (auto parent = root.Parent()) parent.Children().Remove(root);
+    root = nullptr;
+    plate = nullptr;
+    shape = nullptr;
+    brush = nullptr;
+    content = nullptr;
+}
+
 }  // namespace glasswave::ui::pane
