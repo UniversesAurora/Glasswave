@@ -2298,50 +2298,71 @@ void StreamProvider::CancelPlaylistFetchesLocked() {
 }
 
 bool StreamProvider::PutIfCurrent(uint64_t generation, const Song& song) {
-    std::lock_guard lock(m_mutex);
-    if (!m_started || generation != m_generation) return false;
+    {
+        std::lock_guard lock(m_mutex);
+        if (!m_started || generation != m_generation) return false;
+    }
+    // Outside the lock: the catalog writes files and the UI takes this lock.
     Catalog::Get().Put(song);
     return true;
 }
 
 bool StreamProvider::PutIfCurrent(uint64_t generation, const std::vector<Song>& songs) {
-    std::lock_guard lock(m_mutex);
-    if (!m_started || generation != m_generation) return false;
+    {
+        std::lock_guard lock(m_mutex);
+        if (!m_started || generation != m_generation) return false;
+    }
+    // Outside the lock: the catalog writes files and the UI takes this lock.
     Catalog::Get().Put(songs);
     return true;
 }
 
 bool StreamProvider::PutIfCurrent(uint64_t generation, const stream::Playlist& playlist) {
-    std::lock_guard lock(m_mutex);
-    if (!m_started || generation != m_generation) return false;
+    {
+        std::lock_guard lock(m_mutex);
+        if (!m_started || generation != m_generation) return false;
+    }
+    // Outside the lock: the catalog writes files and the UI takes this lock.
     Catalog::Get().Put(playlist);
     return true;
 }
 
 bool StreamProvider::PutIfCurrent(uint64_t generation, const stream::Album& album) {
-    std::lock_guard lock(m_mutex);
-    if (!m_started || generation != m_generation) return false;
+    {
+        std::lock_guard lock(m_mutex);
+        if (!m_started || generation != m_generation) return false;
+    }
+    // Outside the lock: the catalog writes files and the UI takes this lock.
     Catalog::Get().Put(album);
     return true;
 }
 
 bool StreamProvider::PutIfCurrent(uint64_t generation, const std::vector<stream::Album>& albums) {
-    std::lock_guard lock(m_mutex);
-    if (!m_started || generation != m_generation) return false;
+    {
+        std::lock_guard lock(m_mutex);
+        if (!m_started || generation != m_generation) return false;
+    }
+    // Outside the lock: the catalog writes files and the UI takes this lock.
     Catalog::Get().Put(albums);
     return true;
 }
 
 bool StreamProvider::PutIfCurrent(uint64_t generation, const stream::Artist& artist) {
-    std::lock_guard lock(m_mutex);
-    if (!m_started || generation != m_generation) return false;
+    {
+        std::lock_guard lock(m_mutex);
+        if (!m_started || generation != m_generation) return false;
+    }
+    // Outside the lock: the catalog writes files and the UI takes this lock.
     Catalog::Get().Put(artist);
     return true;
 }
 
 bool StreamProvider::PutIfCurrent(uint64_t generation, const std::vector<stream::Artist>& artists) {
-    std::lock_guard lock(m_mutex);
-    if (!m_started || generation != m_generation) return false;
+    {
+        std::lock_guard lock(m_mutex);
+        if (!m_started || generation != m_generation) return false;
+    }
+    // Outside the lock: the catalog writes files and the UI takes this lock.
     Catalog::Get().Put(artists);
     return true;
 }
@@ -3761,6 +3782,7 @@ uint64_t StreamProvider::ApplyVerifiedAccount(uint64_t generation, uint64_t refr
                                               const AccountState& account) {
     bool accountChanged = false;
     bool accountObserved = false;
+    bool clearCatalog = false;
     uint64_t currentGeneration = 0;
     {
         std::lock_guard lock(m_mutex);
@@ -3788,7 +3810,7 @@ uint64_t StreamProvider::ApplyVerifiedAccount(uint64_t generation, uint64_t refr
         if (accountChanged || identityChanged) {
             // Keep the refresh-owned binding epoch. The current worker will fetch B's playlist
             // collection after this phase, while older targeted reads fail the generation guard.
-            Catalog::Get().Clear();
+            clearCatalog = true;
             DisplayMetadata::Get().Clear();
             cache::RotateAccountScope("apple");
             m_snapshotSavePosted = false;
@@ -3823,6 +3845,8 @@ uint64_t StreamProvider::ApplyVerifiedAccount(uint64_t generation, uint64_t refr
             m_favoriteBindingReadInFlight = true;
         }
     }
+    // The catalog deletes its cache files: not under the provider lock, which the UI takes.
+    if (clearCatalog) Catalog::Get().Clear();
 
     if (accountChanged || accountObserved) {
         fb2k::inMainThread([this, observedGeneration = currentGeneration, accountChanged, accountObserved] {
@@ -3847,6 +3871,7 @@ void StreamProvider::CompleteRefresh(uint64_t generation, Snapshot snapshot, std
     bool invalidateLists = false;
     bool snapshotReady = false;
     bool storefrontChanged = false;
+    bool clearCatalog = false;
     std::vector<Done> waiters;
     {
         std::lock_guard lock(m_mutex);
@@ -3888,7 +3913,7 @@ void StreamProvider::CompleteRefresh(uint64_t generation, Snapshot snapshot, std
             m_lastAuthError.clear();
         }
         if (accountChanged || identityChanged) {
-            Catalog::Get().Clear();
+            clearCatalog = true;
             DisplayMetadata::Get().Clear();
             cache::RotateAccountScope("apple");
             m_snapshotSavePosted = false;
@@ -4075,6 +4100,8 @@ void StreamProvider::CompleteRefresh(uint64_t generation, Snapshot snapshot, std
         favoritesChanged =
             previousFavoritesLoaded != m_favoriteSongsLoaded || previousFavoriteIds != m_favoriteIds;
     }
+    // The catalog deletes its cache files: not under the provider lock, which the UI takes.
+    if (clearCatalog) Catalog::Get().Clear();
     if (accountObserved) NotifyAccountObserved();
     if (invalidateLists && snapshotReady && !accountChanged) NotifyListChanged();
     if (accountChanged) NotifyAccountChanged();
