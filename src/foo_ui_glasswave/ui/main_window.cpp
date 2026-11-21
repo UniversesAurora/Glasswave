@@ -1,5 +1,4 @@
 #include "pch.h"
-#include "core/text.h"
 #include <filesystem>
 #include <fstream>
 #include <cstring>
@@ -16,6 +15,7 @@
 #include "ui/home_page.h"
 #include "media/radio.h"
 #include "core/log.h"
+#include "core/text.h"
 #include "aero/aero_atlas.h"
 #include "aero/aero_metrics.h"
 #include "aero/aero_painter.h"
