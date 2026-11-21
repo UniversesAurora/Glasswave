@@ -1,4 +1,5 @@
 #pragma once
+#include "core/signal.h"
 #include "media/library_model.h"
 
 #include <functional>
@@ -26,9 +27,34 @@ inline constexpr const char* kPopularityFormat = "<popularity>";
 // paused, e error); the list draws
 // Windows 7's progress bar (aero.msstyles PROGRESS: trough 648, fills 656 / 658 / 657).
 inline constexpr const char* kProgressFormat = "<progress>";
-// A song's download (download::StateOf): the list draws a round download mark, a progress ring
-// while it downloads, and acts on a click (download, or remove the download).
+// A song's download (ListSource::Download): the list draws a round download mark, a progress
+// ring while it downloads, and acts on a click (ListSource::ToggleDownload).
 inline constexpr const char* kDownloadFormat = "<download>";
+// The song's rating, drawn as WMP's stars; a click on a star rates the song (ListSource::Rate).
+inline constexpr const char* kRatingFormat = "[%rating%]";
+// Whether the song is a favorite (ListSource::IsFavorite), drawn as WMP's star; a click toggles it.
+inline constexpr const char* kFavoriteFormat = "<favorite>";
+// How often the song was played: our cross-source play history, not a titleformat field.
+inline constexpr const char* kPlayCountFormat = "<playcount>";
+
+// What a song's download cell shows.
+struct DownloadCell {
+    enum class Look {
+        None,    // not downloadable
+        Offer,   // downloadable: the mark, on the hovered row
+        Waiting, // a ring filling with `progress`
+        Running,
+        Paused,
+        Failed,
+        Done // the downloaded mark
+    };
+    Look look = Look::None;
+    float progress = 0; // 0-1 while unfinished
+};
+
+// Control cells change outside any list (a download's progress): the callback runs on the main
+// thread until the connection goes.
+[[nodiscard]] core::Signal<>::Connection WatchControlCells(std::function<void()> changed);
 
 // Where a line of the album column leads, like WMP's hyperlinks.
 struct Link {
@@ -178,6 +204,14 @@ public:
     virtual void SelectAll() = 0;
     // The track a row shows (rating / favourite cells); empty for group rows.
     virtual metadb_handle_ptr Item(size_t /*row*/) const { return {}; }
+    // Control cells (kRatingFormat, kFavoriteFormat, kDownloadFormat): what they show and what a
+    // click on them does. The defaults serve any source whose rows are songs, through Item.
+    virtual bool IsFavorite(size_t row) const;
+    virtual DownloadCell Download(size_t row) const;
+    virtual void Rate(size_t row, int stars); // 1-5
+    virtual void ToggleFavorite(size_t row);
+    // Not downloaded: download it; downloaded: remove the download (asked first).
+    virtual void ToggleDownload(size_t row);
     // Album art column: rows of the same album share one cache key, so the cover is fetched
     // and decoded once. ArtTrack is the track whose front cover represents the album.
     virtual std::wstring ArtKey(size_t /*row*/) const { return {}; }

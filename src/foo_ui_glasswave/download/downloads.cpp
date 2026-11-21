@@ -1006,12 +1006,8 @@ std::optional<std::wstring> LocalFile(std::wstring_view provider, std::wstring_v
     return path;
 }
 
-uint64_t Subscribe(std::function<void()> listener) {
-    return g_listeners.Add(std::move(listener));
-}
-
-void Unsubscribe(uint64_t token) {
-    g_listeners.Remove(token);
+core::Signal<>::Connection Subscribe(std::function<void()> listener) {
+    return g_listeners.Connect(std::move(listener));
 }
 
 } // namespace glasswave::download

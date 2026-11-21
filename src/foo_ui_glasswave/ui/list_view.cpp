@@ -7,10 +7,7 @@
 #include "ui/text.h"
 #include "win7/win7_resources.h"
 #include "ui/win7_menu.h"
-#include "download/downloads.h"
-#include "media/favorites.h"
 #include "app/settings.h"
-#include "stream/provider.h"
 #include "ui/i18n.h"
 #include "ui/source_badge.h"
 #include "wmp/wmp_painter.h"
@@ -90,8 +87,8 @@ cfg_var_modern::cfg_int cfg_showGroups({0x5e8b2c48, 0x9a1d, 0x4f63, {0xb0, 0xe2,
 enum class CellKind { Text, Rating, Favorite, Art, Popularity, Progress, Download };
 CellKind KindOf(const media::Column& c) {
     if (!c.format) return CellKind::Text;
-    if (std::strcmp(c.format, "[%rating%]") == 0) return CellKind::Rating;
-    if (std::strcmp(c.format, "<favorite>") == 0) return CellKind::Favorite;
+    if (std::strcmp(c.format, media::kRatingFormat) == 0) return CellKind::Rating;
+    if (std::strcmp(c.format, media::kFavoriteFormat) == 0) return CellKind::Favorite;
     if (std::strcmp(c.format, media::kArtFormat) == 0) return CellKind::Art;
     if (std::strcmp(c.format, media::kPopularityFormat) == 0) return CellKind::Popularity;
     if (std::strcmp(c.format, media::kProgressFormat) == 0) return CellKind::Progress;
@@ -99,31 +96,6 @@ CellKind KindOf(const media::Column& c) {
     return CellKind::Text;
 }
 constexpr float kStar = 13;  // STARS.PNG cell width (13x16)
-
-// Ratings go through foobar2000's own Playback Statistics context command
-// ("Playback Statistics" / "Rating" / "1".."5"), so they land where %rating% reads them.
-bool RateTrack(const metadb_handle_ptr& track, int stars) {
-    metadb_handle_list items;
-    items.add_item(track);
-    auto cm = contextmenu_manager::get();
-    cm->init_context(items, contextmenu_manager::flag_view_full);
-    contextmenu_node* node = cm->get_root();
-    const std::string value = stars > 0 ? std::to_string(stars) : "<not set>";
-    for (const char* want : {"Playback Statistics", "Rating", value.c_str()}) {
-        contextmenu_node* next = nullptr;
-        for (t_size i = 0, n = node ? node->get_num_children() : 0; i < n && !next; ++i) {
-            contextmenu_node* c = node->get_child(i);
-            if (!c || !c->get_name()) continue;
-            std::string name = c->get_name();
-            name.erase(std::remove(name.begin(), name.end(), '&'), name.end());
-            if (pfc::stricmp_ascii(name.c_str(), want) == 0) next = c;
-        }
-        if (!next) return false;
-        node = next;
-    }
-    node->execute();
-    return true;
-}
 
 struct SavedLayout {
     std::vector<size_t> order;
@@ -433,17 +405,14 @@ void DownloadMark(ID2D1DeviceContext* dc, D2D1_POINT_2F c, bool offer, float hot
 
 // A download in progress: a ring (16 DIP) filling clockwise from the top in Windows 7's progress
 // colours (green, yellow paused, red failed) over a grey track; waiting: the track alone.
-void ProgressRing(ID2D1DeviceContext* dc, D2D1_POINT_2F c, float share, download::State state) {
+void ProgressRing(ID2D1DeviceContext* dc, D2D1_POINT_2F c, float share, media::DownloadCell::Look state) {
     const float r = 6.5f, width = 3.0f;
     dc->DrawEllipse({c, r, r}, Brush(dc, 0xDADADA).get(), width);
     share = std::clamp(share, 0.0f, 1.0f);
     if (share <= 0) return;
-    const uint32_t light = state == download::State::Failed ? 0xF08080
-                           : state == download::State::Paused ? 0xFFE27A
-                                                               : 0x7EEB86;
-    const uint32_t dark = state == download::State::Failed ? 0xC81E1E
-                          : state == download::State::Paused ? 0xD49B00
-                                                              : 0x0AB526;
+    using Look = media::DownloadCell::Look;
+    const uint32_t light = state == Look::Failed ? 0xF08080 : state == Look::Paused ? 0xFFE27A : 0x7EEB86;
+    const uint32_t dark = state == Look::Failed ? 0xC81E1E : state == Look::Paused ? 0xD49B00 : 0x0AB526;
     D2D1_GRADIENT_STOP gradient[2] = {{0.0f, D2D1::ColorF(light)}, {1.0f, D2D1::ColorF(dark)}};
    winrt::com_ptr<ID2D1GradientStopCollection> collection;
     dc->CreateGradientStopCollection(gradient, 2, collection.put());
@@ -584,7 +553,7 @@ ListView::ListView(const wuc::ContainerVisual& parent) {
         m_artBitmaps.clear();
         PaintRows();
     });
-    m_downloadToken = download::Subscribe([this] {
+    m_cellChanges = media::WatchControlCells([this] {
         if (m_source && m_mode != Mode::Tiles)
             for (const auto& column : m_source->Columns())
                 if (KindOf(column) == CellKind::Download) {
@@ -595,7 +564,6 @@ ListView::ListView(const wuc::ContainerVisual& parent) {
 }
 
 ListView::~ListView() {
-    download::Unsubscribe(m_downloadToken);
     if (auto* cache = ArtCache::Existing()) cache->Unsubscribe(m_artToken);
     UnsubscribeSourceIcons(m_iconToken);
 }
@@ -1613,18 +1581,6 @@ void ListView::PaintRows() {
             Text(dc, Tr(m_source->EmptyText()), {20, 20, size.width - 20, 60}, kGreyInk, DWRITE_TEXT_ALIGNMENT_CENTER);
             return;
         }
-        // Favorite column shown: which tracks are in the Favorites playlist.
-        m_favorites.clear();
-        if (m_mode != Mode::Tiles) {
-            const auto& srcCols = m_source->Columns();
-            bool shown = false;
-            for (const Col& c : Columns(0)) shown = shown || KindOf(srcCols[c.src]) == CellKind::Favorite;
-            if (const t_size p = shown ? media::FavoritesPlaylist(false) : SIZE_MAX; p != SIZE_MAX) {
-                metadb_handle_list items;
-                playlist_manager::get()->playlist_get_all_items(p, items);
-                for (t_size i = 0; i < items.get_count(); ++i) m_favorites.insert(items[i].get_ptr());
-            }
-        }
         D2D1_MATRIX_3X2_F base;
         dc->GetTransform(&base);
         dc->SetTransform(D2D1::Matrix3x2F::Translation(-ScrollX(), 0) * base);
@@ -1749,10 +1705,7 @@ void ListView::PaintCells(ID2D1DeviceContext* dc, size_t row, float y, float row
         } else if (kind == CellKind::Favorite) {
             // No heart in WMP's art: a gold star (5530) when the song is in Favorites, its
             // outline (5531) on the hovered row, else the empty one (5533).
-            const metadb_handle_ptr item = m_source->Item(row);
-            // Provider tracks ask their provider; local ones the Favorites set cached per paint.
-            const bool fav = item.is_valid() && (stream::ProviderOf(item) ? media::IsFavorite(item)
-                                                                        : m_favorites.count(item.get_ptr()) != 0);
+            const bool fav = m_source->IsFavorite(row);
             const int id = fav ? 5530 : row == m_hot ? 5531 : 5533;
             const float fx = std::round((c.x + (c.w - 14) / 2) * m_scale) / m_scale;
             const float fy = std::round((y + (rowH - 14) / 2) * m_scale) / m_scale;
@@ -1776,17 +1729,18 @@ void ListView::PaintCells(ID2D1DeviceContext* dc, size_t row, float y, float row
             continue;
         } else if (kind == CellKind::Download) {
             // Downloaded: the mark always; downloading: its ring; else the offer on the hovered row.
-            const metadb_handle_ptr item = m_source->Item(row);
-            if (!item.is_valid()) continue;
+            const media::DownloadCell cell = m_source->Download(row);
             const D2D1_POINT_2F centre{std::round((c.x + c.w / 2) * m_scale) / m_scale,
                                        std::round((y + rowH / 2) * m_scale) / m_scale};
-            if (const auto state = download::StateOf(item)) {
-                if (state->state == download::State::Done)
-                    DownloadMark(dc, centre, false, row == m_hot ? m_downloadHot : 0.0f, 1.0f);
-                else
-                    ProgressRing(dc, centre, state->progress, state->state);
-            } else if (row == m_hot && download::Downloadable(item)) {
-                DownloadMark(dc, centre, true, m_downloadHot, 1.0f); // at once with the row
+            switch (cell.look) {
+            case media::DownloadCell::Look::None: break;
+            case media::DownloadCell::Look::Offer:
+                if (row == m_hot) DownloadMark(dc, centre, true, m_downloadHot, 1.0f); // at once with the row
+                break;
+            case media::DownloadCell::Look::Done:
+                DownloadMark(dc, centre, false, row == m_hot ? m_downloadHot : 0.0f, 1.0f);
+                break;
+            default: ProgressRing(dc, centre, cell.progress, cell.look); break;
             }
             continue;
         } else if (kind == CellKind::Progress) {
@@ -2806,31 +2760,12 @@ void ListView::OnLButtonDown(POINT pt, bool ctrl, bool shift) {
         }
         // Rating stars and the Favorite star act on the clicked song (and select it).
         const int kind = CellAt(pt, nullptr);
-        if (kind == static_cast<int>(CellKind::Rating) && StarAt(pt) >= 0) {
-            if (const auto item = m_source->Item(hit.row); item.is_valid() && !RateTrack(item, StarAt(pt) + 1))
-                popup_message::g_show(
-                    core::Utf8(
-                        Tr(L"Ratings need foobar2000's Playback Statistics (Library > Playback Statistics)."))
-                        .c_str(),
-                    core::Utf8(Tr(L"Rating")).c_str());
-        } else if (kind == static_cast<int>(CellKind::Favorite)) {
-            if (const auto item = m_source->Item(hit.row); item.is_valid()) media::ToggleFavorite(item);
-        } else if (kind == static_cast<int>(CellKind::Download)) {
-            // Not downloaded: download it; downloaded: remove the download (asked first).
-            if (const auto item = m_source->Item(hit.row); item.is_valid()) {
-                if (const auto state = download::StateOf(item)) {
-                    if (state->state == download::State::Done &&
-                        MessageBoxW(core_api::get_main_window(),
-                                    Tr(L"Remove this download? Its file goes to the Recycle Bin.").c_str(),
-                                    Tr(L"Download").c_str(), MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) == IDYES)
-                        download::Forget({state->id}, true);
-                } else if (download::Downloadable(item)) {
-                    metadb_handle_list items;
-                    items.add_item(item);
-                    download::Add(items);
-                }
-            }
-        }
+        if (const int star = StarAt(pt); kind == static_cast<int>(CellKind::Rating) && star >= 0)
+            m_source->Rate(hit.row, star + 1);
+        else if (kind == static_cast<int>(CellKind::Favorite))
+            m_source->ToggleFavorite(hit.row);
+        else if (kind == static_cast<int>(CellKind::Download))
+            m_source->ToggleDownload(hit.row);
         MoveFocus(hit.row, ctrl, shift);
         break;
     }

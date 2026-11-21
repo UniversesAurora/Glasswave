@@ -337,14 +337,13 @@ private:
     float m_dragStartW = 0;
     float m_scrollX = 0;  // DIP, horizontal scroll of the detail layouts
     int m_hotStar = -1;   // star under the mouse in the hot row's rating cell
-    std::unordered_set<const void*> m_favorites;  // tracks in the Favorites playlist (per paint)
     int CellAt(POINT pt, size_t* srcColumn) const;  // CellKind of the column under pt
     int StarAt(POINT pt) const;                     // 0..4 over a rating cell, else -1
     D2D1_POINT_2F m_marqueeFrom{}, m_marqueeTo{};  // content coordinates
     std::vector<size_t> m_marqueeBase;              // selection kept with Ctrl
     int m_artToken = 0;
     int m_iconToken = 0; // SubscribeSourceIcons
-    uint64_t m_downloadToken = 0; // download::Subscribe: the Download column follows
+    core::Signal<>::Connection m_cellChanges; // the Download column follows
     // Decoded covers, kept across paints (bounded): a new cover arriving repaints the whole
     // view, and recreating every already-visible D2D bitmap each time made the list stutter.
     struct ArtBitmap {

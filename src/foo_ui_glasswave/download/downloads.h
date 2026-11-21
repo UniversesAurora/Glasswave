@@ -1,6 +1,7 @@
 #pragma once
 
 #include "app/settings.h"
+#include "core/signal.h"
 #include "stream/model.h"
 
 #include <cstdint>
@@ -102,8 +103,7 @@ void Forget(const std::vector<uint64_t>& ids, bool deleteFiles);
 // The downloaded file of a song while it exists (any thread).
 std::optional<std::wstring> LocalFile(std::wstring_view provider, std::wstring_view track);
 
-// Main-thread change notifications (the list, a state or progress).
-uint64_t Subscribe(std::function<void()> listener);
-void Unsubscribe(uint64_t token);
+// Main-thread change notifications (the list, a state or progress) while the connection lives.
+[[nodiscard]] core::Signal<>::Connection Subscribe(std::function<void()> listener);
 
 } // namespace glasswave::download

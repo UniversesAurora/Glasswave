@@ -331,9 +331,8 @@ class DownloadsSource final : public GridSource {
 class DownloadsPage final : public Page {
   public:
     DownloadsPage(PageHost& host, View view) : Page(host, std::move(view)) {
-        m_token = download::Subscribe(Guard([this] { OnChanged(); }));
+        m_changes = download::Subscribe(Guard([this] { OnChanged(); }));
     }
-    ~DownloadsPage() override { download::Unsubscribe(m_token); }
 
     std::unique_ptr<media::ListSource> Start(bool) override {
         auto source = std::make_unique<DownloadsSource>(Done(), download::Items(),
@@ -480,7 +479,7 @@ class DownloadsPage final : public Page {
     }
 
     DownloadsSource* m_list = nullptr;
-    uint64_t m_token = 0;
+    core::Signal<>::Connection m_changes;
     std::pair<size_t, size_t> m_counts{};
 };
 

@@ -380,7 +380,7 @@ void SongTableSource::SetViewStyle(media::ViewStyle style) {
     }
     m_columns.push_back({L"Count", 70, false, true, !m_showPlayCount});
     m_fields.push_back(kPlayCount);
-    m_columns.push_back({L"Favorite", 58, false, false, false, "<favorite>"});
+    m_columns.push_back({L"Favorite", 58, false, false, false, media::kFavoriteFormat});
     m_fields.push_back(kFavorite);
     m_sortColumn = SIZE_MAX;  // columns changed: back to the view's own order
     m_sortDescending = false;

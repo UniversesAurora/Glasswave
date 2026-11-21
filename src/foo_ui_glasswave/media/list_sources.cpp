@@ -1,6 +1,7 @@
 #include "pch.h"
 #include "media/list_sources.h"
 #include "core/text.h"
+#include "download/downloads.h"
 #include "media/play_stats.h"
 #include "media/special_playlists.h"
 #include "media/recent_lists.h"
@@ -30,14 +31,13 @@ int CompareText(const std::wstring& a, const std::wstring& b) {
 }
 
 // Columns WMP 12 offers under "Choose columns" beyond the default ones (hidden by default).
-// "<playcount>" is our cross-source play history, not a titleformat field.
 std::vector<Column> ExtraColumns() {
     return {
         {L"Album artist", 150, false, false, true, "[%album artist%]"},
         {L"Composer", 150, false, false, true, "[%composer%]"},
-        {L"Rating", 80, false, false, false, "[%rating%]"},  // drawn as WMP stars
-        {L"Favorite", 58, false, false, false, "<favorite>"},  // toggles the Favorites playlist
-        {L"Count", 70, false, true, true, "<playcount>"},
+        {L"Rating", 80, false, false, false, kRatingFormat},
+        {L"Favorite", 58, false, false, false, kFavoriteFormat},
+        {L"Count", 70, false, true, true, kPlayCountFormat},
         {L"Bit rate", 70, false, true, true, "[%bitrate% kbps]"},
         {L"Type", 60, false, false, true, "[%codec%]"},
         {L"Size", 70, false, true, true, "[%filesize_natural%]"},
@@ -47,8 +47,35 @@ std::vector<Column> ExtraColumns() {
     };
 }
 
-bool IsPlayCountColumn(const Column& column) {
-    return column.format && std::strcmp(column.format, "<playcount>") == 0;
+bool HasFormat(const Column& column, const char* format) {
+    return column.format && std::strcmp(column.format, format) == 0;
+}
+
+bool IsPlayCountColumn(const Column& column) { return HasFormat(column, kPlayCountFormat); }
+
+// Ratings go through foobar2000's own Playback Statistics context command
+// ("Playback Statistics" / "Rating" / "1".."5"), so they land where %rating% reads them.
+bool RateTrack(const metadb_handle_ptr& track, int stars) {
+    metadb_handle_list items;
+    items.add_item(track);
+    auto cm = contextmenu_manager::get();
+    cm->init_context(items, contextmenu_manager::flag_view_full);
+    contextmenu_node* node = cm->get_root();
+    const std::string value = stars > 0 ? std::to_string(stars) : "<not set>";
+    for (const char* want : {"Playback Statistics", "Rating", value.c_str()}) {
+        contextmenu_node* next = nullptr;
+        for (t_size i = 0, n = node ? node->get_num_children() : 0; i < n && !next; ++i) {
+            contextmenu_node* c = node->get_child(i);
+            if (!c || !c->get_name()) continue;
+            std::string name = c->get_name();
+            name.erase(std::remove(name.begin(), name.end(), '&'), name.end());
+            if (pfc::stricmp_ascii(name.c_str(), want) == 0) next = c;
+        }
+        if (!next) return false;
+        node = next;
+    }
+    node->execute();
+    return true;
 }
 
 template <class IsSel, class SetSel>
@@ -65,6 +92,55 @@ void RangeSelect(size_t count, size_t a, size_t b, bool keepOthers, IsSel, SetSe
 void PlayItems(const metadb_handle_list& items, size_t start) { PlayQueue(items, start); }
 
 Column ArtColumn(bool hidden) { return {L"Album art", 42, false, false, hidden, kArtFormat}; }
+
+core::Signal<>::Connection WatchControlCells(std::function<void()> changed) {
+    return download::Subscribe(std::move(changed));
+}
+
+bool ListSource::IsFavorite(size_t row) const { return media::IsFavorite(Item(row)); }
+
+DownloadCell ListSource::Download(size_t row) const {
+    const metadb_handle_ptr item = Item(row);
+    if (!item.is_valid()) return {};
+    const auto state = download::StateOf(item);
+    if (!state) return {download::Downloadable(item) ? DownloadCell::Look::Offer : DownloadCell::Look::None};
+    using Look = DownloadCell::Look;
+    switch (state->state) {
+    case download::State::Waiting: return {Look::Waiting, state->progress};
+    case download::State::Running: return {Look::Running, state->progress};
+    case download::State::Paused: return {Look::Paused, state->progress};
+    case download::State::Failed: return {Look::Failed, state->progress};
+    case download::State::Done: break;
+    }
+    return {Look::Done, 1.0f};
+}
+
+void ListSource::Rate(size_t row, int stars) {
+    const metadb_handle_ptr item = Item(row);
+    if (item.is_valid() && !RateTrack(item, stars))
+        popup_message::g_show(
+            core::Utf8(ui::Tr(L"Ratings need foobar2000's Playback Statistics (Library > Playback Statistics)."))
+                .c_str(),
+            core::Utf8(ui::Tr(L"Rating")).c_str());
+}
+
+void ListSource::ToggleFavorite(size_t row) { media::ToggleFavorite(Item(row)); }
+
+void ListSource::ToggleDownload(size_t row) {
+    const metadb_handle_ptr item = Item(row);
+    if (!item.is_valid()) return;
+    if (const auto state = download::StateOf(item)) {
+        if (state->state == download::State::Done &&
+            MessageBoxW(core_api::get_main_window(),
+                        ui::Tr(L"Remove this download? Its file goes to the Recycle Bin.").c_str(),
+                        ui::Tr(L"Download").c_str(), MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) == IDYES)
+            download::Forget({state->id}, true);
+    } else if (download::Downloadable(item)) {
+        metadb_handle_list items;
+        items.add_item(item);
+        download::Add(items);
+    }
+}
 
 std::wstring ListSource::RowKey(size_t row) const {
     if (const auto item = Item(row); item.is_valid())
@@ -755,7 +831,7 @@ std::pair<std::wstring, std::wstring> TrackSource::GroupInfo(const Track& t) con
         return {v, v};
     }
     case kFormat: {
-        if (column.format && std::strcmp(column.format, "<favorite>") == 0) {
+        if (HasFormat(column, kFavoriteFormat)) {
             const bool favorite = IsFavorite(t.handle);
             return {favorite ? L"1" : L"0", ui::Tr(favorite ? L"Favorite" : L"Not in Favorites")};
         }
@@ -763,7 +839,7 @@ std::pair<std::wstring, std::wstring> TrackSource::GroupInfo(const Track& t) con
             const std::wstring v = std::to_wstring(PlayStats::Get().CountFor(t.handle));
             return {v, v};
         }
-        if (column.format && std::strcmp(column.format, "[%rating%]") == 0) {
+        if (HasFormat(column, kRatingFormat)) {
             static const wchar_t* const kStars[] = {L"1 Star", L"2 Stars", L"3 Stars", L"4 Stars", L"5 Stars"};
             const int n = t.rating.size() == 1 ? t.rating[0] - L'0' : 0;
             const std::wstring label = t.rating.empty() ? ui::Tr(L"Unrated")
@@ -798,8 +874,8 @@ void TrackSource::ApplySort() {
         if (!byAlbum) {
             pfc::string8 buf;
             const Column& column = m_columns[m_sortColumn];
-            const bool favorite = column.format && std::strcmp(column.format, "<favorite>") == 0;
-            const bool rating = column.format && std::strcmp(column.format, "[%rating%]") == 0;
+            const bool favorite = HasFormat(column, kFavoriteFormat);
+            const bool rating = HasFormat(column, kRatingFormat);
             const bool playCount = IsPlayCountColumn(column);
             for (size_t t : m_all) {
                 const Track& tr = tracks[t];

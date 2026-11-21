@@ -2,6 +2,8 @@
 #include "media/favorites.h"
 #include "stream/provider.h"
 
+#include <unordered_set>
+
 namespace glasswave::media {
 
 // A streaming provider's tracks are favorites in that provider's own library (its liked
@@ -14,16 +16,41 @@ t_size FavoritesPlaylist(bool create) {
     return p;
 }
 
+namespace {
+
+// The local songs in the Favorites playlist. List views ask once per painted row and a sort by
+// the Favorite column once per song, so one read serves until the current main-thread task
+// ends; SetFavorite drops it before it changes the playlist, whose callbacks may paint at once.
+class LocalFavorites {
+  public:
+    static bool Contains(const metadb_handle_ptr& track) {
+        if (!s_read) {
+            if (const t_size p = FavoritesPlaylist(false); p != SIZE_MAX)
+                playlist_manager::get()->playlist_get_all_items(p, s_items);
+            for (t_size i = 0; i < s_items.get_count(); ++i) s_set.insert(s_items[i].get_ptr());
+            s_read = true;
+            fb2k::inMainThread([] { Drop(); });
+        }
+        return s_set.count(track.get_ptr()) != 0;
+    }
+    static void Drop() {
+        s_read = false;
+        s_set.clear();
+        s_items.remove_all();
+    }
+
+  private:
+    static inline bool s_read = false;
+    static inline metadb_handle_list s_items; // keeps the set's handles alive while it is read
+    static inline std::unordered_set<const metadb_handle*> s_set;
+};
+
+} // namespace
+
 bool IsFavorite(const metadb_handle_ptr& track) {
     if (!track.is_valid()) return false;
     if (auto* provider = stream::ProviderOf(track)) return provider->IsFavorite(provider->TrackId(track));
-    const t_size p = FavoritesPlaylist(false);
-    if (p == SIZE_MAX) return false;
-    metadb_handle_list items;
-    playlist_manager::get()->playlist_get_all_items(p, items);
-    for (t_size i = 0; i < items.get_count(); ++i)
-        if (items[i] == track) return true;
-    return false;
+    return LocalFavorites::Contains(track);
 }
 
 void ToggleFavorite(const metadb_handle_ptr& track) {
@@ -53,6 +80,7 @@ void SetFavorite(metadb_handle_list_cref tracks, bool favorite) {
         }
     }
     if (local.get_count() == 0) return;
+    LocalFavorites::Drop();
     const t_size p = FavoritesPlaylist(favorite);
     if (p == SIZE_MAX) return;
     metadb_handle_list items;
