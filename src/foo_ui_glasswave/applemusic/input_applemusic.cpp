@@ -116,6 +116,7 @@ struct AppleEncodedFetch {
     // arrived, as long as its length is the same.
     static constexpr int kMaxCachingWaits = 90; // 1 s each: a lossless song caches in 5-15 s
     static constexpr int kMaxStalledResumes = 3; // resumes in a row that bring nothing
+    static constexpr int kMaxResumes = 20;       // in all: a link that delivers a little each time ends
 
     void operator()(cache::audio::Sink& sink, abort_callback& abort) const {
         // The bridge states the length (Content-Length). A connection that closes before it is
@@ -123,7 +124,7 @@ struct AppleEncodedFetch {
         // called the file corrupt.
         t_filesize expected = filesize_invalid;
         uint64_t received = 0;
-        int waits = 0, stalled = 0;
+        int waits = 0, stalled = 0, resumes = 0;
         std::array<uint8_t, 64 * 1024> buffer{};
         for (;;) {
             const bool resuming = received > 0;
@@ -184,25 +185,28 @@ struct AppleEncodedFetch {
                 }
             }
             const uint64_t before = received;
-            try {
-                for (;;) {
-                    const auto count = source->read(buffer.data(), buffer.size(), abort);
-                    if (!count) break;
-                    const auto drop = static_cast<size_t>(std::min<uint64_t>(skip, count));
-                    skip -= drop;
-                    if (count > drop) sink.Write(buffer.data() + drop, count - drop, abort);
-                    received += count - drop;
+            for (;;) {
+                size_t count = 0;
+                try {
+                    count = source->read(buffer.data(), buffer.size(), abort);
+                } catch (const exception_aborted&) {
+                    throw;
+                } catch (...) {
+                    // A connection that breaks mid-read is a cut like one that closes early;
+                    // without a stated length there is nothing to continue towards. Only the
+                    // read is a cut: a failing sink (disk full, cache limit) is not retried.
+                    if (expected == filesize_invalid) throw;
+                    break;
                 }
-            } catch (const exception_aborted&) {
-                throw;
-            } catch (...) {
-                // A connection that breaks mid-read is a cut like one that closes early; without
-                // a stated length there is nothing to continue towards.
-                if (expected == filesize_invalid) throw;
+                if (!count) break;
+                const auto drop = static_cast<size_t>(std::min<uint64_t>(skip, count));
+                skip -= drop;
+                if (count > drop) sink.Write(buffer.data() + drop, count - drop, abort);
+                received += count - drop;
             }
             if (expected == filesize_invalid || received >= expected) return;
             stalled = received > before ? 0 : stalled + 1;
-            if (stalled > kMaxStalledResumes)
+            if (stalled > kMaxStalledResumes || ++resumes > kMaxResumes)
                 throw exception_io_data(("The Apple Music audio transfer ended early (" + std::to_string(received) +
                                          " of " + std::to_string(expected) + " bytes)")
                                             .c_str());
