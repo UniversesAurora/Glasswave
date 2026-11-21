@@ -460,7 +460,7 @@ class HomePage final : public Page, public stream::Provider::Listener {
             std::vector<std::wstring> names; // every source with a home page, signed in or not
             for (const auto* source : stream::Providers())
                 if (source->Can(stream::Capability::Home)) names.push_back(Tr(source->Name()));
-            m_tiles->SetEmpty(Fill(Tr(L"Sign in to {0} to see their home pages here."), {JoinOr(names)}));
+            m_tiles->SetEmpty(ui::Fill(Tr(L"Sign in to {0} to see their home pages here."), {JoinOr(names)}));
         }
         else if (m_pending > 0)
             m_tiles->SetEmpty(Tr(L"Loading..."));
