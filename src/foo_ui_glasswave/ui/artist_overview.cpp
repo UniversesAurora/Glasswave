@@ -284,16 +284,9 @@ void ArtistOverviewSource::Activate(size_t row) {
         [&](const auto& v) {
             using T = std::decay_t<decltype(v)>;
             if constexpr (std::is_same_v<T, stream::Track>) {
-                metadb_handle_list items;
-                size_t start = 0;
-                for (size_t r = 0; r < m_rows.size(); ++r) {
-                    if (m_entries[m_rows[r]].group != entry->group) continue;
-                    if (auto item = Item(r); item.is_valid()) {
-                        if (r == row) start = items.get_count();
-                        items.add_item(item);
-                    }
-                }
-                if (items.get_count()) media::PlayItems(items, start);
+                media::PlayListFrom(m_rows.size(), row, [&](size_t r) {
+                    return m_entries[m_rows[r]].group == entry->group ? Item(r) : metadb_handle_ptr{};
+                });
             } else if constexpr (std::is_same_v<T, stream::Album>) {
                 if (m_actions.openAlbum) m_actions.openAlbum(v);
             } else if constexpr (std::is_same_v<T, stream::Playlist>) {

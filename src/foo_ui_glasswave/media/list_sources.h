@@ -480,5 +480,8 @@ private:
 // Replace the "Now Playing" playlist with `items` and start playback at `start`
 // (WMP semantics: playing from a library view queues the whole view).
 void PlayItems(const metadb_handle_list& items, size_t start);
+// Plays a list of `count` entries from the chosen one: `track(i)` is entry i's song, and
+// entries without one are left out (the chosen one too: the list then plays from its start).
+void PlayListFrom(size_t count, size_t chosen, const std::function<metadb_handle_ptr(size_t)>& track);
 
 }  // namespace glasswave::media

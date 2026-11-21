@@ -474,14 +474,7 @@ void SongInfoSource::Activate(size_t row) {
     const Line& line = m_lines[m_rows[row]];
     if (!line.trackId.empty()) {
         // The similar songs play as a list, from the one chosen.
-        metadb_handle_list items;
-        size_t start = 0;
-        for (size_t r = 0; r < m_rows.size(); ++r)
-            if (auto item = Item(r); item.is_valid()) {
-                if (r == row) start = items.get_count();
-                items.add_item(item);
-            }
-        if (items.get_count()) media::PlayItems(items, start);
+        media::PlayListFrom(m_rows.size(), row, [this](size_t r) { return Item(r); });
     } else if (!line.artistId.empty() && m_openArtist) {
         m_openArtist(line.artistId, line.name);
     }

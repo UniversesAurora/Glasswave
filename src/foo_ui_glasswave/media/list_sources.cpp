@@ -91,6 +91,17 @@ void RangeSelect(size_t count, size_t a, size_t b, bool keepOthers, IsSel, SetSe
 
 void PlayItems(const metadb_handle_list& items, size_t start) { PlayQueue(items, start); }
 
+void PlayListFrom(size_t count, size_t chosen, const std::function<metadb_handle_ptr(size_t)>& track) {
+    metadb_handle_list items;
+    size_t start = 0;
+    for (size_t i = 0; i < count; ++i)
+        if (const metadb_handle_ptr item = track(i); item.is_valid()) {
+            if (i == chosen) start = items.get_count();
+            items.add_item(item);
+        }
+    if (items.get_count()) PlayItems(items, start);
+}
+
 Column ArtColumn(bool hidden) { return {L"Album art", 42, false, false, hidden, kArtFormat}; }
 
 core::Signal<>::Connection WatchControlCells(std::function<void()> changed) {

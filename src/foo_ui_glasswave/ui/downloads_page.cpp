@@ -201,14 +201,8 @@ class DownloadsSource final : public GridSource {
             download::Resume({m_items[m_rows[row]].id});
             return;
         }
-        metadb_handle_list items; // the list from this song on, as a song list plays
-        size_t start = 0;
-        for (size_t r = 0; r < m_rows.size(); ++r)
-            if (auto handle = Handle(m_items[m_rows[r]]); handle.is_valid()) {
-                if (r == row) start = items.get_count();
-                items.add_item(handle);
-            }
-        if (items.get_count()) media::PlayItems(items, start);
+        // The list from this song on, as a song list plays.
+        media::PlayListFrom(m_rows.size(), row, [this](size_t r) { return Handle(m_items[m_rows[r]]); });
     }
     void ContextMenu(HWND owner, POINT screen) override {
         if (!m_done) {

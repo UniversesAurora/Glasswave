@@ -495,15 +495,8 @@ class HomePage final : public Page, public stream::Provider::Listener {
     }
 
     void PlayRow(const HomeItem& item, const HomeGroup& group) {
-        metadb_handle_list songs;
-        size_t start = 0;
-        for (const auto& other : group.items) {
-            auto song = HomeTiles::SongOf(other);
-            if (!song.is_valid()) continue;
-            if (&other == &item) start = songs.get_count();
-            songs.add_item(song);
-        }
-        if (songs.get_count()) media::PlayItems(songs, start);
+        media::PlayListFrom(group.items.size(), static_cast<size_t>(&item - group.items.data()),
+                            [&](size_t i) { return HomeTiles::SongOf(group.items[i]); });
     }
 
     // The play orb: a card's songs, an album's or a playlist's songs, or a song's row from it.

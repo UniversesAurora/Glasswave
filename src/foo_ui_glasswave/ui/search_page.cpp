@@ -654,15 +654,8 @@ class SearchPage final : public Page {
     // A song plays its group from it; anything else opens its page.
     void Open(const Result& item, const std::vector<Result>& group) {
         if (std::holds_alternative<stream::Track>(item.value)) {
-            metadb_handle_list songs;
-            size_t start = 0;
-            for (const auto& other : group) {
-                auto song = ResultTiles::SongOf(other);
-                if (!song.is_valid()) continue;
-                if (&other == &item) start = songs.get_count();
-                songs.add_item(song);
-            }
-            if (songs.get_count()) media::PlayItems(songs, start);
+            media::PlayListFrom(group.size(), static_cast<size_t>(&item - group.data()),
+                                [&](size_t i) { return ResultTiles::SongOf(group[i]); });
             return;
         }
         if (auto view = ViewOf(item)) m_host.Open(*view);

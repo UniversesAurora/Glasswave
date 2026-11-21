@@ -904,22 +904,16 @@ void SongTableSource::Activate(size_t row) {
 void SongTableSource::PlayFrom(size_t row) const {
     if (row >= m_visible.size()) return;
     // The search box only filters the view: every song plays, in display order, from this one.
-    metadb_handle_list items;
-    size_t start = 0;
-    for (size_t index : m_order) {
-        if (index == m_visible[row]) start = items.get_count();
-        items.add_item(m_all[index].handle);
-    }
-    media::PlayItems(items, start);
+    const size_t chosen = static_cast<size_t>(std::find(m_order.begin(), m_order.end(), m_visible[row]) - m_order.begin());
+    media::PlayListFrom(m_order.size(), chosen, [this](size_t i) { return m_all[m_order[i]].handle; });
 }
 
 void SongTableSource::PlayGroupFrom(size_t row) const {
     if (row >= m_visible.size()) return;
     for (const auto& group : m_groups) {
         if (row < group.first || row >= group.first + group.count) continue;
-        metadb_handle_list items;
-        for (size_t r = group.first; r < group.first + group.count; ++r) items.add_item(m_all[m_visible[r]].handle);
-        media::PlayItems(items, row - group.first);
+        media::PlayListFrom(group.count, row - group.first,
+                            [&](size_t i) { return m_all[m_visible[group.first + i]].handle; });
         return;
     }
     PlayFrom(row);
