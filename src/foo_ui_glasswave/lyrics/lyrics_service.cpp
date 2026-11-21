@@ -1,4 +1,5 @@
 #include "pch.h"
+#include "core/text.h"
 
 #include "lyrics/lyrics_service.h"
 #include "core/paths.h"
@@ -26,20 +27,8 @@ std::vector<std::shared_ptr<Searcher>>& Registry() {
     return searchers;
 }
 
-std::wstring Wide(const char* s) {
-    return s ? std::wstring(pfc::stringcvt::string_wide_from_utf8(s).get_ptr()) : L"";
-}
-
-std::string Utf8(std::wstring_view s) {
-    if (s.empty()) return {};
-    const int n =
-        WideCharToMultiByte(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), nullptr, 0, nullptr, nullptr);
-    std::string out(static_cast<size_t>(std::max(n, 0)), '\0');
-    if (n > 0)
-        WideCharToMultiByte(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), out.data(), n, nullptr,
-                            nullptr);
-    return out;
-}
+using core::Wide;
+using core::Utf8;
 
 std::optional<std::string> ReadFile(const std::filesystem::path& path) {
     std::error_code ec;

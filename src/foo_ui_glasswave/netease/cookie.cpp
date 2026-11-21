@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "netease/cookie.h"
+#include "core/text.h"
 #include "core/log.h"
 #include "core/paths.h"
 
@@ -12,6 +13,8 @@
 namespace glasswave::netease {
 
 namespace {
+
+using core::LowerAscii;
 
 std::mutex g_mutex;
 std::wstring g_cookie;
@@ -139,14 +142,8 @@ std::wstring Trim(std::wstring_view text) {
     return std::wstring(text.substr(start, end - start));
 }
 
-std::wstring Lower(std::wstring_view text) {
-    std::wstring out(text);
-    for (auto& c : out) c = static_cast<wchar_t>(std::towlower(static_cast<wint_t>(c)));
-    return out;
-}
-
 bool IsAttribute(const std::wstring& name) {
-    const std::wstring key = Lower(name);
+    const std::wstring key = LowerAscii(name);
     return key == L"max-age" || key == L"expires" || key == L"path" || key == L"domain" || key == L"httponly" ||
            key == L"secure" || key == L"samesite" || key == L"priority" || key == L"version" || key == L"comment";
 }

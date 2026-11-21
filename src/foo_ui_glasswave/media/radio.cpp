@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "media/radio.h"
+#include "core/text.h"
 
 #include "media/special_playlists.h"
 #include "core/log.h"
@@ -41,13 +42,8 @@ uint64_t g_scheduleListener = 0; // the queue's schedule moved (a song started, 
 std::map<int, std::function<void()>> g_listeners;
 int g_nextToken = 1;
 
-std::string Utf8Of(std::wstring_view text) {
-    return pfc::stringcvt::string_utf8_from_wide(text.data(), text.size()).get_ptr();
-}
-
-std::string Utf8(std::wstring_view text) {
-    return pfc::stringcvt::string_utf8_from_wide(text.data(), text.size()).get_ptr();
-}
+using core::Utf8;
+using core::Wide;
 
 void Notify() {
     auto listeners = g_listeners; // a listener may unsubscribe
@@ -55,15 +51,13 @@ void Notify() {
         if (callback) callback();
 }
 
-std::string Utf8Of(std::wstring_view text);
-
 void Save() {
     if (!g_state.active || !g_state.provider) {
         cfg_station = "";
         return;
     }
-    std::string text = Utf8Of(g_state.provider->Key()) + kField + Utf8Of(g_state.station) + kField +
-                       Utf8Of(g_state.name) + kField;
+    std::string text = Utf8(g_state.provider->Key()) + kField + Utf8(g_state.station) + kField +
+                       Utf8(g_state.name) + kField;
     for (size_t i = 0; i < g_state.queued.size(); ++i) {
         if (i) text += kItem;
         text += g_state.queued[i]->get_path();
@@ -212,7 +206,7 @@ void Restore() {
     }
     const std::string paths = start <= text.size() ? text.substr(start) : std::string();
     stream::Provider* provider =
-        fields.size() == 3 ? stream::FindProvider(pfc::stringcvt::string_wide_from_utf8(fields[0].c_str()).get_ptr())
+        fields.size() == 3 ? stream::FindProvider(Wide(fields[0]))
                            : nullptr;
     const t_size queue = QueuePlaylist(false);
     metadb_handle_list items;
@@ -231,8 +225,8 @@ void Restore() {
         return;
     }
     g_state.provider = provider;
-    g_state.station = pfc::stringcvt::string_wide_from_utf8(fields[1].c_str()).get_ptr();
-    g_state.name = pfc::stringcvt::string_wide_from_utf8(fields[2].c_str()).get_ptr();
+    g_state.station = Wide(fields[1]);
+    g_state.name = Wide(fields[2]);
     for (size_t i = 0; i < items.get_count(); ++i) g_state.queued.push_back(items[i]);
     g_state.playing = g_state.queued.size() - 1; // where it stopped is found as it plays
     g_state.generation = QueueContentGeneration();

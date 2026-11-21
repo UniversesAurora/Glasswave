@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "lyrics/scripts.h"
+#include "core/text.h"
 #include "lyrics/script_host.h"
 #include "applemusic/lyrics_source.h"
 #include "lyrics/native_sources.h"
@@ -20,12 +21,8 @@ cfg_var_modern::cfg_string cfg_disabled(
 cfg_var_modern::cfg_string cfg_order(
     {0xded15512, 0x49c7, 0x41a9, {0x90, 0x5e, 0x83, 0xe1, 0x06, 0x64, 0x58, 0x22}}, "");
 
-std::wstring Wide(std::string_view text) {
-    return pfc::stringcvt::string_wide_from_utf8(std::string(text).c_str()).get_ptr();
-}
-std::string Utf8(std::wstring_view text) {
-    return pfc::stringcvt::string_utf8_from_wide(std::wstring(text).c_str()).get_ptr();
-}
+using core::Wide;
+using core::Utf8;
 
 std::vector<std::filesystem::path> Roots() {
     const std::filesystem::path own(Service::CacheFolder());

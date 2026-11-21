@@ -2,6 +2,7 @@
 
 #include <SDK/foobar2000.h>
 #include "core/paths.h"
+#include "core/text.h"
 
 #include <algorithm>
 #include <cctype>
@@ -31,19 +32,12 @@ inline std::mutex& Mutex() noexcept {
     return mutex;
 }
 
-inline std::string Lower(std::string_view text) {
-    std::string lower(text);
-    std::transform(lower.begin(), lower.end(), lower.begin(),
-                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-    return lower;
-}
-
 inline bool ContainsSensitiveMarker(std::string_view text) {
     static constexpr std::string_view markers[] = {
         "access_token", "authorization",    "bearer", "cookie", "credential",  "jwt",
         "password",     "music-user-token", "secret", "token",  "x-api-token",
     };
-    const std::string lower = Lower(text);
+    const std::string lower = core::LowerAscii(text);
     return std::any_of(std::begin(markers), std::end(markers),
                        [&](std::string_view marker) { return lower.find(marker) != std::string::npos; });
 }

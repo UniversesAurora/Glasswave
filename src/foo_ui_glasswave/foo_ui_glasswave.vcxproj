@@ -259,6 +259,11 @@
     <ClCompile Include="netease\session.cpp" />
     <ClCompile Include="netease\service.cpp" />
     <ClCompile Include="core\task_queue.cpp" />
+    <ClCompile Include="core\text.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <ObjectFileName>$(IntDir)core_text.obj</ObjectFileName>
+    </ClCompile>
+    <ClCompile Include="core\url.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="cd\disc.h" />
@@ -384,6 +389,9 @@
     <ClInclude Include="netease\session.h" />
     <ClInclude Include="netease\service.h" />
     <ClInclude Include="core\task_queue.h" />
+    <ClInclude Include="core\text.h" />
+    <ClInclude Include="core\url.h" />
+    <ClInclude Include="core\hex.h" />
     <ClInclude Include="netease\types.h" />
   </ItemGroup>
   <ItemGroup>

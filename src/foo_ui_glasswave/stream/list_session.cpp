@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "stream/list_session.h"
+#include "core/text.h"
 #include "stream/provider.h"
 #include "cache/lists.h"
 #include "cache/store.h"
@@ -25,9 +26,8 @@ constexpr size_t kWarmRows = 128000;
 constexpr int64_t kFreshSeconds = 5 * 60;
 constexpr size_t kEnrichmentConcurrency = 2;
 
-std::string Utf8(std::wstring_view value) {
-    return pfc::stringcvt::string_utf8_from_wide(value.data(), value.size()).get_ptr();
-}
+using core::Utf8;
+
 void Part(std::string& target, std::string_view value) {
     target += std::to_string(value.size()) + ":";
     target.append(value);

@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "core/log.h"
+#include "core/text.h"
 #include "core/paths.h"
 
 #include <filesystem>
@@ -11,10 +12,6 @@ namespace glasswave::core {
 namespace {
 
 std::mutex g_logMutex;
-
-std::string Utf8(std::wstring_view s) {
-    return pfc::stringcvt::string_utf8_from_wide(s.data(), s.size()).get_ptr();
-}
 
 std::wstring Stamp() {
     SYSTEMTIME st{};

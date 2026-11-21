@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "ui/search_page.h"
+#include "core/text.h"
 
 #include "media/library_model.h"
 #include "stream/list_session.h"
@@ -15,6 +16,9 @@
 #include <variant>
 
 namespace glasswave::ui {
+
+using core::Wide;
+
 
 namespace {
 

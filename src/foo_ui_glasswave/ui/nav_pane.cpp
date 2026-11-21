@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "ui/nav_pane.h"
+#include "core/text.h"
 #include "gfx/composition_host.h"
 #include "ui/art_cache.h"
 #include "ui/text.h"
@@ -9,6 +10,9 @@
 #include "media/special_playlists.h"
 
 namespace glasswave::ui {
+
+using core::Wide;
+
 
 namespace wp = wmp::paint;
 using winrt::Windows::Foundation::Numerics::float2;

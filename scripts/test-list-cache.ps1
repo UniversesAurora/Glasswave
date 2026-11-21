@@ -29,9 +29,11 @@ $devCommand = Join-Path $visualStudio 'Common7/Tools/VsDevCmd.bat'
 $include = Join-Path $Root 'src/foo_ui_glasswave'
 $testSource = Join-Path $Root 'tests/list_cache_tests.cpp'
 $storeSource = Join-Path $Root 'src/foo_ui_glasswave/cache/store.cpp'
+$textSource = Join-Path $Root 'src/foo_ui_glasswave/core/text.cpp'
 $output = Join-Path $Root '.local/tests'
 $testObject = Join-Path $output 'list_cache_tests.obj'
 $storeObject = Join-Path $output 'list_cache_store.obj'
+$textObject = Join-Path $output 'list_cache_text.obj'
 $executable = Join-Path $output 'list_cache_tests.exe'
 
 New-Item -ItemType Directory -Force -Path $output | Out-Null
@@ -82,9 +84,11 @@ if ($CheckOnly) {
 $command = (
     $compilePrefix + ' /c "{0}" /Fo"{1}" && ' +
     'cl {2} /DGLASSWAVE_CACHE_STANDALONE /c "{3}" /Fo"{4}" && ' +
-    'cl /nologo "{1}" "{4}" /Fe"{5}" /link ' +
+    'cl {2} /c "{6}" /Fo"{7}" && ' +
+    'cl /nologo "{1}" "{4}" "{7}" /Fe"{5}" /link ' +
     'bcrypt.lib winsqlite3.lib advapi32.lib ole32.lib runtimeobject.lib windowsapp.lib'
-) -f $testSource, $testObject, $commonOptions, $storeSource, $storeObject, $executable
+) -f $testSource, $testObject, $commonOptions, $storeSource, $storeObject, $executable, $textSource,
+    $textObject
 & $env:ComSpec /d /s /c $command
 if ($LASTEXITCODE -ne 0) {
     throw "Compiling list-cache checks failed (exit code $LASTEXITCODE)"

@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "ui/shell_glue.h"
+#include "core/text.h"
 #include "cache/images.h"
 #include "gfx/composition_host.h"
 #include "ui/i18n.h"
@@ -11,6 +12,9 @@
 #include <thread>
 
 namespace glasswave::ui {
+
+using core::Wide;
+
 
 namespace {
 

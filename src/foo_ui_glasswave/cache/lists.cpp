@@ -2,6 +2,8 @@
 #include "pch.h"
 #endif
 #include "cache/lists.h"
+#include "core/hex.h"
+#include "core/text.h"
 #include "cache/store.h"
 
 #include <windows.h>
@@ -326,12 +328,9 @@ class DuplicateKeyScanner {
     std::size_t m_at = 0;
 };
 
-std::wstring Wide(std::string_view text) {
-    return winrt::to_hstring(text).c_str();
-}
-std::string Utf8(std::wstring_view text) {
-    return winrt::to_string(winrt::hstring(text));
-}
+using core::Wide;
+using core::Utf8;
+
 std::size_t StringBytes(std::wstring_view text) {
     return Utf8(text).size();
 }
@@ -345,14 +344,7 @@ std::string RandomToken() {
     if (BCryptGenRandom(nullptr, bytes.data(), static_cast<ULONG>(bytes.size()),
                         BCRYPT_USE_SYSTEM_PREFERRED_RNG) < 0)
         Invalid("Cannot create a list cache session token.");
-    constexpr char digits[] = "0123456789abcdef";
-    std::string out;
-    out.reserve(bytes.size() * 2);
-    for (const unsigned char value : bytes) {
-        out.push_back(digits[value >> 4]);
-        out.push_back(digits[value & 15]);
-    }
-    return out;
+    return core::HexLower(bytes.data(), bytes.size());
 }
 
 template <typename... Allowed> void CheckKeys(const JsonObject& object, Allowed... allowed) {

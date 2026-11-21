@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "lyrics/native_sources.h"
+#include "core/text.h"
 
 #include "cache/store.h"
 #include "lyrics/lyrics_service.h"
@@ -15,15 +16,8 @@ namespace {
 constexpr wchar_t kSourceOrder[] = L"source";
 constexpr wchar_t kSidecarOrder[] = L"sidecar";
 
-std::wstring Wide(std::string_view value) {
-    return value.empty() ? std::wstring()
-                         : pfc::stringcvt::string_wide_from_utf8(std::string(value).c_str()).get_ptr();
-}
-
-std::string Utf8(std::wstring_view value) {
-    return value.empty() ? std::string()
-                         : pfc::stringcvt::string_utf8_from_wide(std::wstring(value).c_str()).get_ptr();
-}
+using core::Wide;
+using core::Utf8;
 
 struct Scope {
     std::wstring value;

@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "ui/card_layer.h"
+#include "core/text.h"
 
 #include "cache/images.h"
 #include "gfx/composition_host.h"
@@ -18,6 +19,10 @@
 #include <numbers>
 
 namespace glasswave::ui {
+
+using core::Utf8;
+using core::Wide;
+
 
 namespace {
 

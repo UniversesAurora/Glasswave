@@ -1,4 +1,5 @@
 #include "pch.h"
+#include "core/text.h"
 #include <filesystem>
 #include <fstream>
 #include <cstring>
@@ -56,6 +57,9 @@
 #include "win7/win7_resources.h"
 
 namespace glasswave::ui {
+
+using core::Wide;
+
 
 namespace m = aero::metrics;
 namespace paint = aero::paint;

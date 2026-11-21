@@ -1,4 +1,5 @@
 #include "lyrics/script_host.h"
+#include "core/text.h"
 
 #include <windows.h>
 #include <msxml6.h>
@@ -30,12 +31,7 @@ std::string ReadScript(const std::filesystem::path& path) {
     return text;
 }
 
-std::wstring Wide(std::string_view text) {
-    const int size = MultiByteToWideChar(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), nullptr, 0);
-    std::wstring result(static_cast<size_t>(size), 0);
-    MultiByteToWideChar(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), result.data(), size);
-    return result;
-}
+using core::Wide;
 
 std::string PathName(const std::filesystem::path& path) {
     const auto name = path.generic_u8string();

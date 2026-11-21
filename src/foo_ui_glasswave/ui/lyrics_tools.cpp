@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "ui/lyrics_tools.h"
+#include "core/text.h"
 
 #include "lyrics/lyrics_service.h"
 #include "stream/provider.h"
@@ -13,9 +14,7 @@ namespace glasswave::ui::lyrics_tools {
 
 namespace {
 
-std::string Utf8(std::wstring_view s) {
-    return pfc::stringcvt::string_utf8_from_wide(std::wstring(s).c_str()).get_ptr();
-}
+using core::Utf8;
 
 std::wstring SafeName(std::wstring name) {
     for (auto& c : name)

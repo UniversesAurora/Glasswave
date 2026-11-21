@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "applemusic/lyrics_protocol.h"
+#include "core/text.h"
 
 #include <algorithm>
 
@@ -9,16 +10,7 @@ namespace {
 constexpr size_t kMaxResults = 32;
 constexpr size_t kMaxEnhancedLrcBytes = 4ull * 1024 * 1024;
 
-std::string Utf8(std::wstring_view value) {
-    if (value.empty()) return {};
-    const int size = WideCharToMultiByte(CP_UTF8, 0, value.data(), static_cast<int>(value.size()), nullptr, 0,
-                                         nullptr, nullptr);
-    std::string result(static_cast<size_t>(std::max(size, 0)), '\0');
-    if (size > 0)
-        WideCharToMultiByte(CP_UTF8, 0, value.data(), static_cast<int>(value.size()), result.data(), size,
-                            nullptr, nullptr);
-    return result;
-}
+using core::Utf8;
 
 } // namespace
 

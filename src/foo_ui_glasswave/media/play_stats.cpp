@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "media/play_stats.h"
+#include "core/text.h"
 #include "core/paths.h"
 #include "stream/provider.h"
 #include "app/settings.h"
@@ -61,9 +62,7 @@ std::string Unescape(std::string_view text) {
     return out;
 }
 
-std::string Utf8(const std::wstring& text) {
-    return pfc::stringcvt::string_utf8_from_wide(text.c_str()).get_ptr();
-}
+using core::Utf8;
 
 // A titleformat field of a local track, with the scripts compiled once.
 std::string LocalField(const metadb_handle_ptr& track, const char* script) {
@@ -81,9 +80,7 @@ std::string LocalField(const metadb_handle_ptr& track, const char* script) {
 
 int64_t ToInt(std::string_view text) { return std::strtoll(std::string(text).c_str(), nullptr, 10); }
 
-std::wstring Wide(std::string_view text) {
-    return pfc::stringcvt::string_wide_from_utf8(text.data(), text.size()).get_ptr();
-}
+using core::Wide;
 
 // The stable identity of a track, shared by Record and CountFor. Returns false for
 // tracks that should not be tracked (empty paths, internet streams).

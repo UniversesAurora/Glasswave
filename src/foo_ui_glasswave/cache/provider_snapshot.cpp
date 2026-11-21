@@ -4,6 +4,8 @@
 
 #include "cache/provider_snapshot.h"
 
+#include "core/text.h"
+
 #include <Windows.h>
 
 #include <algorithm>
@@ -24,18 +26,6 @@ constexpr std::size_t kMaxBindingKeyBytes = 256;
 constexpr std::size_t kMaxBindingResourceBytes = 4096;
 constexpr std::size_t kMaxStringBytes = 1024 * 1024;
 constexpr char kMagic[] = "GWPS";
-
-std::wstring Wide(std::string_view value) {
-    if (value.empty()) return {};
-    const int size = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value.data(),
-                                         static_cast<int>(value.size()), nullptr, 0);
-    if (size <= 0) throw std::runtime_error("Provider snapshot contains invalid UTF-8.");
-    std::wstring result(static_cast<std::size_t>(size), L'\0');
-    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value.data(), static_cast<int>(value.size()),
-                            result.data(), size) != size)
-        throw std::runtime_error("Provider snapshot UTF-8 conversion failed.");
-    return result;
-}
 
 std::size_t Utf8Size(std::wstring_view value, std::size_t limit) {
     std::size_t bytes = 0;
@@ -180,9 +170,9 @@ std::vector<stream::Playlist> ReadPlaylists(Reader& reader) {
     playlists.reserve(count);
     for (std::uint32_t i = 0; i < count; ++i) {
         stream::Playlist playlist;
-        playlist.id = Wide(reader.String());
-        playlist.name = Wide(reader.String());
-        playlist.coverUrl = Wide(reader.String());
+        playlist.id = core::WideStrict(reader.String());
+        playlist.name = core::WideStrict(reader.String());
+        playlist.coverUrl = core::WideStrict(reader.String());
         playlist.trackCount = reader.I32();
         playlist.own = reader.Boolean();
         playlist.saved = reader.Boolean();

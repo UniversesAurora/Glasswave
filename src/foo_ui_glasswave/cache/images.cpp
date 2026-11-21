@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "cache/images.h"
+#include "core/text.h"
 #include "cache/art_absence.h"
 #include "net/http.h"
 #include "core/log.h"
@@ -29,15 +30,8 @@ thread_local bool t_cacheOnly = false;
 thread_local bool t_cacheMiss = false;
 thread_local int t_sizeHint = 0;
 
-std::wstring Wide(std::string_view text) {
-    if (text.empty()) return {};
-    return pfc::stringcvt::string_wide_from_utf8(text.data(), text.size()).get_ptr();
-}
-
-std::string Utf8(std::wstring_view text) {
-    if (text.empty()) return {};
-    return pfc::stringcvt::string_utf8_from_wide(text.data(), text.size()).get_ptr();
-}
+using core::Wide;
+using core::Utf8;
 
 bool EndsWith(const std::vector<unsigned char>& bytes, std::initializer_list<unsigned char> suffix) {
     if (bytes.size() < suffix.size()) return false;

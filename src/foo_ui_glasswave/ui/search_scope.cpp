@@ -1,10 +1,15 @@
 #include "pch.h"
 #include "ui/search_scope.h"
+#include "core/text.h"
 
 #include "ui/i18n.h"
 #include "ui/text.h"
 
 namespace glasswave::ui {
+
+using core::Utf8;
+using core::Wide;
+
 
 namespace {
 

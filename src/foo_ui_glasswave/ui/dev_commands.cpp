@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "media/radio.h"
+#include "core/text.h"
 #include "media/special_playlists.h"
 #include "core/log.h"
 #include "stream/provider.h"
@@ -25,6 +26,9 @@
 // shows can be read back. From Git Bash, run it with MSYS_NO_PATHCONV=1.
 
 namespace glasswave::ui {
+
+using core::Wide;
+
 namespace {
 
 namespace wuc = winrt::Windows::UI::Composition;

@@ -1,5 +1,7 @@
 #include "pch.h"
 #include "netease/config.h"
+#include "core/hex.h"
+#include "core/text.h"
 #include "net/http.h"
 #include "core/log.h"
 #include "core/paths.h"
@@ -29,21 +31,8 @@ std::filesystem::path ServiceDir() {
 
 constexpr char kServiceSha256[] = "f196774ab85dc1039ec3ca6b5297cbc3e086b0bbbfc744498e6064ea94ceaa02";
 
-std::wstring Wide(const std::string& s) {
-    if (s.empty()) return {};
-    const int n = MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), nullptr, 0);
-    std::wstring w(static_cast<size_t>(n), L'\0');
-    MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), w.data(), n);
-    return w;
-}
-
-std::string Utf8(std::wstring_view s) {
-    if (s.empty()) return {};
-    const int n = WideCharToMultiByte(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), nullptr, 0, nullptr, nullptr);
-    std::string out(static_cast<size_t>(n), '\0');
-    WideCharToMultiByte(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), out.data(), n, nullptr, nullptr);
-    return out;
-}
+using core::Wide;
+using core::Utf8;
 
 std::wstring Win32Error(DWORD code) {
     wchar_t* buffer = nullptr;
@@ -65,14 +54,7 @@ std::string Sha256Hex(const std::string& data) {
                                        static_cast<ULONG>(data.size()), digest, sizeof(digest));
     BCryptCloseAlgorithmProvider(alg, 0);
     if (status < 0) return {};
-    static constexpr char hex[] = "0123456789abcdef";
-    std::string out;
-    out.reserve(64);
-    for (unsigned char byte : digest) {
-        out.push_back(hex[byte >> 4]);
-        out.push_back(hex[byte & 0x0f]);
-    }
-    return out;
+    return core::HexLower(digest, sizeof(digest));
 }
 
 int PickLoopbackPort() {

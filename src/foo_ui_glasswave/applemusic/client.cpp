@@ -1,5 +1,7 @@
 #include "pch.h"
 #include "applemusic/client.h"
+#include "core/text.h"
+#include "core/url.h"
 #include "applemusic/service.h"
 #include "net/http.h"
 #include "core/json.h"
@@ -41,16 +43,8 @@ struct BridgeConfig {
     throw std::runtime_error(message);
 }
 
-std::string Utf8(std::wstring_view text) {
-    if (text.empty()) return {};
-    return pfc::stringcvt::string_utf8_from_wide(text.data(), text.size()).get_ptr();
-}
-
-std::wstring Wide(std::string_view text) {
-    if (text.empty()) return {};
-    const std::string copy(text);
-    return pfc::stringcvt::string_wide_from_utf8(copy.c_str()).get_ptr();
-}
+using core::Utf8;
+using core::Wide;
 
 bool AsciiLetter(wchar_t c) {
     return (c >= L'a' && c <= L'z') || (c >= L'A' && c <= L'Z');
@@ -60,12 +54,7 @@ bool HasControl(std::wstring_view text) {
     return std::any_of(text.begin(), text.end(), [](wchar_t c) { return c < 0x20 || c == 0x7f; });
 }
 
-std::wstring LowerAscii(std::wstring_view text) {
-    std::wstring out(text);
-    for (auto& c : out)
-        if (c >= L'A' && c <= L'Z') c = static_cast<wchar_t>(c + L'a' - L'A');
-    return out;
-}
+using core::LowerAscii;
 
 bool ValidPort(std::wstring_view port) {
     if (port.empty() || port.size() > 5) return false;
@@ -375,23 +364,7 @@ void SetAppleLocale(bool chinese) {
     g_localeKnown.store(true, std::memory_order_release);
 }
 
-std::wstring Encode(std::wstring_view value) {
-    static constexpr wchar_t hex[] = L"0123456789ABCDEF";
-    const std::string bytes = Utf8(value);
-    std::wstring out;
-    out.reserve(bytes.size() * 3);
-    for (unsigned char c : bytes) {
-        if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' ||
-            c == '_' || c == '.' || c == '~') {
-            out.push_back(static_cast<wchar_t>(c));
-        } else {
-            out.push_back(L'%');
-            out.push_back(hex[c >> 4]);
-            out.push_back(hex[c & 0x0f]);
-        }
-    }
-    return out;
-}
+std::wstring Encode(std::wstring_view value) { return Wide(core::UrlEncode(value)); }
 
 Object Request(std::wstring_view path, abort_callback& abort, std::wstring_view method, std::string body) {
     ValidateApiPath(path);

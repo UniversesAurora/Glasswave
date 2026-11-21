@@ -4,6 +4,7 @@
 #include "netease/catalog.h"
 #include "netease/handle.h"
 #include "core/log.h"
+#include "core/text.h"
 #include "netease/session.h"
 
 #include <SDK/album_art_helpers.h>
@@ -173,16 +174,13 @@ class NcmArtInstance : public album_art_extractor_instance_v2 {
         } catch (const exception_aborted&) {
             throw;
         } catch (const std::exception& e) {
-            reason = pfc::stringcvt::string_wide_from_utf8(e.what()).get_ptr();
+            reason = core::Wide(e.what());
         } catch (...) {
             reason = L"unknown error";
         }
         if (!abort.is_aborting()) {
-            const auto wide = [](const char* text) {
-                return std::wstring(pfc::stringcvt::string_wide_from_utf8(text ? text : "").get_ptr());
-            };
-            core::Log(L"art: cover download failed: " + wide(ArtKindName(kind)) + L" " + std::to_wstring(id) + L" (" +
-                wide(rendition.version) + L"): " + reason);
+            core::Log(L"art: cover download failed: " + core::Wide(ArtKindName(kind)) + L" " + std::to_wstring(id) + L" (" +
+                core::Wide(rendition.version) + L"): " + reason);
         }
         throw exception_album_art_not_found();
     }

@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "applemusic/artwork_url.h"
+#include "core/text.h"
 #include "applemusic/catalog.h"
 #include "applemusic/client.h"
 #include "applemusic/handle.h"
@@ -38,14 +39,8 @@ Artwork ArtworkFor(int sizePx) {
     return {L"1200", L"jpg", "1200-jpg-bb-v1", false};
 }
 
-std::wstring Wide(const char* text) {
-    return text ? pfc::stringcvt::string_wide_from_utf8(text).get_ptr() : std::wstring();
-}
-
-std::string Utf8(std::wstring_view text) {
-    if (text.empty()) return {};
-    return pfc::stringcvt::string_utf8_from_wide(text.data(), text.size()).get_ptr();
-}
+using core::Wide;
+using core::Utf8;
 
 const char* ArtKindName(stream::ArtKind kind) {
     switch (kind) {

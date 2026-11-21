@@ -1,5 +1,7 @@
 #include "pch.h"
 #include "download/aria2.h"
+#include "core/hex.h"
+#include "core/text.h"
 #include "core/paths.h"
 
 #include "net/http.h"
@@ -23,8 +25,8 @@ namespace glasswave::download::aria2 {
 namespace {
 
 using namespace winrt::Windows::Data::Json;
-using ui::Utf8;
-using ui::Wide;
+using core::Utf8;
+using core::Wide;
 
 // The release installed when there is no aria2c.exe yet: aria2 1.37.0, the official 64-bit
 // Windows build. Its RPC interface is stable, so a newer aria2c.exe can simply replace it (or a
@@ -51,13 +53,7 @@ std::filesystem::path ExePath() {
 std::wstring RandomSecret() {
     unsigned char bytes[16]{};
     BCryptGenRandom(nullptr, bytes, sizeof(bytes), BCRYPT_USE_SYSTEM_PREFERRED_RNG);
-    static constexpr wchar_t hex[] = L"0123456789abcdef";
-    std::wstring out;
-    for (const unsigned char byte : bytes) {
-        out.push_back(hex[byte >> 4]);
-        out.push_back(hex[byte & 0x0f]);
-    }
-    return out;
+    return Wide(core::HexLower(bytes, sizeof(bytes)));
 }
 
 int PickLoopbackPort() {

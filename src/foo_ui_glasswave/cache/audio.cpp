@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "cache/audio.h"
+#include "core/hex.h"
 
 #include <atomic>
 #include <filesystem>
@@ -173,11 +174,7 @@ void DeletePath(const fs::path& path) noexcept {
 void AppendPart(std::string& output, std::string_view value) {
     output += std::to_string(value.size());
     output.push_back(':');
-    constexpr char digits[] = "0123456789abcdef";
-    for (const unsigned char byte : value) {
-        output.push_back(digits[byte >> 4]);
-        output.push_back(digits[byte & 0x0f]);
-    }
+    output += core::HexLower(value);
     output.push_back(';');
 }
 

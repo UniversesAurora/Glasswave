@@ -1,5 +1,5 @@
 #include "applemusic/lyrics_protocol.h"
-#include "netease/json.h"
+#include "core/json.h"
 
 #include <winrt/base.h>
 
@@ -10,7 +10,7 @@ namespace {
 
 using glasswave::applemusic::lyrics_protocol::Mode;
 using glasswave::applemusic::lyrics_protocol::Request;
-using glasswave::netease::json::Object;
+using glasswave::core::json::Object;
 
 size_t checks = 0;
 
@@ -22,7 +22,7 @@ void Check(bool condition, const char* message) {
 }
 
 Object Parse(std::string_view text) {
-    auto value = glasswave::netease::json::Parse(text);
+    auto value = glasswave::core::json::Parse(text);
     if (!value) {
         std::cerr << "JSON fixture is malformed\n";
         std::exit(1);
@@ -41,17 +41,17 @@ void CheckRequests() {
     direct.locale = L"zh-Hans-CN";
     direct.durationMs = 245000;
     const Object request = Parse(glasswave::applemusic::lyrics_protocol::BuildRequestBody(direct));
-    Check(glasswave::netease::json::GetString(request, L"mode") == L"direct",
+    Check(glasswave::core::json::GetString(request, L"mode") == L"direct",
           "Direct mode was not serialized");
-    Check(glasswave::netease::json::GetString(request, L"trackId") == L"1440833098",
+    Check(glasswave::core::json::GetString(request, L"trackId") == L"1440833098",
           "Direct track id was not serialized");
-    Check(glasswave::netease::json::GetString(request, L"trackType") == L"library-songs",
+    Check(glasswave::core::json::GetString(request, L"trackType") == L"library-songs",
           "Direct track type was not serialized");
-    Check(glasswave::netease::json::GetString(request, L"locale") == L"zh-Hans-CN",
+    Check(glasswave::core::json::GetString(request, L"locale") == L"zh-Hans-CN",
           "Request locale was not serialized");
-    Check(glasswave::netease::json::GetString(request, L"title") == L"Song \"title\"",
+    Check(glasswave::core::json::GetString(request, L"title") == L"Song \"title\"",
           "Request title escaping changed");
-    Check(glasswave::netease::json::GetInt(request, L"durationMs") == 245000,
+    Check(glasswave::core::json::GetInt(request, L"durationMs") == 245000,
           "Request duration was not serialized");
 
     Request search;
@@ -60,9 +60,9 @@ void CheckRequests() {
     search.artist = L"Artist";
     search.locale = L"en-US";
     const Object searchJson = Parse(glasswave::applemusic::lyrics_protocol::BuildRequestBody(search));
-    Check(glasswave::netease::json::GetString(searchJson, L"mode") == L"search",
+    Check(glasswave::core::json::GetString(searchJson, L"mode") == L"search",
           "Search mode was not serialized");
-    Check(glasswave::netease::json::GetString(searchJson, L"trackId").empty(),
+    Check(glasswave::core::json::GetString(searchJson, L"trackId").empty(),
           "Search mode synthesized a track id");
 }
 

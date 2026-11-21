@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "applemusic/display_metadata.h"
+#include "core/text.h"
 #include "applemusic/config.h"
 
 #include <algorithm>
@@ -36,10 +37,7 @@ void Part(std::string& key, std::string_view value) {
     key.append(value);
 }
 
-std::string Utf8(std::wstring_view value) {
-    if (value.empty()) return {};
-    return pfc::stringcvt::string_utf8_from_wide(value.data(), value.size()).get_ptr();
-}
+using core::Utf8;
 
 std::wstring UpperAscii(std::wstring_view value) {
     std::wstring out(value);

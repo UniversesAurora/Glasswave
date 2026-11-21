@@ -23,9 +23,6 @@ winrt::com_ptr<IDWriteTextLayout> MakeWrappedText(std::wstring_view text, float 
 float DrawTag(ID2D1DeviceContext* dc, std::wstring_view text, float x, float cy, float right, D2D1_COLOR_F ink,
               float size, float scale);
 
-std::wstring Wide(const char* utf8);
-std::string Utf8(std::wstring_view wide);
-
 // "m:ss" or "h:mm:ss"
 std::wstring FormatTime(double seconds);
 

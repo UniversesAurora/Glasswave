@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "applemusic/catalog.h"
+#include "core/text.h"
 #include "applemusic/atmos_renderer.h"
 #include "applemusic/client.h"
 #include "applemusic/config.h"
@@ -44,9 +45,7 @@ void EndSkipRun() {
     g_skipRun.clear();
 }
 
-std::string Utf8(std::wstring_view text) {
-    return pfc::stringcvt::string_utf8_from_wide(text.data(), text.size()).get_ptr();
-}
+using core::Utf8;
 
 std::string ActualCodec(file_info& info) {
     if (const char* value = info.info_get("codec"); value && *value) return value;
@@ -67,12 +66,7 @@ bool CodecMatches(std::string_view actual, std::wstring_view declared) {
     return !expected.empty() && upper.find(expected) != std::string::npos;
 }
 
-std::string Lower(std::wstring_view text) {
-    std::string value = Utf8(text);
-    for (char& c : value)
-        if (c >= 'A' && c <= 'Z') c = static_cast<char>(c + 'a' - 'A');
-    return value;
-}
+std::string Lower(std::wstring_view text) { return core::LowerAscii(Utf8(text)); }
 
 struct SessionCleanup {
     ~SessionCleanup() {

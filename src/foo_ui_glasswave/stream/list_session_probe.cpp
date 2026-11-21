@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "stream/list_session.h"
+#include "core/text.h"
 #include "stream/provider.h"
 #include "ui/page.h"
 #include "ui/remote_pages.h"
@@ -201,15 +202,8 @@ struct ViewSnapshot {
     size_t appendOffset = 0;
 };
 
-std::string Utf8(std::wstring_view text) {
-    if (text.empty()) return {};
-    return pfc::stringcvt::string_utf8_from_wide(text.data(), text.size()).get_ptr();
-}
-
-std::wstring Wide(std::string_view text) {
-    if (text.empty()) return {};
-    return pfc::stringcvt::string_wide_from_utf8(text.data(), text.size()).get_ptr();
-}
+using core::Utf8;
+using core::Wide;
 
 double ElapsedMs(Clock::time_point start) {
     return std::chrono::duration<double, std::milli>(Clock::now() - start).count();

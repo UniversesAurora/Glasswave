@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "applemusic/lyrics_source.h"
+#include "core/text.h"
 
 #include "applemusic/client.h"
 #include "applemusic/lyrics_protocol.h"
@@ -16,15 +17,8 @@ namespace {
 
 constexpr wchar_t kUniversalKey[] = L"applemusic";
 
-std::string Utf8(std::wstring_view value) {
-    return value.empty() ? std::string()
-                         : pfc::stringcvt::string_utf8_from_wide(std::wstring(value).c_str()).get_ptr();
-}
-
-std::wstring Wide(std::string_view value) {
-    return value.empty() ? std::wstring()
-                         : pfc::stringcvt::string_wide_from_utf8(std::string(value).c_str()).get_ptr();
-}
+using core::Utf8;
+using core::Wide;
 
 struct CacheScope {
     std::wstring value;

@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "applemusic/catalog.h"
+#include "core/text.h"
 #include "applemusic/display_metadata.h"
 #include "core/paths.h"
 #include "stream/track_snapshot.h"
@@ -19,16 +20,8 @@ constexpr uintmax_t kCacheFileLimit = 64u * 1024u * 1024u;
 constexpr size_t kCacheLineLimit = 200'000;
 constexpr std::string_view kCacheHeader = "# glasswave apple music songs v6";
 
-std::string Utf8(std::wstring_view text) {
-    if (text.empty()) return {};
-    return pfc::stringcvt::string_utf8_from_wide(text.data(), text.size()).get_ptr();
-}
-
-std::wstring Wide(std::string_view text) {
-    if (text.empty()) return {};
-    const std::string copy(text);
-    return pfc::stringcvt::string_wide_from_utf8(copy.c_str()).get_ptr();
-}
+using core::Utf8;
+using core::Wide;
 
 bool IsCatalogId(std::wstring_view id) {
     return !id.empty() && !IsLibraryId(id) &&

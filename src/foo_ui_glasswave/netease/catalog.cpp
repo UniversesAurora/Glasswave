@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "netease/catalog.h"
+#include "core/text.h"
 #include "netease/handle.h"
 #include "core/paths.h"
 #include "stream/track_snapshot.h"
@@ -16,15 +17,8 @@ namespace glasswave::netease {
 
 namespace {
 
-std::string Utf8(std::wstring_view s) {
-    if (s.empty()) return {};
-    return pfc::stringcvt::string_utf8_from_wide(s.data(), s.size()).get_ptr();
-}
-
-std::wstring Wide(const std::string& s) {
-    if (s.empty()) return {};
-    return pfc::stringcvt::string_wide_from_utf8(s.c_str()).get_ptr();
-}
+using core::Utf8;
+using core::Wide;
 
 std::string Clean(std::wstring_view s) {
     std::wstring copy(s);

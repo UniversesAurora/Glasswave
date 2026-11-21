@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "ui/song_actions.h"
+#include "core/text.h"
 #include "ui/item_menu.h"
 #include "ui/recent_page.h"
 
@@ -16,6 +17,10 @@
 #include "ui/text.h"
 
 namespace glasswave::ui {
+
+using core::Utf8;
+using core::Wide;
+
 
 namespace {
 

@@ -19,10 +19,12 @@ $include = Join-Path $Root 'src/foo_ui_glasswave'
 $testSource = Join-Path $Root 'tests/provider_snapshot_tests.cpp'
 $storeSource = Join-Path $Root 'src/foo_ui_glasswave/cache/store.cpp'
 $snapshotSource = Join-Path $Root 'src/foo_ui_glasswave/cache/provider_snapshot.cpp'
+$textSource = Join-Path $Root 'src/foo_ui_glasswave/core/text.cpp'
 $output = Join-Path $Root '.local/tests'
 $testObject = Join-Path $output 'provider_snapshot_tests.obj'
 $storeObject = Join-Path $output 'provider_snapshot_store.obj'
 $snapshotObject = Join-Path $output 'provider_snapshot.obj'
+$textObject = Join-Path $output 'provider_snapshot_text.obj'
 $executable = Join-Path $output 'provider_snapshot_tests.exe'
 $testRoot = $null
 
@@ -70,9 +72,11 @@ try {
         '/DNOMINMAX /DGLASSWAVE_CACHE_STANDALONE /I"{2}" /c "{3}" /Fo"{4}" && ' +
         'cl /nologo /std:c++20 /EHsc /W4 /WX /utf-8 /O2 /DWIN32_LEAN_AND_MEAN ' +
         '/DNOMINMAX /DGLASSWAVE_CACHE_STANDALONE /I"{2}" /c "{6}" /Fo"{7}" && ' +
-        'cl /nologo "{1}" "{4}" "{7}" /Fe"{5}" /link bcrypt.lib winsqlite3.lib advapi32.lib ole32.lib'
+        'cl /nologo /std:c++20 /EHsc /W4 /WX /utf-8 /O2 /DWIN32_LEAN_AND_MEAN ' +
+        '/DNOMINMAX /I"{2}" /c "{8}" /Fo"{9}" && ' +
+        'cl /nologo "{1}" "{4}" "{7}" "{9}" /Fe"{5}" /link bcrypt.lib winsqlite3.lib advapi32.lib ole32.lib'
     ) -f $testSource, $testObject, $include, $storeSource, $storeObject, $executable, $snapshotSource,
-        $snapshotObject
+        $snapshotObject, $textSource, $textObject
     & $env:ComSpec /d /s /c $command
     if ($LASTEXITCODE -ne 0) {
         throw "Compiling provider snapshot checks failed (exit code $LASTEXITCODE)"

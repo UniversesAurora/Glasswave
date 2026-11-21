@@ -20,10 +20,12 @@ $quickJs = Join-Path $Root 'third_party/quickjs-ng'
 $miniz = Join-Path $Root 'third_party/miniz'
 $output = Join-Path $Root '.local/tests/apple-lyrics-protocol'
 $protocol = Join-Path $include 'applemusic/lyrics_protocol.cpp'
-$json = Join-Path $include 'netease/json.cpp'
+$json = Join-Path $include 'core/json.cpp'
+$text = Join-Path $include 'core/text.cpp'
 $source = Join-Path $Root 'tests/apple_lyrics_protocol_tests.cpp'
 $protocolObject = Join-Path $output 'applemusic_lyrics_protocol.obj'
-$jsonObject = Join-Path $output 'netease_json.obj'
+$jsonObject = Join-Path $output 'core_json.obj'
+$textObject = Join-Path $output 'core_text.obj'
 $testObject = Join-Path $output 'apple_lyrics_protocol_tests.obj'
 $executable = Join-Path $output 'apple_lyrics_protocol_tests.exe'
 New-Item -ItemType Directory -Force -Path $output | Out-Null
@@ -35,11 +37,11 @@ $common = (
 ) -f $include, (Join-Path $sdkRoot 'foobar2000'), $sdkRoot, $quickJs, $miniz
 $command = (
     'call "{0}" -no_logo -arch=x64 -host_arch=x64 >nul && ' +
-    'cl {1} /c "{2}" /Fo"{3}" && cl {1} /c "{4}" /Fo"{5}" && ' +
+    'cl {1} /c "{2}" /Fo"{3}" && cl {1} /c "{4}" /Fo"{5}" && cl {1} /c "{10}" /Fo"{11}" && ' +
     'cl /nologo /std:c++20 /EHsc /W4 /WX /utf-8 /I"{6}" /c "{7}" /Fo"{8}" && ' +
-    'cl /nologo /EHsc "{3}" "{5}" "{8}" /Fe"{9}" /link windowsapp.lib'
+    'cl /nologo /EHsc "{3}" "{5}" "{11}" "{8}" /Fe"{9}" /link windowsapp.lib'
 ) -f $devCommand, $common, $protocol, $protocolObject, $json, $jsonObject, $include, $source,
-    $testObject, $executable
+    $testObject, $executable, $text, $textObject
 
 & $env:ComSpec /d /s /c $command
 if ($LASTEXITCODE -ne 0) {

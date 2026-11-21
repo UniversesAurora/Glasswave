@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "cd/discs.h"
+#include "core/text.h"
 
 #include "app/settings.h"
 #include "cd/musicbrainz.h"
@@ -146,7 +147,7 @@ std::wstring DriveTitle(const CdDrive& d) {
         const auto info = d.tracks[0]->get_info_ref();
         if (info.is_valid())
             if (const char* album = info->info().meta_get("ALBUM", 0); album && *album)
-                return ui::Wide(album);
+                return core::Wide(album);
     }
     return ui::Tr(L"Audio CD") + letter;
 }

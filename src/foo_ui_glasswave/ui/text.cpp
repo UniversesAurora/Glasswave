@@ -52,8 +52,6 @@ winrt::com_ptr<IDWriteTextLayout> MakeText(std::wstring_view text, float size, D
     return layout;
 }
 
-std::wstring Wide(const char* utf8) { return std::wstring(pfc::stringcvt::string_wide_from_utf8(utf8 ? utf8 : "")); }
-
 winrt::com_ptr<IDWriteTextLayout> MakeWrappedText(std::wstring_view text, float size, DWRITE_FONT_WEIGHT weight,
                                                   float maxW, float maxH, DWRITE_TEXT_ALIGNMENT align,
                                                   const wchar_t* family) {
@@ -73,10 +71,6 @@ winrt::com_ptr<IDWriteTextLayout> MakeWrappedText(std::wstring_view text, float 
                                               std::max(maxW, 1.0f), std::max(maxH, 1.0f), layout.put()));
     return layout;
 }
-std::string Utf8(std::wstring_view wide) {
-    return std::string(pfc::stringcvt::string_utf8_from_wide(std::wstring(wide).c_str()));
-}
-
 std::wstring FormatTime(double seconds) {
     if (!(seconds >= 0)) seconds = 0;
     const long long s = static_cast<long long>(seconds);

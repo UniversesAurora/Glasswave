@@ -1,4 +1,5 @@
 #include "pch.h"
+#include "core/text.h"
 
 #include "applemusic/catalog.h"
 #include "applemusic/client.h"
@@ -103,13 +104,8 @@ struct ProbeResult {
     std::wstring error;
 };
 
-std::string Utf8(std::wstring_view text) {
-    return pfc::stringcvt::string_utf8_from_wide(text.data(), text.size()).get_ptr();
-}
-
-std::wstring Wide(std::string_view utf8) {
-    return pfc::stringcvt::string_wide_from_utf8(utf8.data(), utf8.size()).get_ptr();
-}
+using core::Utf8;
+using core::Wide;
 
 std::optional<fs::path> FinalPath(const fs::path& path, bool directory) {
     const DWORD flags = directory ? FILE_FLAG_BACKUP_SEMANTICS : FILE_ATTRIBUTE_NORMAL;

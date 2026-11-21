@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "cache/audio.h"
+#include "core/text.h"
 
 #include <SDK/audio_chunk_impl.h>
 #include <SDK/file_info_impl.h>
@@ -113,15 +114,8 @@ struct ProbeResult {
     std::vector<CaseResult> cases;
 };
 
-std::string Utf8(std::wstring_view text) {
-    if (text.empty()) return {};
-    return pfc::stringcvt::string_utf8_from_wide(text.data(), text.size()).get_ptr();
-}
-
-std::wstring Wide(std::string_view text) {
-    if (text.empty()) return {};
-    return pfc::stringcvt::string_wide_from_utf8(text.data(), text.size()).get_ptr();
-}
+using core::Utf8;
+using core::Wide;
 
 bool SameName(const fs::path& left, const fs::path& right) {
     return _wcsicmp(left.c_str(), right.c_str()) == 0;

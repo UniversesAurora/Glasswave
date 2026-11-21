@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "media/library_model.h"
+#include "core/text.h"
 #include "media/source_identity.h"
 #include "ui/text.h"
 
@@ -101,7 +102,7 @@ void LibraryModel::Reload() {
         if (!keep[i]) continue;
         const auto& h = items[i];
         h->format_title(nullptr, buf, script, nullptr);
-        auto f = Split(ui::Wide(buf), 13);
+        auto f = Split(core::Wide(buf), 13);
         Sortable s;
         s.track.handle = h;
         s.track.hasAlbumArtist = !f[0].empty();
@@ -116,7 +117,7 @@ void LibraryModel::Reload() {
         s.track.title = f[4];
         if (s.track.title.empty()) {
             pfc::string8 name = pfc::string_filename(h->get_path());
-            s.track.title = ui::Wide(name);
+            s.track.title = core::Wide(name);
         }
         s.track.number = f[5];
         s.track.length = f[6];

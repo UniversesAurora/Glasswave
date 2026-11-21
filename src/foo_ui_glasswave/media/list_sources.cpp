@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "media/list_sources.h"
+#include "core/text.h"
 #include "media/play_stats.h"
 #include "media/special_playlists.h"
 #include "media/recent_lists.h"
@@ -67,7 +68,7 @@ Column ArtColumn(bool hidden) { return {L"Album art", 42, false, false, hidden, 
 
 std::wstring ListSource::RowKey(size_t row) const {
     if (const auto item = Item(row); item.is_valid())
-        return ui::Wide(item->get_path()) + L'\x1f' + std::to_wstring(item->get_subsong_index());
+        return core::Wide(item->get_path()) + L'\x1f' + std::to_wstring(item->get_subsong_index());
     return ArtKey(row);
 }
 
@@ -86,7 +87,7 @@ std::wstring PlaylistsSource::Cell(size_t row, size_t column) const {
     pfc::string8 name;
     pm->playlist_get_name(m_rows[row], name);
     // Built-in names (Favorites, the smart presets) are shown in the UI language.
-    return IsSpecial(m_rows[row]) ? ui::Tr(ui::Wide(name)) : ui::Wide(name);
+    return IsSpecial(m_rows[row]) ? ui::Tr(core::Wide(name)) : core::Wide(name);
 }
 
 TileInfo PlaylistsSource::Tile(size_t row) const {
@@ -137,7 +138,7 @@ void PlaylistsSource::PlayTile(size_t row) {
     PlayItems(items, 0);
     pfc::string8 name;
     pm->playlist_get_name(m_rows[row], name);
-    const std::wstring wide = ui::Wide(name.get_ptr());
+    const std::wstring wide = core::Wide(name.get_ptr());
     RecordRecentList({}, wide, wide);
 }
 
@@ -166,7 +167,7 @@ void PlaylistsSource::SetFilter(std::wstring_view filterLower) {
         if (IsQueue(p)) continue;  // the queue has its own place
         if ((p == favorites || IsAutoPlaylist(p)) != m_smart) continue;
         pm->playlist_get_name(p, name);
-        if (!filterLower.empty() && Lower(ui::Wide(name)).find(filterLower) == std::wstring::npos) continue;
+        if (!filterLower.empty() && Lower(core::Wide(name)).find(filterLower) == std::wstring::npos) continue;
         m_rows.push_back(p);
     }
     m_selected.assign(m_rows.size(), 0);
@@ -266,7 +267,7 @@ void PlaylistSource::Rebuild() {
         } else {
             pm->playlist_item_format_title(m_playlist, i, nullptr, buf, script, nullptr,
                                            playback_control::display_level_none);
-            text = ui::Wide(buf);
+            text = core::Wide(buf);
         }
         if (MatchesFilter(Lower(text), m_filter)) m_rows.push_back(i);
     }
@@ -293,7 +294,7 @@ void PlaylistSource::BuildGroups() {
     for (size_t r = 0; r < m_rows.size(); ++r) {
         pm->playlist_item_format_title(m_playlist, m_rows[r], nullptr, buf, script, nullptr,
                                        playback_control::display_level_none);
-        std::wstring fields = ui::Wide(buf);
+        std::wstring fields = core::Wide(buf);
         std::array<std::wstring, 5> f;
         size_t k = 0;
         for (size_t from = 0; k < f.size(); ++k) {
@@ -312,7 +313,7 @@ void PlaylistSource::BuildGroups() {
         // A row without an album stays its own group; otherwise the album name is the key
         // (soundtracks often credit a different artist per track).
         info.key = f[0].empty()
-                       ? std::wstring(L"\x1f") + (info.item.is_valid() ? ui::Wide(info.item->get_path()) : L"")
+                       ? std::wstring(L"\x1f") + (info.item.is_valid() ? core::Wide(info.item->get_path()) : L"")
                        : f[0];
         info.album = f[0];
         info.albumArtist = f[1];
@@ -405,7 +406,7 @@ std::wstring PlaylistSource::Cell(size_t row, size_t column) const {
     pfc::string8 out;
     playlist_manager::get()->playlist_item_format_title(m_playlist, item, nullptr, out, m_scripts[column], nullptr,
                                                         playback_control::display_level_all);
-    return ui::Wide(out);
+    return core::Wide(out);
 }
 
 void PlaylistSource::Sort(size_t column, bool descending) {
@@ -457,7 +458,7 @@ void PlaylistSource::Sort(size_t column, bool descending) {
             continue;
         }
         pm->playlist_item_format_title(m_playlist, i, nullptr, buf, script, nullptr, playback_control::display_level_none);
-        keys[i] = ui::Wide(buf);
+        keys[i] = core::Wide(buf);
         if (byLength) {  // zero-pad so the text compare orders numbers
             const double v = _wtof(keys[i].c_str());
             wchar_t pad[32];
@@ -558,11 +559,11 @@ std::wstring PlaylistSource::ArtKey(size_t row) const {
         pfc::string8 buf;
         pm->playlist_item_format_title(m_playlist, m_rows[row], nullptr, buf, script, nullptr,
                                        playback_control::display_level_none);
-        std::wstring text = ui::Wide(buf);
+        std::wstring text = core::Wide(buf);
         if (text.find_first_not_of(L'\x1f') != std::wstring::npos && item.is_valid()) {
             key = L"pl:" + text;
         } else if (item.is_valid()) {  // no album/folder information: keep the track distinct
-            key = L"tr:" + ui::Wide(item->get_path()) + L'|' + std::to_wstring(item->get_subsong_index());
+            key = L"tr:" + core::Wide(item->get_path()) + L'|' + std::to_wstring(item->get_subsong_index());
         } else {
             key = L"row:" + std::to_wstring(row);
         }
@@ -773,7 +774,7 @@ std::pair<std::wstring, std::wstring> TrackSource::GroupInfo(const Track& t) con
         pfc::string8 buf;
         if (m_sortColumn < m_scripts.size() && m_scripts[m_sortColumn].is_valid())
             t.handle->format_title(nullptr, buf, m_scripts[m_sortColumn], nullptr);
-        std::wstring v = ui::Wide(buf);
+        std::wstring v = core::Wide(buf);
         if (v.empty()) v = ui::Tr(L"Unknown");
         return {v, v};
     }
@@ -830,7 +831,7 @@ void TrackSource::ApplySort() {
                         keys[t] = pad;
                     } else {
                         tr.handle->format_title(nullptr, buf, m_scripts[m_sortColumn], nullptr);
-                        keys[t] = ui::Wide(buf);
+                        keys[t] = core::Wide(buf);
                         if (keys[t].empty()) keys[t] = ui::Tr(L"Unknown");
                     }
                     break;
@@ -871,7 +872,7 @@ std::wstring TrackSource::Cell(size_t row, size_t column) const {
         pfc::string8 out;
         if (column < m_scripts.size() && m_scripts[column].is_valid())
             t.handle->format_title(nullptr, out, m_scripts[column], nullptr);
-        return ui::Wide(out);
+        return core::Wide(out);
     }
     default: return {};  // the album column is drawn by the list
     }

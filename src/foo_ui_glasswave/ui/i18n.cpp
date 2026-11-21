@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "ui/i18n.h"
+#include "core/text.h"
 #include "stream/provider.h"
 #include "win7/win7_resources.h"
 
@@ -14,22 +15,6 @@ namespace {
 // {7E1A4C92-3D5B-4F08-A6C1-9B2E4D7F0A35}
 cfg_var_modern::cfg_int cfg_language({0x7e1a4c92, 0x3d5b, 0x4f08, {0xa6, 0xc1, 0x9b, 0x2e, 0x4d, 0x7f, 0x0a, 0x35}}, 0);
 
-std::wstring Widen(const std::string& s) {
-    if (s.empty()) return {};
-    const int n = MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), nullptr, 0);
-    std::wstring w(static_cast<size_t>(n), L'\0');
-    MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), w.data(), n);
-    return w;
-}
-
-std::string Narrow(const std::wstring& w) {
-    if (w.empty()) return {};
-    const int n = WideCharToMultiByte(CP_UTF8, 0, w.data(), static_cast<int>(w.size()), nullptr, 0, nullptr, nullptr);
-    std::string s(static_cast<size_t>(n), '\0');
-    WideCharToMultiByte(CP_UTF8, 0, w.data(), static_cast<int>(w.size()), s.data(), n, nullptr, nullptr);
-    return s;
-}
-
 std::wstring LangFolder() { return win7::Resources::Get().Folder() + L"lang\\"; }
 
 // Minimal reader for a flat JSON object of string pairs (what the translate script writes).
@@ -38,7 +23,7 @@ std::map<std::wstring, std::wstring> ReadJson(const std::wstring& path) {
     std::ifstream in{std::filesystem::path(path), std::ios::binary};
     if (!in) return out;
     std::string bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-    const std::wstring s = Widen(bytes.rfind("\xEF\xBB\xBF", 0) == 0 ? bytes.substr(3) : bytes);
+    const std::wstring s = core::Wide(bytes.rfind("\xEF\xBB\xBF", 0) == 0 ? bytes.substr(3) : bytes);
     size_t i = 0;
     auto readString = [&](std::wstring& v) {
         while (i < s.size() && s[i] != L'"') ++i;
@@ -204,7 +189,7 @@ std::wstring ExportStrings(metadb_handle_list_cref sample) {
     const std::wstring path = folder + L"strings-en.txt";
     std::ofstream out{std::filesystem::path(path), std::ios::binary};
     for (const auto& s : all)
-        if (!s.empty() && s.find(L'\n') == std::wstring::npos) out << Narrow(s) << '\n';
+        if (!s.empty() && s.find(L'\n') == std::wstring::npos) out << core::Utf8(s) << '\n';
     return path;
 }
 

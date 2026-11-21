@@ -1,5 +1,7 @@
 #include "pch.h"
 #include "cache/images.h"
+#include "core/hex.h"
+#include "core/text.h"
 #include "cache/art_absence.h"
 #include "net/http.h"
 
@@ -71,15 +73,8 @@ struct OpenAttempt {
     std::optional<ImageResult> result;
 };
 
-std::string Utf8(std::wstring_view text) {
-    if (text.empty()) return {};
-    return pfc::stringcvt::string_utf8_from_wide(text.data(), text.size()).get_ptr();
-}
-
-std::wstring Wide(std::string_view text) {
-    if (text.empty()) return {};
-    return pfc::stringcvt::string_wide_from_utf8(text.data(), text.size()).get_ptr();
-}
+using core::Utf8;
+using core::Wide;
 
 double ElapsedMs(Clock::time_point start) {
     return std::chrono::duration<double, std::milli>(Clock::now() - start).count();
@@ -102,14 +97,7 @@ std::string Sha256(const std::vector<unsigned char>& bytes) {
                    digest.data(), static_cast<ULONG>(digest.size()));
     BCryptCloseAlgorithmProvider(algorithm, 0);
     if (status < 0) return {};
-    static constexpr char hex[] = "0123456789abcdef";
-    std::string result;
-    result.reserve(64);
-    for (const unsigned char byte : digest) {
-        result.push_back(hex[byte >> 4]);
-        result.push_back(hex[byte & 0x0f]);
-    }
-    return result;
+    return core::HexLower(digest.data(), digest.size());
 }
 
 std::vector<unsigned char> DecodeBase64(std::string_view text) {

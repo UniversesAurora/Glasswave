@@ -2,6 +2,7 @@
 #include "pch.h"
 #endif
 #include "cache/store.h"
+#include "core/hex.h"
 
 #include <windows.h>
 #include <aclapi.h>
@@ -68,22 +69,12 @@ struct Transaction {
     }
 };
 
-std::string Hex(const unsigned char* data, size_t size) {
-    constexpr char hex[] = "0123456789abcdef";
-    std::string text;
-    text.reserve(size * 2);
-    for (size_t i = 0; i < size; ++i) {
-        text += hex[data[i] >> 4];
-        text += hex[data[i] & 15];
-    }
-    return text;
-}
 std::string Random() {
     std::array<unsigned char, 16> bytes{};
     if (BCryptGenRandom(nullptr, bytes.data(), static_cast<ULONG>(bytes.size()),
                         BCRYPT_USE_SYSTEM_PREFERRED_RNG) < 0)
         throw std::runtime_error("Cannot create a cache generation.");
-    return Hex(bytes.data(), bytes.size());
+    return core::HexLower(bytes.data(), bytes.size());
 }
 bool PayloadName(const std::string& name) {
     return name.size() == 37 && name.substr(32) == ".blob" &&
@@ -371,7 +362,7 @@ std::string Store::Digest(const Key& key) {
         BCryptHash(algorithm, nullptr, 0, reinterpret_cast<PUCHAR>(data.data()),
                    static_cast<ULONG>(data.size()), digest.data(), static_cast<ULONG>(digest.size()));
     if (result < 0) throw std::runtime_error("Cannot hash a cache identity.");
-    return Hex(digest.data(), digest.size());
+    return core::HexLower(digest.data(), digest.size());
 }
 
 std::string Store::Scope(const std::string& provider) {

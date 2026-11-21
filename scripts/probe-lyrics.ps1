@@ -17,7 +17,7 @@ $visualStudio = & $vswhere -latest -requires Microsoft.VisualStudio.Component.VC
     Select-Object -First 1
 $devCommand = Join-Path $visualStudio 'Common7/Tools/VsDevCmd.bat'
 $command = @'
-call "{0}" -no_logo -arch=x64 -host_arch=x64 >nul && cl /nologo /std:c++20 /EHsc /W4 /WX /utf-8 /O2 /DWIN32_LEAN_AND_MEAN /DNOMINMAX /I"{1}\src\foo_ui_glasswave" /I"{1}\third_party\quickjs-ng" /I"{1}\third_party\miniz" "{1}\tests\lyrics_source_probe.cpp" "{1}\src\foo_ui_glasswave\lyrics\script_host.cpp" quickjs.obj miniz.obj /Felyrics_source_probe.exe /link ole32.lib oleaut32.lib crypt32.lib msxml6.lib ws2_32.lib winhttp.lib
+call "{0}" -no_logo -arch=x64 -host_arch=x64 >nul && cl /nologo /std:c++20 /EHsc /W4 /WX /utf-8 /O2 /DWIN32_LEAN_AND_MEAN /DNOMINMAX /I"{1}\src\foo_ui_glasswave" /I"{1}\third_party\quickjs-ng" /I"{1}\third_party\miniz" "{1}\tests\lyrics_source_probe.cpp" "{1}\src\foo_ui_glasswave\lyrics\script_host.cpp" "{1}\src\foo_ui_glasswave\core\text.cpp" quickjs.obj miniz.obj /Felyrics_source_probe.exe /link ole32.lib oleaut32.lib crypt32.lib msxml6.lib ws2_32.lib winhttp.lib
 '@ -f $devCommand, $Root
 Push-Location $output
 try {

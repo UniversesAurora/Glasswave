@@ -1,5 +1,7 @@
 #include "pch.h"
 #include "netease/client.h"
+#include "core/text.h"
+#include "core/url.h"
 #include "netease/cookie.h"
 #include "net/http.h"
 #include "core/log.h"
@@ -16,39 +18,8 @@ namespace {
 using winrt::Windows::Data::Json::IJsonValue;
 using winrt::Windows::Data::Json::JsonValueType;
 
-std::wstring Wide(std::string_view s) {
-    if (s.empty()) return {};
-    const int n = MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), nullptr, 0);
-    std::wstring w(static_cast<size_t>(n), L'\0');
-    MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), w.data(), n);
-    return w;
-}
-
-std::string Utf8(std::wstring_view s) {
-    if (s.empty()) return {};
-    const int n = WideCharToMultiByte(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), nullptr, 0, nullptr, nullptr);
-    std::string out(static_cast<size_t>(n), '\0');
-    WideCharToMultiByte(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), out.data(), n, nullptr, nullptr);
-    return out;
-}
-
-std::string UrlEncode(std::wstring_view value) {
-    static constexpr char hex[] = "0123456789ABCDEF";
-    const std::string utf8 = Utf8(value);
-    std::string out;
-    out.reserve(utf8.size() * 3);
-    for (unsigned char c : utf8) {
-        if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_' ||
-            c == '.' || c == '~') {
-            out.push_back(static_cast<char>(c));
-        } else {
-            out.push_back('%');
-            out.push_back(hex[c >> 4]);
-            out.push_back(hex[c & 0x0f]);
-        }
-    }
-    return out;
-}
+using core::Wide;
+using core::Utf8;
 
 std::wstring MessageOf(const core::json::Object& body, int code) {
     std::wstring message = core::json::GetString(body, L"message");
@@ -266,9 +237,9 @@ bool Client::Request(std::wstring_view path, const std::vector<std::pair<std::ws
     const std::wstring cookie = SessionCookie();
     auto append = [&](std::wstring_view name, std::wstring_view value) {
         if (!query.empty()) query += "&";
-        query += UrlEncode(name);
+        query += core::UrlEncode(name);
         query += "=";
-        query += UrlEncode(value);
+        query += core::UrlEncode(value);
     };
     for (const auto& [name, value] : params) append(name, value);
     // The Enhanced server caches successful responses for two minutes. A changing

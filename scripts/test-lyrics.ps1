@@ -14,7 +14,7 @@ $include = Join-Path $Root 'src/foo_ui_glasswave'
 $quickjs = Join-Path $Root 'third_party/quickjs-ng'
 $miniz = Join-Path $Root 'third_party/miniz'
 $command = @'
-call "{0}" -no_logo -arch=x64 -host_arch=x64 >nul && cl /nologo /c /O2 /w /std:c11 /experimental:c11atomics /D_CRT_SECURE_NO_WARNINGS "{1}\quickjs-amalgam.c" /Foquickjs.obj && cl /nologo /c /O2 /w /D_CRT_SECURE_NO_WARNINGS "{2}\miniz.c" /Fominiz.obj && cl /nologo /std:c++20 /EHsc /W4 /WX /utf-8 /O2 /DWIN32_LEAN_AND_MEAN /DNOMINMAX /I"{3}" /I"{1}" /I"{2}" "{4}\tests\lyrics_script_tests.cpp" "{3}\lyrics\script_host.cpp" quickjs.obj miniz.obj /Felyrics_script_tests.exe /link ole32.lib oleaut32.lib crypt32.lib msxml6.lib ws2_32.lib
+call "{0}" -no_logo -arch=x64 -host_arch=x64 >nul && cl /nologo /c /O2 /w /std:c11 /experimental:c11atomics /D_CRT_SECURE_NO_WARNINGS "{1}\quickjs-amalgam.c" /Foquickjs.obj && cl /nologo /c /O2 /w /D_CRT_SECURE_NO_WARNINGS "{2}\miniz.c" /Fominiz.obj && cl /nologo /std:c++20 /EHsc /W4 /WX /utf-8 /O2 /DWIN32_LEAN_AND_MEAN /DNOMINMAX /I"{3}" /I"{1}" /I"{2}" "{4}\tests\lyrics_script_tests.cpp" "{3}\lyrics\script_host.cpp" "{3}\core\text.cpp" quickjs.obj miniz.obj /Felyrics_script_tests.exe /link ole32.lib oleaut32.lib crypt32.lib msxml6.lib ws2_32.lib
 '@ -f $devCommand, $quickjs, $miniz, $include, $Root
 Push-Location $output
 try {

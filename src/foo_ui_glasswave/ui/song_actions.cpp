@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "ui/downloads_page.h"
+#include "core/text.h"
 #include "ui/song_actions.h"
 #include "media/favorites.h"
 #include "media/special_playlists.h"
@@ -9,6 +10,9 @@
 #include <set>
 
 namespace glasswave::ui {
+
+using core::Wide;
+
 
 std::vector<LocalPlaylistTarget> LocalPlaylistTargets(size_t exclude) {
     auto pm = playlist_manager::get();

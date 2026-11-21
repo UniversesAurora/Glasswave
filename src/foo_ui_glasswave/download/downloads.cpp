@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "download/downloads.h"
+#include "core/text.h"
 #include "core/paths.h"
 
 #include "download/aria2.h"
@@ -31,8 +32,8 @@ namespace glasswave::download {
 
 namespace {
 
-using ui::Utf8;
-using ui::Wide;
+using core::Utf8;
+using core::Wide;
 
 constexpr size_t kWorkers = 10;         // threads; Preferences' "songs at once" limits the running ones
 constexpr int kRetries = 3;             // renewed links per song before it fails

@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "applemusic/login.h"
+#include "core/text.h"
 #include "applemusic/client.h"
 #include "core/json.h"
 #include "stream/provider.h"
@@ -16,9 +17,8 @@ constexpr UINT kResult = WM_APP + 77;
 constexpr int kEmail = 201, kPassword = 202, kCode = 203, kLogin = 204, kVerify = 205, kStatus = 206;
 HWND g_window = nullptr;
 
-std::string Utf8(std::wstring_view text) {
-    return pfc::stringcvt::string_utf8_from_wide(text.data(), text.size()).get_ptr();
-}
+using core::Utf8;
+
 std::wstring Text(HWND window, int id) {
     HWND edit = GetDlgItem(window, id);
     std::wstring value(static_cast<size_t>(GetWindowTextLengthW(edit)) + 1, L'\0');

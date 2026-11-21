@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "applemusic/stream_provider.h"
+#include "core/text.h"
 #include "applemusic/artist_preference.h"
 #include "applemusic/atmos_renderer.h"
 #include "applemusic/config.h"
@@ -31,16 +32,9 @@ using winrt::Windows::Data::Json::JsonArray;
 using winrt::Windows::Data::Json::JsonValue;
 using winrt::Windows::Data::Json::JsonValueType;
 
-std::string Utf8(std::wstring_view text) {
-    if (text.empty()) return {};
-    return pfc::stringcvt::string_utf8_from_wide(text.data(), text.size()).get_ptr();
-}
-
-std::wstring Wide(std::string_view text) {
-    if (text.empty()) return {};
-    const std::string copy(text);
-    return pfc::stringcvt::string_wide_from_utf8(copy.c_str()).get_ptr();
-}
+using core::Utf8;
+using core::Wide;
+using core::LowerAscii;
 
 void AppendListContextPart(std::string& key, std::string_view value) {
     key += std::to_string(value.size());
@@ -402,13 +396,6 @@ std::wstring ListPathOnly(std::wstring_view path) {
     return std::wstring(path.substr(0, path.find(L'?')));
 }
 
-std::wstring LowerListAscii(std::wstring_view text) {
-    std::wstring out(text);
-    for (auto& c : out)
-        if (c >= L'A' && c <= L'Z') c = static_cast<wchar_t>(c + L'a' - L'A');
-    return out;
-}
-
 bool ValidListApiPath(std::wstring_view path) {
     return path.size() > 4 && StartsWith(path, L"/v1/") &&
            std::none_of(path.begin(), path.end(), [](wchar_t c) { return c < 0x20 || c == 0x7f; }) &&
@@ -430,10 +417,10 @@ std::wstring NormalizeListNext(std::wstring_view expectedPath, std::wstring_view
         const size_t pathStart =
             scheme == std::wstring_view::npos ? std::wstring_view::npos : next.find(L'/', scheme + 3);
         if (scheme == std::wstring_view::npos || pathStart == std::wstring_view::npos ||
-            LowerListAscii(next.substr(0, scheme)) != L"https") {
+            LowerAscii(next.substr(0, scheme)) != L"https") {
             throw std::runtime_error("Apple Music returned a list continuation from another origin.");
         }
-        const std::wstring host = LowerListAscii(next.substr(scheme + 3, pathStart - scheme - 3));
+        const std::wstring host = LowerAscii(next.substr(scheme + 3, pathStart - scheme - 3));
         if (host != L"amp-api.music.apple.com" && host != L"api.music.apple.com") {
             throw std::runtime_error("Apple Music returned a list continuation from another origin.");
         }

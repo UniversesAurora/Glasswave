@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "ui/list_view.h"
+#include "core/text.h"
 #include "gfx/composition_host.h"
 #include "ui/art_cache.h"
 #include "ui/card_layer.h"
@@ -16,6 +17,10 @@
 #include "wmp/wmp_transport.h"
 
 namespace glasswave::ui {
+
+using core::Utf8;
+using core::Wide;
+
 
 namespace wuc = winrt::Windows::UI::Composition;
 namespace wp = wmp::paint;

@@ -1,4 +1,5 @@
 #include "pch.h"
+#include "core/text.h"
 
 #include "cache/prefetch.h"
 #include "cache/prefetch_host.h"
@@ -19,10 +20,7 @@
 namespace glasswave::cache {
 namespace {
 
-std::string Utf8(std::wstring_view value) {
-    if (value.empty()) return {};
-    return pfc::stringcvt::string_utf8_from_wide(value.data(), value.size()).get_ptr();
-}
+using core::Utf8;
 
 std::string TrackToken(const metadb_handle_ptr& track) {
     if (!track.is_valid()) return {};

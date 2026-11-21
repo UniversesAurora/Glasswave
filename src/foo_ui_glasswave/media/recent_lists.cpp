@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "media/recent_lists.h"
+#include "core/text.h"
 
 #include "ui/text.h"
 
@@ -38,14 +39,14 @@ void Store(const std::vector<RecentList>& lists) {
     for (const auto& list : lists)
         text += Clean(list.provider) + L'\t' + Clean(list.id) + L'\t' + Clean(list.name) + L'\t' +
                 std::to_wstring(list.played) + L'\n';
-    cfg_recentLists.set(ui::Utf8(text).c_str());
+    cfg_recentLists.set(core::Utf8(text).c_str());
 }
 
 } // namespace
 
 std::vector<RecentList> RecentLists() {
     std::vector<RecentList> lists;
-    for (const auto& line : Split(ui::Wide(cfg_recentLists.get()), L'\n')) {
+    for (const auto& line : Split(core::Wide(cfg_recentLists.get()), L'\n')) {
         const auto parts = Split(line, L'\t');
         if (parts.size() < 4 || parts[1].empty()) continue;
         lists.push_back({parts[0], parts[1], parts[2], _wtoi64(parts[3].c_str())});

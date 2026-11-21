@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "ui/art_cache.h"
+#include "core/text.h"
 #include "cache/art_absence.h"
 #include "app/settings.h"
 #include "stream/provider.h"
@@ -21,15 +22,8 @@ constexpr std::chrono::seconds kRetryMax{600};
 // one download per picture, so this bounds waiting threads, not requests per picture.
 constexpr int kNetworkThreads = 3;
 
-std::string Utf8(std::wstring_view text) {
-    if (text.empty()) return {};
-    return pfc::stringcvt::string_utf8_from_wide(text.data(), text.size()).get_ptr();
-}
-
-std::wstring Wide(std::string_view text) {
-    if (text.empty()) return {};
-    return pfc::stringcvt::string_wide_from_utf8(text.data(), text.size()).get_ptr();
-}
+using core::Utf8;
+using core::Wide;
 
 std::string ProviderFor(std::wstring_view sourceKey) {
     const size_t colon = sourceKey.find(L':');

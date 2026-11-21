@@ -1,4 +1,5 @@
 #include "pch.h"
+#include "core/text.h"
 
 #include "applemusic/catalog.h"
 #include "core/paths.h"
@@ -115,9 +116,7 @@ struct State {
     size_t noCatalogAlbumSampleAvailableCount = 0;
 };
 
-std::string Utf8(std::wstring_view text) {
-    return pfc::stringcvt::string_utf8_from_wide(text.data(), text.size()).get_ptr();
-}
+using core::Utf8;
 
 JsonValue Number(size_t value) {
     return JsonValue::CreateNumberValue(static_cast<double>(value));

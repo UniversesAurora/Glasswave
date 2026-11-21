@@ -1,4 +1,5 @@
 #include "pch.h"
+#include "core/text.h"
 
 #include "applemusic/catalog.h"
 #include "core/paths.h"
@@ -329,13 +330,8 @@ struct State {
     bool done = false;
 };
 
-std::string Utf8(std::wstring_view text) {
-    return pfc::stringcvt::string_utf8_from_wide(text.data(), text.size()).get_ptr();
-}
-
-std::wstring Wide(std::string_view utf8) {
-    return pfc::stringcvt::string_wide_from_utf8(utf8.data(), utf8.size()).get_ptr();
-}
+using core::Utf8;
+using core::Wide;
 
 void WriteResult(const State& state) noexcept {
     try {

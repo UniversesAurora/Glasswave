@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "cd/musicbrainz.h"
+#include "core/text.h"
 
 #include "cd/discs.h"
 
@@ -20,8 +21,8 @@ namespace glasswave::cd {
 
 namespace json = core::json;
 using core::Log;
-using ui::Utf8;
-using ui::Wide;
+using core::Utf8;
+using core::Wide;
 
 namespace {
 

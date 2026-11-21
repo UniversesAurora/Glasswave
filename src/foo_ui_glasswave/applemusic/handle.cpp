@@ -1,6 +1,7 @@
 #include "pch.h"
 #include "applemusic/client.h"
 #include "applemusic/handle.h"
+#include "core/text.h"
 
 #include <array>
 
@@ -46,12 +47,10 @@ bool ParseEncodedId(std::string_view segment, stream::Id& id) {
         return false;
     }
 
-    const int count = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, bytes.data(),
-                                          static_cast<int>(bytes.size()), nullptr, 0);
-    if (count <= 0) return false;
-    std::wstring wide(static_cast<size_t>(count), L'\0');
-    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, bytes.data(), static_cast<int>(bytes.size()),
-                            wide.data(), count) != count) {
+    std::wstring wide;
+    try {
+        wide = core::WideStrict(bytes);
+    } catch (const std::exception&) {
         return false;
     }
     id = std::move(wide);
@@ -61,7 +60,7 @@ bool ParseEncodedId(std::string_view segment, stream::Id& id) {
 std::string PathSuffix(std::wstring_view id) {
     if (id.empty()) return {};
     const std::wstring encoded = Encode(id);
-    return pfc::stringcvt::string_utf8_from_wide(encoded.c_str()).get_ptr();
+    return core::Utf8(encoded);
 }
 
 } // namespace

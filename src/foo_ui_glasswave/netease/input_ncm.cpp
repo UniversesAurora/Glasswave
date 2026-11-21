@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "netease/catalog.h"
+#include "core/text.h"
 #include "cache/audio.h"
 #include "download/downloads.h"
 #include "netease/config.h"
@@ -17,14 +18,9 @@ namespace glasswave::netease {
 
 namespace {
 
-std::string Utf8(std::wstring_view s) {
-    if (s.empty()) return {};
-    return pfc::stringcvt::string_utf8_from_wide(s.data(), s.size()).get_ptr();
-}
-
-std::wstring Wide(const char* s) {
-    return s ? pfc::stringcvt::string_wide_from_utf8(s).get_ptr() : std::wstring();
-}
+using core::Utf8;
+using core::Wide;
+using core::LowerAscii;
 
 std::string ExtensionFor(const SongUrl& url) {
     std::wstring type = url.type;
@@ -46,15 +42,8 @@ file::ptr OpenStream(const std::wstring& url, abort_callback& abort) {
     return request->run(Utf8(url).c_str(), abort);
 }
 
-std::wstring Lower(std::wstring_view text) {
-    std::wstring value(text);
-    for (wchar_t& c : value)
-        if (c >= L'A' && c <= L'Z') c = static_cast<wchar_t>(c + L'a' - L'A');
-    return value;
-}
-
 bool SameSourceVariant(const SongUrl& expected, const SongUrl& actual) {
-    return Lower(expected.level) == Lower(actual.level) && Lower(expected.type) == Lower(actual.type) &&
+    return LowerAscii(expected.level) == LowerAscii(actual.level) && LowerAscii(expected.type) == LowerAscii(actual.type) &&
            expected.bitrate == actual.bitrate && expected.trial == actual.trial;
 }
 
@@ -62,7 +51,7 @@ bool CodecMatches(std::wstring_view type, std::string_view actual) {
     std::string upper(actual);
     for (char& c : upper)
         if (c >= 'a' && c <= 'z') c = static_cast<char>(c - 'a' + 'A');
-    const std::wstring expected = Lower(type);
+    const std::wstring expected = LowerAscii(type);
     if (expected == L"flac") return upper.find("FLAC") != std::string::npos;
     if (expected == L"mp3") return upper.find("MP3") != std::string::npos ||
                                   upper.find("MPEG") != std::string::npos;
@@ -80,7 +69,7 @@ std::string ActualCodec(file_info& info) {
 
 // What cache::audio::RememberSource keeps for a song: the fields that name its cache entry.
 std::string SourceMemo(const SongUrl& url) {
-    return Utf8(Lower(url.level)) + '\t' + Utf8(Lower(url.type)) + '\t' + std::to_string(url.bitrate);
+    return Utf8(LowerAscii(url.level)) + '\t' + Utf8(LowerAscii(url.type)) + '\t' + std::to_string(url.bitrate);
 }
 
 bool ParseSourceMemo(const std::string& memo, SongUrl& url) {
@@ -311,9 +300,9 @@ public:
                     source.accountScope = "ephemeral-" + std::to_string(GetCurrentProcessId());
                 }
                 source.identity = identity;
-                source.quality = Utf8(Lower(url.level) + L":" + Lower(url.type) + L":" +
+                source.quality = Utf8(LowerAscii(url.level) + L":" + LowerAscii(url.type) + L":" +
                                       std::to_wstring(url.bitrate) + (url.trial ? L":trial" : L":full"));
-                source.codec = Utf8(Lower(url.type));
+                source.codec = Utf8(LowerAscii(url.type));
                 source.sourceVersion = std::string(cache::audio::kProducerSalt) + ":" + source.codec + ":" +
                                        std::to_string(url.bitrate) + (url.trial ? ":trial" : ":full");
                 const cache::Key key = cache::audio::MakeKey(std::move(source));

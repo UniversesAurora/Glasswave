@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "media/source_identity.h"
+#include "core/text.h"
 #include "media/cue_encoding.h"
 #include "media/library_model.h"
 #include "ui/text.h"
@@ -85,14 +86,14 @@ std::wstring NativePath(const char* fbPath) {
         // Portable installs store library paths relative to the foobar2000 folder.
         wchar_t exe[MAX_PATH]{};
         GetModuleFileNameW(nullptr, exe, MAX_PATH);
-        std::wstring joined = DirOf(exe) + L'\\' + ui::Wide(fbPath + sizeof(kRelative) - 1);
+        std::wstring joined = DirOf(exe) + L'\\' + core::Wide(fbPath + sizeof(kRelative) - 1);
         wchar_t full[4096]{};
         if (GetFullPathNameW(joined.c_str(), 4096, full, nullptr)) return full;
         return joined;
     }
     pfc::string8 native;
     if (filesystem::g_get_native_path(fbPath, native) && strstr(native.c_str(), "://") == nullptr)
-        return ui::Wide(native);
+        return core::Wide(native);
     return {};
 }
 
@@ -229,7 +230,7 @@ SourceIdentity CueCatalog::Identify(const metadb_handle_ptr& handle) {
     const t_uint32 subsong = handle->get_subsong_index();
     SourceIdentity id;
     if (native.empty()) {  // non-file sources (streams, archives): identity is the path itself
-        id.key = Lower(ui::Wide(fbPath)) + L'|' + std::to_wstring(subsong);
+        id.key = Lower(core::Wide(fbPath)) + L'|' + std::to_wstring(subsong);
         return id;
     }
     if (!EndsWithI(native, L".cue")) {

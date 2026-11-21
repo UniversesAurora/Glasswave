@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "ui/song_table.h"
+#include "core/text.h"
 
 #include "cd/disc.h"
 #include "media/favorites.h"
@@ -14,6 +15,9 @@
 #include <unordered_set>
 
 namespace glasswave::ui {
+
+using core::Wide;
+
 
 namespace {
 

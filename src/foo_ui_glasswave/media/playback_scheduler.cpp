@@ -1,4 +1,5 @@
 #include "pch.h"
+#include "core/hex.h"
 
 #include "media/playback_scheduler.h"
 #include "media/special_playlists.h"
@@ -83,17 +84,6 @@ std::size_t OrderIndex(const char* name) {
     return SIZE_MAX;
 }
 
-std::string HexEncode(std::string_view bytes) {
-    static constexpr char digits[] = "0123456789abcdef";
-    std::string out;
-    out.reserve(bytes.size() * 2);
-    for (const unsigned char byte : bytes) {
-        out.push_back(digits[byte >> 4]);
-        out.push_back(digits[byte & 0x0f]);
-    }
-    return out;
-}
-
 void AppendLe64(std::string& out, std::uint64_t value) {
     for (unsigned i = 0; i < 8; ++i)
         out.push_back(static_cast<char>((value >> (i * 8)) & 0xff));
@@ -175,7 +165,7 @@ std::string QueueFingerprint(const metadb_handle_list& items) {
     AppendLe64(count, items.get_count());
     std::string bytes;
     AppendLe64(bytes, digest);
-    return HexEncode(count) + HexEncode(bytes);
+    return core::HexLower(count) + core::HexLower(bytes);
 }
 
 std::optional<std::string> JsonString(std::string_view json, std::string_view key) {
