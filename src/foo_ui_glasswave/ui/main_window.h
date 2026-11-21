@@ -15,6 +15,7 @@
 #include "ui/nav_pane.h"
 #include "ui/breadcrumb.h"
 #include "ui/page.h"
+#include "ui/scroll_bar.h"
 #include "ui/player_window.h"
 #include "ui/search_box.h"
 #include "ui/search_popup.h"
@@ -251,7 +252,9 @@ class MainWindow : public PageHost, public PlayerHost {
     void OnDetailAction();
     // The description's own scroll area (long artist/album/playlist introductions).
     bool DetailBriefThumb(float* top, float* height) const; // DIP within the bar
-    int DetailBriefPartAt(POINT pt) const;                  // 0 none, 1 up, 2 down, 3 track, 4 thumb
+    ScrollBarModel::Geometry DetailBriefGeometry() const;
+    ScrollBarModel::Part DetailBriefPartAt(POINT pt) const;
+    float DetailBriefPage() const;
     void ScrollDetailBrief(float delta);
     void UpdateDetailBriefHover(POINT pt);
     void OnDetailBriefBarDown(POINT pt);
@@ -523,12 +526,8 @@ class MainWindow : public PageHost, public PlayerHost {
     float m_detailBriefContentH = 0;
     float m_detailBriefTextW = 0; // DIP text width (without the bar)
     bool m_detailBriefScrollable = false;
-    int m_detailBriefHot = 0; // 1 up, 2 down, 3 track, 4 thumb
-    int m_detailBriefPressed = 0;
-    int m_detailBriefTrackDir = 0;   // track click above (1) or below (2) the thumb
+    ScrollBarModel m_briefScroll; // the description's bar
     int m_detailBriefDragOffset = 0; // px
-    POINT m_detailBriefPressPt{};
-    std::array<float, 5> m_detailBriefBlend{}; // 0 normal .. 1 hot .. 2 pressed
     bool m_scrollAnimActive = false;
     bool m_scrollRepeatActive = false;
     ULONGLONG m_scrollRepeatSince = 0;

@@ -1,6 +1,7 @@
 #pragma once
 #include "core/signal.h"
 #include "media/list_sources.h"
+#include "ui/scroll_bar.h"
 
 #include <memory>
 
@@ -49,7 +50,7 @@ public:
     void SetShelfPositions(const std::map<std::wstring, float>& positions);
 
     bool HitTest(POINT pt) const { return PtInRect(&m_bounds, pt) != FALSE; }
-    bool Capturing() const { return m_drag != Drag::None || m_scrollPressed != 0; }
+    bool Capturing() const { return m_drag != Drag::None || m_scrollBar.Pressed() != ScrollBarModel::kNone; }
     LPCWSTR CursorAt(POINT pt) const;  // system cursor id, or null for the default
     // Text shown cut short under the pointer: its whole text and its box in client px.
     bool CutTextAt(POINT pt, std::wstring* text, RECT* rect) const;
@@ -237,7 +238,10 @@ private:
     void DrawArt(ID2D1DeviceContext* dc, const metadb_handle_ptr& track, D2D1_RECT_F box) {
         DrawArt(dc, std::wstring(), track, box);
     }
+    ScrollBarModel::Geometry BarGeometry() const;
+    static ScrollBarModel::Part BarPart(Part part);
     bool ThumbGeometry(float* top, float* height) const;  // in px, relative to the scrollbar
+    float ScrollPage() const; // DIP a track press scrolls
 
     winrt::Windows::UI::Composition::ContainerVisual m_root{nullptr};
     winrt::Windows::UI::Composition::CompositionRectangleGeometry m_clipGeometry{nullptr};
@@ -325,11 +329,7 @@ private:
     bool m_playHot = false; // the mouse is on the button itself
     size_t m_hotHeader = SIZE_MAX;  // display index of the hovered header cell
     size_t m_anchor = SIZE_MAX;
-    int m_scrollHot = 0;      // 1 up, 2 down, 3 track, 4 thumb
-    int m_scrollPressed = 0;
-    int m_scrollTrackDir = 0;  // track click above (1) or below (2) the thumb
-    POINT m_scrollPt{};
-    std::array<float, 5> m_scrollBlend{};  // 0 normal .. 1 hot .. 2 pressed
+    ScrollBarModel m_scrollBar;
     Drag m_drag = Drag::None;
     int m_dragOffset = 0;   // thumb
     size_t m_dragCol = 0;   // display index

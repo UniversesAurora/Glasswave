@@ -2172,32 +2172,33 @@ void ListView::DrawArt(ID2D1DeviceContext* dc, const std::wstring& key, const me
                       Brush(dc, 0x000000, 0.18f).get(), px);
 }
 
-// By pixels: the thumb is the view's share of the content, wherever the tall rows are.
-bool ListView::ThumbGeometry(float* top, float* height) const {
-    const float arrow = kScrollArrow * m_scale;
-    const float trackH = static_cast<float>(std::max<LONG>(RowsRect().bottom - RowsRect().top, 0)) - arrow * 2;
-    const float content = ContentHeightDip(), view = RowsHeightDip(), max = MaxScrollDip();
-    if (max <= 0.5f || trackH <= 0 || content <= 0) return false;
-    const float minH = 24.0f * m_scale;
-    *height = std::min(trackH, std::max(minH, trackH * view / content));
-    *top = arrow + (trackH - *height) * std::clamp(ContentTopDip() / max, 0.0f, 1.0f);
-    return true;
+// The bar measures in pixels (its arrows 17 DIP, its thumb at least 24), the content in DIP:
+// the thumb is the view's share of the content, wherever the tall rows are.
+ScrollBarModel::Geometry ListView::BarGeometry() const {
+    const RECT rr = RowsRect();
+    return {static_cast<float>(std::max<LONG>(rr.bottom - rr.top, 0)), kScrollArrow * m_scale, 24.0f * m_scale,
+            ContentHeightDip(), RowsHeightDip(), ContentTopDip()};
 }
 
-bool ListView::AnimateScrollBar() {
-    bool active = false, changed = false;
-    for (int part = 1; part <= 4; ++part) {
-        const float target = m_scrollPressed == part ? 2.0f : m_scrollHot == part ? 1.0f : 0.0f;
-        float& blend = m_scrollBlend[part];
-        if (blend < target) {
-            blend = std::min(target, blend + 0.12f);
-            changed = true;
-        } else if (blend > target) {
-            blend = std::max(target, blend - 0.12f);
-            changed = true;
-        }
-        if (blend != target) active = true;
+ScrollBarModel::Part ListView::BarPart(Part part) {
+    switch (part) {
+    case Part::ArrowUp: return ScrollBarModel::kUp;
+    case Part::ArrowDown: return ScrollBarModel::kDown;
+    case Part::Track: return ScrollBarModel::kTrack;
+    case Part::Thumb: return ScrollBarModel::kThumb;
+    default: return ScrollBarModel::kNone;
     }
+}
+
+bool ListView::ThumbGeometry(float* top, float* height) const {
+    return ScrollBarModel::Thumb(BarGeometry(), top, height);
+}
+
+float ListView::ScrollPage() const { return std::max(RowsHeightDip() - 24.0f, 24.0f); }
+
+bool ListView::AnimateScrollBar() {
+    bool changed = false;
+    bool active = m_scrollBar.Animate(&changed);
     if (changed) PaintScrollBar();
     // Shelves slide to their page (ease-out cubic); play buttons fade.
     bool rows = false;
@@ -2244,37 +2245,10 @@ bool ListView::AnimateScrollBar() {
 }
 
 bool ListView::OnScrollRepeat() {
-    const float page = std::max(RowsHeightDip() - 24.0f, 24.0f);
-    switch (m_scrollPressed) {
-    case 1:
-        if (ContentTopDip() <= 0) return false;
-        ScrollBy(-kScrollStep);
-        return ContentTopDip() > 0;
-    case 2:
-        if (ContentTopDip() >= MaxScrollDip()) return false;
-        ScrollBy(kScrollStep);
-        return ContentTopDip() < MaxScrollDip();
-    case 3: {
-        float top = 0, height = 0;
-        if (!ThumbGeometry(&top, &height)) return false;
-        const RECT rr = RowsRect();
-        const float y = static_cast<float>(m_scrollPt.y - rr.top);
-        if (m_scrollTrackDir == 1) {
-            if (y >= top) return false;  // the thumb has reached the pointer
-            if (ContentTopDip() <= 0) return false;
-            ScrollBy(-page);
-            return true;
-        }
-        if (m_scrollTrackDir == 2) {
-            if (y < top + height) return false;
-            if (ContentTopDip() >= MaxScrollDip()) return false;
-            ScrollBy(page);
-            return true;
-        }
-        return false;
-    }
-    default: return false;
-    }
+    const float step = m_scrollBar.Repeat(BarGeometry(), kScrollStep, ScrollPage());
+    if (step == 0) return false; // an end, or the thumb under the pointer
+    ScrollBy(step);
+    return true;
 }
 
 void ListView::PaintScrollBar() {
@@ -2285,7 +2259,7 @@ void ListView::PaintScrollBar() {
     const bool has = ThumbGeometry(&top, &height);
     const float s = m_scale;
     host.Repaint(m_scroll, w, h, s, [&](ID2D1DeviceContext* dc) {
-        wp::ScrollBar(dc, {w / s, h / s}, 0, 0, m_scrollBlend.data()); // the track and the arrows
+        wp::ScrollBar(dc, {w / s, h / s}, 0, 0, m_scrollBar.Blend()); // the track and the arrows
     });
     PlaceVisual(m_scroll, static_cast<float>(rr.right - m_bounds.left), static_cast<float>(ContentOffsetPx()),
                 static_cast<float>(w), static_cast<float>(h));
@@ -2293,7 +2267,7 @@ void ListView::PaintScrollBar() {
     if (has) {
         const int th = std::max(1, static_cast<int>(std::lround(height)));
         host.Repaint(m_thumb, w, th, s, [&](ID2D1DeviceContext* dc) {
-            wp::ScrollBar(dc, {w / s, th / s}, 0, th / s, m_scrollBlend.data(), true);
+            wp::ScrollBar(dc, {w / s, th / s}, 0, th / s, m_scrollBar.Blend(), true);
         });
         m_thumb.Size(float2{static_cast<float>(w), static_cast<float>(th)});
     }
@@ -2343,19 +2317,12 @@ ListView::Hit ListView::HitAt(POINT pt) const {
     }
     const RECT rr = RowsRect();
     if (pt.x >= rr.right) {
-        float top = 0, height = 0;
-        const float arrow = kScrollArrow * m_scale;
-        const float y = static_cast<float>(pt.y - rr.top);
-        if (y < arrow) {
-            hit.part = Part::ArrowUp;
-            return hit;
+        switch (ScrollBarModel::PartAt(BarGeometry(), static_cast<float>(pt.y - rr.top))) {
+        case ScrollBarModel::kUp: hit.part = Part::ArrowUp; break;
+        case ScrollBarModel::kDown: hit.part = Part::ArrowDown; break;
+        case ScrollBarModel::kThumb: hit.part = Part::Thumb; break;
+        default: hit.part = Part::Track; break;
         }
-        if (y >= static_cast<float>(rr.bottom - rr.top) - arrow) {
-            hit.part = Part::ArrowDown;
-            return hit;
-        }
-        hit.part = Part::Track;
-        if (ThumbGeometry(&top, &height) && y >= top && y < top + height) hit.part = Part::Thumb;
         return hit;
     }
     hit.part = Part::Empty;
@@ -2624,15 +2591,7 @@ void ListView::OnMouseMove(POINT pt) {
         m_hotLinkLine = linkLine;
         PaintRows();
     }
-    const int scrollHot = hit.part == Part::ArrowUp ? 1
-                          : hit.part == Part::ArrowDown ? 2
-                          : hit.part == Part::Track   ? 3
-                          : hit.part == Part::Thumb   ? 4
-                                                      : 0;
-    if (scrollHot != m_scrollHot) {
-        m_scrollHot = scrollHot;
-        if (onScrollAnim) onScrollAnim();
-    }
+    if (m_scrollBar.SetHot(BarPart(hit.part)) && onScrollAnim) onScrollAnim();
 }
 
 void ListView::OnMouseLeave() {
@@ -2670,10 +2629,7 @@ void ListView::OnMouseLeave() {
         m_hotLinkGroup = SIZE_MAX;
         PaintRows();
     }
-    if (m_scrollHot) {
-        m_scrollHot = 0;
-        if (onScrollAnim) onScrollAnim();
-    }
+    if (m_scrollBar.SetHot(ScrollBarModel::kNone) && onScrollAnim) onScrollAnim();
 }
 
 void ListView::OnLButtonDown(POINT pt, bool ctrl, bool shift) {
@@ -2683,42 +2639,18 @@ void ListView::OnLButtonDown(POINT pt, bool ctrl, bool shift) {
         float top = 0, height = 0;
         ThumbGeometry(&top, &height);
         m_drag = Drag::Thumb;
-        m_scrollPressed = 4;
-        m_scrollPt = pt;
+        m_scrollBar.Press(ScrollBarModel::kThumb, static_cast<float>(pt.y - RowsRect().top), BarGeometry(), 0, 0);
         m_dragOffset = static_cast<int>(pt.y - RowsRect().top - top);
         if (onScrollAnim) onScrollAnim();
         break;
     }
-    case Part::Track: {
-        float top = 0, height = 0;
-        if (ThumbGeometry(&top, &height)) {
-            const float page = std::max(RowsHeightDip() - 24.0f, 24.0f);
-            if (pt.y - RowsRect().top < top) {
-                m_scrollTrackDir = 1;
-                ScrollBy(-page);
-            } else {
-                m_scrollTrackDir = 2;
-                ScrollBy(page);
-            }
-        }
-        m_scrollPressed = 3;
-        m_scrollPt = pt;
-        if (onScrollAnim) onScrollAnim();
-        if (onScrollHold) onScrollHold();
-        break;
-    }
-    case Part::ArrowUp: {
-        ScrollBy(-kScrollStep);
-        m_scrollPressed = 1;
-        m_scrollPt = pt;
-        if (onScrollAnim) onScrollAnim();
-        if (onScrollHold) onScrollHold();
-        break;
-    }
+    case Part::Track:
+    case Part::ArrowUp:
     case Part::ArrowDown: {
-        ScrollBy(kScrollStep);
-        m_scrollPressed = 2;
-        m_scrollPt = pt;
+        const float y = static_cast<float>(pt.y - RowsRect().top);
+        if (const float step = m_scrollBar.Press(BarPart(hit.part), y, BarGeometry(), kScrollStep, ScrollPage());
+            step != 0)
+            ScrollBy(step);
         if (onScrollAnim) onScrollAnim();
         if (onScrollHold) onScrollHold();
         break;
@@ -2816,11 +2748,7 @@ void ListView::OnLButtonDown(POINT pt, bool ctrl, bool shift) {
 void ListView::OnLButtonUp(POINT pt) {
     const Drag drag = m_drag;
     m_drag = Drag::None;
-    if (m_scrollPressed) {
-        m_scrollPressed = 0;
-        m_scrollTrackDir = 0;
-        if (onScrollAnim) onScrollAnim();
-    }
+    if (m_scrollBar.Release() && onScrollAnim) onScrollAnim();
     switch (drag) {
     case Drag::ShelfButton: {
         const size_t group = m_shelfPressedGroup, side = m_shelfPressedSide;
@@ -2900,10 +2828,9 @@ void ListView::CancelDrag() {
         m_cards->SetPressed(m_source, SIZE_MAX);
     }
     if (m_drag != Drag::None) m_drag = Drag::None;
-    if (m_scrollPressed || m_scrollHot) {
-        m_scrollPressed = 0;
-        m_scrollTrackDir = 0;
-        m_scrollHot = 0;
+    if (m_scrollBar.Pressed() != ScrollBarModel::kNone || m_scrollBar.Hot() != ScrollBarModel::kNone) {
+        m_scrollBar.Release();
+        m_scrollBar.SetHot(ScrollBarModel::kNone);
         if (onScrollAnim) onScrollAnim();
     }
     PaintHeader();

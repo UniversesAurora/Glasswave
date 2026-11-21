@@ -4229,9 +4229,7 @@ void MainWindow::Navigate(const View& requested, bool push) {
     if (!sameView) {
         m_detailBriefExpanded = false;
         m_detailBriefScroll = 0;
-        m_detailBriefHot = 0;
-        m_detailBriefPressed = 0;
-        m_detailBriefBlend.fill(0.0f);
+        m_briefScroll.Reset();
     }
     if (push && !sameView) {
         // A new view clears the search, like WMP.
@@ -4547,7 +4545,7 @@ void MainWindow::PaintDetailHeader() {
                     const D2D1::Matrix3x2F baseM(base._11, base._12, base._21, base._22, base._31, base._32);
                     dc->SetTransform(D2D1::Matrix3x2F::Translation(barX, barY) * baseM);
                     wp::ScrollBar(dc, {kDetailScrollWidth, barH}, thumbTop, thumbH,
-                                  m_detailBriefBlend.data());
+                                  m_briefScroll.Blend());
                     dc->SetTransform(baseM);
                 }
             }
@@ -4703,28 +4701,18 @@ void MainWindow::OnDetailAction() {
     if (m_page) m_page->DetailAction();
 }
 
-bool MainWindow::DetailBriefThumb(float* top, float* height) const {
-    if (!m_detailBriefScrollable) return false;
-    const float arrow = 17.0f;
-    const float barH = m_detailBriefViewH;
-    const float trackH = barH - arrow * 2;
-    if (trackH <= 0 || m_detailBriefContentH <= m_detailBriefViewH + 0.5f) return false;
-    *height = std::max(24.0f, std::min(trackH, trackH * m_detailBriefViewH / m_detailBriefContentH));
-    const float maxScroll = std::max(0.001f, m_detailBriefContentH - m_detailBriefViewH);
-    *top = arrow + (trackH - *height) * (m_detailBriefScroll / maxScroll);
-    return true;
+// The description's bar measures in DIP, its arrows 17 tall, its thumb at least 24.
+ScrollBarModel::Geometry MainWindow::DetailBriefGeometry() const {
+    return {m_detailBriefViewH, 17.0f, 24.0f, m_detailBriefContentH, m_detailBriefViewH, m_detailBriefScroll};
 }
 
-int MainWindow::DetailBriefPartAt(POINT pt) const {
-    if (!m_detailBriefScrollable || !PtInRect(&m_layout.detailBriefBar, pt)) return 0;
-    const RECT& bar = m_layout.detailBriefBar;
-    const float y = (pt.y - bar.top) / m_scale;
-    const float h = (bar.bottom - bar.top) / m_scale;
-    if (y < 17.0f) return 1;
-    if (y >= h - 17.0f) return 2;
-    float top = 0, height = 0;
-    if (DetailBriefThumb(&top, &height) && y >= top && y < top + height) return 4;
-    return 3;
+bool MainWindow::DetailBriefThumb(float* top, float* height) const {
+    return m_detailBriefScrollable && ScrollBarModel::Thumb(DetailBriefGeometry(), top, height);
+}
+
+ScrollBarModel::Part MainWindow::DetailBriefPartAt(POINT pt) const {
+    if (!m_detailBriefScrollable || !PtInRect(&m_layout.detailBriefBar, pt)) return ScrollBarModel::kNone;
+    return ScrollBarModel::PartAt(DetailBriefGeometry(), (pt.y - m_layout.detailBriefBar.top) / m_scale);
 }
 
 void MainWindow::ScrollDetailBrief(float delta) {
@@ -4736,40 +4724,26 @@ void MainWindow::ScrollDetailBrief(float delta) {
 }
 
 void MainWindow::UpdateDetailBriefHover(POINT pt) {
-    const int part = DetailBriefPartAt(pt);
-    if (part != m_detailBriefHot) {
-        m_detailBriefHot = part;
-        StartScrollAnimation();
-    }
+    if (m_briefScroll.SetHot(DetailBriefPartAt(pt))) StartScrollAnimation();
 }
 
+// The description scrolls a line of 54 DIP per arrow step and its height less two lines per page.
+float MainWindow::DetailBriefPage() const { return std::max(18.0f, m_detailBriefViewH - 36.0f); }
+
 void MainWindow::OnDetailBriefBarDown(POINT pt) {
-    const int part = DetailBriefPartAt(pt);
-    m_detailBriefPressed = part;
-    m_detailBriefPressPt = pt;
-    if (part == 1) {
-        ScrollDetailBrief(-54.0f);
-    } else if (part == 2) {
-        ScrollDetailBrief(54.0f);
-    } else if (part == 3) {
-        float top = 0, height = 0;
-        if (DetailBriefThumb(&top, &height)) {
-            const float y = (pt.y - m_layout.detailBriefBar.top) / m_scale;
-            const float page = std::max(18.0f, m_detailBriefViewH - 36.0f);
-            m_detailBriefTrackDir = y < top ? 1 : 2;
-            ScrollDetailBrief(y < top ? -page : page);
-        }
-    } else if (part == 4) {
-        float top = 0, height = 0;
-        if (DetailBriefThumb(&top, &height))
-            m_detailBriefDragOffset = pt.y - m_layout.detailBriefBar.top - PxI(top);
-    }
+    const ScrollBarModel::Part part = DetailBriefPartAt(pt);
+    const float y = (pt.y - m_layout.detailBriefBar.top) / m_scale;
+    if (const float step = m_briefScroll.Press(part, y, DetailBriefGeometry(), 54.0f, DetailBriefPage()); step != 0)
+        ScrollDetailBrief(step);
+    if (float top = 0, height = 0; part == ScrollBarModel::kThumb && DetailBriefThumb(&top, &height))
+        m_detailBriefDragOffset = pt.y - m_layout.detailBriefBar.top - PxI(top);
     StartScrollAnimation();
-    if (part >= 1 && part <= 3) StartScrollRepeat();
+    if (part == ScrollBarModel::kUp || part == ScrollBarModel::kDown || part == ScrollBarModel::kTrack)
+        StartScrollRepeat();
 }
 
 void MainWindow::OnDetailBriefBarMove(POINT pt) {
-    if (m_detailBriefPressed != 4) return;
+    if (m_briefScroll.Pressed() != ScrollBarModel::kThumb) return;
     float top = 0, height = 0;
     if (!DetailBriefThumb(&top, &height)) return;
     const float arrow = 17.0f;
@@ -4787,63 +4761,22 @@ void MainWindow::OnDetailBriefBarMove(POINT pt) {
 }
 
 void MainWindow::OnDetailBriefBarUp() {
-    if (!m_detailBriefPressed) return;
-    m_detailBriefPressed = 0;
-    m_detailBriefTrackDir = 0;
-    StartScrollAnimation();
+    if (m_briefScroll.Release()) StartScrollAnimation();
 }
 
 bool MainWindow::AnimateDetailScrollBar() {
-    bool active = false, changed = false;
-    for (int part = 1; part <= 4; ++part) {
-        const float target = m_detailBriefPressed == part ? 2.0f : m_detailBriefHot == part ? 1.0f : 0.0f;
-        float& blend = m_detailBriefBlend[part];
-        if (blend < target) {
-            blend = std::min(target, blend + 0.12f);
-            changed = true;
-        } else if (blend > target) {
-            blend = std::max(target, blend - 0.12f);
-            changed = true;
-        }
-        if (blend != target) active = true;
-    }
+    bool changed = false;
+    const bool active = m_briefScroll.Animate(&changed);
     if (changed) RepaintDetailHeader();
     return active;
 }
 
 bool MainWindow::OnDetailBriefRepeat() {
-    const float maxScroll = std::max(0.0f, m_detailBriefContentH - m_detailBriefViewH);
-    const float page = std::max(18.0f, m_detailBriefViewH - 36.0f);
-    switch (m_detailBriefPressed) {
-    case 1:
-        if (m_detailBriefScroll <= 0.0f) return false;
-        ScrollDetailBrief(-54.0f);
-        return m_detailBriefScroll > 0.0f;
-    case 2:
-        if (m_detailBriefScroll >= maxScroll) return false;
-        ScrollDetailBrief(54.0f);
-        return m_detailBriefScroll < maxScroll;
-    case 3: {
-        float top = 0, height = 0;
-        if (!DetailBriefThumb(&top, &height)) return false;
-        const float y = (m_detailBriefPressPt.y - m_layout.detailBriefBar.top) / m_scale;
-        if (m_detailBriefTrackDir == 1) {
-            if (y >= top) return false;
-            if (m_detailBriefScroll <= 0.0f) return false;
-            ScrollDetailBrief(-page);
-            return true;
-        }
-        if (m_detailBriefTrackDir == 2) {
-            if (y < top + height) return false;
-            if (m_detailBriefScroll >= maxScroll) return false;
-            ScrollDetailBrief(page);
-            return true;
-        }
-        return false;
-    }
-    default:
-        return false;
-    }
+    if (!m_detailBriefScrollable) return false;
+    const float step = m_briefScroll.Repeat(DetailBriefGeometry(), 54.0f, DetailBriefPage());
+    if (step == 0) return false;
+    ScrollDetailBrief(step);
+    return true;
 }
 
 void MainWindow::StartScrollAnimation() {
@@ -7273,10 +7206,7 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
             m_lyricsHover = false;
             m_pane->OnMouseLeave();
         }
-        if (m_detailBriefHot) {
-            m_detailBriefHot = 0;
-            StartScrollAnimation();
-        }
+        if (m_briefScroll.SetHot(ScrollBarModel::kNone)) StartScrollAnimation();
         if (m_hover && !IsCaptionWidget(m_hover->Id()) && !m_pressed) SetHoverWidget(nullptr);
         if (m_capture == Capture::None) {
             m_list->OnMouseLeave();
@@ -7460,8 +7390,7 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
             if (m_capture == Capture::Nav) m_nav->CancelDrag();
             if (m_capture == Capture::Lyrics && m_pane) m_pane->OnCaptureLost();
             if (m_capture == Capture::DetailScroll) {
-                m_detailBriefPressed = 0;
-                m_detailBriefTrackDir = 0;
+                m_briefScroll.Release();
                 StartScrollAnimation();
             }
             m_capture = Capture::None;
