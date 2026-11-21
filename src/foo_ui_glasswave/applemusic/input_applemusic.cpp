@@ -10,9 +10,11 @@
 #include "net/http.h"
 #include "net/resumable_fetch.h"
 #include "core/json.h"
+#include "core/task_queue.h"
 #include "stream/playback_source.h"
 #include "stream/track_snapshot.h"
 
+#include <SDK/initquit.h>
 #include <SDK/input_impl.h>
 
 #include <algorithm>
@@ -46,6 +48,7 @@ void EndSkipRun() {
 }
 
 using core::Utf8;
+using core::Wide;
 
 std::string ActualCodec(file_info& info) {
     if (const char* value = info.info_get("codec"); value && *value) return value;
@@ -68,26 +71,65 @@ bool CodecMatches(std::string_view actual, std::wstring_view declared) {
 
 std::string Lower(std::wstring_view text) { return core::LowerAscii(Utf8(text)); }
 
+// Ends playback sessions on a worker. A session is released by whichever thread drops the last
+// reference to its fetcher (a cache worker, the decoder, the main thread), and the DELETE is a
+// blocking request of up to a second, so none of them waits for it. After quit nothing is sent:
+// the bridge drops a session that is not asked for anyway.
+class SessionCleanupQueue : public initquit {
+  public:
+    static void Post(std::function<void()> task) {
+        State& state = Shared();
+        std::lock_guard lock(state.mutex);
+        if (state.stopped) return;
+        if (!state.queue) state.queue = std::make_unique<core::TaskQueue>(1);
+        state.queue->Post(std::move(task));
+    }
+
+    void on_quit() override {
+        State& state = Shared();
+        std::unique_ptr<core::TaskQueue> queue;
+        {
+            std::lock_guard lock(state.mutex);
+            state.stopped = true;
+            queue = std::move(state.queue);
+        }
+        if (queue) queue->Stop();
+    }
+
+  private:
+    struct State {
+        std::mutex mutex;
+        std::unique_ptr<core::TaskQueue> queue;
+        bool stopped = false;
+    };
+    static State& Shared() {
+        static State* state = new State; // never destroyed: a late session may still be dropped
+        return *state;
+    }
+};
+static initquit_factory_t<SessionCleanupQueue> g_sessionCleanupQueue;
+
 struct SessionCleanup {
     ~SessionCleanup() {
         if (session.empty()) return;
-        try {
-            const std::wstring cleanupBridge = bridge.empty() ? BridgeUrl() : bridge;
-            const std::string cleanupToken = token.empty() ? BridgeToken() : token;
-            net::HttpOptions options;
-            options.method = L"DELETE";
-            options.noProxy = true;
-            options.timeoutMs = 1000;
-            options.headers.emplace_back(
-                L"X-Api-Token", pfc::stringcvt::string_wide_from_utf8(cleanupToken.c_str()).get_ptr());
-            if (!transactionTag.empty())
-                options.headers.emplace_back(
-                    L"X-Glasswave-Probe-Transaction",
-                    pfc::stringcvt::string_wide_from_utf8(transactionTag.c_str()).get_ptr());
-            abort_callback_dummy abort;
-            net::SendHttp(cleanupBridge + L"/api/v1/playback/" + Encode(session), options, abort);
-        } catch (...) {
-        }
+        SessionCleanupQueue::Post([bridge = std::move(bridge), token = std::move(token),
+                                   transactionTag = std::move(transactionTag), session = std::move(session)] {
+            try {
+                const std::wstring cleanupBridge = bridge.empty() ? BridgeUrl() : bridge;
+                const std::string cleanupToken = token.empty() ? BridgeToken() : token;
+                net::HttpOptions options;
+                options.method = L"DELETE";
+                options.noProxy = true;
+                options.timeoutMs = 1000;
+                options.headers.emplace_back(L"X-Api-Token", Wide(cleanupToken));
+                if (!transactionTag.empty())
+                    options.headers.emplace_back(L"X-Glasswave-Probe-Transaction", Wide(transactionTag));
+                abort_callback_dummy abort;
+                net::SendHttp(cleanupBridge + L"/api/v1/playback/" + Encode(session), options, abort);
+            } catch (...) {
+                // The bridge drops a session nobody uses; nothing depends on this call.
+            }
+        });
     }
 
     std::wstring bridge;
