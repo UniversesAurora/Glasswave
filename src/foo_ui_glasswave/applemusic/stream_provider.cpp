@@ -1803,6 +1803,42 @@ size_t PageLimit(size_t limit) {
     return std::clamp<size_t>(limit, 1, 100);
 }
 
+std::vector<Object> ObjectsOf(const Object& collection) {
+    if (const auto data = json::GetArray(collection, L"data")) return json::Objects(*data);
+    return {};
+}
+
+std::vector<stream::Playlist> ParsePlaylistRows(const std::vector<Object>& objects) {
+    std::vector<stream::Playlist> playlists;
+    for (const auto& object : objects)
+        if (auto playlist = ParsePlaylist(object)) playlists.push_back(std::move(*playlist));
+    return playlists;
+}
+
+// The catalog search categories: the `types` the search asks for, the key their results come
+// back under and what the rows are.
+enum class SearchRows { Songs, Artists, Albums, Playlists, Mixed };
+struct SearchKind {
+    stream::ListKind kind;
+    const wchar_t* types;
+    const wchar_t* resultKey;
+    SearchRows rows;
+};
+constexpr SearchKind kSearchKinds[] = {
+    {stream::ListKind::CatalogSearch, L"songs", L"songs", SearchRows::Songs},
+    {stream::ListKind::CatalogSearchArtists, L"artists", L"artists", SearchRows::Artists},
+    {stream::ListKind::CatalogSearchAlbums, L"albums", L"albums", SearchRows::Albums},
+    {stream::ListKind::CatalogSearchPlaylists, L"playlists", L"playlists", SearchRows::Playlists},
+    {stream::ListKind::CatalogSearchTopResults, L"songs,artists,albums,playlists", L"topResults",
+     SearchRows::Mixed},
+};
+
+const SearchKind* FindSearchKind(stream::ListKind kind) {
+    for (const auto& entry : kSearchKinds)
+        if (entry.kind == kind) return &entry;
+    return nullptr;
+}
+
 std::wstring PlaylistPath(const std::wstring& id, const std::wstring& storefront, bool library,
                           bool tracks = true) {
     if (!library)
@@ -5350,6 +5386,288 @@ void StreamProvider::RestoreListRecords(const stream::ListPage& page) {
     }
 }
 
+// One read of a list page, on a worker thread: the request (query, cursor, storefront, page
+// size) and what the kind's loader fills in. The commit follows on the main thread
+// (FinishListPage). The loaders of the paged kinds share the continuation bookkeeping here.
+struct StreamProvider::ListLoad {
+    ListLoad(const stream::ListQuery& query, const ListCursorState& cursor, uint64_t fingerprint,
+             const std::wstring& storefront, uint64_t generation, size_t pageLimit, abort_callback& abort)
+        : query(query), cursor(cursor), fingerprint(fingerprint), storefront(storefront),
+          generation(generation), pageLimit(pageLimit), abort(abort) {}
+
+    const stream::ListQuery& query;
+    const ListCursorState& cursor;
+    uint64_t fingerprint;
+    const std::wstring& storefront;
+    uint64_t generation;
+    size_t pageLimit;
+    abort_callback& abort;
+
+    stream::ListPage page;
+    std::vector<Song> songs;
+    bool trackRows = false;
+    bool catalogItemRows = false;
+
+    size_t NextOffset(size_t sourceRows) const {
+        if (cursor.offset > std::numeric_limits<size_t>::max() - sourceRows)
+            throw std::runtime_error("Apple Music list position overflowed.");
+        return cursor.offset + sourceRows;
+    }
+
+    // The request of a continuation: the cursor's own path shaped by `bind`; empty on page one.
+    template <class Bind>
+    std::wstring CurrentRequest(std::wstring_view expected, Bind&& bind) const {
+        if (cursor.path.empty()) return std::wstring();
+        const std::wstring normalized = NormalizeListNext(expected, cursor.path);
+        std::wstring request = bind(std::move(normalized));
+        if (HistoryContains(cursor.history, Fnv1a(Utf8(request))))
+            throw std::runtime_error("Apple Music returned a cyclic list continuation.");
+        return request;
+    }
+
+    // Continues the list from the collection's "next" link, when it has one.
+    template <class Bind>
+    void SetNext(const Object& collection, std::wstring_view expected, Bind&& bind, size_t sourceRows) {
+        const std::wstring raw = json::GetString(collection, L"next");
+        if (raw.empty()) return;
+        const std::wstring normalized = NormalizeListNext(expected, raw);
+        const std::wstring nextRequest = bind(normalized);
+        std::wstring nextError;
+        if (!BuildListCursor(cursor, query.kind, Hex64(fingerprint),
+                             cursor.path.empty() ? expected : cursor.path, NextOffset(sourceRows), expected,
+                             raw, nextRequest, page.next, nextError)) {
+            throw std::runtime_error(Utf8(nextError));
+        }
+        page.more = true;
+    }
+
+    // The request shapes of the paths the lists continue.
+    auto LimitBinder() const {
+        return [limit = pageLimit](std::wstring path) {
+            return WithQueryValue(std::move(path), L"limit", std::to_wstring(limit));
+        };
+    }
+    auto LimitAndQueryBinder(std::wstring parameters) const {
+        return [limit = pageLimit, parameters = std::move(parameters)](std::wstring path) {
+            path = WithQueryValue(std::move(path), L"limit", std::to_wstring(limit));
+            return EnsureQuery(std::move(path), parameters);
+        };
+    }
+    auto RelationshipBinder(bool library) const {
+        return [library, limit = pageLimit](std::wstring path) {
+            return RelationshipPagePath(std::move(path), library, limit);
+        };
+    }
+
+    // One page of a resource's relationship that came with the resource (or is read from its
+    // own link when the resource carries none).
+    std::vector<Object> ParseRelationshipPage(const Object& item, const wchar_t* relationship,
+                                              std::wstring_view expected, bool library) {
+        const auto relation = Relationship(item, relationship);
+        std::vector<Object> objects = EmbeddedRelationship(item, relationship);
+        std::wstring next = relation ? json::GetString(*relation, L"next") : std::wstring();
+        std::wstring href = relation ? json::GetString(*relation, L"href") : std::wstring();
+        if (objects.empty()) {
+            const std::wstring firstPath = !href.empty() ? href : next;
+            if (!firstPath.empty()) {
+                const std::wstring path =
+                    RelationshipPagePath(NormalizeListNext(expected, firstPath), library, pageLimit);
+                if (HistoryContains(cursor.history, Fnv1a(Utf8(path))))
+                    throw std::runtime_error("Apple Music returned a cyclic list continuation.");
+                const Object response = Apple(path, abort);
+                objects = ObjectsOf(response);
+                if (relation)
+                    if (const auto total = CollectionTotal(*relation)) page.total = total;
+                if (const auto total = CollectionTotal(response)) page.total = total;
+                SetNext(response, expected, RelationshipBinder(library), objects.size());
+                return objects;
+            }
+        }
+        if (relation)
+            if (const auto total = CollectionTotal(*relation)) page.total = total;
+        SetNext(relation ? *relation : Object(), expected, RelationshipBinder(library), objects.size());
+        return objects;
+    }
+
+    // Every page but the first of a resource's tracks (and the first of a library resource,
+    // whose detail endpoint rejects projected relationship queries) is the tracks collection.
+    std::vector<Object> TracksCollectionPage(const std::wstring& tracksPath, bool library) {
+        const std::wstring request = cursor.path.empty()
+                                         ? RelationshipPagePath(tracksPath, library, pageLimit)
+                                         : CurrentRequest(tracksPath, RelationshipBinder(library));
+        const Object response = Apple(request, abort);
+        std::vector<Object> objects = ObjectsOf(response);
+        if (const auto total = CollectionTotal(response)) page.total = total;
+        SetNext(response, tracksPath, RelationshipBinder(library), objects.size());
+        return objects;
+    }
+
+    void LoadPlaylistTracks(const stream::Id& playlist, bool library) {
+        trackRows = true;
+        const std::wstring tracksPath = PlaylistTracksPath(playlist, storefront, library);
+        std::vector<Object> objects;
+        if (library) page.playlist = Catalog::Get().FindPlaylistRaw(playlist);
+        if (page.playlist && page.playlist->trackCount >= 0)
+            page.total = static_cast<size_t>(page.playlist->trackCount);
+        // Apple's library playlist detail endpoint rejects projected relationship
+        // queries in practice, so the tracks collection itself is page one.
+        // The catalog answers a resource request that carries "limit" with 400 ("Limit may
+        // not be supplied on this request", observed 2026-11-13); its included tracks come
+        // in the service's own page size, continued through the relationship's next link.
+        if (cursor.path.empty() && !library) {
+            const Object response = Apple(PlaylistPath(playlist, storefront, library, true), abort);
+            const auto item = FirstData(response);
+            if (!item) throw std::runtime_error("Apple Music returned no playlist.");
+            page.playlist = ParsePlaylist(*item);
+            if (!page.playlist) throw std::runtime_error("Apple Music returned an invalid playlist.");
+            objects = ParseRelationshipPage(*item, L"tracks", tracksPath, library);
+            if (!page.total && page.playlist->trackCount >= 0)
+                page.total = static_cast<size_t>(page.playlist->trackCount);
+        } else {
+            objects = TracksCollectionPage(tracksPath, library);
+        }
+        songs = ParseSongs(objects);
+    }
+
+    void LoadAlbumTracks(const stream::Id& album, bool library) {
+        trackRows = true;
+        const std::wstring tracksPath = AlbumTracksPath(album, storefront, library);
+        std::vector<Object> objects;
+        std::optional<stream::Album> albumInfo;
+        // Library album details show the same query restriction as playlists;
+        // the tracks collection is the stable source for page one and continuations.
+        if (cursor.path.empty() && !library) { // no "limit": see the playlist above
+            const Object response = Apple(AlbumPath(album, storefront, library), abort);
+            const auto item = FirstData(response);
+            if (!item) throw std::runtime_error("Apple Music returned no album.");
+            albumInfo = ParseAlbum(*item);
+            if (!albumInfo) throw std::runtime_error("Apple Music returned an invalid album.");
+            page.album = albumInfo;
+            objects = ParseRelationshipPage(*item, L"tracks", tracksPath, library);
+            if (!page.total && albumInfo->trackCount >= 0)
+                page.total = static_cast<size_t>(albumInfo->trackCount);
+        } else {
+            objects = TracksCollectionPage(tracksPath, library);
+        }
+        songs = ParseSongs(objects);
+        if (!albumInfo) albumInfo = Catalog::Get().FindAlbumRaw(album);
+        if (albumInfo) {
+            page.album = albumInfo;
+            if (albumInfo->trackCount >= 0) page.total = static_cast<size_t>(albumInfo->trackCount);
+            for (auto& song : songs)
+                ApplyAlbumContext(song, *albumInfo);
+        }
+    }
+
+    // The rows of one catalog search category (an empty page for a missing collection).
+    void AssignSearchRows(SearchRows rows, const std::vector<Object>& objects) {
+        switch (rows) {
+        case SearchRows::Songs:
+            songs = ParseSongs(objects);
+            trackRows = true;
+            break;
+        case SearchRows::Artists:
+            page.rows = ParseArtists(objects);
+            break;
+        case SearchRows::Albums:
+            page.rows = ParseAlbums(objects);
+            break;
+        case SearchRows::Playlists:
+            page.rows = ParsePlaylistRows(objects);
+            break;
+        case SearchRows::Mixed:
+            page.rows = ParseCatalogSearchItems(objects);
+            catalogItemRows = true;
+            break;
+        }
+    }
+};
+
+StreamProvider::ArtistSource StreamProvider::ResolveArtistSource(const stream::Id& artist,
+                                                                  abort_callback& abort) const {
+    ArtistSource source;
+    source.library = IsLibraryId(artist) && artist[0] == L'r';
+    source.catalogId = ArtistCatalogId(artist);
+    if (source.library && source.catalogId.empty())
+        source.catalogId = ResolveLibraryArtistCatalogId(artist, abort);
+    return source;
+}
+
+// One of an artist's catalog views. A 404 for an artist that does exist is an empty view
+// (nullopt); any other failure, and a 404 on a continuation, is an error.
+std::optional<Object> StreamProvider::ReadArtistView(ListLoad& load, const stream::Id& catalogId,
+                                                     const std::wstring& request) {
+    try {
+        return Apple(request, load.abort);
+    } catch (const BridgeHttpError& exception) {
+        if (exception.status() != 404 || !load.cursor.path.empty() ||
+            !VerifyCatalogArtist(load.generation, load.storefront, catalogId, load.abort))
+            throw;
+        return std::nullopt;
+    }
+}
+
+// Parks a read of the Favorite Songs list until the system playlist is bound (the library
+// snapshot names it). True when the request was parked or answered; false when the playlist
+// is known and the read can go on.
+bool StreamProvider::HoldForFavoritePlaylist(const stream::ListQuery& query, const stream::ListCursor& cursor,
+                                             size_t limit, uint64_t generation,
+                                             const stream::ListPageDone& done, stream::Id& favoritePlaylist) {
+    constexpr size_t kMaximumFavoriteWaiters = 64;
+    FavoriteBindingState favoriteBindingState = FavoriteBindingState::Unknown;
+    bool knownEmpty = false;
+    bool startBinding = false;
+    bool overflow = false;
+    uint64_t bindingEpoch = 0;
+    {
+        std::lock_guard lock(m_mutex);
+        if (!m_started || generation != m_generation) return true;
+        favoritePlaylist = m_favoritePlaylistId;
+        favoriteBindingState = m_favoriteBindingState;
+        if (favoritePlaylist.empty() && favoriteBindingState != FavoriteBindingState::Empty) {
+            std::erase_if(m_favoritePageWaiters, [generation](const FavoritePageWaiter& waiter) {
+                return waiter.generation != generation || ListCancelled(waiter.query.cancelled) ||
+                       !waiter.done;
+            });
+            if (!m_favoriteBindingReadInFlight) {
+                m_favoriteBindingState = FavoriteBindingState::Pending;
+                if (m_refreshInFlight && m_refreshGeneration == generation) {
+                    m_favoriteBindingReadInFlight = true;
+                } else {
+                    ++m_favoriteBindingEpoch;
+                    m_favoriteBindingReadInFlight = true;
+                    startBinding = true;
+                }
+            }
+            bindingEpoch = m_favoriteBindingEpoch;
+            if (m_favoritePageWaiters.size() >= kMaximumFavoriteWaiters) {
+                overflow = true;
+            } else {
+                m_favoritePageWaiters.push_back({generation, query, cursor, limit, done});
+            }
+        } else if (favoriteBindingState == FavoriteBindingState::Empty) {
+            knownEmpty = true;
+        }
+    }
+    if (overflow) {
+        if (!ListCancelled(query.cancelled) && done)
+            done({}, L"Too many pending Apple Music Favorite Songs requests.");
+        return true;
+    }
+    if (knownEmpty) {
+        stream::ListPage empty;
+        empty.rows = std::vector<stream::Track>{};
+        empty.total = 0;
+        if (!ListCancelled(query.cancelled) && done) done(std::move(empty), {});
+        return true;
+    }
+    if (favoritePlaylist.empty()) {
+        if (startBinding) StartFavoriteBindingRead(generation, bindingEpoch);
+        return true;
+    }
+    return false;
+}
+
 void StreamProvider::FetchListPage(const stream::ListQuery& sourceQuery, const stream::ListCursor& cursor,
                                    size_t limit, stream::ListPageDone done) {
     done = stream::GuardDone(std::move(done), kRequestDropped, sourceQuery.cancelled);
@@ -5358,7 +5676,6 @@ void StreamProvider::FetchListPage(const stream::ListQuery& sourceQuery, const s
     std::wstring locale;
     uint64_t preferenceEpoch = 0;
     stream::Id favoritePlaylist;
-    FavoriteBindingState favoriteBindingState = FavoriteBindingState::Unknown;
     {
         std::lock_guard lock(m_mutex);
         generation = m_generation;
@@ -5367,7 +5684,6 @@ void StreamProvider::FetchListPage(const stream::ListQuery& sourceQuery, const s
         locale = m_locale;
         preferenceEpoch = m_artistPreferenceEpoch;
         favoritePlaylist = m_favoritePlaylistId;
-        favoriteBindingState = m_favoriteBindingState;
     }
 
     stream::ListQuery query = sourceQuery;
@@ -5377,62 +5693,13 @@ void StreamProvider::FetchListPage(const stream::ListQuery& sourceQuery, const s
         else if (query.section == kSavedSection)
             query.shelf = stream::Shelf::Saved;
     }
+
     const bool favoriteQuery =
         query.kind == stream::ListKind::Favorites ||
         (query.kind == stream::ListKind::SectionTracks && query.section == kFavoritesSection);
-    if (favoriteQuery && favoritePlaylist.empty()) {
-        constexpr size_t kMaximumFavoriteWaiters = 64;
-        bool knownEmpty = false;
-        bool startBinding = false;
-        bool overflow = false;
-        uint64_t bindingEpoch = 0;
-        {
-            std::lock_guard lock(m_mutex);
-            if (!m_started || generation != m_generation) return;
-            favoritePlaylist = m_favoritePlaylistId;
-            favoriteBindingState = m_favoriteBindingState;
-            if (favoritePlaylist.empty() && favoriteBindingState != FavoriteBindingState::Empty) {
-                std::erase_if(m_favoritePageWaiters, [generation](const FavoritePageWaiter& waiter) {
-                    return waiter.generation != generation || ListCancelled(waiter.query.cancelled) ||
-                           !waiter.done;
-                });
-                if (!m_favoriteBindingReadInFlight) {
-                    m_favoriteBindingState = FavoriteBindingState::Pending;
-                    if (m_refreshInFlight && m_refreshGeneration == generation) {
-                        m_favoriteBindingReadInFlight = true;
-                    } else {
-                        ++m_favoriteBindingEpoch;
-                        m_favoriteBindingReadInFlight = true;
-                        startBinding = true;
-                    }
-                }
-                bindingEpoch = m_favoriteBindingEpoch;
-                if (m_favoritePageWaiters.size() >= kMaximumFavoriteWaiters) {
-                    overflow = true;
-                } else {
-                    m_favoritePageWaiters.push_back({generation, query, cursor, limit, done});
-                }
-            } else if (favoriteBindingState == FavoriteBindingState::Empty) {
-                knownEmpty = true;
-            }
-        }
-        if (overflow) {
-            if (!ListCancelled(query.cancelled) && done)
-                done({}, L"Too many pending Apple Music Favorite Songs requests.");
-            return;
-        }
-        if (knownEmpty) {
-            stream::ListPage empty;
-            empty.rows = std::vector<stream::Track>{};
-            empty.total = 0;
-            if (!ListCancelled(query.cancelled) && done) done(std::move(empty), {});
-            return;
-        }
-        if (favoritePlaylist.empty()) {
-            if (startBinding) StartFavoriteBindingRead(generation, bindingEpoch);
-            return;
-        }
-    }
+    if (favoriteQuery && favoritePlaylist.empty() &&
+        HoldForFavoritePlaylist(query, cursor, limit, generation, done, favoritePlaylist))
+        return;
     if (favoriteQuery) query.id = favoritePlaylist;
 
     const uint64_t fingerprint = ListQueryFingerprint(query, storefront, locale);
@@ -5448,676 +5715,10 @@ void StreamProvider::FetchListPage(const stream::ListQuery& sourceQuery, const s
     Post(generation, [this, query = std::move(query), cursorState, fingerprint, storefront, generation,
                       preferenceEpoch, pageLimit, derivedGroupsPage, done = std::move(done)]() mutable {
         if (query.cancelled && query.cancelled->load(std::memory_order_acquire)) return;
-        stream::ListPage page;
-        std::vector<Song> songs;
-        bool trackRows = false;
-        bool catalogItemRows = false;
         std::wstring error;
+        ListLoad load(query, cursorState, fingerprint, storefront, generation, pageLimit, *m_abort);
         try {
-            abort_callback& abort = *m_abort;
-            const auto nextOffset = [&cursorState](size_t sourceRows) {
-                if (cursorState.offset > std::numeric_limits<size_t>::max() - sourceRows)
-                    throw std::runtime_error("Apple Music list position overflowed.");
-                return cursorState.offset + sourceRows;
-            };
-            const auto currentRequest = [&cursorState](std::wstring_view expected, auto&& add_parameters) {
-                if (cursorState.path.empty()) return std::wstring();
-                const std::wstring normalized = NormalizeListNext(expected, cursorState.path);
-                std::wstring request = add_parameters(std::move(normalized));
-                if (HistoryContains(cursorState.history, Fnv1a(Utf8(request))))
-                    throw std::runtime_error("Apple Music returned a cyclic list continuation.");
-                return request;
-            };
-            const auto setNext = [&](const Object& collection, std::wstring_view expected,
-                                     auto&& add_parameters, size_t sourceRows) {
-                const std::wstring raw = json::GetString(collection, L"next");
-                if (raw.empty()) return;
-                const std::wstring normalized = NormalizeListNext(expected, raw);
-                const std::wstring nextRequest = add_parameters(normalized);
-                std::wstring nextError;
-                if (!BuildListCursor(cursorState, query.kind, Hex64(fingerprint),
-                                     cursorState.path.empty() ? expected : cursorState.path,
-                                     nextOffset(sourceRows), expected, raw, nextRequest, page.next,
-                                     nextError)) {
-                    throw std::runtime_error(Utf8(nextError));
-                }
-                page.more = true;
-            };
-            const auto parseRelationshipPage = [&](const Object& item, const wchar_t* relationship,
-                                                   std::wstring_view expected, bool library) {
-                const auto relation = Relationship(item, relationship);
-                std::vector<Object> objects = EmbeddedRelationship(item, relationship);
-                std::wstring next = relation ? json::GetString(*relation, L"next") : std::wstring();
-                std::wstring href = relation ? json::GetString(*relation, L"href") : std::wstring();
-                if (objects.empty()) {
-                    const std::wstring firstPath = !href.empty() ? href : next;
-                    if (!firstPath.empty()) {
-                        const std::wstring path =
-                            RelationshipPagePath(NormalizeListNext(expected, firstPath), library, pageLimit);
-                        if (HistoryContains(cursorState.history, Fnv1a(Utf8(path))))
-                            throw std::runtime_error("Apple Music returned a cyclic list continuation.");
-                        const Object response = Apple(path, abort);
-                        if (const auto data = json::GetArray(response, L"data"))
-                            objects = json::Objects(*data);
-                        if (relation)
-                            if (const auto total = CollectionTotal(*relation)) page.total = total;
-                        if (const auto total = CollectionTotal(response)) page.total = total;
-                        setNext(
-                            response, expected,
-                            [library, pageLimit](std::wstring path) {
-                                return RelationshipPagePath(std::move(path), library, pageLimit);
-                            },
-                            objects.size());
-                        return objects;
-                    }
-                }
-                if (relation)
-                    if (const auto total = CollectionTotal(*relation)) page.total = total;
-                setNext(
-                    relation ? *relation : Object(), expected,
-                    [library, pageLimit](std::wstring path) {
-                        return RelationshipPagePath(std::move(path), library, pageLimit);
-                    },
-                    objects.size());
-                return objects;
-            };
-            const auto loadPlaylistTracks = [&](const stream::Id& playlist, bool library) {
-                trackRows = true;
-                const std::wstring tracksPath = PlaylistTracksPath(playlist, storefront, library);
-                std::vector<Object> objects;
-                if (library) page.playlist = Catalog::Get().FindPlaylistRaw(playlist);
-                if (page.playlist && page.playlist->trackCount >= 0)
-                    page.total = static_cast<size_t>(page.playlist->trackCount);
-                // Apple's library playlist detail endpoint rejects projected relationship
-                // queries in practice, so the tracks collection itself is page one.
-                // The catalog answers a resource request that carries "limit" with 400 ("Limit may
-                // not be supplied on this request", observed 2026-11-13); its included tracks come
-                // in the service's own page size, continued through the relationship's next link.
-                if (cursorState.path.empty() && !library) {
-                    const Object response = Apple(PlaylistPath(playlist, storefront, library, true), abort);
-                    const auto item = FirstData(response);
-                    if (!item) throw std::runtime_error("Apple Music returned no playlist.");
-                    page.playlist = ParsePlaylist(*item);
-                    if (!page.playlist) throw std::runtime_error("Apple Music returned an invalid playlist.");
-                    objects = parseRelationshipPage(*item, L"tracks", tracksPath, library);
-                    if (!page.total && page.playlist->trackCount >= 0)
-                        page.total = static_cast<size_t>(page.playlist->trackCount);
-                } else {
-                    const std::wstring request =
-                        cursorState.path.empty()
-                            ? RelationshipPagePath(tracksPath, library, pageLimit)
-                            : currentRequest(tracksPath, [library, pageLimit](std::wstring path) {
-                                  return RelationshipPagePath(std::move(path), library, pageLimit);
-                              });
-                    const Object response = Apple(request, abort);
-                    if (const auto data = json::GetArray(response, L"data")) objects = json::Objects(*data);
-                    if (const auto total = CollectionTotal(response)) page.total = total;
-                    setNext(
-                        response, tracksPath,
-                        [library, pageLimit](std::wstring path) {
-                            return RelationshipPagePath(std::move(path), library, pageLimit);
-                        },
-                        objects.size());
-                }
-                songs = ParseSongs(objects);
-            };
-            const auto loadAlbumTracks = [&](const stream::Id& album, bool library) {
-                trackRows = true;
-                const std::wstring tracksPath = AlbumTracksPath(album, storefront, library);
-                std::vector<Object> objects;
-                std::optional<stream::Album> albumInfo;
-                // Library album details show the same query restriction as playlists;
-                // the tracks collection is the stable source for page one and continuations.
-                if (cursorState.path.empty() && !library) { // no "limit": see the playlist above
-                    const Object response = Apple(AlbumPath(album, storefront, library), abort);
-                    const auto item = FirstData(response);
-                    if (!item) throw std::runtime_error("Apple Music returned no album.");
-                    albumInfo = ParseAlbum(*item);
-                    if (!albumInfo) throw std::runtime_error("Apple Music returned an invalid album.");
-                    page.album = albumInfo;
-                    objects = parseRelationshipPage(*item, L"tracks", tracksPath, library);
-                    if (!page.total && albumInfo->trackCount >= 0)
-                        page.total = static_cast<size_t>(albumInfo->trackCount);
-                } else {
-                    const std::wstring request =
-                        cursorState.path.empty()
-                            ? RelationshipPagePath(tracksPath, library, pageLimit)
-                            : currentRequest(tracksPath, [library, pageLimit](std::wstring path) {
-                                  return RelationshipPagePath(std::move(path), library, pageLimit);
-                              });
-                    const Object response = Apple(request, abort);
-                    if (const auto data = json::GetArray(response, L"data")) objects = json::Objects(*data);
-                    if (const auto total = CollectionTotal(response)) page.total = total;
-                    setNext(
-                        response, tracksPath,
-                        [library, pageLimit](std::wstring path) {
-                            return RelationshipPagePath(std::move(path), library, pageLimit);
-                        },
-                        objects.size());
-                }
-                songs = ParseSongs(objects);
-                if (!albumInfo) albumInfo = Catalog::Get().FindAlbumRaw(album);
-                if (albumInfo) {
-                    page.album = albumInfo;
-                    if (albumInfo->trackCount >= 0) page.total = static_cast<size_t>(albumInfo->trackCount);
-                    for (auto& song : songs)
-                        ApplyAlbumContext(song, *albumInfo);
-                }
-            };
-
-            switch (query.kind) {
-            case stream::ListKind::PlaylistTracks: {
-                if (query.id.empty()) throw std::runtime_error("The playlist list has no id.");
-                const bool library = IsLibraryId(query.id) && query.id[0] == L'p';
-                loadPlaylistTracks(query.id, library);
-                break;
-            }
-            case stream::ListKind::Favorites: {
-                loadPlaylistTracks(query.id, true);
-                break;
-            }
-            case stream::ListKind::AlbumTracks: {
-                if (query.id.empty()) throw std::runtime_error("The album list has no id.");
-                const AlbumRequest request = ResolveAlbumRequest(query.id);
-                try {
-                    loadAlbumTracks(request.id, request.library);
-                } catch (const std::exception& exception) {
-                    // A library album that is not found was removed from the library (an
-                    // uploaded one has nothing else to show): say that, not "HTTP 404".
-                    if (request.library && DefiniteNotFound(exception))
-                        throw std::runtime_error("This album is no longer in your library.");
-                    throw;
-                }
-                break;
-            }
-            case stream::ListKind::SectionTracks: {
-                if (query.section == kFavoritesSection) {
-                    if (query.id.empty())
-                        throw std::runtime_error("The Favorite Songs system playlist was not found.");
-                    loadPlaylistTracks(query.id, true);
-                    break;
-                }
-                if (query.section == kSongsSection) {
-                    if (!query.id.empty())
-                        throw std::runtime_error("The Songs list does not take a group id.");
-                    trackRows = true;
-                    const std::wstring expected = L"/v1/me/library/songs";
-                    const std::wstring queryParameters =
-                        L"limit=" + std::to_wstring(pageLimit) +
-                        L"&include=catalog,albums,artists&include[songs]=albums"
-                        L"&extend=editorialVideo&platform=web";
-                    std::wstring request;
-                    if (cursorState.path.empty()) {
-                        request = L"/v1/me/library/songs?" + queryParameters;
-                    } else {
-                        request = currentRequest(expected, [&queryParameters, pageLimit](std::wstring path) {
-                            path = WithQueryValue(std::move(path), L"limit", std::to_wstring(pageLimit));
-                            return EnsureQuery(std::move(path), queryParameters);
-                        });
-                    }
-                    const Object response = Apple(request, abort);
-                    std::vector<Object> objects;
-                    if (const auto data = json::GetArray(response, L"data")) objects = json::Objects(*data);
-                    songs = ParseSongs(objects);
-                    page.total = CollectionTotal(response);
-                    {
-                        // Songs removed here stay out while Apple still lists them.
-                        std::lock_guard lock(m_mutex);
-                        const size_t erased =
-                            std::erase_if(songs, [this](const Song& song) { return SongRemovedHereLocked(song); });
-                        if (page.total) page.total = *page.total - std::min(*page.total, erased);
-                    }
-                    setNext(
-                        response, expected,
-                        [&queryParameters, pageLimit](std::wstring path) {
-                            path = WithQueryValue(std::move(path), L"limit", std::to_wstring(pageLimit));
-                            return EnsureQuery(std::move(path), queryParameters);
-                        },
-                        objects.size());
-                    break;
-                }
-                if (query.section != kGenresSection && query.section != kComposersSection)
-                    throw std::runtime_error("This section does not provide tracks directly.");
-                if (!cursorState.path.empty())
-                    throw std::runtime_error("This derived list has no continuation.");
-                const bool genres = query.section == kGenresSection;
-                const std::wstring prefix = genres ? kGenreGroupPrefix : kComposerGroupPrefix;
-                if (!StartsWith(query.id, prefix) || query.id.size() == prefix.size())
-                    throw std::runtime_error("The selected group is invalid for this section.");
-                songs = SongsInGroup(RecentLibrarySongs(generation, abort), query.id, genres);
-                page.total = songs.size();
-                trackRows = true;
-                break;
-            }
-            case stream::ListKind::ArtistTopTracks: {
-                if (query.id.empty()) throw std::runtime_error("The artist list has no id.");
-                if (!query.section.empty() && query.section != L"top-songs")
-                    throw std::runtime_error("The artist track view is invalid.");
-                trackRows = true;
-                const bool library = IsLibraryId(query.id) && query.id[0] == L'r';
-                stream::Id catalogId = ArtistCatalogId(query.id);
-                if (library && catalogId.empty()) catalogId = ResolveLibraryArtistCatalogId(query.id, abort);
-                if (library && catalogId.empty()) {
-                    if (!cursorState.path.empty())
-                        throw std::runtime_error("This derived list has no continuation.");
-                    std::wstring artistName;
-                    if (const auto cached = Catalog::Get().FindArtistRaw(query.id)) artistName = cached->name;
-                    auto data = LoadLibraryArtistData(query.id, artistName, abort);
-                    songs = std::move(data.songs);
-                    page.total = songs.size();
-                } else {
-                    const stream::Id artistId = catalogId.empty() ? query.id : catalogId;
-                    if (artistId.empty())
-                        throw std::runtime_error("No Apple Music catalog artist is available.");
-                    const std::wstring expected =
-                        L"/v1/catalog/" + storefront + L"/artists/" + Encode(artistId) + L"/view/top-songs";
-                    const std::wstring parameters =
-                        L"limit=" + std::to_wstring(pageLimit) + L"&include=albums";
-                    std::wstring request;
-                    if (cursorState.path.empty()) {
-                        request = expected + L"?" + parameters;
-                    } else {
-                        request = currentRequest(expected, [&parameters, pageLimit](std::wstring path) {
-                            path = WithQueryValue(std::move(path), L"limit", std::to_wstring(pageLimit));
-                            return EnsureQuery(std::move(path), parameters);
-                        });
-                    }
-                    const Object response = Apple(request, abort);
-                    std::vector<Object> objects;
-                    if (const auto data = json::GetArray(response, L"data")) objects = json::Objects(*data);
-                    songs = ParseSongs(objects);
-                    page.total = CollectionTotal(response);
-                    setNext(
-                        response, expected,
-                        [&parameters, pageLimit](std::wstring path) {
-                            path = WithQueryValue(std::move(path), L"limit", std::to_wstring(pageLimit));
-                            return EnsureQuery(std::move(path), parameters);
-                        },
-                        objects.size());
-                }
-                if (const auto artist = Catalog::Get().FindArtist(query.id)) page.artist = artist;
-                break;
-            }
-            case stream::ListKind::ArtistAlbums: {
-                if (query.id.empty()) throw std::runtime_error("The artist list has no id.");
-                const bool library = IsLibraryId(query.id) && query.id[0] == L'r';
-                stream::Id catalogId = ArtistCatalogId(query.id);
-                if (library && catalogId.empty()) catalogId = ResolveLibraryArtistCatalogId(query.id, abort);
-                if (!query.section.empty()) {
-                    if (!IsArtistAlbumView(query.section))
-                        throw std::runtime_error("The artist album view is invalid.");
-                    if (catalogId.empty())
-                        throw std::runtime_error("No Apple Music catalog artist is available.");
-                    if (library) Catalog::Get().PutArtistCatalogId(query.id, catalogId);
-                    const std::wstring expected = L"/v1/catalog/" + storefront + L"/artists/" +
-                                                  Encode(catalogId) + L"/view/" + query.section;
-                    // The latest release is one album and its view answers any `limit` with
-                    // HTTP 400 (seen 2026-11-14); the other views page.
-                    const bool single = query.section == L"latest-release";
-                    const auto bindView = [pageLimit, single](std::wstring path) {
-                        if (single) return path;
-                        return WithQueryValue(std::move(path), L"limit", std::to_wstring(pageLimit));
-                    };
-                    const std::wstring request =
-                        cursorState.path.empty() ? bindView(expected) : currentRequest(expected, bindView);
-                    Object response;
-                    try {
-                        response = Apple(request, abort);
-                    } catch (const BridgeHttpError& exception) {
-                        if (exception.status() != 404 || !cursorState.path.empty() ||
-                            !VerifyCatalogArtist(generation, storefront, catalogId, abort))
-                            throw;
-                        page.rows = std::vector<stream::Album>{};
-                        page.total = 0;
-                        if (const auto artist = Catalog::Get().FindArtist(query.id)) page.artist = artist;
-                        break;
-                    }
-                    std::vector<Object> objects;
-                    if (const auto data = json::GetArray(response, L"data")) objects = json::Objects(*data);
-                    page.rows = ParseAlbums(objects);
-                    page.total = CollectionTotal(response);
-                    setNext(response, expected, bindView, objects.size());
-                    if (const auto artist = Catalog::Get().FindArtist(query.id)) page.artist = artist;
-                    break;
-                }
-                const std::wstring expected = library && catalogId.empty()
-                                                  ? L"/v1/me/library/artists/" + Encode(query.id) + L"/albums"
-                                                  : L"/v1/catalog/" + storefront + L"/artists/" +
-                                                        Encode(catalogId.empty() ? query.id : catalogId) +
-                                                        L"/albums";
-                std::wstring request;
-                if (cursorState.path.empty()) {
-                    request = ArtistAlbumsPath(query.id, catalogId, storefront, library, 0, pageLimit);
-                } else {
-                    request = currentRequest(expected, [pageLimit](std::wstring path) {
-                        return WithQueryValue(std::move(path), L"limit", std::to_wstring(pageLimit));
-                    });
-                }
-                const Object response = Apple(request, abort);
-                std::vector<Object> objects;
-                if (const auto data = json::GetArray(response, L"data")) objects = json::Objects(*data);
-                page.rows = ParseAlbums(objects);
-                ApplyAlbumMutations(std::get<std::vector<stream::Album>>(page.rows), false);
-                page.total = CollectionTotal(response);
-                setNext(
-                    response, expected,
-                    [pageLimit](std::wstring path) {
-                        return WithQueryValue(std::move(path), L"limit", std::to_wstring(pageLimit));
-                    },
-                    objects.size());
-                if (const auto artist = Catalog::Get().FindArtist(query.id)) page.artist = artist;
-                break;
-            }
-            case stream::ListKind::ArtistPlaylists: {
-                if (query.id.empty()) throw std::runtime_error("The artist list has no id.");
-                if (!IsArtistPlaylistView(query.section))
-                    throw std::runtime_error("The artist playlist view is invalid.");
-                const bool library = IsLibraryId(query.id) && query.id[0] == L'r';
-                stream::Id catalogId = ArtistCatalogId(query.id);
-                if (library && catalogId.empty()) catalogId = ResolveLibraryArtistCatalogId(query.id, abort);
-                if (catalogId.empty())
-                    throw std::runtime_error("No Apple Music catalog artist is available.");
-                if (library) Catalog::Get().PutArtistCatalogId(query.id, catalogId);
-                const std::wstring expected = L"/v1/catalog/" + storefront + L"/artists/" +
-                                              Encode(catalogId) + L"/view/" + query.section;
-                const auto bindView = [pageLimit](std::wstring path) {
-                    return WithQueryValue(std::move(path), L"limit", std::to_wstring(pageLimit));
-                };
-                const std::wstring request =
-                    cursorState.path.empty() ? bindView(expected) : currentRequest(expected, bindView);
-                Object response;
-                try {
-                    response = Apple(request, abort);
-                } catch (const BridgeHttpError& exception) {
-                    if (exception.status() != 404 || !cursorState.path.empty() ||
-                        !VerifyCatalogArtist(generation, storefront, catalogId, abort))
-                        throw;
-                    page.rows = std::vector<stream::Playlist>{};
-                    page.total = 0;
-                    if (const auto artist = Catalog::Get().FindArtist(query.id)) page.artist = artist;
-                    break;
-                }
-                std::vector<Object> objects;
-                if (const auto data = json::GetArray(response, L"data")) objects = json::Objects(*data);
-                std::vector<stream::Playlist> playlists;
-                for (const auto& object : objects)
-                    if (auto playlist = ParsePlaylist(object)) playlists.push_back(std::move(*playlist));
-                page.rows = std::move(playlists);
-                page.total = CollectionTotal(response);
-                setNext(response, expected, bindView, objects.size());
-                if (const auto artist = Catalog::Get().FindArtist(query.id)) page.artist = artist;
-                break;
-            }
-            case stream::ListKind::ArtistSimilarArtists: {
-                if (query.id.empty()) throw std::runtime_error("The artist list has no id.");
-                const bool library = IsLibraryId(query.id) && query.id[0] == L'r';
-                stream::Id catalogId = ArtistCatalogId(query.id);
-                if (library && catalogId.empty()) catalogId = ResolveLibraryArtistCatalogId(query.id, abort);
-                if (catalogId.empty())
-                    throw std::runtime_error("No Apple Music catalog artist is available.");
-                if (library) Catalog::Get().PutArtistCatalogId(query.id, catalogId);
-                const std::wstring expected =
-                    L"/v1/catalog/" + storefront + L"/artists/" + Encode(catalogId) + L"/view/similar-artists";
-                const auto bindView = [pageLimit](std::wstring path) {
-                    return WithQueryValue(std::move(path), L"limit", std::to_wstring(pageLimit));
-                };
-                const std::wstring request =
-                    cursorState.path.empty() ? bindView(expected) : currentRequest(expected, bindView);
-                Object response;
-                try {
-                    response = Apple(request, abort);
-                } catch (const BridgeHttpError& exception) {
-                    if (exception.status() != 404 || !cursorState.path.empty() ||
-                        !VerifyCatalogArtist(generation, storefront, catalogId, abort))
-                        throw;
-                    page.rows = std::vector<stream::Artist>{};
-                    page.total = 0;
-                    break;
-                }
-                std::vector<Object> objects;
-                if (const auto data = json::GetArray(response, L"data")) objects = json::Objects(*data);
-                std::vector<stream::Artist> artists;
-                for (const auto& object : objects)
-                    if (auto artist = ParseArtist(object)) artists.push_back(std::move(*artist));
-                page.rows = std::move(artists);
-                page.total = CollectionTotal(response);
-                setNext(response, expected, bindView, objects.size());
-                break;
-            }
-            case stream::ListKind::SavedAlbums: {
-                const std::wstring expected = L"/v1/me/library/albums";
-                const std::wstring parameters =
-                    L"include=catalog,artists&platform=web&fields[library-albums]=name,artwork,"
-                    L"artistName,genreNames,trackCount,playParams,releaseDate";
-                std::wstring request;
-                if (cursorState.path.empty()) {
-                    request = expected + L"?limit=" + std::to_wstring(pageLimit) + L'&' + parameters;
-                } else {
-                    request = currentRequest(expected, [&parameters, pageLimit](std::wstring path) {
-                        path = WithQueryValue(std::move(path), L"limit", std::to_wstring(pageLimit));
-                        return EnsureQuery(std::move(path), parameters);
-                    });
-                }
-                const Object response = Apple(request, abort);
-                std::vector<Object> objects;
-                if (const auto data = json::GetArray(response, L"data")) objects = json::Objects(*data);
-                page.rows = ParseAlbums(objects);
-                ApplyAlbumMutations(std::get<std::vector<stream::Album>>(page.rows), cursorState.path.empty());
-                page.total = CollectionTotal(response);
-                setNext(
-                    response, expected,
-                    [&parameters, pageLimit](std::wstring path) {
-                        path = WithQueryValue(std::move(path), L"limit", std::to_wstring(pageLimit));
-                        return EnsureQuery(std::move(path), parameters);
-                    },
-                    objects.size());
-                break;
-            }
-            case stream::ListKind::FollowedArtists: {
-                const std::wstring expected = L"/v1/me/library/artists";
-                const std::wstring parameters =
-                    L"include=catalog&extend[library-artists]=inFavorites&extend=inFavorites&platform=web";
-                std::wstring request;
-                if (cursorState.path.empty()) {
-                    request = expected + L"?limit=" + std::to_wstring(pageLimit) + L'&' + parameters;
-                } else {
-                    request = currentRequest(expected, [&parameters, pageLimit](std::wstring path) {
-                        path = WithQueryValue(std::move(path), L"limit", std::to_wstring(pageLimit));
-                        return EnsureQuery(std::move(path), parameters);
-                    });
-                }
-                const Object response = Apple(request, abort);
-                std::vector<Object> objects;
-                if (const auto data = json::GetArray(response, L"data")) objects = json::Objects(*data);
-                page.rows = ParseArtists(objects);
-                page.total = CollectionTotal(response);
-                setNext(
-                    response, expected,
-                    [&parameters, pageLimit](std::wstring path) {
-                        path = WithQueryValue(std::move(path), L"limit", std::to_wstring(pageLimit));
-                        return EnsureQuery(std::move(path), parameters);
-                    },
-                    objects.size());
-                break;
-            }
-            case stream::ListKind::Playlists: {
-                if (!query.section.empty() && query.section != kCreatedSection &&
-                    query.section != kSavedSection)
-                    throw std::runtime_error("This provider playlist section is unavailable.");
-                if (query.shelf == stream::Shelf::Recommended)
-                    throw std::runtime_error("Apple Music does not expose a recommended playlist shelf.");
-                const std::wstring expected = L"/v1/me/library/playlists";
-                const std::wstring parameters =
-                    L"include=catalog&extend[library-playlists]=tags&platform=web"
-                    L"&fields[library-playlists]=name,artwork,editorialArtwork,tags,canEdit,"
-                    L"canDelete,canRename,trackCount,playParams";
-                std::wstring request;
-                if (cursorState.path.empty()) {
-                    request = expected + L"?limit=" + std::to_wstring(pageLimit) + L'&' + parameters;
-                } else {
-                    request = currentRequest(expected, [&parameters, pageLimit](std::wstring path) {
-                        path = WithQueryValue(std::move(path), L"limit", std::to_wstring(pageLimit));
-                        return EnsureQuery(std::move(path), parameters);
-                    });
-                }
-                const Object response = Apple(request, abort);
-                std::vector<Object> objects;
-                if (const auto data = json::GetArray(response, L"data")) objects = json::Objects(*data);
-                std::vector<stream::Playlist> rows;
-                for (const auto& object : objects) {
-                    if (IsFavoriteSystemPlaylist(object)) continue;
-                    auto playlist = ParsePlaylist(object);
-                    if (!playlist) continue;
-                    if ((query.shelf == stream::Shelf::Created && !playlist->own) ||
-                        (query.shelf == stream::Shelf::Saved && playlist->own))
-                        continue;
-                    rows.push_back(std::move(*playlist));
-                }
-                page.rows = std::move(rows);
-                if (cursorState.path.empty() && query.shelf == stream::Shelf::Saved) {
-                    auto& playlists = std::get<std::vector<stream::Playlist>>(page.rows);
-                    std::lock_guard lock(m_mutex);
-                    std::erase_if(playlists, [&](const stream::Playlist& item) {
-                        return std::any_of(
-                            m_playlistMutations.begin(), m_playlistMutations.end(), [&](const auto& entry) {
-                                return !entry.second.saved &&
-                                       (entry.first == item.id || entry.second.libraryId == item.id ||
-                                        entry.second.catalogId == item.id);
-                            });
-                    });
-                    for (const auto& [key, mutation] : m_playlistMutations) {
-                        if (!mutation.saved || mutation.playlist.id.empty()) continue;
-                        const bool present = std::any_of(
-                            playlists.begin(), playlists.end(), [&](const stream::Playlist& item) {
-                                return item.id == key || item.id == mutation.catalogId ||
-                                       item.id == mutation.libraryId;
-                            });
-                        if (!present) playlists.push_back(mutation.playlist);
-                    }
-                }
-                setNext(
-                    response, expected,
-                    [&parameters, pageLimit](std::wstring path) {
-                        path = WithQueryValue(std::move(path), L"limit", std::to_wstring(pageLimit));
-                        return EnsureQuery(std::move(path), parameters);
-                    },
-                    objects.size());
-                break;
-            }
-            case stream::ListKind::Groups: {
-                if (query.section != kGenresSection && query.section != kComposersSection)
-                    throw std::runtime_error("This section does not provide groups.");
-                if (!cursorState.path.empty())
-                    throw std::runtime_error("This derived list has no continuation.");
-                songs = RecentLibrarySongs(generation, abort);
-                const bool genres = query.section == kGenresSection;
-                auto groups = DerivedGroups(songs, songs, genres);
-                page.total = groups.size();
-                page.rows = std::move(groups);
-                songs.clear();
-                break;
-            }
-            case stream::ListKind::CatalogSearch:
-            case stream::ListKind::CatalogSearchArtists:
-            case stream::ListKind::CatalogSearchAlbums:
-            case stream::ListKind::CatalogSearchPlaylists:
-            case stream::ListKind::CatalogSearchTopResults: {
-                if (query.search.empty()) {
-                    if (!cursorState.path.empty())
-                        throw std::runtime_error("The empty search has no continuation.");
-                    trackRows = query.kind == stream::ListKind::CatalogSearch;
-                    page.total = 0;
-                    break;
-                }
-                const std::wstring expected = L"/v1/catalog/" + storefront + L"/search";
-                const bool topResults = query.kind == stream::ListKind::CatalogSearchTopResults;
-                std::wstring types;
-                switch (query.kind) {
-                case stream::ListKind::CatalogSearch:
-                    types = L"songs";
-                    break;
-                case stream::ListKind::CatalogSearchArtists:
-                    types = L"artists";
-                    break;
-                case stream::ListKind::CatalogSearchAlbums:
-                    types = L"albums";
-                    break;
-                case stream::ListKind::CatalogSearchPlaylists:
-                    types = L"playlists";
-                    break;
-                case stream::ListKind::CatalogSearchTopResults:
-                    types = L"songs,artists,albums,playlists";
-                    break;
-                default:
-                    throw std::runtime_error("Unsupported Apple Music search category.");
-                }
-                const size_t requestLimit = std::min(pageLimit, kCatalogSearchApiLimit);
-                const auto bindSearch = [&](std::wstring path) {
-                    path = WithQueryValue(std::move(path), L"limit", std::to_wstring(requestLimit));
-                    path = WithQueryValue(std::move(path), L"types", types);
-                    path = WithQueryValue(std::move(path), L"term", Encode(query.search));
-                    path =
-                        WithQueryValue(std::move(path), L"with",
-                                       topResults ? std::wstring_view(L"topResults") : std::wstring_view());
-                    if (query.kind == stream::ListKind::CatalogSearch)
-                        path = WithQueryValue(std::move(path), L"include", L"albums");
-                    return path;
-                };
-                const std::wstring request = cursorState.path.empty()
-                                                 ? bindSearch(expected)
-                                                 : currentRequest(expected, [&](std::wstring path) {
-                                                       return bindSearch(std::move(path));
-                                                   });
-                const Object response = Apple(request, abort);
-                const auto results = json::GetObject(response, L"results");
-                if (!results) throw std::runtime_error("Apple Music returned an invalid search.");
-                const wchar_t* resultKey = query.kind == stream::ListKind::CatalogSearch          ? L"songs"
-                                           : query.kind == stream::ListKind::CatalogSearchArtists ? L"artists"
-                                           : query.kind == stream::ListKind::CatalogSearchAlbums  ? L"albums"
-                                           : query.kind == stream::ListKind::CatalogSearchPlaylists
-                                               ? L"playlists"
-                                               : L"topResults";
-                const auto collection = json::GetObject(*results, resultKey);
-                if (!collection) {
-                    if (query.kind == stream::ListKind::CatalogSearch) {
-                        trackRows = true;
-                    } else if (query.kind == stream::ListKind::CatalogSearchArtists) {
-                        page.rows = std::vector<stream::Artist>{};
-                    } else if (query.kind == stream::ListKind::CatalogSearchAlbums) {
-                        page.rows = std::vector<stream::Album>{};
-                    } else if (query.kind == stream::ListKind::CatalogSearchPlaylists) {
-                        page.rows = std::vector<stream::Playlist>{};
-                    } else {
-                        page.rows = std::vector<stream::CatalogSearchItem>{};
-                        catalogItemRows = true;
-                    }
-                    page.total = 0;
-                    break;
-                }
-                std::vector<Object> objects;
-                if (const auto data = json::GetArray(*collection, L"data")) objects = json::Objects(*data);
-                if (query.kind == stream::ListKind::CatalogSearch) {
-                    songs = ParseSongs(objects);
-                    trackRows = true;
-                } else if (query.kind == stream::ListKind::CatalogSearchArtists) {
-                    page.rows = ParseArtists(objects);
-                } else if (query.kind == stream::ListKind::CatalogSearchAlbums) {
-                    page.rows = ParseAlbums(objects);
-                } else if (query.kind == stream::ListKind::CatalogSearchPlaylists) {
-                    std::vector<stream::Playlist> playlists;
-                    for (const auto& object : objects)
-                        if (auto playlist = ParsePlaylist(object)) playlists.push_back(std::move(*playlist));
-                    page.rows = std::move(playlists);
-                } else {
-                    page.rows = ParseCatalogSearchItems(objects);
-                    catalogItemRows = true;
-                }
-                page.total = CollectionTotal(*collection);
-                setNext(*collection, expected, bindSearch, objects.size());
-                break;
-            }
-            }
-            if (trackRows) page.rows = DisplayTracks(songs);
+            ReadListPage(load);
         } catch (const exception_aborted&) {
             return;
         } catch (const std::exception& exception) {
@@ -6125,110 +5726,622 @@ void StreamProvider::FetchListPage(const stream::ListQuery& sourceQuery, const s
         }
 
         if (query.cancelled && query.cancelled->load(std::memory_order_acquire)) return;
-        PostMain(generation, [this, generation, preferenceEpoch, page = std::move(page),
-                              songs = std::move(songs), trackRows, catalogItemRows, derivedGroupsPage,
+        PostMain(generation, [this, generation, preferenceEpoch, page = std::move(load.page),
+                              songs = std::move(load.songs), trackRows = load.trackRows,
+                              catalogItemRows = load.catalogItemRows, derivedGroupsPage,
                               error = std::move(error), done = std::move(done)]() mutable {
-            bool mixedNeedsHydration = false;
-            if (error.empty() && trackRows) {
-                songs = MergeSongRecordsWithCatalog(std::move(songs), true);
-                // The generic list cache owns persistence. Avoid rewriting the legacy
-                // catalog snapshot once per streamed page.
-                Catalog::Get().PutAndHint(songs, false);
-                page.rows = DisplayTracks(songs);
-            }
-            if (error.empty() && derivedGroupsPage) {
-                Catalog::Get().PutAndHint(songs);
-                std::lock_guard lock(m_mutex);
-                if (generation == m_generation) {
-                    m_librarySongs = songs;
-                    m_librarySongsLoaded = true;
-                    m_librarySongsAt = std::chrono::steady_clock::now();
-                }
-            }
-            if (error.empty() && catalogItemRows) {
-                auto* items = std::get_if<std::vector<stream::CatalogSearchItem>>(&page.rows);
-                if (!items) {
-                    error = L"Apple Music returned a malformed top-results page.";
-                } else {
-                    std::vector<Song> topTracks;
-                    for (auto& item : *items) {
-                        if (auto* track = std::get_if<stream::Track>(&item)) {
-                            Song song = BaselineSong(*track);
-                            if (const auto existing = Catalog::Get().FindSongRaw(track->id))
-                                song = MergeSongRecord(*existing, song);
-                            song.track.id = track->id;
-                            *track = song.track;
-                            topTracks.push_back(std::move(song));
-                        } else if (auto* playlist = std::get_if<stream::Playlist>(&item)) {
-                            Catalog::Get().Put(*playlist);
-                        } else if (auto* album = std::get_if<stream::Album>(&item)) {
-                            Catalog::Get().Put(*album);
-                        } else if (auto* artist = std::get_if<stream::Artist>(&item)) {
-                            Catalog::Get().Put(*artist);
-                        }
-                    }
-                    Catalog::Get().PutAndHint(topTracks, false);
-                    mixedNeedsHydration = HasSongAlbumHydrationWork(topTracks);
-                }
-            }
-            if (error.empty()) {
-                if (page.playlist) {
-                    auto merged = *page.playlist;
-                    if (const auto existing = Catalog::Get().FindPlaylistRaw(page.playlist->id))
-                        merged = MergePlaylistRecord(merged, *existing, false);
-                    if (const auto saved = PlaylistSavedState(merged.id)) merged.saved = *saved;
-                    Catalog::Get().Put(merged);
-                    page.playlist = std::move(merged);
-                }
-                if (page.album) {
-                    auto merged = *page.album;
-                    if (const auto existing = Catalog::Get().FindAlbumRaw(page.album->id))
-                        merged = MergeAlbumRecord(merged, *existing);
-                    Catalog::Get().Put(merged);
-                    page.album = std::move(merged);
-                }
-                if (page.artist) {
-                    auto merged = *page.artist;
-                    if (const auto existing = Catalog::Get().FindArtistRaw(page.artist->id))
-                        merged = MergeArtistRecord(merged, *existing, false);
-                    ApplyArtistPreferenceOverlay(merged, preferenceEpoch);
-                    Catalog::Get().Put(merged);
-                    page.artist = std::move(merged);
-                }
-                if (!page.total && page.playlist && page.playlist->trackCount >= 0)
-                    page.total = static_cast<size_t>(page.playlist->trackCount);
-                if (!page.total && page.album && page.album->trackCount >= 0)
-                    page.total = static_cast<size_t>(page.album->trackCount);
-                if (auto* playlistRows = std::get_if<std::vector<stream::Playlist>>(&page.rows)) {
-                    for (auto& row : *playlistRows) {
-                        if (const auto existing = Catalog::Get().FindPlaylistRaw(row.id))
-                            row = MergePlaylistRecord(row, *existing, false);
-                        if (const auto saved = PlaylistSavedState(row.id)) row.saved = *saved;
-                        Catalog::Get().Put(row);
-                    }
-                } else if (auto* albumRows = std::get_if<std::vector<stream::Album>>(&page.rows)) {
-                    for (auto& row : *albumRows) {
-                        if (const auto existing = Catalog::Get().FindAlbumRaw(row.id))
-                            row = MergeAlbumRecord(row, *existing);
-                        Catalog::Get().Put(row);
-                    }
-                } else if (auto* artistRows = std::get_if<std::vector<stream::Artist>>(&page.rows)) {
-                    for (auto& row : *artistRows) {
-                        if (const auto existing = Catalog::Get().FindArtistRaw(row.id))
-                            row = MergeArtistRecord(row, *existing, false);
-                        ApplyArtistPreferenceOverlay(row, preferenceEpoch);
-                        Catalog::Get().Put(row);
-                    }
-                }
-                ApplyPageDisplayNames(page, false);
-                page.enrichmentPending = (trackRows && HasSongAlbumHydrationWork(songs)) ||
-                                         mixedNeedsHydration || PageNeedsDisplayNames(page) ||
-                                         (derivedGroupsPage && RegionalDisplayEnabled()) ||
-                                         (catalogItemRows && PageNeedsDisplayNames(page));
-            }
-            if (done) done(std::move(page), std::move(error));
+            FinishListPage(generation, preferenceEpoch, std::move(page), std::move(songs), trackRows,
+                           catalogItemRows, derivedGroupsPage, std::move(error), std::move(done));
         });
     });
+}
+
+// Reads one page of the query's kind from the service into `load`.
+void StreamProvider::ReadListPage(ListLoad& load) {
+    switch (load.query.kind) {
+    case stream::ListKind::PlaylistTracks:
+        ReadPlaylistTracksPage(load);
+        break;
+    case stream::ListKind::Favorites:
+        load.LoadPlaylistTracks(load.query.id, true);
+        break;
+    case stream::ListKind::AlbumTracks:
+        ReadAlbumTracksPage(load);
+        break;
+    case stream::ListKind::SectionTracks:
+        ReadSectionTracksPage(load);
+        break;
+    case stream::ListKind::ArtistTopTracks:
+        ReadArtistTopTracksPage(load);
+        break;
+    case stream::ListKind::ArtistAlbums:
+        ReadArtistAlbumsPage(load);
+        break;
+    case stream::ListKind::ArtistPlaylists:
+        ReadArtistPlaylistsPage(load);
+        break;
+    case stream::ListKind::ArtistSimilarArtists:
+        ReadSimilarArtistsPage(load);
+        break;
+    case stream::ListKind::SavedAlbums:
+        ReadSavedAlbumsPage(load);
+        break;
+    case stream::ListKind::FollowedArtists:
+        ReadFollowedArtistsPage(load);
+        break;
+    case stream::ListKind::Playlists:
+        ReadPlaylistsPage(load);
+        break;
+    case stream::ListKind::Groups:
+        ReadGroupsPage(load);
+        break;
+    case stream::ListKind::CatalogSearch:
+    case stream::ListKind::CatalogSearchArtists:
+    case stream::ListKind::CatalogSearchAlbums:
+    case stream::ListKind::CatalogSearchPlaylists:
+    case stream::ListKind::CatalogSearchTopResults:
+        ReadCatalogSearchPage(load);
+        break;
+    default:
+        break;
+    }
+    if (load.trackRows) load.page.rows = DisplayTracks(load.songs);
+}
+
+void StreamProvider::ReadPlaylistTracksPage(ListLoad& load) {
+    if (load.query.id.empty()) throw std::runtime_error("The playlist list has no id.");
+    const bool library = IsLibraryId(load.query.id) && load.query.id[0] == L'p';
+    load.LoadPlaylistTracks(load.query.id, library);
+}
+
+void StreamProvider::ReadAlbumTracksPage(ListLoad& load) {
+    const auto& query = load.query;
+
+    if (query.id.empty()) throw std::runtime_error("The album list has no id.");
+    const AlbumRequest request = ResolveAlbumRequest(query.id);
+    try {
+        load.LoadAlbumTracks(request.id, request.library);
+    } catch (const std::exception& exception) {
+        // A library album that is not found was removed from the library (an
+        // uploaded one has nothing else to show): say that, not "HTTP 404".
+        if (request.library && DefiniteNotFound(exception))
+            throw std::runtime_error("This album is no longer in your library.");
+        throw;
+    }
+}
+
+void StreamProvider::ReadSectionTracksPage(ListLoad& load) {
+    const auto& query = load.query;
+    if (query.section == kFavoritesSection) {
+        if (query.id.empty()) throw std::runtime_error("The Favorite Songs system playlist was not found.");
+        load.LoadPlaylistTracks(query.id, true);
+    } else if (query.section == kSongsSection) {
+        ReadLibrarySongsPage(load);
+    } else {
+        ReadGroupSongsPage(load);
+    }
+}
+
+void StreamProvider::ReadLibrarySongsPage(ListLoad& load) {
+    const auto& query = load.query;
+    const auto& cursorState = load.cursor;
+    const size_t pageLimit = load.pageLimit;
+    abort_callback& abort = load.abort;
+    auto& page = load.page;
+    auto& songs = load.songs;
+    bool& trackRows = load.trackRows;
+
+    if (!query.id.empty())
+        throw std::runtime_error("The Songs list does not take a group id.");
+    trackRows = true;
+    const std::wstring expected = L"/v1/me/library/songs";
+    const std::wstring queryParameters =
+        L"limit=" + std::to_wstring(pageLimit) +
+        L"&include=catalog,albums,artists&include[songs]=albums"
+        L"&extend=editorialVideo&platform=web";
+    std::wstring request;
+    if (cursorState.path.empty()) {
+        request = L"/v1/me/library/songs?" + queryParameters;
+    } else {
+        request = load.CurrentRequest(expected, load.LimitAndQueryBinder(queryParameters));
+    }
+    const Object response = Apple(request, abort);
+    std::vector<Object> objects = ObjectsOf(response);
+    songs = ParseSongs(objects);
+    page.total = CollectionTotal(response);
+    {
+        // Songs removed here stay out while Apple still lists them.
+        std::lock_guard lock(m_mutex);
+        const size_t erased =
+            std::erase_if(songs, [this](const Song& song) { return SongRemovedHereLocked(song); });
+        if (page.total) page.total = *page.total - std::min(*page.total, erased);
+    }
+    load.SetNext(response, expected, load.LimitAndQueryBinder(queryParameters), objects.size());
+}
+
+void StreamProvider::ReadGroupSongsPage(ListLoad& load) {
+    const auto& query = load.query;
+    const auto& cursorState = load.cursor;
+    const uint64_t generation = load.generation;
+    abort_callback& abort = load.abort;
+    auto& page = load.page;
+    auto& songs = load.songs;
+    bool& trackRows = load.trackRows;
+
+    if (query.section != kGenresSection && query.section != kComposersSection)
+        throw std::runtime_error("This section does not provide tracks directly.");
+    if (!cursorState.path.empty())
+        throw std::runtime_error("This derived list has no continuation.");
+    const bool genres = query.section == kGenresSection;
+    const std::wstring prefix = genres ? kGenreGroupPrefix : kComposerGroupPrefix;
+    if (!StartsWith(query.id, prefix) || query.id.size() == prefix.size())
+        throw std::runtime_error("The selected group is invalid for this section.");
+    songs = SongsInGroup(RecentLibrarySongs(generation, abort), query.id, genres);
+    page.total = songs.size();
+    trackRows = true;
+}
+
+void StreamProvider::ReadArtistTopTracksPage(ListLoad& load) {
+    const auto& query = load.query;
+    const auto& cursorState = load.cursor;
+    const auto& storefront = load.storefront;
+    const size_t pageLimit = load.pageLimit;
+    abort_callback& abort = load.abort;
+    auto& page = load.page;
+    auto& songs = load.songs;
+    bool& trackRows = load.trackRows;
+
+    if (query.id.empty()) throw std::runtime_error("The artist list has no id.");
+    if (!query.section.empty() && query.section != L"top-songs")
+        throw std::runtime_error("The artist track view is invalid.");
+    trackRows = true;
+    const ArtistSource source = ResolveArtistSource(query.id, abort);
+    const bool library = source.library;
+    const stream::Id& catalogId = source.catalogId;
+    if (library && catalogId.empty()) {
+        if (!cursorState.path.empty())
+            throw std::runtime_error("This derived list has no continuation.");
+        std::wstring artistName;
+        if (const auto cached = Catalog::Get().FindArtistRaw(query.id)) artistName = cached->name;
+        auto data = LoadLibraryArtistData(query.id, artistName, abort);
+        songs = std::move(data.songs);
+        page.total = songs.size();
+    } else {
+        const stream::Id artistId = catalogId.empty() ? query.id : catalogId;
+        if (artistId.empty())
+            throw std::runtime_error("No Apple Music catalog artist is available.");
+        const std::wstring expected =
+            L"/v1/catalog/" + storefront + L"/artists/" + Encode(artistId) + L"/view/top-songs";
+        const std::wstring parameters =
+            L"limit=" + std::to_wstring(pageLimit) + L"&include=albums";
+        std::wstring request;
+        if (cursorState.path.empty()) {
+            request = expected + L"?" + parameters;
+        } else {
+            request = load.CurrentRequest(expected, load.LimitAndQueryBinder(parameters));
+        }
+        const Object response = Apple(request, abort);
+        std::vector<Object> objects = ObjectsOf(response);
+        songs = ParseSongs(objects);
+        page.total = CollectionTotal(response);
+        load.SetNext(response, expected, load.LimitAndQueryBinder(parameters), objects.size());
+    }
+    if (const auto artist = Catalog::Get().FindArtist(query.id)) page.artist = artist;
+}
+
+void StreamProvider::ReadArtistAlbumsPage(ListLoad& load) {
+    const auto& query = load.query;
+    const auto& cursorState = load.cursor;
+    const auto& storefront = load.storefront;
+    const size_t pageLimit = load.pageLimit;
+    abort_callback& abort = load.abort;
+    auto& page = load.page;
+
+    if (query.id.empty()) throw std::runtime_error("The artist list has no id.");
+    const ArtistSource source = ResolveArtistSource(query.id, abort);
+    const bool library = source.library;
+    const stream::Id& catalogId = source.catalogId;
+    if (!query.section.empty()) {
+        if (!IsArtistAlbumView(query.section))
+            throw std::runtime_error("The artist album view is invalid.");
+        if (catalogId.empty())
+            throw std::runtime_error("No Apple Music catalog artist is available.");
+        if (library) Catalog::Get().PutArtistCatalogId(query.id, catalogId);
+        const std::wstring expected = L"/v1/catalog/" + storefront + L"/artists/" +
+                                      Encode(catalogId) + L"/view/" + query.section;
+        // The latest release is one album and its view answers any `limit` with
+        // HTTP 400 (seen 2026-11-14); the other views page.
+        const bool single = query.section == L"latest-release";
+        const auto bindView = [pageLimit, single](std::wstring path) {
+            if (single) return path;
+            return WithQueryValue(std::move(path), L"limit", std::to_wstring(pageLimit));
+        };
+        const std::wstring request =
+            cursorState.path.empty() ? bindView(expected) : load.CurrentRequest(expected, bindView);
+        const auto view = ReadArtistView(load, catalogId, request);
+        if (!view) {
+            page.rows = std::vector<stream::Album>{};
+            page.total = 0;
+            if (const auto artist = Catalog::Get().FindArtist(query.id)) page.artist = artist;
+            return;
+        }
+        const Object& response = *view;
+        std::vector<Object> objects = ObjectsOf(response);
+        page.rows = ParseAlbums(objects);
+        page.total = CollectionTotal(response);
+        load.SetNext(response, expected, bindView, objects.size());
+        if (const auto artist = Catalog::Get().FindArtist(query.id)) page.artist = artist;
+        return;
+    }
+    const std::wstring expected = library && catalogId.empty()
+                                      ? L"/v1/me/library/artists/" + Encode(query.id) + L"/albums"
+                                      : L"/v1/catalog/" + storefront + L"/artists/" +
+                                            Encode(catalogId.empty() ? query.id : catalogId) +
+                                            L"/albums";
+    std::wstring request;
+    if (cursorState.path.empty()) {
+        request = ArtistAlbumsPath(query.id, catalogId, storefront, library, 0, pageLimit);
+    } else {
+        request = load.CurrentRequest(expected, load.LimitBinder());
+    }
+    const Object response = Apple(request, abort);
+    std::vector<Object> objects = ObjectsOf(response);
+    page.rows = ParseAlbums(objects);
+    ApplyAlbumMutations(std::get<std::vector<stream::Album>>(page.rows), false);
+    page.total = CollectionTotal(response);
+    load.SetNext(response, expected, load.LimitBinder(), objects.size());
+    if (const auto artist = Catalog::Get().FindArtist(query.id)) page.artist = artist;
+}
+
+void StreamProvider::ReadArtistPlaylistsPage(ListLoad& load) {
+    const auto& query = load.query;
+    const auto& cursorState = load.cursor;
+    const auto& storefront = load.storefront;
+    abort_callback& abort = load.abort;
+    auto& page = load.page;
+
+    if (query.id.empty()) throw std::runtime_error("The artist list has no id.");
+    if (!IsArtistPlaylistView(query.section))
+        throw std::runtime_error("The artist playlist view is invalid.");
+    const ArtistSource source = ResolveArtistSource(query.id, abort);
+    const bool library = source.library;
+    const stream::Id& catalogId = source.catalogId;
+    if (catalogId.empty())
+        throw std::runtime_error("No Apple Music catalog artist is available.");
+    if (library) Catalog::Get().PutArtistCatalogId(query.id, catalogId);
+    const std::wstring expected = L"/v1/catalog/" + storefront + L"/artists/" +
+                                  Encode(catalogId) + L"/view/" + query.section;
+    const auto bindView = load.LimitBinder();
+    const std::wstring request =
+        cursorState.path.empty() ? bindView(expected) : load.CurrentRequest(expected, bindView);
+    const auto view = ReadArtistView(load, catalogId, request);
+    if (!view) {
+        page.rows = std::vector<stream::Playlist>{};
+        page.total = 0;
+        if (const auto artist = Catalog::Get().FindArtist(query.id)) page.artist = artist;
+        return;
+    }
+    const Object& response = *view;
+    std::vector<Object> objects = ObjectsOf(response);
+    std::vector<stream::Playlist> playlists;
+    for (const auto& object : objects)
+        if (auto playlist = ParsePlaylist(object)) playlists.push_back(std::move(*playlist));
+    page.rows = std::move(playlists);
+    page.total = CollectionTotal(response);
+    load.SetNext(response, expected, bindView, objects.size());
+    if (const auto artist = Catalog::Get().FindArtist(query.id)) page.artist = artist;
+}
+
+void StreamProvider::ReadSimilarArtistsPage(ListLoad& load) {
+    const auto& query = load.query;
+    const auto& cursorState = load.cursor;
+    const auto& storefront = load.storefront;
+    abort_callback& abort = load.abort;
+    auto& page = load.page;
+
+    if (query.id.empty()) throw std::runtime_error("The artist list has no id.");
+    const ArtistSource source = ResolveArtistSource(query.id, abort);
+    const bool library = source.library;
+    const stream::Id& catalogId = source.catalogId;
+    if (catalogId.empty())
+        throw std::runtime_error("No Apple Music catalog artist is available.");
+    if (library) Catalog::Get().PutArtistCatalogId(query.id, catalogId);
+    const std::wstring expected =
+        L"/v1/catalog/" + storefront + L"/artists/" + Encode(catalogId) + L"/view/similar-artists";
+    const auto bindView = load.LimitBinder();
+    const std::wstring request =
+        cursorState.path.empty() ? bindView(expected) : load.CurrentRequest(expected, bindView);
+    const auto view = ReadArtistView(load, catalogId, request);
+    if (!view) {
+        page.rows = std::vector<stream::Artist>{};
+        page.total = 0;
+        return;
+    }
+    const Object& response = *view;
+    std::vector<Object> objects = ObjectsOf(response);
+    std::vector<stream::Artist> artists;
+    for (const auto& object : objects)
+        if (auto artist = ParseArtist(object)) artists.push_back(std::move(*artist));
+    page.rows = std::move(artists);
+    page.total = CollectionTotal(response);
+    load.SetNext(response, expected, bindView, objects.size());
+}
+
+void StreamProvider::ReadSavedAlbumsPage(ListLoad& load) {
+    const auto& cursorState = load.cursor;
+    const size_t pageLimit = load.pageLimit;
+    abort_callback& abort = load.abort;
+    auto& page = load.page;
+
+    const std::wstring expected = L"/v1/me/library/albums";
+    const std::wstring parameters =
+        L"include=catalog,artists&platform=web&fields[library-albums]=name,artwork,"
+        L"artistName,genreNames,trackCount,playParams,releaseDate";
+    std::wstring request;
+    if (cursorState.path.empty()) {
+        request = expected + L"?limit=" + std::to_wstring(pageLimit) + L'&' + parameters;
+    } else {
+        request = load.CurrentRequest(expected, load.LimitAndQueryBinder(parameters));
+    }
+    const Object response = Apple(request, abort);
+    std::vector<Object> objects = ObjectsOf(response);
+    page.rows = ParseAlbums(objects);
+    ApplyAlbumMutations(std::get<std::vector<stream::Album>>(page.rows), cursorState.path.empty());
+    page.total = CollectionTotal(response);
+    load.SetNext(response, expected, load.LimitAndQueryBinder(parameters), objects.size());
+}
+
+void StreamProvider::ReadFollowedArtistsPage(ListLoad& load) {
+    const auto& cursorState = load.cursor;
+    const size_t pageLimit = load.pageLimit;
+    abort_callback& abort = load.abort;
+    auto& page = load.page;
+
+    const std::wstring expected = L"/v1/me/library/artists";
+    const std::wstring parameters =
+        L"include=catalog&extend[library-artists]=inFavorites&extend=inFavorites&platform=web";
+    std::wstring request;
+    if (cursorState.path.empty()) {
+        request = expected + L"?limit=" + std::to_wstring(pageLimit) + L'&' + parameters;
+    } else {
+        request = load.CurrentRequest(expected, load.LimitAndQueryBinder(parameters));
+    }
+    const Object response = Apple(request, abort);
+    std::vector<Object> objects = ObjectsOf(response);
+    page.rows = ParseArtists(objects);
+    page.total = CollectionTotal(response);
+    load.SetNext(response, expected, load.LimitAndQueryBinder(parameters), objects.size());
+}
+
+void StreamProvider::ReadPlaylistsPage(ListLoad& load) {
+    const auto& query = load.query;
+    const auto& cursorState = load.cursor;
+    const size_t pageLimit = load.pageLimit;
+    abort_callback& abort = load.abort;
+    auto& page = load.page;
+
+    if (!query.section.empty() && query.section != kCreatedSection &&
+        query.section != kSavedSection)
+        throw std::runtime_error("This provider playlist section is unavailable.");
+    if (query.shelf == stream::Shelf::Recommended)
+        throw std::runtime_error("Apple Music does not expose a recommended playlist shelf.");
+    const std::wstring expected = L"/v1/me/library/playlists";
+    const std::wstring parameters =
+        L"include=catalog&extend[library-playlists]=tags&platform=web"
+        L"&fields[library-playlists]=name,artwork,editorialArtwork,tags,canEdit,"
+        L"canDelete,canRename,trackCount,playParams";
+    std::wstring request;
+    if (cursorState.path.empty()) {
+        request = expected + L"?limit=" + std::to_wstring(pageLimit) + L'&' + parameters;
+    } else {
+        request = load.CurrentRequest(expected, load.LimitAndQueryBinder(parameters));
+    }
+    const Object response = Apple(request, abort);
+    std::vector<Object> objects = ObjectsOf(response);
+    std::vector<stream::Playlist> rows;
+    for (const auto& object : objects) {
+        if (IsFavoriteSystemPlaylist(object)) continue;
+        auto playlist = ParsePlaylist(object);
+        if (!playlist) continue;
+        if ((query.shelf == stream::Shelf::Created && !playlist->own) ||
+            (query.shelf == stream::Shelf::Saved && playlist->own))
+            continue;
+        rows.push_back(std::move(*playlist));
+    }
+    page.rows = std::move(rows);
+    if (cursorState.path.empty() && query.shelf == stream::Shelf::Saved) {
+        auto& playlists = std::get<std::vector<stream::Playlist>>(page.rows);
+        std::lock_guard lock(m_mutex);
+        std::erase_if(playlists, [&](const stream::Playlist& item) {
+            return std::any_of(
+                m_playlistMutations.begin(), m_playlistMutations.end(), [&](const auto& entry) {
+                    return !entry.second.saved &&
+                           (entry.first == item.id || entry.second.libraryId == item.id ||
+                            entry.second.catalogId == item.id);
+                });
+        });
+        for (const auto& [key, mutation] : m_playlistMutations) {
+            if (!mutation.saved || mutation.playlist.id.empty()) continue;
+            const bool present = std::any_of(
+                playlists.begin(), playlists.end(), [&](const stream::Playlist& item) {
+                    return item.id == key || item.id == mutation.catalogId ||
+                           item.id == mutation.libraryId;
+                });
+            if (!present) playlists.push_back(mutation.playlist);
+        }
+    }
+    load.SetNext(response, expected, load.LimitAndQueryBinder(parameters), objects.size());
+}
+
+void StreamProvider::ReadGroupsPage(ListLoad& load) {
+    const auto& query = load.query;
+    const auto& cursorState = load.cursor;
+    const uint64_t generation = load.generation;
+    abort_callback& abort = load.abort;
+    auto& page = load.page;
+    auto& songs = load.songs;
+
+    if (query.section != kGenresSection && query.section != kComposersSection)
+        throw std::runtime_error("This section does not provide groups.");
+    if (!cursorState.path.empty())
+        throw std::runtime_error("This derived list has no continuation.");
+    songs = RecentLibrarySongs(generation, abort);
+    const bool genres = query.section == kGenresSection;
+    auto groups = DerivedGroups(songs, songs, genres);
+    page.total = groups.size();
+    page.rows = std::move(groups);
+    songs.clear();
+}
+
+void StreamProvider::ReadCatalogSearchPage(ListLoad& load) {
+    const auto& query = load.query;
+    const auto& cursorState = load.cursor;
+    const auto& storefront = load.storefront;
+    auto& page = load.page;
+
+    if (query.search.empty()) {
+        if (!cursorState.path.empty()) throw std::runtime_error("The empty search has no continuation.");
+        load.trackRows = query.kind == stream::ListKind::CatalogSearch;
+        page.total = 0;
+        return;
+    }
+    const SearchKind* category = FindSearchKind(query.kind);
+    if (!category) throw std::runtime_error("Unsupported Apple Music search category.");
+
+    const std::wstring expected = L"/v1/catalog/" + storefront + L"/search";
+    const bool topResults = query.kind == stream::ListKind::CatalogSearchTopResults;
+    const size_t requestLimit = std::min(load.pageLimit, kCatalogSearchApiLimit);
+    const auto bindSearch = [&](std::wstring path) {
+        path = WithQueryValue(std::move(path), L"limit", std::to_wstring(requestLimit));
+        path = WithQueryValue(std::move(path), L"types", category->types);
+        path = WithQueryValue(std::move(path), L"term", Encode(query.search));
+        path = WithQueryValue(std::move(path), L"with",
+                              topResults ? std::wstring_view(L"topResults") : std::wstring_view());
+        if (query.kind == stream::ListKind::CatalogSearch)
+            path = WithQueryValue(std::move(path), L"include", L"albums");
+        return path;
+    };
+    const std::wstring request = cursorState.path.empty() ? bindSearch(expected)
+                                                          : load.CurrentRequest(expected, bindSearch);
+    const Object response = Apple(request, load.abort);
+    const auto results = json::GetObject(response, L"results");
+    if (!results) throw std::runtime_error("Apple Music returned an invalid search.");
+    const auto collection = json::GetObject(*results, category->resultKey);
+    if (!collection) {
+        load.AssignSearchRows(category->rows, {});
+        page.total = 0;
+        return;
+    }
+    const std::vector<Object> objects = ObjectsOf(*collection);
+    load.AssignSearchRows(category->rows, objects);
+    page.total = CollectionTotal(*collection);
+    load.SetNext(*collection, expected, bindSearch, objects.size());
+}
+
+// The main-thread end of a list page read: the records join the catalog, the rows are shown in
+// the display region and the page says whether metadata still has to arrive.
+void StreamProvider::FinishListPage(uint64_t generation, uint64_t preferenceEpoch, stream::ListPage page,
+                                    std::vector<Song> songs, bool trackRows, bool catalogItemRows,
+                                    bool derivedGroupsPage, std::wstring error, stream::ListPageDone done) {
+    bool mixedNeedsHydration = false;
+    if (error.empty() && trackRows) {
+        songs = MergeSongRecordsWithCatalog(std::move(songs), true);
+        // The generic list cache owns persistence. Avoid rewriting the legacy
+        // catalog snapshot once per streamed page.
+        Catalog::Get().PutAndHint(songs, false);
+        page.rows = DisplayTracks(songs);
+    }
+    if (error.empty() && derivedGroupsPage) {
+        Catalog::Get().PutAndHint(songs);
+        std::lock_guard lock(m_mutex);
+        if (generation == m_generation) {
+            m_librarySongs = songs;
+            m_librarySongsLoaded = true;
+            m_librarySongsAt = std::chrono::steady_clock::now();
+        }
+    }
+    if (error.empty() && catalogItemRows) {
+        auto* items = std::get_if<std::vector<stream::CatalogSearchItem>>(&page.rows);
+        if (!items) {
+            error = L"Apple Music returned a malformed top-results page.";
+        } else {
+            std::vector<Song> topTracks;
+            for (auto& item : *items) {
+                if (auto* track = std::get_if<stream::Track>(&item)) {
+                    Song song = BaselineSong(*track);
+                    if (const auto existing = Catalog::Get().FindSongRaw(track->id))
+                        song = MergeSongRecord(*existing, song);
+                    song.track.id = track->id;
+                    *track = song.track;
+                    topTracks.push_back(std::move(song));
+                } else if (auto* playlist = std::get_if<stream::Playlist>(&item)) {
+                    Catalog::Get().Put(*playlist);
+                } else if (auto* album = std::get_if<stream::Album>(&item)) {
+                    Catalog::Get().Put(*album);
+                } else if (auto* artist = std::get_if<stream::Artist>(&item)) {
+                    Catalog::Get().Put(*artist);
+                }
+            }
+            Catalog::Get().PutAndHint(topTracks, false);
+            mixedNeedsHydration = HasSongAlbumHydrationWork(topTracks);
+        }
+    }
+    if (error.empty()) {
+        if (page.playlist) {
+            auto merged = *page.playlist;
+            if (const auto existing = Catalog::Get().FindPlaylistRaw(page.playlist->id))
+                merged = MergePlaylistRecord(merged, *existing, false);
+            if (const auto saved = PlaylistSavedState(merged.id)) merged.saved = *saved;
+            Catalog::Get().Put(merged);
+            page.playlist = std::move(merged);
+        }
+        if (page.album) {
+            auto merged = *page.album;
+            if (const auto existing = Catalog::Get().FindAlbumRaw(page.album->id))
+                merged = MergeAlbumRecord(merged, *existing);
+            Catalog::Get().Put(merged);
+            page.album = std::move(merged);
+        }
+        if (page.artist) {
+            auto merged = *page.artist;
+            if (const auto existing = Catalog::Get().FindArtistRaw(page.artist->id))
+                merged = MergeArtistRecord(merged, *existing, false);
+            ApplyArtistPreferenceOverlay(merged, preferenceEpoch);
+            Catalog::Get().Put(merged);
+            page.artist = std::move(merged);
+        }
+        if (!page.total && page.playlist && page.playlist->trackCount >= 0)
+            page.total = static_cast<size_t>(page.playlist->trackCount);
+        if (!page.total && page.album && page.album->trackCount >= 0)
+            page.total = static_cast<size_t>(page.album->trackCount);
+        if (auto* playlistRows = std::get_if<std::vector<stream::Playlist>>(&page.rows)) {
+            for (auto& row : *playlistRows) {
+                if (const auto existing = Catalog::Get().FindPlaylistRaw(row.id))
+                    row = MergePlaylistRecord(row, *existing, false);
+                if (const auto saved = PlaylistSavedState(row.id)) row.saved = *saved;
+                Catalog::Get().Put(row);
+            }
+        } else if (auto* albumRows = std::get_if<std::vector<stream::Album>>(&page.rows)) {
+            for (auto& row : *albumRows) {
+                if (const auto existing = Catalog::Get().FindAlbumRaw(row.id))
+                    row = MergeAlbumRecord(row, *existing);
+                Catalog::Get().Put(row);
+            }
+        } else if (auto* artistRows = std::get_if<std::vector<stream::Artist>>(&page.rows)) {
+            for (auto& row : *artistRows) {
+                if (const auto existing = Catalog::Get().FindArtistRaw(row.id))
+                    row = MergeArtistRecord(row, *existing, false);
+                ApplyArtistPreferenceOverlay(row, preferenceEpoch);
+                Catalog::Get().Put(row);
+            }
+        }
+        ApplyPageDisplayNames(page, false);
+        page.enrichmentPending = (trackRows && HasSongAlbumHydrationWork(songs)) ||
+                                 mixedNeedsHydration || PageNeedsDisplayNames(page) ||
+                                 (derivedGroupsPage && RegionalDisplayEnabled()) ||
+                                 (catalogItemRows && PageNeedsDisplayNames(page));
+    }
+    if (done) done(std::move(page), std::move(error));
 }
 
 bool StreamProvider::EnrichListPage(const stream::ListQuery& query, const stream::ListPage& page,

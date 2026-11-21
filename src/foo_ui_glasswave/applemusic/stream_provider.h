@@ -203,6 +203,40 @@ class StreamProvider final : public stream::Provider {
     // Reads the Favorite Songs playlist so the stars know which songs are favorites.
     void RefreshFavoriteSongs();
 
+    // FetchListPage: a read is prepared on the main thread (FetchListPage, which also parks the
+    // Favorite Songs reads until their playlist is bound), loaded on a worker by the loader of
+    // its kind (ReadListPage and the Read*Page methods fill a ListLoad) and committed on the
+    // main thread (FinishListPage).
+    struct ListLoad;
+    struct ArtistSource {
+        bool library = false;
+        stream::Id catalogId;
+    };
+    bool HoldForFavoritePlaylist(const stream::ListQuery& query, const stream::ListCursor& cursor,
+                                 size_t limit, uint64_t generation, const stream::ListPageDone& done,
+                                 stream::Id& favoritePlaylist);
+    void ReadListPage(ListLoad& load);
+    void ReadPlaylistTracksPage(ListLoad& load);
+    void ReadAlbumTracksPage(ListLoad& load);
+    void ReadSectionTracksPage(ListLoad& load);
+    void ReadLibrarySongsPage(ListLoad& load);
+    void ReadGroupSongsPage(ListLoad& load);
+    void ReadArtistTopTracksPage(ListLoad& load);
+    void ReadArtistAlbumsPage(ListLoad& load);
+    void ReadArtistPlaylistsPage(ListLoad& load);
+    void ReadSimilarArtistsPage(ListLoad& load);
+    void ReadSavedAlbumsPage(ListLoad& load);
+    void ReadFollowedArtistsPage(ListLoad& load);
+    void ReadPlaylistsPage(ListLoad& load);
+    void ReadGroupsPage(ListLoad& load);
+    void ReadCatalogSearchPage(ListLoad& load);
+    ArtistSource ResolveArtistSource(const stream::Id& artist, abort_callback& abort) const;
+    std::optional<Object> ReadArtistView(ListLoad& load, const stream::Id& catalogId,
+                                         const std::wstring& request);
+    void FinishListPage(uint64_t generation, uint64_t preferenceEpoch, stream::ListPage page,
+                        std::vector<Song> songs, bool trackRows, bool catalogItemRows, bool derivedGroupsPage,
+                        std::wstring error, stream::ListPageDone done);
+
     mutable std::mutex m_mutex;
     std::condition_variable m_artistVerificationCondition;
     bool m_started = false;
