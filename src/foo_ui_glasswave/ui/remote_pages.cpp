@@ -1550,8 +1550,30 @@ class AlbumBrowsePage : public PagedPage {
     bool StyleRebuildsPage() const override { return true; }
 
     void OnPresentationChanged() override {
-        PagedPage::OnPresentationChanged();
-        if (Expanded()) StartNextAlbumTracks();
+        if (!Expanded() || !m_session) {
+            PagedPage::OnPresentationChanged();
+            return;
+        }
+        // Expanded, the songs come album by album in the albums' own order: more of them are
+        // needed only as the list scrolls on, all of them only to sort or filter (the tile
+        // style alone does not need the whole list here, unlike a list of loose songs).
+        m_allMode = CompleteNeeded();
+        m_session->SetMode(m_allMode || m_drainRequested ? stream::ListLoadMode::All
+                                                         : stream::ListLoadMode::OnDemand);
+        PresentationChanged();
+        UpdateLoadingText();
+        FinishDrainIfReady();
+        StartNextAlbumTracks();
+        m_host.ListChanged();
+    }
+
+    void NearEnd() override {
+        if (!Expanded()) {
+            PagedPage::NearEnd();
+            return;
+        }
+        m_tracksWanted = true;
+        StartNextAlbumTracks();
     }
 
   protected:

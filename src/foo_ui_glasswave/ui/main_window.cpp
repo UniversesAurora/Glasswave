@@ -4398,6 +4398,21 @@ void MainWindow::Navigate(const View& requested, bool push) {
     for (int id : {kBack, kForward, kViewOptions})
         if (auto* w = WidgetById(id)) w->Invalidate();
     RepaintBreadcrumb(); // also re-applies the layout (view options button, detail band)
+    SelectPending();
+}
+
+// A page opened for one of its songs selects it and scrolls to it as soon as its row is there
+// (an album page reads its songs after it opens).
+void MainWindow::SelectPending() {
+    if (!m_pendingSelect.is_valid() || !m_source || !m_list) return;
+    const size_t row = m_source->FindRow(m_pendingSelect);
+    if (row == SIZE_MAX) return;
+    m_pendingSelect = nullptr;
+    m_pendingScrollKey.clear();
+    m_source->SelectOnly(row);
+    m_source->SetFocus(row);
+    m_list->EnsureVisible(row);
+    m_list->Refresh();
 }
 
 void MainWindow::PaintDetailHeader() {
@@ -7748,10 +7763,14 @@ void MainWindow::ShowSource(std::unique_ptr<media::ListSource> source) {
     if (focusRow != SIZE_MAX) m_source->SetFocus(focusRow);
     if (anchorRow == SIZE_MAX && topRow != SIZE_MAX && m_source->Count())
         anchorRow = std::min(topRow, m_source->Count() - 1);
-    if (anchorRow != SIZE_MAX) m_list->ScrollToRow(anchorRow);
+    if (atTop)
+        m_list->ScrollToTop();
+    else if (anchorRow != SIZE_MAX)
+        m_list->ScrollToRow(anchorRow, topOffset);
     m_list->Refresh();
     if (m_page) m_page->OnPresentationChanged();
     if (auto* w = WidgetById(kViewOptions)) w->Invalidate();
+    SelectPending();
 }
 void MainWindow::BeforeListChange() {
     m_pageAnchor.clear();
@@ -7776,10 +7795,13 @@ void MainWindow::ListChanged() {
             }
         if (target == SIZE_MAX && m_source->Count())
             target = std::min(m_pageAnchorRow, m_source->Count() - 1);
-        if (target != SIZE_MAX) m_list->ScrollToRow(target);
+        // Back at the same distance from the top, not at the top: an album's header (or the
+        // band) above the row stays in view (owner, 2026-11-14: every load hid the first header).
+        if (target != SIZE_MAX) m_list->ScrollToRow(target, m_pageAnchorOffset);
     }
     m_pageAnchor.clear();
     m_pageAnchorRow = SIZE_MAX;
+    SelectPending();
 }
 
 void MainWindow::ChromeChanged() {

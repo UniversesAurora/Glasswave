@@ -1324,7 +1324,7 @@ void ListView::SetFocused(bool focused) {
 void ListView::Refresh() {
     UpdateStatusText();
     BuildLines();  // rows, groups or the view style may have changed
-    m_top = std::min(m_top, MaxTop());
+    if (ContentTopDip() > MaxScrollDip()) ScrollTopTo(MaxScrollDip());
     m_scrollX = std::clamp(m_scrollX, 0.0f, std::max(0.0f, ContentWidth() + 4 - RowsWidth()));
     if (m_source && m_hot != SIZE_MAX && m_hot >= m_source->Count()) m_hot = SIZE_MAX;
     m_hotGroup = SIZE_MAX;
@@ -1404,6 +1404,27 @@ size_t ListView::TopRow() const {
 void ListView::ScrollToRow(size_t row) {
     if (!m_source || row >= m_source->Count()) return;
     ScrollTo(LineOfRow(row));
+}
+
+void ListView::ScrollToTop() {
+    ScrollTopTo(0);
+    PaintRows();
+    PaintScrollBar();
+    CheckNearEnd();
+}
+
+float ListView::RowOffset(size_t row) const {
+    if (!m_source || row >= m_source->Count()) return 0;
+    return LineTopDip(LineOfRow(row)) - ContentTopDip();
+}
+
+void ListView::ScrollToRow(size_t row, float offsetDip) {
+    if (!m_source || row >= m_source->Count()) return;
+    const float top = std::min(LineTopDip(LineOfRow(row)) - offsetDip, LineTopDip(MaxTop()));
+    ScrollTopTo(top);
+    PaintRows();
+    PaintScrollBar();
+    CheckNearEnd();
 }
 
 // ---- Painting -------------------------------------------------------------------------------
@@ -2189,20 +2210,15 @@ void ListView::DrawArt(ID2D1DeviceContext* dc, const std::wstring& key, const me
                       Brush(dc, 0x000000, 0.18f).get(), px);
 }
 
+// By pixels: the thumb is the view's share of the content, wherever the tall rows are.
 bool ListView::ThumbGeometry(float* top, float* height) const {
-    const size_t n = LineCount(), v = VisibleLines();
     const float arrow = kScrollArrow * m_scale;
     const float trackH = static_cast<float>(std::max<LONG>(RowsRect().bottom - RowsRect().top, 0)) - arrow * 2;
-    if (n <= v || trackH <= 0) return false;
+    const float content = ContentHeightDip(), view = RowsHeightDip(), max = MaxScrollDip();
+    if (max <= 0.5f || trackH <= 0 || content <= 0) return false;
     const float minH = 24.0f * m_scale;
-    *height = std::min(trackH, std::max(minH, trackH * v / n));
-    const float lineH =
-        std::max(LineHeightDip(m_lines.empty() ? Line{} : m_lines[std::min(m_top, m_lines.size() - 1)]),
-                 m_mode == Mode::Grouped ? 0.001f : LineHeightPx() / m_scale);
-    const float position = std::clamp((static_cast<float>(m_top) + m_topOffsetDip / std::max(lineH, 0.001f)) /
-                                          static_cast<float>(std::max<size_t>(MaxTop(), 1)),
-                                      0.0f, 1.0f);
-    *top = arrow + (trackH - *height) * position;
+    *height = std::min(trackH, std::max(minH, trackH * view / content));
+    *top = arrow + (trackH - *height) * std::clamp(ContentTopDip() / max, 0.0f, 1.0f);
     return true;
 }
 
@@ -2283,14 +2299,14 @@ bool ListView::OnScrollRepeat() {
         const float y = static_cast<float>(m_scrollPt.y - rr.top);
         if (m_scrollTrackDir == 1) {
             if (y >= top) return false;  // the thumb has reached the pointer
-            if (m_top == 0) return false;
-            ScrollTo(m_top > page ? m_top - page : 0);
+            if (ContentTopDip() <= 0) return false;
+            ScrollBy(-page);
             return true;
         }
         if (m_scrollTrackDir == 2) {
             if (y < top + height) return false;
-            if (m_top >= MaxTop()) return false;
-            ScrollTo(m_top + page);
+            if (ContentTopDip() >= MaxScrollDip()) return false;
+            ScrollBy(page);
             return true;
         }
         return false;
@@ -2307,10 +2323,35 @@ void ListView::PaintScrollBar() {
     const bool has = ThumbGeometry(&top, &height);
     const float s = m_scale;
     host.Repaint(m_scroll, w, h, s, [&](ID2D1DeviceContext* dc) {
-        wp::ScrollBar(dc, {w / s, h / s}, top / s, has ? height / s : 0, m_scrollBlend.data());
+        wp::ScrollBar(dc, {w / s, h / s}, 0, 0, m_scrollBlend.data()); // the track and the arrows
     });
     PlaceVisual(m_scroll, static_cast<float>(rr.right - m_bounds.left), static_cast<float>(ContentOffsetPx()),
                 static_cast<float>(w), static_cast<float>(h));
+    m_thumb.IsVisible(has);
+    if (has) {
+        const int th = std::max(1, static_cast<int>(std::lround(height)));
+        host.Repaint(m_thumb, w, th, s, [&](ID2D1DeviceContext* dc) {
+            wp::ScrollBar(dc, {w / s, th / s}, 0, th / s, m_scrollBlend.data(), true);
+        });
+        m_thumb.Size(float2{static_cast<float>(w), static_cast<float>(th)});
+    }
+    PlaceThumb();
+}
+
+void ListView::PlaceThumb() {
+    float top = 0, height = 0;
+    if (!ThumbGeometry(&top, &height)) return;
+    const RECT rr = RowsRect();
+    const float arrow = kScrollArrow * m_scale;
+    const float trackH = static_cast<float>(std::max<LONG>(rr.bottom - rr.top, 0)) - arrow * 2;
+    const float max = MaxScrollDip() * m_scale;
+    const float lo = static_cast<float>(ContentOffsetPx()) + arrow;
+    m_thumbPlace.InsertScalar(L"x", static_cast<float>(rr.right - m_bounds.left));
+    m_thumbPlace.InsertScalar(L"a", lo);
+    m_thumbPlace.InsertScalar(L"b", max > 0 ? (trackH - std::round(height)) / max : 0.0f);
+    m_thumbPlace.InsertScalar(L"top", 0.0f); // content coordinates are absolute
+    m_thumbPlace.InsertScalar(L"lo", lo);
+    m_thumbPlace.InsertScalar(L"hi", lo + std::max(0.0f, trackH - std::round(height)));
 }
 
 // ---- Input ----------------------------------------------------------------------------------
@@ -2495,7 +2536,7 @@ void ListView::OnMouseMove(POINT pt) {
             const float trackH = static_cast<float>(rr.bottom - rr.top) - arrow * 2 - height;
             const float y = static_cast<float>(pt.y - rr.top - arrow - m_dragOffset);
             const float frac = trackH > 0 ? std::clamp(y / trackH, 0.0f, 1.0f) : 0.0f;
-            ScrollTo(static_cast<size_t>(std::lround(frac * MaxTop())));
+            SetScrollDip(frac * MaxScrollDip());
         }
         return;
     }
@@ -2689,13 +2730,13 @@ void ListView::OnLButtonDown(POINT pt, bool ctrl, bool shift) {
     case Part::Track: {
         float top = 0, height = 0;
         if (ThumbGeometry(&top, &height)) {
-            const size_t page = std::max<size_t>(VisibleLines(), 1) - 1;
+            const float page = std::max(RowsHeightDip() - 24.0f, 24.0f);
             if (pt.y - RowsRect().top < top) {
                 m_scrollTrackDir = 1;
-                ScrollTo(m_top > page ? m_top - page : 0);
+                ScrollBy(-page);
             } else {
                 m_scrollTrackDir = 2;
-                ScrollTo(m_top + page);
+                ScrollBy(page);
             }
         }
         m_scrollPressed = 3;
@@ -2705,7 +2746,7 @@ void ListView::OnLButtonDown(POINT pt, bool ctrl, bool shift) {
         break;
     }
     case Part::ArrowUp: {
-        ScrollTo(m_top > 3 ? m_top - 3 : 0);
+        ScrollBy(-kScrollStep);
         m_scrollPressed = 1;
         m_scrollPt = pt;
         if (onScrollAnim) onScrollAnim();
@@ -2713,7 +2754,7 @@ void ListView::OnLButtonDown(POINT pt, bool ctrl, bool shift) {
         break;
     }
     case Part::ArrowDown: {
-        ScrollTo(m_top + 3);
+        ScrollBy(kScrollStep);
         m_scrollPressed = 2;
         m_scrollPt = pt;
         if (onScrollAnim) onScrollAnim();
