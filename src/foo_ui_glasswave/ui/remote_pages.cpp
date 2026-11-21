@@ -96,66 +96,83 @@ std::wstring DateText(const std::wstring& text) {
     return out;
 }
 
-// An artist's profile as details-pane facts, most telling first; what the source does not
-// know is left out.
+// A subject's details as details-pane facts, in the order added (most telling first). Labels
+// are UI keys; a fact whose value the source does not know is left out.
+class FactList {
+  public:
+    // The value as it is.
+    FactList& Add(const wchar_t* label, std::wstring value) {
+        if (!value.empty()) m_facts.push_back({Tr(label), std::move(value)});
+        return *this;
+    }
+    // A UI key (a type, an area the service names in English), translated.
+    FactList& Key(const wchar_t* label, const std::wstring& key) {
+        return Add(label, key.empty() ? std::wstring() : Tr(key));
+    }
+    // A date as the service writes it (DateText).
+    FactList& Date(const wchar_t* label, const std::wstring& text) {
+        return Add(label, text.empty() ? std::wstring() : DateText(text));
+    }
+    // Several values in one fact (ListText); `keys`: each value is a UI key, translated.
+    FactList& List(const wchar_t* label, const std::vector<std::wstring>& values, bool keys = false) {
+        if (!keys) return Add(label, ListText(values));
+        std::vector<std::wstring> translated;
+        for (const auto& value : values) translated.push_back(Tr(value));
+        return Add(label, ListText(translated));
+    }
+    std::vector<DetailInfo::Fact> Take() { return std::move(m_facts); }
+
+  private:
+    std::vector<DetailInfo::Fact> m_facts;
+};
+
+// An artist's profile as details-pane facts.
 std::vector<DetailInfo::Fact> ArtistFacts(const stream::Artist& artist) {
-    std::vector<DetailInfo::Fact> facts;
-    const auto add = [&facts](const wchar_t* label, std::wstring value) {
-        if (!value.empty()) facts.push_back({Tr(label), std::move(value)});
-    };
     using Kind = stream::ArtistKind;
-    add(artist.kind == Kind::Group ? L"Formed" : artist.kind == Kind::Unknown ? L"Born or formed" : L"Born",
-        artist.born.empty() ? std::wstring() : DateText(artist.born));
-    add(L"From", artist.origin);
-    add(L"Area", artist.area.empty() ? std::wstring() : Tr(artist.area));
-    add(L"Type", artist.kind == Kind::Group    ? Tr(L"Band or group")
-                 : artist.kind == Kind::Male   ? Tr(L"Male artist")
-                 : artist.kind == Kind::Female ? Tr(L"Female artist")
-                 : artist.kind == Kind::Person ? Tr(L"Solo artist")
-                                               : std::wstring());
-    add(L"Genre", ListText(artist.genres));
-    add(L"Also known as", ListText(artist.aliases));
-    add(L"Roles", ListText(artist.roles));
-    add(L"Music videos", artist.videoCount > 0 ? NumberText(artist.videoCount) : std::wstring());
-    return facts;
+    const wchar_t* const type = artist.kind == Kind::Group    ? L"Band or group"
+                                : artist.kind == Kind::Male   ? L"Male artist"
+                                : artist.kind == Kind::Female ? L"Female artist"
+                                : artist.kind == Kind::Person ? L"Solo artist"
+                                                              : L"";
+    return FactList()
+        .Date(artist.kind == Kind::Group ? L"Formed" : artist.kind == Kind::Unknown ? L"Born or formed" : L"Born",
+              artist.born)
+        .Add(L"From", artist.origin)
+        .Key(L"Area", artist.area)
+        .Key(L"Type", type)
+        .List(L"Genre", artist.genres)
+        .List(L"Also known as", artist.aliases)
+        .List(L"Roles", artist.roles)
+        .Add(L"Music videos", artist.videoCount > 0 ? NumberText(artist.videoCount) : std::wstring())
+        .Take();
 }
 
 // A playlist's details as details-pane facts.
 std::vector<DetailInfo::Fact> PlaylistFacts(const stream::Playlist& playlist) {
-    std::vector<DetailInfo::Fact> facts;
-    const auto add = [&facts](const wchar_t* label, std::wstring value) {
-        if (!value.empty()) facts.push_back({Tr(label), std::move(value)});
-    };
-    std::vector<std::wstring> traits;
-    for (const auto& trait : playlist.traits) traits.push_back(Tr(trait));
-    add(L"Type", playlist.type.empty() ? std::wstring() : Tr(playlist.type));
-    add(L"Tags", ListText(playlist.tags));
-    add(L"Created", playlist.created.empty() ? std::wstring() : DateText(playlist.created));
-    add(L"Updated", playlist.updated.empty() ? std::wstring() : DateText(playlist.updated));
-    add(L"Updates", playlist.updates);
-    add(L"Audio", ListText(traits));
-    add(L"Also known as", ListText(playlist.aliases));
-    return facts;
+    return FactList()
+        .Key(L"Type", playlist.type)
+        .List(L"Tags", playlist.tags)
+        .Date(L"Created", playlist.created)
+        .Date(L"Updated", playlist.updated)
+        .Add(L"Updates", playlist.updates)
+        .List(L"Audio", playlist.traits, true)
+        .List(L"Also known as", playlist.aliases)
+        .Take();
 }
 
 // An album's details as details-pane facts.
 std::vector<DetailInfo::Fact> AlbumFacts(const stream::Album& album) {
-    std::vector<DetailInfo::Fact> facts;
-    const auto add = [&facts](const wchar_t* label, std::wstring value) {
-        if (!value.empty()) facts.push_back({Tr(label), std::move(value)});
-    };
-    std::vector<std::wstring> traits;
-    for (const auto& trait : album.traits) traits.push_back(Tr(trait));
-    add(L"Type", album.type.empty() ? std::wstring() : Tr(album.type));
-    add(L"Edition", album.edition);
-    add(L"Released", album.released.empty() ? std::wstring() : DateText(album.released));
-    add(L"Genre", ListText(album.genres));
-    add(L"Label", album.label);
-    add(L"Audio", ListText(traits));
-    add(L"Also known as", ListText(album.aliases));
-    add(L"Copyright", album.copyright);
-    add(L"UPC", album.upc);
-    return facts;
+    return FactList()
+        .Key(L"Type", album.type)
+        .Add(L"Edition", album.edition)
+        .Date(L"Released", album.released)
+        .List(L"Genre", album.genres)
+        .Add(L"Label", album.label)
+        .List(L"Audio", album.traits, true)
+        .List(L"Also known as", album.aliases)
+        .Add(L"Copyright", album.copyright)
+        .Add(L"UPC", album.upc)
+        .Take();
 }
 
 bool Contains(const std::vector<stream::Album>& albums, const stream::Id& id) {
@@ -2592,36 +2609,26 @@ class SongPage final : public Page {
     }
 
     static std::vector<DetailInfo::Fact> Facts(const stream::SongDetails& song) {
-        std::vector<DetailInfo::Fact> facts;
-        const auto add = [&facts](const wchar_t* label, std::wstring value) {
-            if (!value.empty()) facts.push_back({Tr(label), std::move(value)});
-        };
-        std::vector<std::wstring> traits;
-        for (const auto& trait : song.traits) traits.push_back(Tr(trait));
-        add(L"Length", song.track.durationMs > 0 ? FormatTime(song.track.durationMs / 1000.0) : L"");
         std::wstring position;
         if (song.number > 0) {
-            position = Tr(L"Track {0}");
-            position.replace(position.find(L"{0}"), 3, std::to_wstring(song.number));
-            if (song.disc > 0) {
-                std::wstring disc = Tr(L"Disc {0}");
-                disc.replace(disc.find(L"{0}"), 3, std::to_wstring(song.disc));
-                position = disc + L" · " + position;
-            }
+            position = Fill(Tr(L"Track {0}"), {std::to_wstring(song.number)});
+            if (song.disc > 0) position = Fill(Tr(L"Disc {0}"), {std::to_wstring(song.disc)}) + L" · " + position;
         }
-        add(L"Position", position);
-        add(L"Released", song.released.empty() ? std::wstring() : DateText(song.released));
-        add(L"Genre", ListText(song.genres));
-        add(L"Tags", ListText(song.tags));
-        add(L"Language", LanguageText(song.language));
-        add(L"BPM", song.bpm > 0 ? std::to_wstring(song.bpm) : L"");
-        add(L"Version", song.version.empty() ? std::wstring() : Tr(song.version));
-        add(L"Audio", ListText(traits));
-        add(L"Lyrics", song.lyrics.empty() ? std::wstring() : Tr(song.lyrics));
-        if (song.credits.empty()) add(L"Composer", song.composer);
-        add(L"Also known as", ListText(song.aliases));
-        add(L"ISRC", song.isrc);
-        return facts;
+        return FactList()
+            .Add(L"Length", song.track.durationMs > 0 ? FormatTime(song.track.durationMs / 1000.0) : L"")
+            .Add(L"Position", position)
+            .Date(L"Released", song.released)
+            .List(L"Genre", song.genres)
+            .List(L"Tags", song.tags)
+            .Add(L"Language", LanguageText(song.language))
+            .Add(L"BPM", song.bpm > 0 ? std::to_wstring(song.bpm) : L"")
+            .Key(L"Version", song.version)
+            .List(L"Audio", song.traits, true)
+            .Key(L"Lyrics", song.lyrics)
+            .Add(L"Composer", song.credits.empty() ? song.composer : std::wstring()) // else among the credits
+            .List(L"Also known as", song.aliases)
+            .Add(L"ISRC", song.isrc)
+            .Take();
     }
 
     // A language tag ("zh-Hans-CN") as the system names the language; other text as it is.
