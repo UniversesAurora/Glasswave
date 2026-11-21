@@ -1031,29 +1031,39 @@ Song BaselineSong(const stream::Track& track) {
     return song;
 }
 
-// Track projections normally supply album and artist IDs. This fallback handles only
-// rows where Apple omitted one of those relations.
-size_t HydrateSongAlbums(std::vector<Song>& songs, const std::wstring& storefront, abort_callback& abort) {
-    std::vector<stream::Id> libraryIds;
-    std::vector<stream::Id> catalogIds;
-    std::set<stream::Id> seenLibrary;
-    std::set<stream::Id> seenCatalog;
-    for (const auto& song : songs) {
-        if (!NeedsSongAlbumHydration(song)) continue;
-        if (!song.libraryId.empty() && seenLibrary.emplace(song.libraryId).second)
-            libraryIds.push_back(song.libraryId);
-        else if (song.libraryId.empty() && !song.catalogId.empty() &&
-                 seenCatalog.emplace(song.catalogId).second)
-            catalogIds.push_back(song.catalogId);
-    }
+// Songs read again by their library and catalog ids, with their album and artists. A batch
+// that failed answers for none of its ids.
+struct SongsRead {
+    std::vector<Song> library; // read by library id
+    std::vector<Song> catalog; // read by catalog id
+    std::set<stream::Id> answered;
+    size_t batches = 0;
 
+    // What was read for `song`: by its library id when it has one, else by its catalog id.
+    const Song* For(const Song& song) const {
+        const bool inLibrary = !song.libraryId.empty();
+        const stream::Id& key = inLibrary ? song.libraryId : song.catalogId;
+        if (key.empty()) return nullptr;
+        for (const auto& read : inLibrary ? library : catalog)
+            if ((inLibrary ? read.libraryId : read.catalogId) == key) return &read;
+        return nullptr;
+    }
+    bool Answered(const Song& song) const {
+        return answered.contains(song.libraryId.empty() ? song.catalogId : song.libraryId);
+    }
+};
+
+SongsRead ReadSongsByIds(const std::vector<stream::Id>& libraryIds, const std::vector<stream::Id>& catalogIds,
+                         const std::wstring& storefront, abort_callback& abort) {
     struct Batch {
         std::vector<stream::Id> ids;
         bool library = false;
     };
     struct BatchResult {
         std::vector<Song> songs;
+        std::vector<stream::Id> ids;
         bool library = false;
+        bool ok = false;
     };
 
     std::vector<Batch> batches;
@@ -1069,6 +1079,8 @@ size_t HydrateSongAlbums(std::vector<Song>& songs, const std::wstring& storefron
     appendBatches(libraryIds, true);
     appendBatches(catalogIds, false);
 
+    SongsRead read;
+    read.batches = batches.size();
     // The bridge permits concurrent reads. Keep a small fixed ceiling so large playlists do
     // not create one request per track or starve the ordinary task queue.
     std::vector<std::future<BatchResult>> pending;
@@ -1094,8 +1106,10 @@ size_t HydrateSongAlbums(std::vector<Song>& songs, const std::wstring& storefron
                                             L"&include=albums,artists&platform=web";
                     try {
                         const Object response = Apple(path, abort);
-                        const auto data = json::GetArray(response, L"data");
-                        if (data) result.songs = ParseSongs(json::Objects(*data));
+                        if (const auto data = json::GetArray(response, L"data"))
+                            result.songs = ParseSongs(json::Objects(*data));
+                        result.ids = std::move(batch.ids);
+                        result.ok = true;
                     } catch (const exception_aborted&) {
                         throw;
                     } catch (...) {
@@ -1108,16 +1122,43 @@ size_t HydrateSongAlbums(std::vector<Song>& songs, const std::wstring& storefron
         BatchResult result = pending.front().get();
         pending.erase(pending.begin());
         abort.check();
-        for (const auto& hydrated : result.songs) {
-            const stream::Id key = result.library ? hydrated.libraryId : hydrated.catalogId;
-            if (key.empty()) continue;
-            for (auto& song : songs) {
-                if ((result.library ? song.libraryId : song.catalogId) == key)
-                    MergeHydratedSong(song, hydrated);
-            }
+        if (!result.ok) continue;
+        read.answered.insert(result.ids.begin(), result.ids.end());
+        auto& into = result.library ? read.library : read.catalog;
+        into.insert(into.end(), std::make_move_iterator(result.songs.begin()),
+                    std::make_move_iterator(result.songs.end()));
+    }
+    return read;
+}
+
+// The library and catalog ids to read `songs` by, each once.
+void SongReadIds(const std::vector<Song>& songs, std::vector<stream::Id>& libraryIds,
+                 std::vector<stream::Id>& catalogIds) {
+    std::set<stream::Id> seenLibrary;
+    std::set<stream::Id> seenCatalog;
+    for (const auto& song : songs) {
+        if (!song.libraryId.empty()) {
+            if (seenLibrary.emplace(song.libraryId).second) libraryIds.push_back(song.libraryId);
+        } else if (!song.catalogId.empty() && seenCatalog.emplace(song.catalogId).second) {
+            catalogIds.push_back(song.catalogId);
         }
     }
-    return batches.size();
+}
+
+// Track projections normally supply album and artist IDs. This fallback handles only
+// rows where Apple omitted one of those relations.
+size_t HydrateSongAlbums(std::vector<Song>& songs, const std::wstring& storefront, abort_callback& abort) {
+    std::vector<Song> needed;
+    for (const auto& song : songs)
+        if (NeedsSongAlbumHydration(song)) needed.push_back(song);
+    std::vector<stream::Id> libraryIds;
+    std::vector<stream::Id> catalogIds;
+    SongReadIds(needed, libraryIds, catalogIds);
+    const SongsRead read = ReadSongsByIds(libraryIds, catalogIds, storefront, abort);
+    for (auto& song : songs)
+        if (NeedsSongAlbumHydration(song))
+            if (const Song* hydrated = read.For(song)) MergeHydratedSong(song, *hydrated);
+    return read.batches;
 }
 
 std::vector<Song> LoadLibrarySongs(abort_callback& abort) {
@@ -2269,19 +2310,14 @@ void StreamProvider::Start() {
     }
     RefreshAccountAsync(generation, {});
     // Songs asked for before the provider started (a queue restored and resumed at start-up,
-    // owner 2026-11-21: the resumed song kept "Apple Music <id>"): RequestUnknownSong keeps them
-    // and does not ask again for two minutes, so they are read now.
-    bool unknown = false;
-    {
-        std::lock_guard lock(m_unknownMutex);
-        unknown = !m_unknownSongs.empty();
-    }
-    if (unknown) m_exec.Post(kTasks, generation, [this] { ReadUnknownSongs(); });
+    // owner 2026-11-21: the resumed song kept "Apple Music <id>") waited for this reader.
+    Catalog::Get().Records().StartReading([this](std::vector<stream::Id> ids) { ReadSongs(std::move(ids)); });
 }
 
 void StreamProvider::Shutdown() {
     const auto finalSnapshot = m_snapshots.Prepare();
 
+    Catalog::Get().Records().StopReading();
     {
         std::lock_guard lock(m_mutex);
         if (!m_started && !m_exec.Running()) return;
@@ -3884,96 +3920,74 @@ stream::Catalog* StreamProvider::Records() const {
 
 std::optional<stream::Track> StreamProvider::FindTrack(const stream::Id& track) const {
     const auto song = Catalog::Get().FindSong(track);
-    if (!song) RequestUnknownSong(track);
+    if (!song || stream::LacksLinks(song->track)) Catalog::Get().Records().Want(track);
     return song ? std::optional<stream::Track>(song->track) : std::nullopt;
 }
 
 stream::Id StreamProvider::AlbumOfTrack(const stream::Id& track) const {
     stream::Id album = Catalog::Get().SongAlbum(track); // what album_art_applemusic.cpp names the cover by
-    if (album.empty() && !Catalog::Get().FindSongRaw(track)) RequestUnknownSong(track);
+    if (album.empty()) Catalog::Get().Records().Want(track);
     return album;
 }
 
-void StreamProvider::RequestUnknownSong(const stream::Id& track) const {
-    if (track.empty()) return;
-    constexpr auto kRetry = std::chrono::minutes(2);
-    const auto now = std::chrono::steady_clock::now();
+void StreamProvider::ReadSongs(std::vector<stream::Id> ids) {
+    uint64_t generation = 0;
     {
-        std::lock_guard lock(m_unknownMutex);
-        if (const auto asked = m_unknownAsked.find(track); asked != m_unknownAsked.end() && now - asked->second < kRetry)
+        std::lock_guard lock(m_mutex);
+        if (!m_started) return;
+        generation = m_exec.Generation();
+    }
+    const std::wstring storefront = Storefront();
+    m_exec.Post(kTasks, generation, [this, generation, storefront, ids = std::move(ids)] {
+        // Each song is read by its library id when its record has one, else by its catalog id;
+        // one never seen by the id it is asked for.
+        std::vector<Song> wanted;
+        wanted.reserve(ids.size());
+        for (const auto& id : ids) {
+            Song song;
+            if (const auto known = Catalog::Get().FindSongRaw(id)) {
+                song = *known;
+            } else {
+                stream::Track track;
+                track.id = id;
+                song = BaselineSong(track);
+            }
+            song.track.id = id;
+            wanted.push_back(std::move(song));
+        }
+        std::vector<stream::Id> libraryIds;
+        std::vector<stream::Id> catalogIds;
+        SongReadIds(wanted, libraryIds, catalogIds);
+        SongsRead read;
+        try {
+            read = ReadSongsByIds(libraryIds, catalogIds, storefront, m_exec.Abort());
+        } catch (const exception_aborted&) {
             return;
-        m_unknownAsked[track] = now;
-        m_unknownSongs.insert(track);
-        if (m_unknownQueued) return;
-        m_unknownQueued = true;
-    }
-    // Gathered until the main thread is free: a queue asks for its rows one by one in one paint.
-    auto* self = const_cast<StreamProvider*>(this);
-    fb2k::inMainThread([self] {
-        {
-            std::lock_guard unknown(self->m_unknownMutex);
-            self->m_unknownQueued = false; // later requests post again; the set is read once
         }
-        uint64_t generation = 0;
-        {
-            std::lock_guard lock(self->m_mutex);
-            if (!self->m_started) return;
-            generation = self->m_exec.Generation();
+        std::vector<std::pair<stream::Id, Song>> found;
+        std::vector<stream::Id> answered;
+        for (const auto& song : wanted) {
+            if (!read.Answered(song)) continue; // a failed batch: asked again after the pause
+            answered.push_back(song.track.id);
+            if (const Song* songRead = read.For(song)) found.emplace_back(song.track.id, *songRead);
         }
-        self->m_exec.Post(kTasks, generation, [self] { self->ReadUnknownSongs(); });
-    });
-}
-
-void StreamProvider::ReadUnknownSongs() const {
-    std::vector<stream::Id> library, catalog;
-    {
-        std::lock_guard lock(m_unknownMutex);
-        for (const auto& id : m_unknownSongs) {
-            if (Catalog::Get().FindSongRaw(id)) continue;
-            (IsLibraryId(id) && id[0] == L'i' ? library : catalog).push_back(id);
-        }
-        m_unknownSongs.clear();
-    }
-    if (library.empty() && catalog.empty()) return;
-    std::wstring storefront;
-    try {
-        storefront = Storefront();
-    } catch (...) {
-    }
-    if (storefront.empty()) storefront = L"US";
-    std::vector<Song> songs;
-    const auto read = [&](const std::vector<stream::Id>& ids, bool inLibrary) {
-        constexpr size_t kBatch = 100;
-        for (size_t first = 0; first < ids.size(); first += kBatch) {
-            std::wstring joined;
-            for (size_t i = first; i < std::min(ids.size(), first + kBatch); ++i) {
-                if (!joined.empty()) joined += L',';
-                joined += ids[i];
-            }
-            const std::wstring path =
-                inLibrary ? L"/v1/me/library/songs?ids=" + Encode(joined) +
-                                L"&include=catalog,albums,artists&include[songs]=albums"
-                          : L"/v1/catalog/" + storefront + L"/songs?ids=" + Encode(joined) + L"&include=albums,artists";
-            try {
-                const Object response = Apple(path, m_exec.Abort());
-                if (const auto data = json::GetArray(response, L"data")) {
-                    auto parsed = ParseSongs(json::Objects(*data));
-                    songs.insert(songs.end(), std::make_move_iterator(parsed.begin()),
-                                 std::make_move_iterator(parsed.end()));
+        m_exec.PostMain(generation, [found = std::move(found), answered = std::move(answered)] {
+            // Joined with the record as it is now: a list may have put a richer one meanwhile.
+            std::vector<Song> songs;
+            songs.reserve(found.size());
+            for (const auto& [id, songRead] : found) {
+                Song song = songRead;
+                if (const auto known = Catalog::Get().FindSongRaw(id)) {
+                    song = *known;
+                    MergeHydratedSong(song, songRead);
                 }
-            } catch (...) {
-                // Asked again after the retry pause by whatever still needs the songs.
-                std::lock_guard lock(m_unknownMutex);
-                for (size_t i = first; i < std::min(ids.size(), first + kBatch); ++i) m_unknownAsked.erase(ids[i]);
+                song.track.id = id;
+                songs.push_back(std::move(song));
             }
-        }
-    };
-    read(library, true);
-    read(catalog, false);
-    if (songs.empty()) return;
-    fb2k::inMainThread([songs = std::move(songs)]() mutable {
-        // Persisted with the restart catalog: a queue restored next time has its names at once.
-        Catalog::Get().PutAndHint(songs, true);
+            // Persisted with the restart catalog: a queue restored next time has its names at once.
+            if (!songs.empty()) Catalog::Get().PutAndHint(songs, true);
+            Catalog::Get().Records().Settle(answered);
+        });
     });
 }
 

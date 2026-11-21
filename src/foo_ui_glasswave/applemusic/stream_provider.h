@@ -59,11 +59,6 @@ class StreamProvider final : public stream::Provider {
     stream::Catalog* Records() const override;
     std::optional<stream::Track> FindTrack(const stream::Id& track) const override;
     stream::Id AlbumOfTrack(const stream::Id& track) const override;
-    // A song the catalog does not know (a queue from an earlier run, a list not opened in this
-    // one) is read in a batch with the others asked for meanwhile and published to foobar2000's
-    // metadata, so every view gets its name and album. A failed read is asked again later.
-    // Any thread.
-    void RequestUnknownSong(const stream::Id& track) const;
     bool SameCover(std::wstring_view a, std::wstring_view b) const override;
 
     bool ReadFavorite(const stream::Id& track) const override;
@@ -357,12 +352,10 @@ class StreamProvider final : public stream::Provider {
     // the account changes.
     std::unordered_map<stream::Id, bool> m_songLibraryEdits;
     bool SongRemovedHereLocked(const Song& song) const;
-    // RequestUnknownSong: ids waiting for the next batch, and when each was last asked for.
-    mutable std::mutex m_unknownMutex;
-    mutable std::set<stream::Id> m_unknownSongs;
-    mutable std::unordered_map<stream::Id, std::chrono::steady_clock::time_point> m_unknownAsked;
-    mutable bool m_unknownQueued = false;
-    void ReadUnknownSongs() const;
+    // The catalog's reader (stream::Catalog::StartReading): songs asked for that it lacks or
+    // holds without their album or artists, read in one batch and published to foobar2000's
+    // metadata, so every view gets their names and links. Main thread.
+    void ReadSongs(std::vector<stream::Id> ids);
     // The library's songs for the lists derived from them (genres, composers and their songs):
     // the copy read within the library window, else one read shared by every such list. Worker.
     std::vector<Song> RecentLibrarySongs(uint64_t generation, abort_callback& abort);

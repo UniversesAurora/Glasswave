@@ -450,11 +450,13 @@ class AppleInput : public stream::EncodedInputBase {
             if (!song->track.album.empty()) out.meta_set("album", Utf8(song->track.album).c_str());
             if (!m_decoder.is_valid() && song->track.durationMs > 0)
                 out.set_length(static_cast<double>(song->track.durationMs) / 1000.0);
+            // A station's song arrives without its album and artists: read them while it plays.
+            if (stream::LacksLinks(song->track)) Catalog::Get().Records().Want(m_id);
         } else {
             // Read in the background and published to the metadata of every view showing it;
             // meanwhile the song's last known tags (stream/track_snapshot.h), and a stand-in
             // only for a song never seen. Either way the record is reported once it is known.
-            StreamProvider::Get().RequestUnknownSong(m_id);
+            Catalog::Get().Records().Want(m_id);
             m_reportWhenKnown = true;
             if (!stream::KnownTags(Catalog::Get().Handle(m_id), out) && !out.meta_get("title", 0)) {
                 out.meta_set("title", Utf8(L"Apple Music " + m_id).c_str());
