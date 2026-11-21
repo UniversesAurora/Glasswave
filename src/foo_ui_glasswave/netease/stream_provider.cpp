@@ -194,7 +194,7 @@ bool SongDetailsInBatches(Client& client, const std::vector<int64_t>& ids, abort
 // ncm:// items also play with another UI; stopped before the component is unloaded (no
 // joins in static destructors).
 const bool g_registered = [] {
-    stream::Register(StreamProvider::Get());
+    stream::Register(StreamProvider::Get(), 20);
     return true;
 }();
 

@@ -574,11 +574,14 @@ template <class Fn> Fn GuardDone(Fn done, std::shared_ptr<std::atomic_bool> canc
     };
 }
 
-// The providers compiled into the component, in navigation order. Providers register
-// themselves while the component loads; Providers() is safe from then on (main thread).
+// The providers compiled into the component, in the order the navigation pane and the home page
+// show them: by the `order` each registers with, lowest first (the owner's, 2026-11-15: Apple
+// Music, then NetEase Cloud Music). Providers register themselves while the component loads, in
+// an order the linker decides, which is why the order is given and not taken from it.
+// Providers() is safe from then on (main thread).
 const std::vector<Provider*>& Providers();
 void StartProviders(); // Start() on every provider
-void Register(Provider& provider);
+void Register(Provider& provider, int order);
 void Unregister(Provider& provider);
 Provider* FindProvider(std::wstring_view key);
 // The provider an item belongs to, or nullptr for local files.

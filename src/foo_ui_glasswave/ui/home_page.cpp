@@ -21,20 +21,11 @@ namespace {
 
 using Value = stream::HomeShelfItem; // Track, Artist, Album, Playlist, Station
 
-// The sources in the owner's order (2026-11-15: Apple Music's cards first, then NetEase's); any
-// other source with a home page follows in registration order.
+// The sources with a home page, in the sources' order (stream::Providers).
 std::vector<stream::Provider*> HomeSources() {
     std::vector<stream::Provider*> sources;
     for (auto* p : stream::Providers())
         if (p->Can(stream::Capability::Home) && (p->SignedIn() || p->SessionRestoring())) sources.push_back(p);
-    const auto rank = [](const stream::Provider* p) {
-        constexpr std::wstring_view kOrder[] = {L"apple", L"ncm"};
-        for (size_t i = 0; i < std::size(kOrder); ++i)
-            if (p->Key() == kOrder[i]) return i;
-        return std::size(kOrder);
-    };
-    std::stable_sort(sources.begin(), sources.end(),
-                     [&](const stream::Provider* a, const stream::Provider* b) { return rank(a) < rank(b); });
     return sources;
 }
 

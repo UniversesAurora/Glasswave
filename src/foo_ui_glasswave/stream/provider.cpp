@@ -13,6 +13,11 @@ std::vector<Provider*>& Registry() {
     return providers;
 }
 
+std::map<const Provider*, int>& RegistryOrder() {
+    static std::map<const Provider*, int> orders;
+    return orders;
+}
+
 const wchar_t* KindName(ArtKind kind) {
     switch (kind) {
     case ArtKind::Track:
@@ -441,15 +446,20 @@ void StartProviders() {
         provider->Start();
 }
 
-void Register(Provider& provider) {
+void Register(Provider& provider, int order) {
     auto& providers = Registry();
-    if (std::find(providers.begin(), providers.end(), &provider) == providers.end())
-        providers.push_back(&provider);
+    auto& orders = RegistryOrder();
+    if (std::find(providers.begin(), providers.end(), &provider) != providers.end()) return;
+    orders[&provider] = order;
+    const auto at = std::upper_bound(providers.begin(), providers.end(), order,
+                                     [&orders](int value, const Provider* p) { return value < orders.at(p); });
+    providers.insert(at, &provider);
 }
 
 void Unregister(Provider& provider) {
     auto& providers = Registry();
     providers.erase(std::remove(providers.begin(), providers.end(), &provider), providers.end());
+    RegistryOrder().erase(&provider);
 }
 
 Provider* FindProvider(std::wstring_view key) {
