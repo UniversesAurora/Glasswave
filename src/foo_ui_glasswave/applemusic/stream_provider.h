@@ -70,26 +70,12 @@ class StreamProvider final : public stream::Provider {
     std::vector<stream::Album> SavedAlbums() const override;
     std::optional<stream::Playlist> FindPlaylist(const stream::Id& playlist) const override;
     std::optional<stream::Album> FindAlbum(const stream::Id& album) const override;
-    std::optional<std::vector<stream::Track>> CachedFavorites() const override;
-    std::optional<std::vector<stream::Track>> CachedPlaylist(const stream::Id& playlist) const override;
-    std::optional<std::vector<stream::Track>> CachedAlbum(const stream::Id& album) const override;
 
-    void FetchFavorites(TracksDone done) override;
-    void FetchPlaylists(stream::Shelf shelf, PlaylistsDone done) override;
-    void FetchPlaylist(const stream::Id& playlist, PlaylistDone done) override;
-    void FetchAlbum(const stream::Id& album, AlbumDone done) override;
-    void FetchAlbumsTracks(std::vector<stream::Id> albums, TracksDone done) override;
     void FetchArtist(const stream::Id& artist, ArtistDone done) override;
     void FetchArtistBio(const stream::Id& artist, TextDone done) override;
     void FetchSongDetails(const stream::Id& track, SongDetailsDone done) override;
     void FetchHome(HomeDone done) override;
     void FetchStationTracks(const stream::Id& station, TracksDone done) override;
-    void FetchArtistAlbums(const stream::Id& artist, size_t offset, size_t limit,
-                           AlbumPageDone done) override;
-    void FetchArtistTopTracks(const stream::Id& artist, size_t offset, size_t limit,
-                              TrackPageDone done) override;
-    void FetchFollowedArtists(ArtistsDone done) override;
-    void FetchSavedAlbums(size_t offset, size_t limit, AlbumPageDone done) override;
     void FetchListPage(const stream::ListQuery& query, const stream::ListCursor& cursor, size_t limit,
                        stream::ListPageDone done) override;
     bool EnrichListPage(const stream::ListQuery& query, const stream::ListPage& page,
@@ -113,12 +99,9 @@ class StreamProvider final : public stream::Provider {
     void DeletePlaylist(const stream::Id& playlist, Done done = {}) override;
     void ReorderPlaylists(std::vector<stream::Id> playlists, Done done = {}) override;
 
-    void SearchCatalog(std::wstring query, TracksDone done) override;
     void FetchCatalogSearchSuggestions(CatalogSearchSuggestionQuery query,
                                        CatalogSearchSuggestionsDone done) override;
     std::vector<stream::NavigationSection> Sections() const override;
-    void FetchGroups(const stream::Id& section, GroupsDone done) override;
-    void FetchSectionTracks(const stream::Id& section, const stream::Id& group, TracksDone done) override;
 
     void OnLanguageChanged() override;
 
@@ -143,7 +126,6 @@ class StreamProvider final : public stream::Provider {
         std::vector<stream::Artist> libraryArtists;
         std::unordered_map<stream::Id, std::vector<stream::Track>> playlistTracks;
         std::unordered_map<stream::Id, std::vector<Song>> playlistSongs;
-        std::unordered_map<stream::Id, std::vector<stream::Track>> albumTracks;
         std::unordered_map<stream::Id, stream::Id> playlistLibraryIds;
         std::unordered_map<stream::Id, stream::Id> albumLibraryIds;
         std::unordered_map<stream::Id, stream::Id> artistCatalogIds;
@@ -178,7 +160,6 @@ class StreamProvider final : public stream::Provider {
                              abort_callback& abort);
     void ClearLibraryLocked();
     void ClearPlaylistDetailsLocked();
-    void CancelPlaylistFetchesLocked();
     bool PutIfCurrent(uint64_t generation, const Song& song);
     bool PutIfCurrent(uint64_t generation, const std::vector<Song>& songs);
     bool PutIfCurrent(uint64_t generation, const stream::Playlist& playlist);
@@ -216,7 +197,10 @@ class StreamProvider final : public stream::Provider {
     void RefreshKnownPlaylist(const stream::Id& id, Done done = {}, bool invalidateLists = false);
     void RefreshKnownAlbum(const stream::Id& id);
     void RefreshLibrarySongsAsync(uint64_t generation, TracksDone done);
-    void FetchFavoritesWithInvalidation(TracksDone done, bool invalidateLists);
+    // The tracks of a playlist the last detail read kept; nullopt when it was never read.
+    std::optional<std::vector<stream::Track>> CachedPlaylist(const stream::Id& playlist) const;
+    // Reads the Favorite Songs playlist so the stars know which songs are favorites.
+    void RefreshFavoriteSongs();
 
     mutable std::mutex m_mutex;
     std::condition_variable m_artistVerificationCondition;
@@ -257,11 +241,6 @@ class StreamProvider final : public stream::Provider {
     std::vector<stream::Artist> m_libraryArtists;
     std::unordered_map<stream::Id, std::vector<stream::Track>> m_playlistTracks;
     std::unordered_map<stream::Id, std::vector<Song>> m_playlistSongs;
-    struct PlaylistFetch {
-        uint64_t generation = 0;
-        uint64_t epoch = 0;
-        std::vector<PlaylistDone> waiters;
-    };
     enum class FavoriteBindingState {
         Unknown,
         Pending,
@@ -305,8 +284,6 @@ class StreamProvider final : public stream::Provider {
         bool pending = true;
     };
     uint64_t m_playlistDetailEpoch = 0;
-    std::unordered_map<stream::Id, std::shared_ptr<PlaylistFetch>> m_playlistFetches;
-    std::unordered_map<stream::Id, std::vector<stream::Track>> m_albumTracks;
     std::unordered_map<stream::Id, std::vector<stream::Track>> m_artistLibraryTracks;
     std::unordered_map<stream::Id, stream::Id> m_playlistLibraryIds;
     std::unordered_map<stream::Id, stream::Id> m_albumLibraryIds;

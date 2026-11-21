@@ -4,6 +4,7 @@
 #include "applemusic/catalog.h"
 #include "core/paths.h"
 #include "stream/provider.h"
+#include "stream/list_read.h"
 #include "stream/list_session.h"
 #include "ui/art_cache.h"
 #include "ui/i18n.h"
@@ -33,7 +34,6 @@ using winrt::Windows::Data::Json::JsonArray;
 using winrt::Windows::Data::Json::JsonObject;
 using winrt::Windows::Data::Json::JsonValue;
 
-constexpr double kCachedReadBudgetMs = 100.0;
 constexpr size_t kArtistResolveAttemptLimit = 5;
 constexpr size_t kArtistAvatarSampleLimit = 3;
 constexpr size_t kNoCatalogAlbumSampleLimit = 2;
@@ -57,10 +57,10 @@ struct PlaylistProbe {
     size_t detailCount = 0;
     int detailDeclaredCount = stream::kUnknownCount;
     double initialMs = 0;
-    double cachedMs = 0;
+    double rereadMs = 0;
     bool countMatch = false;
     bool detailCountMatch = false;
-    bool cachedSnapshotMatch = false;
+    bool rereadSnapshotMatch = false;
     bool detailOk = false;
     std::wstring error;
 };
@@ -94,7 +94,6 @@ struct State {
     std::vector<Album> savedAlbums;
     std::vector<Artist> followedArtists;
     std::vector<Track> librarySongs;
-    std::optional<std::vector<Id>> favoriteIds;
     std::vector<PlaylistProbe> playlistProbes;
     std::vector<ArtProbe> artProbes;
     std::vector<ArtTarget> artTargets;
@@ -178,10 +177,10 @@ void Finish(const std::shared_ptr<State>& state, std::wstring fatal = {}) {
         row.Insert(L"detailCount", Number(probe.detailCount));
         row.Insert(L"detailDeclaredCount", Number(probe.detailDeclaredCount));
         row.Insert(L"initialMs", Number(probe.initialMs));
-        row.Insert(L"cachedMs", Number(probe.cachedMs));
+        row.Insert(L"rereadMs", Number(probe.rereadMs));
         row.Insert(L"countMatch", JsonValue::CreateBooleanValue(probe.countMatch));
         row.Insert(L"detailCountMatch", JsonValue::CreateBooleanValue(probe.detailCountMatch));
-        row.Insert(L"cachedSnapshotMatch", JsonValue::CreateBooleanValue(probe.cachedSnapshotMatch));
+        row.Insert(L"rereadSnapshotMatch", JsonValue::CreateBooleanValue(probe.rereadSnapshotMatch));
         row.Insert(L"ok", JsonValue::CreateBooleanValue(probe.detailOk));
         row.Insert(L"error", probe.error.empty() ? JsonValue::CreateNullValue()
                                                  : JsonValue::CreateStringValue(probe.error));
@@ -344,20 +343,12 @@ bool SameArtistSnapshot(const std::vector<Artist>& a, const std::vector<Artist>&
     });
 }
 
-bool SameFavoriteSnapshot(const std::optional<std::vector<Id>>& a, const std::optional<std::vector<Id>>& b) {
-    return a.has_value() == b.has_value() && (!a || *a == *b);
-}
-
 bool SameAccountSnapshot(const State& state, stream::Provider& provider) {
-    const auto favorites = provider.CachedFavorites();
-    std::optional<std::vector<Id>> favoriteIds;
-    if (favorites) favoriteIds = TrackIds(*favorites);
     return SameSectionSnapshot(state.sections, provider.Sections()) &&
            SamePlaylistSnapshot(state.created, provider.Playlists(Shelf::Created)) &&
            SamePlaylistSnapshot(state.saved, provider.Playlists(Shelf::Saved)) &&
            SameAlbumSnapshot(state.savedAlbums, provider.SavedAlbums()) &&
-           SameArtistSnapshot(state.followedArtists, provider.FollowedArtists()) &&
-           SameFavoriteSnapshot(state.favoriteIds, favoriteIds);
+           SameArtistSnapshot(state.followedArtists, provider.FollowedArtists());
 }
 
 bool MatchesActualCount(int reported, size_t actual) {
@@ -371,7 +362,6 @@ void CaptureSnapshot(const std::shared_ptr<State>& state, stream::Provider& prov
     state->saved = provider.Playlists(Shelf::Saved);
     state->savedAlbums = provider.SavedAlbums();
     state->followedArtists = provider.FollowedArtists();
-    if (const auto favorites = provider.CachedFavorites()) state->favoriteIds = TrackIds(*favorites);
 
     JsonArray sections;
     for (const auto& section : state->sections) {
@@ -431,8 +421,11 @@ void StartNextPlaylist(const std::shared_ptr<State>& state) {
     if (!provider) return;
     if (state->playlistIndex >= state->created.size()) {
         if (state->created.size() != 3) AddFailure(state, L"created_playlist_count_not_3");
-        provider->FetchFavorites([state](std::vector<Track> tracks, std::wstring error) {
+        stream::ListQuery favoritesQuery;
+        favoritesQuery.kind = stream::ListKind::Favorites;
+        stream::ReadList(*provider, std::move(favoritesQuery), [state](stream::ListPage page, std::wstring error) {
             if (!state || state->stop || state->done) return;
+            const auto tracks = stream::RowsOf<Track>(page);
             state->result.Insert(L"favoriteCount", Number(tracks.size()));
             if (!error.empty())
                 AddFailure(state, L"favorites_read_failed");
@@ -507,9 +500,14 @@ void StartNextPlaylist(const std::shared_ptr<State>& state) {
     }
 
     const auto initialStart = Clock::now();
-    provider->FetchPlaylist(playlist.id, [state, playlist, position, initialStart](
-                                             Playlist info, std::vector<Track> tracks, std::wstring error) {
+    stream::ListQuery detailQuery;
+    detailQuery.kind = stream::ListKind::PlaylistTracks;
+    detailQuery.id = playlist.id;
+    stream::ReadList(*provider, detailQuery, [state, playlist, position, initialStart, detailQuery](
+                                                 stream::ListPage page, std::wstring error) {
         if (!state || state->stop || state->done) return;
+        Playlist info = page.playlist.value_or(Playlist{});
+        std::vector<Track> tracks = stream::RowsOf<Track>(page);
         PlaylistProbe probe;
         probe.position = position;
         probe.listCount = playlist.trackCount;
@@ -535,24 +533,25 @@ void StartNextPlaylist(const std::shared_ptr<State>& state) {
         const std::vector<Id> firstIds = TrackIds(tracks);
         auto* apple = Apple(state);
         if (!apple) return;
-        apple->FetchPlaylist(playlist.id, [state, info, firstIds, probe = std::move(probe),
-                                           cachedStart](Playlist cachedInfo, std::vector<Track> cachedTracks,
-                                                        std::wstring cachedError) mutable {
+        // A second read of the same list must answer the same rows (the list cache itself is
+        // covered by the list-session and list-cache tests).
+        stream::ReadList(*apple, detailQuery, [state, info, firstIds, probe = std::move(probe),
+                                               cachedStart](stream::ListPage secondPage,
+                                                            std::wstring cachedError) mutable {
             if (!state || state->stop || state->done) return;
-            probe.cachedMs = ElapsedMs(cachedStart);
-            probe.cachedSnapshotMatch = cachedError.empty() && SamePlaylistSummary(info, cachedInfo) &&
+            const Playlist cachedInfo = secondPage.playlist.value_or(Playlist{});
+            const std::vector<Track> cachedTracks = stream::RowsOf<Track>(secondPage);
+            probe.rereadMs = ElapsedMs(cachedStart);
+            probe.rereadSnapshotMatch = cachedError.empty() && SamePlaylistSummary(info, cachedInfo) &&
                                         TrackIds(cachedTracks) == firstIds;
             probe.detailOk = cachedError.empty() && probe.countMatch && probe.detailCountMatch &&
-                             probe.cachedSnapshotMatch && probe.cachedMs < kCachedReadBudgetMs;
+                             probe.rereadSnapshotMatch;
             if (!cachedError.empty()) {
-                probe.error = L"playlist_cached_read_failed";
-                AddFailure(state, L"playlist_cached_read_failed_" + std::to_wstring(probe.position));
-            } else if (!probe.cachedSnapshotMatch) {
-                probe.error = L"playlist_cached_snapshot_mismatch";
-                AddFailure(state, L"playlist_cached_snapshot_mismatch_" + std::to_wstring(probe.position));
-            } else if (probe.cachedMs >= kCachedReadBudgetMs) {
-                probe.error = L"playlist_cached_read_slow";
-                AddFailure(state, L"playlist_cached_read_slow_" + std::to_wstring(probe.position));
+                probe.error = L"playlist_reread_failed";
+                AddFailure(state, L"playlist_reread_failed_" + std::to_wstring(probe.position));
+            } else if (!probe.rereadSnapshotMatch) {
+                probe.error = L"playlist_reread_snapshot_mismatch";
+                AddFailure(state, L"playlist_reread_snapshot_mismatch_" + std::to_wstring(probe.position));
             }
             state->playlistProbes.push_back(std::move(probe));
             ++state->playlistIndex;
@@ -564,8 +563,12 @@ void StartNextPlaylist(const std::shared_ptr<State>& state) {
 void StartLibrarySectionChecks(const std::shared_ptr<State>& state) {
     auto* provider = Apple(state);
     if (!provider) return;
-    provider->FetchSectionTracks(state->songs, L"", [state](std::vector<Track> songs, std::wstring error) {
+    stream::ListQuery songsQuery;
+    songsQuery.kind = stream::ListKind::SectionTracks;
+    songsQuery.section = state->songs;
+    stream::ReadList(*provider, std::move(songsQuery), [state](stream::ListPage songsPage, std::wstring error) {
         if (!state || state->stop || state->done) return;
+        std::vector<Track> songs = stream::RowsOf<Track>(songsPage);
         state->result.Insert(L"librarySongCount", Number(songs.size()));
         if (error.empty()) state->librarySongs = songs;
         if (!error.empty())
@@ -575,9 +578,13 @@ void StartLibrarySectionChecks(const std::shared_ptr<State>& state) {
 
         auto* afterSongs = Apple(state);
         if (!afterSongs) return;
-        afterSongs->FetchGroups(
-            state->genres, [state](std::vector<BrowseGroup> genres, std::wstring genresError) {
+        stream::ListQuery genresQuery;
+        genresQuery.kind = stream::ListKind::Groups;
+        genresQuery.section = state->genres;
+        stream::ReadList(
+            *afterSongs, std::move(genresQuery), [state](stream::ListPage genresPage, std::wstring genresError) {
                 if (!state || state->stop || state->done) return;
+                const auto genres = stream::RowsOf<BrowseGroup>(genresPage);
                 state->result.Insert(L"genreCount", Number(genres.size()));
                 if (!genresError.empty())
                     AddFailure(state, L"genres_read_failed");
@@ -587,9 +594,13 @@ void StartLibrarySectionChecks(const std::shared_ptr<State>& state) {
 
                 auto* afterGenres = Apple(state);
                 if (!afterGenres) return;
-                afterGenres->FetchGroups(state->composers, [state](std::vector<BrowseGroup> composers,
-                                                                   std::wstring composersError) {
+                stream::ListQuery composersQuery;
+                composersQuery.kind = stream::ListKind::Groups;
+                composersQuery.section = state->composers;
+                stream::ReadList(*afterGenres, std::move(composersQuery), [state](stream::ListPage composersPage,
+                                                                                  std::wstring composersError) {
                     if (!state || state->stop || state->done) return;
+                    const auto composers = stream::RowsOf<BrowseGroup>(composersPage);
                     state->result.Insert(L"composerCount", Number(composers.size()));
                     if (!composersError.empty())
                         AddFailure(state, L"composers_read_failed");
@@ -610,9 +621,14 @@ void StartGenreDrilldown(const std::shared_ptr<State>& state) {
         StartComposerDrilldown(state);
         return;
     }
-    provider->FetchSectionTracks(state->genres, state->genreGroup,
-                                 [state](std::vector<Track> tracks, std::wstring error) {
+    stream::ListQuery genreQuery;
+    genreQuery.kind = stream::ListKind::SectionTracks;
+    genreQuery.section = state->genres;
+    genreQuery.id = state->genreGroup;
+    stream::ReadList(*provider, std::move(genreQuery),
+                                 [state](stream::ListPage page, std::wstring error) {
                                      if (!state || state->stop || state->done) return;
+                                     const auto tracks = stream::RowsOf<Track>(page);
                                      state->result.Insert(L"genreTrackCount", Number(tracks.size()));
                                      if (!error.empty())
                                          AddFailure(state, L"genre_tracks_read_failed");
@@ -630,9 +646,14 @@ void StartComposerDrilldown(const std::shared_ptr<State>& state) {
         StartArtist(state);
         return;
     }
-    provider->FetchSectionTracks(state->composers, state->composerGroup,
-                                 [state](std::vector<Track> tracks, std::wstring error) {
+    stream::ListQuery composerQuery;
+    composerQuery.kind = stream::ListKind::SectionTracks;
+    composerQuery.section = state->composers;
+    composerQuery.id = state->composerGroup;
+    stream::ReadList(*provider, std::move(composerQuery),
+                                 [state](stream::ListPage page, std::wstring error) {
                                      if (!state || state->stop || state->done) return;
+                                     const auto tracks = stream::RowsOf<Track>(page);
                                      state->result.Insert(L"composerTrackCount", Number(tracks.size()));
                                      if (!error.empty())
                                          AddFailure(state, L"composer_tracks_read_failed");
@@ -642,28 +663,30 @@ void StartComposerDrilldown(const std::shared_ptr<State>& state) {
                                  });
 }
 
-void StartCachedPlaylistRefresh(const std::shared_ptr<State>& state, stream::Provider& provider) {
+void StartPlaylistsRead(const std::shared_ptr<State>& state, stream::Provider& provider) {
     const auto start = Clock::now();
-    provider.FetchPlaylists(
-        Shelf::Created, [state, start](std::vector<Playlist> playlists, std::wstring error) {
+    stream::ListQuery playlistsQuery;
+    playlistsQuery.kind = stream::ListKind::Playlists;
+    playlistsQuery.shelf = Shelf::Created;
+    stream::ReadList(
+        provider, std::move(playlistsQuery), [state, start](stream::ListPage page, std::wstring error) {
             if (!state || state->stop || state->done) return;
+            const auto playlists = stream::RowsOf<Playlist>(page);
             const double elapsed = ElapsedMs(start);
             bool snapshotMatch = false;
             if (error.empty()) {
                 if (auto* apple = Apple(state)) snapshotMatch = SameAccountSnapshot(*state, *apple);
             }
             const bool playlistOrderMatch = error.empty() && SamePlaylistSnapshot(state->created, playlists);
-            state->result.Insert(L"cachedFetchPlaylistsMs", Number(elapsed));
-            state->result.Insert(L"cachedFetchPlaylistsSnapshotMatch",
+            state->result.Insert(L"playlistsReadMs", Number(elapsed));
+            state->result.Insert(L"playlistsReadSnapshotMatch",
                                  JsonValue::CreateBooleanValue(snapshotMatch));
-            state->result.Insert(L"cachedFetchPlaylistsOrderMatch",
+            state->result.Insert(L"playlistsReadOrderMatch",
                                  JsonValue::CreateBooleanValue(playlistOrderMatch));
-            state->result.Insert(L"cachedReadBudgetMs", Number(kCachedReadBudgetMs));
             if (!error.empty()) {
-                AddFailure(state, L"fetch_playlists_cache_failed");
+                AddFailure(state, L"playlists_read_failed");
             } else {
-                if (!snapshotMatch) AddFailure(state, L"fetch_playlists_cache_snapshot_mismatch");
-                if (elapsed >= kCachedReadBudgetMs) AddFailure(state, L"fetch_playlists_cache_slow");
+                if (!snapshotMatch) AddFailure(state, L"playlists_read_snapshot_mismatch");
             }
             StartNextPlaylist(state);
         });
@@ -715,11 +738,15 @@ void TryArtist(const std::shared_ptr<State>& state) {
 
         auto* apple = Apple(state);
         if (!apple) return;
-        apple->FetchArtistAlbums(
-            artist.id, 0, 24,
-            [state, albumCount = artist.albumCount](std::vector<Album> albums, bool more, std::optional<bool>,
-                                                    std::wstring albumsError) {
+        stream::ListQuery albumsQuery;
+        albumsQuery.kind = stream::ListKind::ArtistAlbums;
+        albumsQuery.id = artist.id;
+        apple->FetchListPage(
+            albumsQuery, {}, 24,
+            [state, albumCount = artist.albumCount](stream::ListPage albumsPage, std::wstring albumsError) {
                 if (!state || state->stop || state->done) return;
+                const bool more = albumsPage.more;
+                const auto albums = stream::RowsOf<Album>(albumsPage);
                 state->result.Insert(L"artistAlbumFirstPageCount", Number(albums.size()));
                 state->result.Insert(L"artistAlbumFirstPageMore", JsonValue::CreateBooleanValue(more));
                 state->result.Insert(L"artistAlbumReadError",
@@ -741,10 +768,15 @@ void TryArtist(const std::shared_ptr<State>& state) {
 
                 auto* afterAlbums = Apple(state);
                 if (!afterAlbums) return;
-                afterAlbums->FetchArtistTopTracks(
-                    state->selectedArtist.id, 0, 10,
-                    [state](std::vector<Track> tracks, bool more, std::wstring tracksError) {
+                stream::ListQuery tracksQuery;
+                tracksQuery.kind = stream::ListKind::ArtistTopTracks;
+                tracksQuery.id = state->selectedArtist.id;
+                afterAlbums->FetchListPage(
+                    tracksQuery, {}, 10,
+                    [state](stream::ListPage tracksPage, std::wstring tracksError) {
                         if (!state || state->stop || state->done) return;
+                        const bool more = tracksPage.more;
+                        const auto tracks = stream::RowsOf<Track>(tracksPage);
                         state->result.Insert(L"artistTopTrackCount", Number(tracks.size()));
                         state->result.Insert(L"artistTopTrackMore", JsonValue::CreateBooleanValue(more));
                         state->result.Insert(L"artistTopTrackReadError",
@@ -786,11 +818,15 @@ void StartLibraryOnlyArtistCheck(const std::shared_ptr<State>& state) {
 
         auto* apple = Apple(state);
         if (!apple) return;
-        apple->FetchArtistAlbums(
-            state->libraryOnlyArtistId, 0, 100,
-            [state, artist](std::vector<Album> albums, bool more, std::optional<bool>,
-                            std::wstring albumsError) {
+        stream::ListQuery albumsQuery;
+        albumsQuery.kind = stream::ListKind::ArtistAlbums;
+        albumsQuery.id = state->libraryOnlyArtistId;
+        apple->FetchListPage(
+            albumsQuery, {}, 100,
+            [state, artist](stream::ListPage albumsPage, std::wstring albumsError) {
                 if (!state || state->stop || state->done) return;
+                const bool more = albumsPage.more;
+                const auto albums = stream::RowsOf<Album>(albumsPage);
                 const bool pageComplete = albumsError.empty() && !more;
                 const bool countKnown = artist.albumCount > 0;
                 const bool countMatch =
@@ -826,10 +862,15 @@ void StartLibraryOnlyArtistCheck(const std::shared_ptr<State>& state) {
 
                 auto* tracksProvider = Apple(state);
                 if (!tracksProvider) return;
-                tracksProvider->FetchArtistTopTracks(
-                    state->libraryOnlyArtistId, 0, 100,
-                    [state, artist](std::vector<Track> tracks, bool more, std::wstring tracksError) {
+                stream::ListQuery tracksQuery;
+                tracksQuery.kind = stream::ListKind::ArtistTopTracks;
+                tracksQuery.id = state->libraryOnlyArtistId;
+                tracksProvider->FetchListPage(
+                    tracksQuery, {}, 100,
+                    [state, artist](stream::ListPage tracksPage, std::wstring tracksError) {
                         if (!state || state->stop || state->done) return;
+                        const bool more = tracksPage.more;
+                        const auto tracks = stream::RowsOf<Track>(tracksPage);
                         const bool albumIdsPresent =
                             std::all_of(tracks.begin(), tracks.end(), [](const Track& track) {
                                 return track.albumId.size() > 2 && track.albumId[0] == L'l' &&
@@ -1060,7 +1101,7 @@ void Continue(const std::shared_ptr<State>& state, unsigned step) {
             if (!apple) return;
             CaptureSnapshot(state, *apple);
             if (state->done) return;
-            StartCachedPlaylistRefresh(state, *apple);
+            StartPlaylistsRead(state, *apple);
         });
     } else {
         Finish(state, L"invalid_probe_step");
@@ -1097,10 +1138,9 @@ class ProbeLifecycle : public initquit {
         state->result.Insert(L"composerTrackCount", JsonValue::CreateNumberValue(0));
         state->result.Insert(L"playlists", JsonArray());
         state->result.Insert(L"favoriteLeak", JsonValue::CreateNullValue());
-        state->result.Insert(L"cachedFetchPlaylistsMs", JsonValue::CreateNumberValue(0));
-        state->result.Insert(L"cachedFetchPlaylistsSnapshotMatch", JsonValue::CreateBooleanValue(false));
-        state->result.Insert(L"cachedFetchPlaylistsOrderMatch", JsonValue::CreateBooleanValue(false));
-        state->result.Insert(L"cachedReadBudgetMs", JsonValue::CreateNullValue());
+        state->result.Insert(L"playlistsReadMs", JsonValue::CreateNumberValue(0));
+        state->result.Insert(L"playlistsReadSnapshotMatch", JsonValue::CreateBooleanValue(false));
+        state->result.Insert(L"playlistsReadOrderMatch", JsonValue::CreateBooleanValue(false));
         state->result.Insert(L"followedArtistCount", JsonValue::CreateNumberValue(0));
         state->result.Insert(L"artistResolveAttemptCount", JsonValue::CreateNumberValue(0));
         state->result.Insert(L"artistResolved", JsonValue::CreateBooleanValue(false));

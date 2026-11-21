@@ -140,18 +140,6 @@ std::vector<Playlist> Provider::SectionPlaylists(const Id& section) const {
     return found == sections.end() ? std::vector<Playlist>() : Playlists(found->shelf);
 }
 
-void Provider::FetchSectionPlaylists(const Id& section, PlaylistsDone done) {
-    const auto sections = Sections();
-    const auto found = std::find_if(sections.begin(), sections.end(), [&section](const auto& item) {
-        return item.id == section && item.kind == SectionKind::PlaylistShelf;
-    });
-    if (found == sections.end()) {
-        if (done) done({}, L"The provider playlist section is unavailable.");
-        return;
-    }
-    FetchPlaylists(found->shelf, std::move(done));
-}
-
 std::optional<NavigationSection> Provider::SectionOfPlaylist(const Id& playlist) const {
     for (const auto& section : Sections()) {
         if (section.kind != SectionKind::PlaylistShelf) continue;
@@ -285,112 +273,6 @@ ListCachePolicy Provider::ListPolicy(const ListQuery& query) const {
     if (query.kind == ListKind::Playlists && query.shelf == Shelf::Recommended)
         return ListCachePolicy::Memory;
     return ListCachePolicy::Persistent;
-}
-
-void Provider::FetchListPage(const ListQuery& query, const ListCursor& cursor, size_t limit,
-                             ListPageDone done) {
-    const auto tracks = [done](std::vector<Track> rows, std::wstring error) {
-        ListPage page;
-        page.total = rows.size();
-        page.rows = std::move(rows);
-        done(std::move(page), std::move(error));
-    };
-    switch (query.kind) {
-    case ListKind::ArtistTopTracks:
-        FetchArtistTopTracks(
-            query.id, cursor.offset, limit,
-            [done, offset = cursor.offset](std::vector<Track> rows, bool more, std::wstring error) {
-                ListPage page;
-                page.next.offset = offset + rows.size();
-                page.more = more;
-                page.rows = std::move(rows);
-                done(std::move(page), std::move(error));
-            });
-        return;
-    case ListKind::ArtistAlbums:
-    case ListKind::SavedAlbums: {
-        auto albums = [done, offset = cursor.offset](std::vector<Album> rows, bool more, std::optional<bool>,
-                                                     std::wstring error) {
-            ListPage page;
-            page.next.offset = offset + rows.size();
-            page.more = more;
-            page.rows = std::move(rows);
-            done(std::move(page), std::move(error));
-        };
-        if (query.kind == ListKind::ArtistAlbums)
-            FetchArtistAlbums(query.id, cursor.offset, limit, std::move(albums));
-        else
-            FetchSavedAlbums(cursor.offset, limit, std::move(albums));
-        return;
-    }
-    default:
-        break;
-    }
-    if (cursor.offset || !cursor.value.empty()) {
-        done({}, L"This list does not expose another page.");
-        return;
-    }
-    switch (query.kind) {
-    case ListKind::PlaylistTracks:
-        FetchPlaylist(query.id, [done](Playlist info, std::vector<Track> rows, std::wstring error) {
-            ListPage page;
-            page.playlist = std::move(info);
-            page.total = rows.size();
-            page.rows = std::move(rows);
-            done(std::move(page), std::move(error));
-        });
-        break;
-    case ListKind::AlbumTracks:
-        FetchAlbum(query.id, [done](Album info, std::vector<Track> rows, std::wstring error) {
-            ListPage page;
-            page.album = std::move(info);
-            page.total = rows.size();
-            page.rows = std::move(rows);
-            done(std::move(page), std::move(error));
-        });
-        break;
-    case ListKind::Favorites:
-        FetchFavorites(tracks);
-        break;
-    case ListKind::SectionTracks:
-        FetchSectionTracks(query.section, query.id, tracks);
-        break;
-    case ListKind::CatalogSearch:
-        SearchCatalog(query.search, tracks);
-        break;
-    case ListKind::Playlists: {
-        auto lists = [done](std::vector<Playlist> rows, std::wstring error) {
-            ListPage page;
-            page.total = rows.size();
-            page.rows = std::move(rows);
-            done(std::move(page), std::move(error));
-        };
-        if (!query.section.empty())
-            FetchSectionPlaylists(query.section, std::move(lists));
-        else
-            FetchPlaylists(query.shelf, std::move(lists));
-        break;
-    }
-    case ListKind::FollowedArtists:
-        FetchFollowedArtists([done](std::vector<Artist> rows, std::wstring error) {
-            ListPage page;
-            page.total = rows.size();
-            page.rows = std::move(rows);
-            done(std::move(page), std::move(error));
-        });
-        break;
-    case ListKind::Groups:
-        FetchGroups(query.section, [done](std::vector<BrowseGroup> rows, std::wstring error) {
-            ListPage page;
-            page.total = rows.size();
-            page.rows = std::move(rows);
-            done(std::move(page), std::move(error));
-        });
-        break;
-    default:
-        done({}, L"This list is unavailable.");
-        break;
-    }
 }
 
 const std::vector<Provider*>& Providers() {

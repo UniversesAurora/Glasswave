@@ -329,6 +329,7 @@
     <ClInclude Include="cache\prefetch_host.h" />
     <ClInclude Include="cache\lists.h" />
     <ClInclude Include="stream\list.h" />
+    <ClInclude Include="stream\list_read.h" />
     <ClInclude Include="stream\list_session.h" />
     <ClInclude Include="stream\track_snapshot.h" />
     <ClInclude Include="media\playback_schedule.h" />

@@ -48,24 +48,9 @@ class StreamProvider final : public stream::Provider {
     std::vector<stream::Album> SavedAlbums() const override;
     std::optional<stream::Playlist> FindPlaylist(const stream::Id& playlist) const override;
     std::optional<stream::Album> FindAlbum(const stream::Id& album) const override;
-    std::optional<std::vector<stream::Track>> CachedFavorites() const override;
-    std::optional<std::vector<stream::Track>> CachedPlaylist(const stream::Id& playlist) const override;
-    std::optional<std::vector<stream::Track>> CachedAlbum(const stream::Id& album) const override;
-
-    void FetchFavorites(TracksDone done) override;
-    void FetchPlaylists(stream::Shelf shelf, PlaylistsDone done) override;
-    void FetchPlaylist(const stream::Id& playlist, PlaylistDone done) override;
-    void FetchAlbum(const stream::Id& album, AlbumDone done) override;
-    void FetchAlbumsTracks(std::vector<stream::Id> albums, TracksDone done) override;
     void FetchArtist(const stream::Id& artist, ArtistDone done) override;
     void FetchArtistBio(const stream::Id& artist, TextDone done) override;
     void FetchSongDetails(const stream::Id& track, SongDetailsDone done) override;
-    void FetchArtistAlbums(const stream::Id& artist, size_t offset, size_t limit,
-                           AlbumPageDone done) override;
-    void FetchArtistTopTracks(const stream::Id& artist, size_t offset, size_t limit,
-                              TrackPageDone done) override;
-    void FetchFollowedArtists(ArtistsDone done) override;
-    void FetchSavedAlbums(size_t offset, size_t limit, AlbumPageDone done) override;
     void FetchListPage(const stream::ListQuery& query, const stream::ListCursor& cursor, size_t limit,
                        stream::ListPageDone done) override;
     void FetchCatalogSearchSuggestions(CatalogSearchSuggestionQuery query,

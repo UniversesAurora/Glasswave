@@ -7,7 +7,7 @@
     Writes a marker into the repository dev profile and optionally restarts the dev
     instance through scripts/run-dev.ps1. The component then records dynamic sections,
     playlist exclusion, favorites, songs, genres, composers, created-playlist details,
-    background artwork decoding, no-catalog album artwork, cached-read timings and one artist
+    background artwork decoding, no-catalog album artwork, re-read checks and one artist
     journey without UI automation.
 #>
 [CmdletBinding()]
@@ -225,8 +225,8 @@ $required = @(
     'ok', 'error', 'failureCodes', 'sections', 'sectionCount', 'createdCount',
     'savedCount', 'favoriteCount', 'librarySongCount', 'genreCount', 'composerCount',
     'genreTrackCount', 'composerTrackCount', 'playlists', 'favoriteLeak',
-    'cachedFetchPlaylistsMs', 'cachedFetchPlaylistsSnapshotMatch',
-    'cachedFetchPlaylistsOrderMatch', 'cachedReadBudgetMs',
+    'playlistsReadMs', 'playlistsReadSnapshotMatch',
+    'playlistsReadOrderMatch',
     'playlistDetails', 'playlistDetailCaseCount', 'artDecodes',
     'artDecodePipeline', 'playlistCoverDecodedCount', 'followedArtistCount', 'artistResolveAttemptCount',
     'artistResolved', 'artistAvatarPresent', 'artistAlbumCount',
@@ -298,16 +298,11 @@ if ($playlistDetails.Count -ne [int]$result.createdCount -or
     [int]$result.playlistDetailCaseCount -ne [int]$result.createdCount) {
     Add-AcceptanceFailure 'playlist_detail_case_count_mismatch'
 }
-$cachedBudgetMs = [double]$result.cachedReadBudgetMs
-if (-not [double]::IsFinite([double]$result.cachedFetchPlaylistsMs) -or
-    [double]$result.cachedFetchPlaylistsMs -ge $cachedBudgetMs) {
-    Add-AcceptanceFailure 'fetch_playlists_cache_slow'
+if (-not [bool]$result.playlistsReadSnapshotMatch) {
+    Add-AcceptanceFailure 'playlists_read_snapshot_mismatch'
 }
-if (-not [bool]$result.cachedFetchPlaylistsSnapshotMatch) {
-    Add-AcceptanceFailure 'fetch_playlists_cache_snapshot_mismatch'
-}
-if (-not [bool]$result.cachedFetchPlaylistsOrderMatch) {
-    Add-AcceptanceFailure 'fetch_playlists_cache_order_mismatch'
+if (-not [bool]$result.playlistsReadOrderMatch) {
+    Add-AcceptanceFailure 'playlists_read_order_mismatch'
 }
 foreach ($row in $playlistDetails) {
     $position = [int]$row.position
@@ -317,11 +312,8 @@ foreach ($row in $playlistDetails) {
     if (-not [bool]$row.detailCountMatch) {
         Add-AcceptanceFailure "playlist_detail_count_mismatch_$position"
     }
-    if (-not [double]::IsFinite([double]$row.cachedMs) -or [double]$row.cachedMs -ge $cachedBudgetMs) {
-        Add-AcceptanceFailure "playlist_cached_read_slow_$position"
-    }
-    if (-not [bool]$row.cachedSnapshotMatch) {
-        Add-AcceptanceFailure "playlist_cached_snapshot_mismatch_$position"
+    if (-not [bool]$row.rereadSnapshotMatch) {
+        Add-AcceptanceFailure "playlist_reread_snapshot_mismatch_$position"
     }
     if (-not [bool]$row.ok) {
         Add-AcceptanceFailure "playlist_detail_failed_$position"
@@ -497,10 +489,10 @@ if ($result.PSObject.Properties.Name -contains 'pagedFirstMs') {
 Write-Host "Genres: $($result.genreCount) ($($result.genreTrackCount) sampled tracks)"
 Write-Host "Composers: $($result.composerCount) ($($result.composerTrackCount) sampled tracks)"
 foreach ($row in $playlistDetails) {
-    Write-Host ("Playlist {0}: list={1}, detail={2}, cached={3:F1} ms" -f
-        $row.position, $row.listCount, $row.detailCount, [double]$row.cachedMs)
+    Write-Host ("Playlist {0}: list={1}, detail={2}, reread={3:F1} ms" -f
+        $row.position, $row.listCount, $row.detailCount, [double]$row.rereadMs)
 }
-Write-Host ("Cached FetchPlaylists: {0:F1} ms" -f [double]$result.cachedFetchPlaylistsMs)
+Write-Host ("Playlists read: {0:F1} ms" -f [double]$result.playlistsReadMs)
 Write-Host "Playlist covers decoded: $($result.playlistCoverDecodedCount)/$($result.createdCount)"
 Write-Host "Artist: albums=$($result.artistAlbumFirstPageCount), declared=$($result.artistAlbumCount), hot songs=$($result.artistTopTrackCount)"
 Write-Host "Artist avatars decoded: $($result.artistAvatarSampleDecodedCount)/$($result.artistAvatarSampleRequestedCount)"

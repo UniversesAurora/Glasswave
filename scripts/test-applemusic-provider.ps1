@@ -1,12 +1,12 @@
 #Requires -Version 7.2
 <#
 .SYNOPSIS
-    Exercise Apple Music provider writes and playlist performance against the isolated mock.
+    Exercise Apple Music provider writes and paged playlist reads against the isolated mock.
 
 .DESCRIPTION
     This checks the original 19-operation write contract plus streaming FetchListPage
-    paging, projected playlist metadata, nonblocking page enrichment, duplicate-row
-    preservation, request coalescing, bounded fallback hydration, and regional display
+    paging, nonblocking page enrichment, duplicate-row
+    preservation, and regional display
     metadata without changing the source US library or playback requests.
     It never contacts Apple or writes a user library.
     The real dev bridge is backed up, replaced by a random-port local mock, restored
@@ -549,56 +549,6 @@ try {
         Write-Host 'Mutation ACKs: 22 exact responses; 20 true empty 202/204; 2 nonempty 201'
     }
 
-    $performance = $result.performance
-    if ($null -eq $performance -or
-        [int]$performance.coalescedCallbacks -ne 2 -or
-        [int]$performance.firstRows -ne 359 -or
-        [int]$performance.secondRows -ne 359 -or
-        [int]$performance.uniqueTracks -ne 356 -or
-        [int]$performance.cachedRows -ne 359 -or
-        [int]$performance.fallbackRows -ne 359 -or
-        [int]$performance.catalogRows -ne 3 -or
-        -not [bool]$performance.firstValid -or
-        -not [bool]$performance.secondValid -or
-        -not [bool]$performance.cachedValid -or
-        -not [bool]$performance.fallbackValid -or
-        -not [bool]$performance.catalogValid -or
-        [double]$performance.cachedMs -gt [double]$performance.coalescedMs) {
-        throw 'Provider performance playlist callback validation failed.'
-    }
-
-    $fixturePerformance = $testing.performance
-    $pageOffsets = @($fixturePerformance.pageOffsets | ForEach-Object { [int]$_ })
-    $batchSizes = @($fixturePerformance.hydrationBatchSizes | ForEach-Object { [int]$_ })
-    $expectedBatchSizes = @(1..17 | ForEach-Object { 20 }) + @(16)
-    $sortedBatchSizes = @($batchSizes | Sort-Object)
-    $sortedExpectedBatchSizes = @($expectedBatchSizes | Sort-Object)
-    if ($null -eq $fixturePerformance -or
-        [int]$fixturePerformance.detailRequests -ne 2 -or
-        [int]$fixturePerformance.projectedDetailRequests -ne 1 -or
-        [int]$fixturePerformance.fallbackDetailRequests -ne 1 -or
-        [int]$fixturePerformance.invalidDetailRequests -ne 0 -or
-        [int]$fixturePerformance.catalogDetailRequests -ne 1 -or
-        [int]$fixturePerformance.invalidCatalogDetailRequests -ne 0 -or
-        [int]$fixturePerformance.maxDetailConcurrency -ne 1 -or
-        [int]$fixturePerformance.hydrationsBeforeFallback -ne 0 -or
-        [int]$fixturePerformance.pagesBeforeFallback -ne 3 -or
-        [int]$fixturePerformance.trackPageRequests -ne 6 -or
-        [int]$fixturePerformance.zeroOffsetPageRequests -ne 0 -or
-        [int]$fixturePerformance.trackPageRows -ne 518 -or
-        [int]$fixturePerformance.invalidTrackPageRequests -ne 0 -or
-        [int]$fixturePerformance.hydrationRequests -ne 18 -or
-        [int]$fixturePerformance.hydrationDuplicateIds -ne 0 -or
-        [int]$fixturePerformance.invalidHydrationRequests -ne 0 -or
-        [int]$fixturePerformance.maxHydrationConcurrency -ne 4 -or
-        [int]$fixturePerformance.uniqueHydrationIds -ne 356 -or
-        [int]$fixturePerformance.primaryEmbeddedRows -ne 100 -or
-        ($pageOffsets -join ',') -ne '100,200,300,100,200,300' -or
-        $batchSizes.Count -ne $expectedBatchSizes.Count -or
-        ($sortedBatchSizes -join ',') -ne ($sortedExpectedBatchSizes -join ',')) {
-        throw 'Provider performance playlist request-shape validation failed.'
-    }
-
     $paging = $result.paging
     # Cursor rejection here verifies offset/opaque integrity; cursors remain reusable by design.
     if ($null -eq $paging -or
@@ -748,10 +698,7 @@ try {
         "seeding; Account restored source US"))
     Write-Host 'Regional list cache: persistent contexts separated by region and source storefront'
     Write-Host 'Regional transient failure: one JP 503 retried without a region toggle'
-    Write-Host (("Performance playlist: {0:F1} ms projected, {1:F1} ms cached, " +
-        "{2:F1} ms fallback hydration") -f [double]$performance.coalescedMs,
-        [double]$performance.cachedMs, [double]$performance.fallbackMs)
-    Write-Host 'Mock write, playlist performance and enrichment contracts: complete'
+    Write-Host 'Mock write and enrichment contracts: complete'
 } catch {
     $testFailure = $_.Exception.Message
     throw
@@ -786,7 +733,6 @@ try {
                 ok = $probeResult.ok
                 error = $probeResult.error
                 operations = @($probeResult.operations)
-                performance = $probeResult.performance
                 paging = $probeResult.paging
                 enrichment = $probeResult.enrichment
                 regional = $probeResult.regional

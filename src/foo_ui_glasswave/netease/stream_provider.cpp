@@ -1406,68 +1406,6 @@ std::optional<stream::Album> StreamProvider::FindAlbum(const Id& album) const {
     return std::nullopt;
 }
 
-std::optional<std::vector<stream::Track>> StreamProvider::CachedFavorites() const {
-    return ToTracks(Ncm().CachedLikedSongs());
-}
-
-std::optional<std::vector<stream::Track>> StreamProvider::CachedPlaylist(const Id& playlist) const {
-    return ToTracks(Ncm().CachedPlaylistSongs(Num(playlist)));
-}
-
-std::optional<std::vector<stream::Track>> StreamProvider::CachedAlbum(const Id& album) const {
-    return ToTracks(Ncm().CachedAlbumSongs(Num(album)));
-}
-
-void StreamProvider::FetchFavorites(TracksDone done) {
-    Ncm().FetchLiked([done = std::move(done)](std::vector<Song> songs, std::wstring error) {
-        done(ToTracks(songs), std::move(error));
-    });
-}
-
-void StreamProvider::FetchPlaylists(stream::Shelf shelf, PlaylistsDone done) {
-    if (shelf == stream::Shelf::Recommended) {
-        Ncm().FetchRecommended([done = std::move(done)](std::vector<Playlist> playlists, std::wstring error) {
-            done(ToPlaylists(playlists), std::move(error));
-        });
-        return;
-    }
-    // One request returns the created and the collected playlists together.
-    Ncm().FetchMyPlaylists(
-        [shelf, done = std::move(done)](std::vector<Playlist> playlists, std::wstring error) {
-            std::vector<stream::Playlist> out;
-            for (const auto& playlist : playlists)
-                if (IsOwn(playlist) == (shelf == stream::Shelf::Created)) out.push_back(ToPlaylist(playlist));
-            done(std::move(out), std::move(error));
-        });
-}
-
-void StreamProvider::FetchPlaylist(const Id& playlist, PlaylistDone done) {
-    Ncm().FetchPlaylist(Num(playlist), [done = std::move(done)](PlaylistDetail detail, std::wstring error) {
-        done(detail.info.id ? ToPlaylist(detail.info) : stream::Playlist{}, ToTracks(detail.songs),
-             std::move(error));
-    });
-}
-
-void StreamProvider::FetchAlbum(const Id& album, AlbumDone done) {
-    Ncm().FetchAlbumDetail(
-        Num(album), [done = std::move(done)](Album info, std::vector<Song> songs, std::wstring error) {
-            done(info.id ? ToAlbum(info) : stream::Album{}, ToTracks(songs), std::move(error));
-        });
-}
-
-void StreamProvider::FetchAlbumsTracks(std::vector<Id> albums, TracksDone done) {
-    std::vector<Album> wanted;
-    for (const int64_t id : Nums(albums)) {
-        Album album;
-        album.id = id;
-        wanted.push_back(album);
-    }
-    Ncm().FetchAlbumTracks(std::move(wanted),
-                           [done = std::move(done)](std::vector<Song> songs, std::wstring error) {
-                               done(ToTracks(songs), std::move(error));
-                           });
-}
-
 void StreamProvider::FetchArtist(const Id& artist, ArtistDone done) {
     Ncm().FetchArtistDetail(Num(artist), [done = std::move(done)](Artist info, std::wstring error) {
         done(info.id ? ToArtist(info) : stream::Artist{}, std::move(error));
@@ -1529,43 +1467,6 @@ void StreamProvider::FetchSongDetails(const Id& track, SongDetailsDone done) {
             if (done) done(std::move(details), std::move(error));
         });
     });
-}
-
-void StreamProvider::FetchArtistAlbums(const Id& artist, size_t offset, size_t limit, AlbumPageDone done) {
-    Ncm().FetchArtistAlbumsPage(
-        Num(artist), static_cast<int>(offset), static_cast<int>(limit),
-        [artist = Num(artist), done = std::move(done)](
-            std::vector<Album> albums, bool more, bool followedKnown, bool followed, std::wstring error) {
-            std::optional<bool> follows;
-            if (followedKnown) {
-                follows = followed;
-                for (const auto& saved : Ncm().FollowedArtists())
-                    if (saved.id == artist) follows = true;
-            }
-            done(ToAlbums(albums), more, follows, std::move(error));
-        });
-}
-
-void StreamProvider::FetchArtistTopTracks(const Id& artist, size_t offset, size_t limit, TrackPageDone done) {
-    Ncm().FetchArtistSongsPage(
-        Num(artist), static_cast<int>(offset), static_cast<int>(limit),
-        [done = std::move(done)](std::vector<Song> songs, bool more, std::wstring error) {
-            done(ToTracks(songs), more, std::move(error));
-        });
-}
-
-void StreamProvider::FetchFollowedArtists(ArtistsDone done) {
-    Ncm().FetchFollowedArtists([done = std::move(done)](std::vector<Artist> artists, std::wstring error) {
-        done(ToArtists(artists), std::move(error));
-    });
-}
-
-void StreamProvider::FetchSavedAlbums(size_t offset, size_t limit, AlbumPageDone done) {
-    Ncm().FetchCollectedAlbumsPage(
-        static_cast<int>(offset), static_cast<int>(limit),
-        [done = std::move(done)](std::vector<Album> albums, bool more, std::wstring error) {
-            done(ToAlbums(albums), more, std::nullopt, std::move(error));
-        });
 }
 
 void StreamProvider::RestoreListRecords(const stream::ListPage& page) {
@@ -1829,10 +1730,10 @@ void StreamProvider::FetchListPage(const stream::ListQuery& query, const stream:
             }
             if (!ToInt(cursor.offset, offset, error) || !ToInt(limit, count, error)) break;
             std::vector<Album> albums;
-            bool followed = false, more = false;
+            bool more = false;
             size_t received = 0;
-            if (!client.GetArtistAlbumsPage(artistId, offset, count, *m_abort, albums, &followed, &more,
-                                            error, &received))
+            if (!client.GetArtistAlbumsPage(artistId, offset, count, *m_abort, albums, nullptr, &more, error,
+                                            &received))
                 break;
             Catalog::Get().Put(albums);
             page.rows = ToAlbums(albums);

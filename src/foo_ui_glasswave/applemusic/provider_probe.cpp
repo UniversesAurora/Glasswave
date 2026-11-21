@@ -8,6 +8,7 @@
 #include "applemusic/display_metadata.h"
 #include "net/http.h"
 #include "core/json.h"
+#include "stream/list_read.h"
 #include "stream/list_session.h"
 #include "stream/provider.h"
 
@@ -37,8 +38,6 @@ constexpr wchar_t kAlbumCatalog[] = L"album.contract";
 constexpr wchar_t kAlbumLibrary[] = L"l.album.contract";
 constexpr wchar_t kPlaylistCatalog[] = L"playlist.contract";
 constexpr wchar_t kPlaylistLibrary[] = L"p.saved.contract";
-constexpr wchar_t kPlaylistPerformance[] = L"p.performance.contract";
-constexpr wchar_t kPlaylistPerformanceCatalog[] = L"playlist.performance.catalog";
 constexpr wchar_t kPlaylistPagedPerformance[] = L"p.glasswave-paged-performance";
 constexpr wchar_t kMutationAlbumCatalog[] = L"1900000001";
 constexpr wchar_t kMutationAlbumLibrary[] = L"l.mutation.contract";
@@ -100,26 +99,7 @@ struct Snapshot {
     std::vector<std::wstring> saved;
     std::vector<std::wstring> albums;
     std::vector<std::wstring> artists;
-    std::vector<std::wstring> favorites;
     bool operator==(const Snapshot&) const = default;
-};
-
-struct PerformanceResult {
-    size_t coalescedCallbacks = 0;
-    size_t firstRows = 0;
-    size_t secondRows = 0;
-    size_t uniqueTracks = 0;
-    size_t cachedRows = 0;
-    size_t fallbackRows = 0;
-    size_t catalogRows = 0;
-    double coalescedMs = 0;
-    double cachedMs = 0;
-    double fallbackMs = 0;
-    bool firstValid = false;
-    bool secondValid = false;
-    bool cachedValid = false;
-    bool fallbackValid = false;
-    bool catalogValid = false;
 };
 
 struct PagingResult {
@@ -284,7 +264,6 @@ struct State {
     fs::path result_path;
     std::vector<Operation> operations;
     Snapshot before_rename;
-    PerformanceResult performance;
     PagingResult paging;
     stream::ListQuery pagingQuery;
     stream::ListCursor pagingFirstCursor;
@@ -298,7 +277,6 @@ struct State {
     stream::ListPage enrichmentBaseline;
     stream::ListPage enrichmentFinal;
     std::wstring enrichmentTag;
-    std::chrono::steady_clock::time_point performanceStarted;
     std::chrono::steady_clock::time_point enrichmentStarted;
     stream::Id scratch;
     std::wstring error;
@@ -387,30 +365,6 @@ void WriteResult(const State& state) noexcept {
         mutationRegression.Insert(L"oldReadError",
                                   JsonValue::CreateStringValue(state.mutationOldRefreshError));
         result.Insert(L"mutationRegression", mutationRegression);
-        JsonObject performance;
-        performance.Insert(L"coalescedCallbacks", JsonValue::CreateNumberValue(static_cast<double>(
-                                                      state.performance.coalescedCallbacks)));
-        performance.Insert(L"firstRows",
-                           JsonValue::CreateNumberValue(static_cast<double>(state.performance.firstRows)));
-        performance.Insert(L"secondRows",
-                           JsonValue::CreateNumberValue(static_cast<double>(state.performance.secondRows)));
-        performance.Insert(L"uniqueTracks",
-                           JsonValue::CreateNumberValue(static_cast<double>(state.performance.uniqueTracks)));
-        performance.Insert(L"cachedRows",
-                           JsonValue::CreateNumberValue(static_cast<double>(state.performance.cachedRows)));
-        performance.Insert(L"fallbackRows",
-                           JsonValue::CreateNumberValue(static_cast<double>(state.performance.fallbackRows)));
-        performance.Insert(L"catalogRows",
-                           JsonValue::CreateNumberValue(static_cast<double>(state.performance.catalogRows)));
-        performance.Insert(L"coalescedMs", JsonValue::CreateNumberValue(state.performance.coalescedMs));
-        performance.Insert(L"cachedMs", JsonValue::CreateNumberValue(state.performance.cachedMs));
-        performance.Insert(L"fallbackMs", JsonValue::CreateNumberValue(state.performance.fallbackMs));
-        performance.Insert(L"firstValid", JsonValue::CreateBooleanValue(state.performance.firstValid));
-        performance.Insert(L"secondValid", JsonValue::CreateBooleanValue(state.performance.secondValid));
-        performance.Insert(L"cachedValid", JsonValue::CreateBooleanValue(state.performance.cachedValid));
-        performance.Insert(L"fallbackValid", JsonValue::CreateBooleanValue(state.performance.fallbackValid));
-        performance.Insert(L"catalogValid", JsonValue::CreateBooleanValue(state.performance.catalogValid));
-        result.Insert(L"performance", performance);
         JsonObject paging;
         paging.Insert(L"firstRows",
                       JsonValue::CreateNumberValue(static_cast<double>(state.paging.firstRows)));
@@ -880,62 +834,61 @@ bool StartsWith(std::wstring_view text, std::wstring_view prefix) {
     return text.size() >= prefix.size() && text.substr(0, prefix.size()) == prefix;
 }
 
-std::vector<stream::Id> ExpectedPerformanceTrackIds() {
-    std::vector<stream::Id> ids;
-    ids.reserve(kPerformanceTrackCount);
-    for (size_t index = 0; index < kPerformanceUniqueCount; ++index)
-        ids.push_back(L"song.performance." + std::to_wstring(index));
-    ids.push_back(L"song.performance.7");
-    ids.push_back(L"song.performance.128");
-    ids.push_back(L"song.performance.277");
-    return ids;
+// Whole-list reads through the UI's own path (a ListSession loading every page, enrichment
+// included), shaped like the answers the cases below look at.
+using TracksRead = std::function<void(std::vector<stream::Track>, std::wstring)>;
+
+void ReadTracks(stream::Provider& provider, stream::ListQuery query, TracksRead done) {
+    stream::ReadList(provider, std::move(query),
+                     [done = std::move(done)](stream::ListPage page, std::wstring error) {
+                         done(stream::RowsOf<stream::Track>(page), std::move(error));
+                     });
 }
 
-bool ValidPerformanceTracks(const stream::Playlist& info, const std::vector<stream::Track>& tracks,
-                            size_t& uniqueTracks) {
-    uniqueTracks = 0;
-    if (info.id != kPlaylistPerformance || info.trackCount != static_cast<int>(kPerformanceTrackCount) ||
-        tracks.size() != kPerformanceTrackCount)
-        return false;
-
-    const auto expectedIds = ExpectedPerformanceTrackIds();
-    if (!std::equal(
-            expectedIds.begin(), expectedIds.end(), tracks.begin(), tracks.end(),
-            [](const stream::Id& expected, const stream::Track& track) { return expected == track.id; }))
-        return false;
-
-    std::set<stream::Id> unique;
-    constexpr std::wstring_view trackPrefix = L"song.performance.";
-    constexpr std::wstring_view albumPrefix = L"l.album.performance.";
-    constexpr std::wstring_view artistPrefix = L"r.artist.performance.";
-    constexpr std::wstring_view artistNamePrefix = L"Performance Artist ";
-    for (const auto& track : tracks) {
-        if (!StartsWith(track.id, trackPrefix)) return false;
-        const std::wstring suffix(track.id.substr(trackPrefix.size()));
-        if (track.album != L"Performance Album " + suffix ||
-            track.albumId != std::wstring(albumPrefix) + suffix || track.artists.size() != 1 ||
-            track.artists.front().id != std::wstring(artistPrefix) + suffix ||
-            track.artists.front().name != std::wstring(artistNamePrefix) + suffix)
-            return false;
-        unique.emplace(track.id);
-    }
-    uniqueTracks = unique.size();
-    return uniqueTracks == kPerformanceUniqueCount;
+void ReadFavorites(stream::Provider& provider, TracksRead done) {
+    stream::ListQuery query;
+    query.kind = stream::ListKind::Favorites;
+    ReadTracks(provider, std::move(query), std::move(done));
 }
 
-bool ValidCatalogPerformanceTracks(const stream::Playlist& info, const std::vector<stream::Track>& tracks) {
-    if (info.id != kPlaylistPerformanceCatalog || info.trackCount != 3 || tracks.size() != 3) return false;
-    for (size_t index = 0; index < tracks.size(); ++index) {
-        const stream::Track& track = tracks[index];
-        const std::wstring suffix = std::to_wstring(index);
-        if (track.id != L"song.catalog.performance." + suffix ||
-            track.album != L"Catalog Performance Album " + suffix ||
-            track.albumId != L"album.catalog.performance." + suffix || track.artists.size() != 1 ||
-            track.artists.front().id != L"artist.catalog.performance." + suffix ||
-            track.artists.front().name != L"Catalog Performance Artist " + suffix)
-            return false;
-    }
-    return true;
+void ReadSectionTracks(stream::Provider& provider, const stream::Id& section, const stream::Id& group,
+                       TracksRead done) {
+    stream::ListQuery query;
+    query.kind = stream::ListKind::SectionTracks;
+    query.section = section;
+    query.id = group;
+    ReadTracks(provider, std::move(query), std::move(done));
+}
+
+void ReadAlbumTracks(stream::Provider& provider, const stream::Id& album, TracksRead done) {
+    stream::ListQuery query;
+    query.kind = stream::ListKind::AlbumTracks;
+    query.id = album;
+    ReadTracks(provider, std::move(query), std::move(done));
+}
+
+void ReadPlaylist(stream::Provider& provider, const stream::Id& playlist,
+                  std::function<void(stream::Playlist, std::vector<stream::Track>, std::wstring)> done) {
+    stream::ListQuery query;
+    query.kind = stream::ListKind::PlaylistTracks;
+    query.id = playlist;
+    stream::ReadList(provider, std::move(query),
+                     [done = std::move(done)](stream::ListPage page, std::wstring error) {
+                         done(page.playlist.value_or(stream::Playlist{}), stream::RowsOf<stream::Track>(page),
+                              std::move(error));
+                     });
+}
+
+void ReadAlbum(stream::Provider& provider, const stream::Id& album,
+               std::function<void(stream::Album, std::vector<stream::Track>, std::wstring)> done) {
+    stream::ListQuery query;
+    query.kind = stream::ListKind::AlbumTracks;
+    query.id = album;
+    stream::ReadList(provider, std::move(query),
+                     [done = std::move(done)](stream::ListPage page, std::wstring error) {
+                         done(page.album.value_or(stream::Album{}), stream::RowsOf<stream::Track>(page),
+                              std::move(error));
+                     });
 }
 
 std::vector<stream::Id> ExpectedPagedTrackIds() {
@@ -1436,12 +1389,6 @@ Snapshot CaptureSnapshot(stream::Provider& provider) {
         snapshot.albums.push_back(AlbumRow(item));
     for (const auto& item : provider.FollowedArtists())
         snapshot.artists.push_back(ArtistRow(item));
-    if (const auto favorites = provider.CachedFavorites()) {
-        for (const auto& track : *favorites)
-            snapshot.favorites.push_back(track.id);
-    } else {
-        snapshot.favorites.push_back(L"<unloaded>");
-    }
     return snapshot;
 }
 
@@ -2633,7 +2580,7 @@ void Continue(const std::shared_ptr<State>& state, unsigned step) {
             Continue(state, 1);
         });
     } else if (step == 1) {
-        provider->FetchFavorites([state](std::vector<stream::Track>, std::wstring error) {
+        ReadFavorites(*provider, [state](std::vector<stream::Track>, std::wstring error) {
             if (!Live(state)) return;
             if (!error.empty()) return Fail(state, L"fetch_favorites_initial", L"provider_read_failed");
             AddOperation(state, L"fetch_favorites_initial", true);
@@ -2642,7 +2589,7 @@ void Continue(const std::shared_ptr<State>& state, unsigned step) {
     } else if (step == 2) {
         const stream::Id section = SongsSection(*provider);
         if (section.empty()) return Fail(state, L"fetch_library_songs", L"library_songs_section_missing");
-        provider->FetchSectionTracks(
+        ReadSectionTracks(*provider, 
             section, L"", [state](std::vector<stream::Track> tracks, std::wstring error) {
                 if (!Live(state)) return;
                 if (!error.empty() || !HasTrack(tracks, kSongCatalog))
@@ -2671,7 +2618,7 @@ void Continue(const std::shared_ptr<State>& state, unsigned step) {
             Continue(state, 5);
         });
     } else if (step == 5) {
-        provider->FetchFavorites([state](std::vector<stream::Track> tracks, std::wstring error) {
+        ReadFavorites(*provider, [state](std::vector<stream::Track> tracks, std::wstring error) {
             if (!Live(state)) return;
             if (!error.empty() || HasTrack(tracks, kSongCatalog))
                 return Fail(state, L"fetch_favorites_final", L"favorite_final_state_failed");
@@ -2713,7 +2660,7 @@ void Continue(const std::shared_ptr<State>& state, unsigned step) {
         });
     } else if (step == 9 || step == 11) {
         const bool added = step == 9;
-        provider->FetchPlaylist(
+        ReadPlaylist(*provider, 
             state->scratch,
             [state, added](stream::Playlist, std::vector<stream::Track> tracks, std::wstring error) {
                 if (!Live(state)) return;
@@ -2779,7 +2726,7 @@ void Continue(const std::shared_ptr<State>& state, unsigned step) {
                 HasSavedPlaylistIdentity(*apple, kPlaylistCatalog, kPlaylistLibrary))
                 return Fail(state, L"final_refresh", L"final_state_failed");
             AddOperation(state, L"final_refresh", true);
-            Continue(state, 19);
+            Continue(state, 24);
         });
     } else if (step == 18) {
         provider->RenamePlaylist(state->scratch, kRenamedName, [state](std::wstring error) {
@@ -2793,84 +2740,6 @@ void Continue(const std::shared_ptr<State>& state, unsigned step) {
             AddOperation(state, L"playlist_rename", true);
             Continue(state, 8);
         });
-    } else if (step == 19) {
-        state->performanceStarted = std::chrono::steady_clock::now();
-        auto done = [state](stream::Playlist info, std::vector<stream::Track> tracks, std::wstring error) {
-            if (!Live(state)) return;
-            auto& performance = state->performance;
-            size_t uniqueTracks = 0;
-            const bool valid = error.empty() && ValidPerformanceTracks(info, tracks, uniqueTracks);
-            ++performance.coalescedCallbacks;
-            if (performance.coalescedCallbacks == 1) {
-                performance.firstRows = tracks.size();
-                performance.firstValid = valid;
-                return;
-            }
-            if (performance.coalescedCallbacks == 2) {
-                performance.secondRows = tracks.size();
-                performance.secondValid = valid;
-                performance.uniqueTracks = uniqueTracks;
-                performance.coalescedMs = ElapsedMs(state->performanceStarted);
-                if (!performance.firstValid || !performance.secondValid)
-                    return Fail(state, L"performance_playlist_coalescing",
-                                L"performance_playlist_read_failed");
-                Continue(state, 20);
-                return;
-            }
-            Fail(state, L"performance_playlist_coalescing", L"performance_callback_overrun");
-        };
-        provider->FetchPlaylist(kPlaylistPerformance, done);
-        provider->FetchPlaylist(kPlaylistPerformance, done);
-    } else if (step == 20) {
-        const auto started = std::chrono::steady_clock::now();
-        provider->FetchPlaylist(
-            kPlaylistPerformance,
-            [state, started](stream::Playlist info, std::vector<stream::Track> tracks, std::wstring error) {
-                if (!Live(state)) return;
-                size_t uniqueTracks = 0;
-                auto& performance = state->performance;
-                performance.cachedRows = tracks.size();
-                performance.cachedValid = error.empty() && ValidPerformanceTracks(info, tracks, uniqueTracks);
-                performance.uniqueTracks = uniqueTracks;
-                performance.cachedMs = ElapsedMs(started);
-                if (!performance.cachedValid)
-                    return Fail(state, L"performance_playlist_cache", L"performance_cached_read_failed");
-                Continue(state, 21);
-            });
-    } else if (step == 21) {
-        provider->RefreshLibrary([state](std::wstring error) {
-            if (!Live(state)) return;
-            if (!error.empty()) return Fail(state, L"performance_refresh", L"performance_refresh_failed");
-            Continue(state, 22);
-        });
-    } else if (step == 22) {
-        const auto started = std::chrono::steady_clock::now();
-        provider->FetchPlaylist(kPlaylistPerformance, [state, started](stream::Playlist info,
-                                                                       std::vector<stream::Track> tracks,
-                                                                       std::wstring error) {
-            if (!Live(state)) return;
-            size_t uniqueTracks = 0;
-            auto& performance = state->performance;
-            performance.fallbackRows = tracks.size();
-            performance.fallbackValid = error.empty() && ValidPerformanceTracks(info, tracks, uniqueTracks);
-            performance.uniqueTracks = uniqueTracks;
-            performance.fallbackMs = ElapsedMs(started);
-            if (!performance.fallbackValid)
-                return Fail(state, L"performance_playlist_fallback", L"performance_fallback_read_failed");
-            Continue(state, 23);
-        });
-    } else if (step == 23) {
-        provider->FetchPlaylist(
-            kPlaylistPerformanceCatalog,
-            [state](stream::Playlist info, std::vector<stream::Track> tracks, std::wstring error) {
-                if (!Live(state)) return;
-                auto& performance = state->performance;
-                performance.catalogRows = tracks.size();
-                performance.catalogValid = error.empty() && ValidCatalogPerformanceTracks(info, tracks);
-                if (!performance.catalogValid)
-                    return Fail(state, L"catalog_performance_playlist", L"catalog_performance_read_failed");
-                Continue(state, 24);
-            });
     } else if (step == 24) {
         // Exercise the provider boundary directly. Generic ListSession behavior is covered
         // separately with a fake provider so this fixture cannot mask adapter paging defects.
@@ -3362,7 +3231,7 @@ void Continue(const std::shared_ptr<State>& state, unsigned step) {
             if (section.empty())
                 return Fail(state, L"restore_list_page_preserves_canonical",
                             L"library_songs_section_missing");
-            current->FetchSectionTracks(
+            ReadSectionTracks(*current, 
                 section, L"",
                 [state, sourceSong, sourceAlbum, sourceArtist](std::vector<stream::Track> rows,
                                                                std::wstring songsError) {
@@ -3405,9 +3274,7 @@ void Continue(const std::shared_ptr<State>& state, unsigned step) {
             Continue(state, 36);
         });
     } else if (step == 36) {
-        provider->FetchAlbumsTracks(
-            {RegionalDetailAlbumCatalogId(*state)},
-            [state](std::vector<stream::Track> tracks, std::wstring error) {
+        ReadAlbumTracks(*provider, RegionalDetailAlbumCatalogId(*state), [state](std::vector<stream::Track> tracks, std::wstring error) {
                 if (!Live(state)) return;
                 if (!error.empty()) {
                     return Fail(state, L"provider_regional_japan_song_first", L"song_first_fetch_failed");
@@ -3420,7 +3287,7 @@ void Continue(const std::shared_ptr<State>& state, unsigned step) {
                 Continue(state, 37);
             });
     } else if (step == 37) {
-        provider->FetchAlbum(RegionalDetailAlbumCatalogId(*state), [state](stream::Album album,
+        ReadAlbum(*provider, RegionalDetailAlbumCatalogId(*state), [state](stream::Album album,
                                                                            std::vector<stream::Track> tracks,
                                                                            std::wstring error) {
             if (!Live(state)) return;
@@ -3522,9 +3389,7 @@ void Continue(const std::shared_ptr<State>& state, unsigned step) {
             Continue(state, 41);
         });
     } else if (step == 41) {
-        provider->FetchAlbumsTracks(
-            {RegionalDetailAlbumCatalogId(*state)},
-            [state](std::vector<stream::Track> tracks, std::wstring error) {
+        ReadAlbumTracks(*provider, RegionalDetailAlbumCatalogId(*state), [state](std::vector<stream::Track> tracks, std::wstring error) {
                 if (!Live(state)) return;
                 if (!error.empty()) {
                     return Fail(state, L"provider_regional_china_song_first",
@@ -3538,7 +3403,7 @@ void Continue(const std::shared_ptr<State>& state, unsigned step) {
                 Continue(state, 42);
             });
     } else if (step == 42) {
-        provider->FetchAlbum(RegionalDetailAlbumCatalogId(*state), [state](stream::Album album,
+        ReadAlbum(*provider, RegionalDetailAlbumCatalogId(*state), [state](stream::Album album,
                                                                            std::vector<stream::Track> tracks,
                                                                            std::wstring error) {
             if (!Live(state)) return;
@@ -3603,7 +3468,7 @@ void Continue(const std::shared_ptr<State>& state, unsigned step) {
             Continue(state, 46);
         });
     } else if (step == 46) {
-        provider->FetchAlbum(
+        ReadAlbum(*provider, 
             RegionalDetailAlbumCatalogId(*state),
             [state](stream::Album album, std::vector<stream::Track> tracks, std::wstring error) {
                 if (!Live(state)) return;
@@ -3694,8 +3559,7 @@ void Continue(const std::shared_ptr<State>& state, unsigned step) {
             });
         });
     } else if (step == 61) {
-        provider->FetchAlbumsTracks(
-            {kMutationAlbumLibrary}, [state](std::vector<stream::Track> tracks, std::wstring error) {
+        ReadAlbumTracks(*provider, kMutationAlbumLibrary, [state](std::vector<stream::Track> tracks, std::wstring error) {
                 if (!Live(state)) return;
                 const auto counters = ReadAlbumResolverFixtureCounters();
                 if (!error.empty() || !HasTrack(tracks, kMutationCatalogSong) || !counters ||

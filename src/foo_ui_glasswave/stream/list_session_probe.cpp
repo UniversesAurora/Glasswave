@@ -411,42 +411,12 @@ class FakeProvider final : public Provider {
     std::vector<Album> SavedAlbums() const override { return {}; }
     std::optional<Playlist> FindPlaylist(const Id&) const override { return std::nullopt; }
     std::optional<Album> FindAlbum(const Id&) const override { return std::nullopt; }
-    std::optional<std::vector<Track>> CachedFavorites() const override { return std::nullopt; }
-    std::optional<std::vector<Track>> CachedPlaylist(const Id&) const override { return std::nullopt; }
-    std::optional<std::vector<Track>> CachedAlbum(const Id&) const override { return std::nullopt; }
 
-    void FetchFavorites(TracksDone done) override {
-        if (done) done({}, L"Unavailable.");
-    }
-    void FetchPlaylists(Shelf, PlaylistsDone done) override {
-        if (done) done({}, L"Unavailable.");
-    }
-    void FetchPlaylist(const Id&, PlaylistDone done) override {
-        if (done) done({}, {}, L"Unavailable.");
-    }
-    void FetchAlbum(const Id&, AlbumDone done) override {
-        if (done) done({}, {}, L"Unavailable.");
-    }
-    void FetchAlbumsTracks(std::vector<Id>, TracksDone done) override {
-        if (done) done({}, L"Unavailable.");
-    }
     void FetchArtist(const Id&, ArtistDone done) override {
         if (done) done({}, L"Unavailable.");
     }
     void FetchArtistBio(const Id&, TextDone done) override {
         if (done) done({}, L"Unavailable.");
-    }
-    void FetchArtistAlbums(const Id&, size_t, size_t, AlbumPageDone done) override {
-        if (done) done({}, false, std::nullopt, L"Unavailable.");
-    }
-    void FetchArtistTopTracks(const Id&, size_t, size_t, TrackPageDone done) override {
-        if (done) done({}, false, L"Unavailable.");
-    }
-    void FetchFollowedArtists(ArtistsDone done) override {
-        if (done) done({}, L"Unavailable.");
-    }
-    void FetchSavedAlbums(size_t, size_t, AlbumPageDone done) override {
-        if (done) done({}, false, std::nullopt, L"Unavailable.");
     }
 
     void FetchListPage(const ListQuery& query, const ListCursor& cursor, size_t limit,
