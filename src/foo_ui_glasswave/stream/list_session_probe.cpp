@@ -691,10 +691,15 @@ class Observer {
 
 class FakePageHost final : public ui::PageHost {
   public:
+    const media::LibraryModel& Library() const override {
+        static const media::LibraryModel empty;
+        return empty;
+    }
     const ui::View& CurrentView() const override { return m_view; }
     void Open(const ui::View& view) override { m_view = view; }
     void Replace(const ui::View& view) override { m_view = view; }
     void Reload() override {}
+    void Search(const std::wstring&) override {}
     void Refresh() override {}
     void SetPageName(const std::wstring& name) override { m_view.name = name; }
     void ShowSource(std::unique_ptr<media::ListSource> source) override { m_source = std::move(source); }

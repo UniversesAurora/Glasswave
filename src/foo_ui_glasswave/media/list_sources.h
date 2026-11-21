@@ -64,17 +64,43 @@ struct RowGroup {
     std::array<std::wstring, 4> lines;
     // What each album column line opens (album, artist, genre, year); none = plain text.
     std::array<Link, 4> links;
+    // Icon views in groups (an artist's overview): the group's tiles show this many rows at
+    // most (0: all), and `more` ("Show all (12)") stands at the header's right end as a link
+    // to ListSource::ShowGroupMore.
+    size_t tileLines = 0;
+    std::wstring more;
+    bool moreBeyond = false; // the source has more than these rows (another page to load)
+    // Icon views in groups: the group's own tiles (None: the source's), and a shelf that pages
+    // sideways (Apple Music's): tileLines rows, filled column by column, arrows at its ends.
+    TileStyle tiles = TileStyle::None;
+    bool carousel = false;
 };
 
 // WMP 12 view options: Icon, Expanded tile, Details.
 enum class ViewStyle { Icons, Tiles, Details };
 
-// WMP 12 icon views: albums (cover above two lines) or artists (cover beside three lines).
-enum class TileStyle { None, Album, Artist };
 struct TileInfo {
     metadb_handle_ptr art;
     std::array<std::wstring, 3> lines;
     int icon = 0;  // wmploc PNG drawn instead of a cover (playlists page), 0 = none
+    // Results mixed from several sources: whose this tile is, marked on the cover's corner
+    // (a provider's key, or "local"); empty: no mark.
+    std::wstring source;
+    std::vector<std::wstring> badges; // drawn before lines[1] (a song's artist): stream::Track::badges
+};
+
+// A featured card (TileStyle::Card): words, picture, motion cover and colours as its source
+// describes them (stream::HomeCard).
+struct CardInfo {
+    std::wstring key;      // identity of the card's visuals, stable while the list lives
+    std::wstring provider; // whose pictures (the image cache's identity)
+    std::wstring label, title, subtitle, badge;
+    std::wstring imageUrl;
+    bool imageTall = false; // the picture fills the card; else a square cover above the words
+    std::wstring videoUrl;  // an HLS master playlist; empty: none
+    bool colors = false;    // background / inks known; else taken from the picture
+    uint32_t background = 0, titleInk = 0, textInk = 0;
+    bool playable = false;  // its play orb shows (ListSource::CanPlayTile)
 };
 
 class ListSource {
@@ -86,13 +112,30 @@ public:
     virtual std::wstring ColumnSetKey() const { return {}; }
     virtual size_t Count() const = 0;
     virtual std::wstring Cell(size_t row, size_t column) const = 0;
+    // Grey text the list draws after the cell's own (a song's note after its title,
+    // stream::Track::note); not part of the cell's value.
+    virtual std::wstring CellNote(size_t /*row*/, size_t /*column*/) const { return {}; }
+    // Small tags the list draws before the cell's text (a song's stream::Track::badges before its
+    // artist, as NetEase puts 原唱), as untranslated UI keys. Not a column of their own.
+    virtual std::vector<std::wstring> CellBadges(size_t /*row*/, size_t /*column*/) const { return {}; }
     virtual std::wstring EmptyText() const = 0;
     virtual bool IsPlaying(size_t /*row*/) const { return false; }
 
     // Optional layouts. Groups (if any) cover all rows in order; column 0 is the album column.
     virtual const std::vector<RowGroup>* Groups() const { return nullptr; }
+    virtual void ShowGroupMore(size_t /*group*/) {} // the header's `more` link was clicked
+    // A double click on a group's album column (Expanded tile): plays only that group.
+    virtual void ActivateGroup(size_t group) {
+        if (const auto* groups = Groups(); groups && group < groups->size() && (*groups)[group].count)
+            Activate((*groups)[group].first);
+    }
     virtual TileStyle Tiles() const { return TileStyle::None; }
     virtual TileInfo Tile(size_t /*row*/) const { return {}; }
+    // A card's description, for rows of a group with TileStyle::Card; null: none.
+    virtual const CardInfo* Card(size_t /*row*/) const { return nullptr; }
+    // A tile's play button (shown over its cover under the mouse): plays what the tile is.
+    virtual bool CanPlayTile(size_t /*row*/) const { return false; }
+    virtual void PlayTile(size_t /*row*/) {}
     // Draw the album column (cover + lines) beside grouped rows, or only header lines.
     virtual bool GroupArt() const { return Groups() != nullptr; }
 
@@ -168,6 +211,7 @@ public:
     const std::vector<Column>& Columns() const override { return m_columns; }
     size_t Count() const override { return m_rows.size(); }
     std::wstring Cell(size_t row, size_t column) const override;
+    std::vector<std::wstring> CellBadges(size_t row, size_t column) const override;
     std::wstring EmptyText() const override;
     bool IsPlaying(size_t row) const override;
     // Expanded tile: runs of consecutive songs from one album share an album column.
@@ -317,6 +361,11 @@ public:
     void ContextMenu(HWND owner, POINT screen) override;
     metadb_handle_list SelectedItems() const override;
     void SetFilter(std::wstring_view filterLower) override;
+    // An album's cover plays the album.
+    bool CanPlayTile(size_t row) const override {
+        return m_kind == GroupKind::Album && row < m_rows.size() && Tiles() != TileStyle::None;
+    }
+    void PlayTile(size_t row) override;
 
 private:
     const Group& At(size_t row) const { return m_model.Groups(m_kind)[m_rows[row]]; }
@@ -366,6 +415,8 @@ public:
     void ContextMenu(HWND owner, POINT screen) override;
     metadb_handle_list SelectedItems() const override;
     void SetFilter(std::wstring_view filterLower) override;
+    bool CanPlayTile(size_t row) const override { return m_style == ViewStyle::Icons && row < m_rows.size(); }
+    void PlayTile(size_t row) override;
 
 private:
     bool m_smart;

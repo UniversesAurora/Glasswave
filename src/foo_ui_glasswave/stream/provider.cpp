@@ -405,6 +405,13 @@ Provider* FindProvider(std::wstring_view key) {
     return nullptr;
 }
 
+std::vector<std::wstring> TrackBadges(const metadb_handle_ptr& item) {
+    Provider* provider = ProviderOf(item);
+    if (!provider) return {};
+    const auto track = provider->FindTrack(provider->TrackId(item));
+    return track ? track->badges : std::vector<std::wstring>{};
+}
+
 Provider* ProviderOf(const metadb_handle_ptr& item) {
     if (!item.is_valid()) return nullptr;
     for (Provider* provider : Registry())

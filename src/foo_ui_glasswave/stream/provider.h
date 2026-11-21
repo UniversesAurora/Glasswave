@@ -311,6 +311,31 @@ class Provider {
     virtual void FetchSectionTracks(const Id&, const Id&, TracksDone done) {
         if (done) done({}, L"Section tracks are unavailable for this provider.");
     }
+    // The service's home page for the signed-in user (Capability::Home); main thread. Every
+    // record it names (songs, albums, playlists, artists) is known to the source afterwards, so
+    // covers and pages work as for search results.
+    virtual void FetchHome(HomeDone done) {
+        if (done) done({}, L"This source has no home page.");
+    }
+
+    // ---- stations (Capability::Stations) ------------------------------------------------
+    // A station's next songs, a few at a time; the service decides as the songs play, so each
+    // call can answer differently and the end is never known. Main thread. The UI plays them in
+    // radio mode (stream/radio.h): asked again as the last ones start, no shuffle, no list repeat.
+    virtual void FetchStationTracks(const Id& station, TracksDone done) {
+        (void)station;
+        if (done) done({}, L"This source has no stations.");
+    }
+    // Whether a station takes "recommend less" for its songs (NetEase's 不感兴趣).
+    virtual bool CanDislike(const Id& station) const {
+        (void)station;
+        return false;
+    }
+    // Recommend less like this song on this station (the service learns from it).
+    virtual void DislikeStationTrack(const Id& station, const Id& track, Done done) {
+        (void)station, (void)track;
+        if (done) done(L"This station does not take feedback.");
+    }
     virtual void SearchCatalog(std::wstring, TracksDone done) {
         if (done) done({}, L"Catalog search is unavailable for this provider.");
     }
@@ -395,5 +420,7 @@ void Unregister(Provider& provider);
 Provider* FindProvider(std::wstring_view key);
 // The provider an item belongs to, or nullptr for local files.
 Provider* ProviderOf(const metadb_handle_ptr& item);
+// The tags a source gives its song (Track::badges), for any item; none for a local file.
+std::vector<std::wstring> TrackBadges(const metadb_handle_ptr& item);
 
 } // namespace glasswave::stream

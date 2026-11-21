@@ -51,10 +51,13 @@ struct PageTab {
 // What a page needs from the window.
 class PageHost {
 public:
+    virtual const media::LibraryModel& Library() const = 0; // the local library's snapshot
     virtual const View& CurrentView() const = 0;
     virtual void Open(const View& view) = 0;     // navigate, adding to history
     virtual void Replace(const View& view) = 0;  // navigate without a new history entry
     virtual void Reload() = 0;                   // rebuild the current page
+    // Searches every source for `term` (an album's name from its menu), as the search box does.
+    virtual void Search(const std::wstring& term) = 0;
     virtual void Refresh() = 0;                  // re-read the current page from its service
     virtual void SetPageName(const std::wstring& name) = 0;  // the page learned its subject's name
     // Shows `source` in place of the current list. The page's saved view style and the

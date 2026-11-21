@@ -75,9 +75,11 @@ private:
         ArrowUp,
         ArrowDown,
         Track,
-        Thumb
+        Thumb,
+        Carousel, // a shelf's arrow: Hit::line 0 left, 1 right
+        TilePlay  // a tile's play button
     };
-    enum class Drag { None, Thumb, Resize, PendingMove, Move, Marquee };
+    enum class Drag { None, Thumb, Resize, PendingMove, Move, Marquee, MoreButton, ShelfButton, CardPress, PlayPress };
     struct Line {
         enum Kind : uint8_t { GroupHeader, Item, Filler } kind = Item;
         size_t row = SIZE_MAX;  // Item
@@ -133,6 +135,37 @@ private:
     size_t LineOfRow(size_t row) const;
     size_t TileColumns() const;
     D2D1_SIZE_F TileSize() const;  // DIP
+    float TilePitch() const;            // DIP from one tile column to the next
+    float TileLeft(size_t column) const; // DIP, the tile's left edge
+    // The same for a group's own tile style (None: the source's).
+    media::TileStyle GroupTiles(size_t group) const;
+    D2D1_SIZE_F TileSizeOf(media::TileStyle style) const;
+    size_t TileColumnsOf(media::TileStyle style) const;
+    // shelf: a shelf's (carousel) tiles keep their width; elsewhere the spare width spreads.
+    float TilePitchOf(media::TileStyle style, bool shelf = false) const;
+    float TileLeftOf(media::TileStyle style, float column, bool shelf = false) const;
+    // A shelf (RowGroup::carousel): its columns, how far it is paged (in columns, animated),
+    // its arrows (DIP in the rows' space, between the shelf's top and bottom).
+    size_t ShelfColumns(size_t group) const;
+    float ShelfPos(size_t group) const;
+    D2D1_RECT_F ShelfArrow(size_t group, bool right, float top, float bottom) const;
+    bool ShelfCanPage(size_t group, bool right) const;
+    void PageShelf(size_t group, bool right);
+    // Moves a shelf to `to` (columns), from where it shows, over ms (a page, a wheel's step).
+    void SlideShelf(size_t group, float to, int ms);
+    float ShelfVisible(size_t group) const; // columns the view holds, a part counted as such
+    float ShelfLast(size_t group) const;    // the farthest it goes: its last tile at the right edge
+    float ShelfShownPos(size_t group) const;
+    struct ShelfSlide {
+        size_t group = SIZE_MAX;
+        float from = 0, to = 0;
+        std::chrono::steady_clock::time_point start{};
+        int ms = 0;
+    } m_shelfSlide;
+    // The play button over a tile's cover (DIP, the tile at x, y).
+    D2D1_RECT_F TilePlayRect(media::TileStyle style, float x, float y) const;
+    // The tile under a point of a tile line: its row, and its left edge (DIP).
+    size_t TileAtLine(const Line& line, float x, float* left) const;
     size_t VisibleLines() const;
     size_t MaxTop() const;
     void ScrollTo(size_t top);
@@ -141,14 +174,44 @@ private:
     void UpdateStatusText();
     float ContentTopDip() const;
     void ScrollTopTo(float top);
+    // Pixel scrolling (owner, 2026-11-20: tall rows of cards skipped by a notch, a thumb that
+    // changed size over them; "smooth as Edge, at the display's refresh rate"). The scroll position
+    // is the content's top in DIP. The rows, the cards and a sliding shelf lie in m_content inside
+    // the clipping m_viewport; the wheel glides there: the rows are painted for the whole way and
+    // the compositor moves m_content, so the motion runs at the display's rate with no repaint.
+    float ContentHeightDip() const;
+    float MaxScrollDip() const;
+    void SetScrollDip(float top); // at once
+    void ScrollBy(float dip) { SetScrollDip(ContentTopDip() + dip); }
+    void GlideTo(float top);      // the wheel's glide
+    bool Gliding() const;
+    float VisualTopDip() const;   // where the content stands on screen (mid-glide)
+    winrt::Windows::UI::Composition::ContainerVisual m_viewport{nullptr}, m_content{nullptr};
+    // The scroll bar's thumb, a visual of its own whose place the compositor computes from
+    // m_content's offset (an expression over m_thumbPlace), so it glides with the rows.
+    winrt::Windows::UI::Composition::SpriteVisual m_thumb{nullptr};
+    winrt::Windows::UI::Composition::CompositionPropertySet m_thumbPlace{nullptr};
+    void PlaceThumb(); // the expression's terms for the current paint and scroll
+    float m_paintTop = 0, m_paintHeight = 0; // DIP: the content the rows surface holds
+    float m_paintViewH = -1;                 // while painting: that height (RowsHeightDip)
+    struct Glide {
+        float from = 0, to = 0;
+        std::chrono::steady_clock::time_point start{};
+        int ms = 0; // 0: none
+    } m_glide;
     void PaintStatus();
     void PaintHeader();
     void PaintRows();
+    void NoteGlow();
     void PaintScrollBar();
     void PaintPlain(ID2D1DeviceContext* dc, D2D1_SIZE_F size);
     void PaintGrouped(ID2D1DeviceContext* dc, D2D1_SIZE_F size);
     void PaintTiles(ID2D1DeviceContext* dc);
+    void PaintTile(ID2D1DeviceContext* dc, size_t idx, float x, float y, media::TileStyle style, size_t focus);
+    void PaintShelfArrows(ID2D1DeviceContext* dc);
     void PaintCells(ID2D1DeviceContext* dc, size_t row, float y, float rowH, const std::vector<Col>& cols);
+    float PaintBadge(ID2D1DeviceContext* dc, const std::wstring& text, float x, float cy, float right);
+    float PaintBadges(ID2D1DeviceContext* dc, const std::vector<std::wstring>& badges, float x, float cy, float right);
     void DrawArt(ID2D1DeviceContext* dc, const std::wstring& key, const metadb_handle_ptr& track, D2D1_RECT_F box);
     void DrawArt(ID2D1DeviceContext* dc, const metadb_handle_ptr& track, D2D1_RECT_F box) {
         DrawArt(dc, std::wstring(), track, box);

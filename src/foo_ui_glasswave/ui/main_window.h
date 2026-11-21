@@ -12,9 +12,12 @@
 #include "ui/main_menu.h"
 #include "ui/i18n.h"
 #include "ui/nav_pane.h"
+#include "ui/breadcrumb.h"
 #include "ui/page.h"
 #include "ui/player_window.h"
 #include "ui/search_box.h"
+#include "ui/search_popup.h"
+#include "ui/search_scope.h"
 #include "ui/widget.h"
 #include "ui/win7_menu.h"
 
@@ -99,10 +102,14 @@ class MainWindow : public PageHost, public PlayerHost {
     void ScheduleLibraryReload();
 
     // PageHost: what the page on screen may do with the window.
+    const media::LibraryModel& Library() const override { return m_library; }
     const View& CurrentView() const override { return m_view; }
-    void Open(const View& view) override { Navigate(view, true); }
-    void Replace(const View& view) override { Navigate(view, false); }
+    // A page opened from inside the one on screen keeps that page's place in the breadcrumb
+    // (View::from); a section of the navigation pane always stands in its own place.
+    void Open(const View& view) override;
+    void Replace(const View& view) override; // the same page in another state: its place stays
     void Reload() override { Navigate(m_view, false); }
+    void Search(const std::wstring& term) override;
     void Refresh() override { RefreshCurrentPage(); }
     void SetPageName(const std::wstring& name) override;
     void ShowSource(std::unique_ptr<media::ListSource> source) override;
@@ -170,19 +177,17 @@ class MainWindow : public PageHost, public PlayerHost {
     std::vector<MenuAction> ShelfMenu(stream::Provider& provider, const stream::NavigationSection& section);
     std::vector<MenuAction> FollowedArtistsMenu(stream::Provider& provider, const stream::Id& sectionId);
     std::vector<MenuAction> SavedAlbumsMenu(stream::Provider& provider, const stream::Id& sectionId);
-    void AddRemoteCrumbs(std::vector<Crumb>& path, stream::Provider& provider);
-    void PaintBreadcrumb();
-    bool CrumbAt(POINT pt, int* index, int* part) const;
-    void UpdateCrumbHover(POINT pt);
-    void OnCrumbClick(POINT pt);
+    void AddRemoteCrumbs(std::vector<Crumb>& path, stream::Provider& provider, const View& view);
 
     enum class Capture {
         None,
         Widget,
+        SearchClear, // the search box's cross, held down
         List,
         DetailScroll,
         Nav,
-        Lyrics
+        Lyrics,
+        Search // selecting text in the search box
     };
 
     static LRESULT CALLBACK WndProcThunk(HWND, UINT, WPARAM, LPARAM);
@@ -203,10 +208,13 @@ class MainWindow : public PageHost, public PlayerHost {
     // Navigation
     void Navigate(const View& view, bool push);
     void ApplyPendingScroll();
+    void SelectPending();
+    metadb_handle_ptr m_pendingSelect; // the song a page was opened for (View::select)
     void SaveLastView();
     bool LoadLastView(View& view, size_t& top);
     void GoBack();
     void GoForward();
+    void PlaceImeWindows();  // IME candidates under the search box, at its caret
     void ShowOrganizeMenu();
     void ShowPlaylistMenu(size_t playlist, POINT screen);
     void ShowViewMenu();
@@ -259,6 +267,53 @@ class MainWindow : public PageHost, public PlayerHost {
     void OnNavMove(const NavPane::Item& dragged, const NavPane::Item& target, bool after);
     void AddDroppedFiles(IDataObject* data);
     void SetSearchFocus(bool focused);
+    // ---- search (main_window_search.cpp) ----
+    // The search box searches the list on screen or a catalog (ui/search_scope.h); a catalog
+    // search opens the search page. The drop-down lists earlier searches or suggestions.
+    void BeginSearch(const SearchScope& scope); // the box focused, in this scope
+    void SetSearchScope(const SearchScope& scope);
+    void OnSearchTextChanged(const std::wstring& text);
+    bool OnSearchKey(WPARAM key); // Up / Down / Enter / Escape while the box has the focus
+    void OnSearchClear();         // the box's cross
+    void SubmitSearch(std::wstring term);
+    void ShowSearchPopup();
+    void HideSearchPopup();
+    void FetchSuggestions();
+    void ListSuggestions(); // the current list's titles, artists and albums
+    void PickSuggestion(size_t row);
+    void SyncSearchBox(const View& view); // the box shows a search page's scope and term
+    struct Suggestion {
+        std::wstring text, detail;
+        bool history = false;
+        std::function<void()> pick;
+    };
+    SearchScope m_searchScope;
+    std::unique_ptr<SearchPopup> m_searchPopup;
+    std::vector<Suggestion> m_suggestions;
+    std::shared_ptr<std::atomic_bool> m_suggestCancel;
+    // Each source's answer for the text being suggested for (provider key, or "local").
+    std::vector<std::pair<std::wstring, stream::Provider::CatalogSearchSuggestions>> m_suggestAnswers;
+    size_t m_suggestPending = 0;
+    void BuildSuggestions();
+    // The page's tabs (WMC's large text tabs): hover fades like the breadcrumb's plates.
+    std::vector<PageTab> m_tabs;
+    std::wstring m_tabCurrent;
+    std::vector<float> m_tabBlend;
+    std::vector<float> m_tabX; // DIP: each tab's left edge, then the last one's right edge
+    int m_tabHot = -1;
+    // The current tab's bar: its own visual, sliding to a newly chosen tab on the compositor.
+    winrt::Windows::UI::Composition::SpriteVisual m_tabBar{nullptr};
+    float m_tabBarLeft = -1, m_tabBarRight = -1; // DIP, where it stands (or is going)
+    bool m_tabSlide = false;                     // the next placement slides
+    void PlaceTabBar(float left, float right);
+    winrt::Windows::UI::Composition::SpriteVisual m_tabStrip{nullptr};
+    SIZE m_tabStripSize{};
+    void LayoutTabs();
+    void PaintTabs();
+    int TabAt(POINT pt) const;
+    void UpdateTabHover(POINT pt);
+    void OnTabClick(POINT pt);
+    bool AnimateTabs();
     void FocusNav(); // the navigation pane has the focus (its selection turns blue)
 
     LRESULT HitTest(POINT clientPt) const;

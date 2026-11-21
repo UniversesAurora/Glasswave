@@ -74,7 +74,7 @@ std::wstring ArtistLabel(const SongTableRow& row) {
 
 void FinishRow(SongTableRow& row) {
     row.length = LengthText(row.lengthMs);
-    row.search = media::Lower(row.title + L'\n' + row.artist + L'\n' + row.album);
+    row.search = media::Lower(row.title + L'\n' + row.note + L'\n' + row.artist + L'\n' + row.album);
     row.playCount = media::PlayStats::Get().CountFor(row.handle);
 }
 
@@ -804,10 +804,22 @@ std::wstring SongTableSource::Cell(size_t row, size_t column) const {
     case kLength: return item.length;
     case kArtist: return item.artist;
     case kAlbum: return item.album;
+    case kPopularity: return std::to_wstring(std::clamp(item.popularity, 0, 100));  // drawn as a bar
     case kPlayCount: return std::to_wstring(item.playCount);
     case kSource: return item.source;
+    case kLyric: return item.lyric;
     default: return {};  // the album, art and favorite columns are drawn by the list
     }
+}
+
+std::wstring SongTableSource::CellNote(size_t row, size_t column) const {
+    if (row >= m_visible.size() || column >= m_fields.size() || m_fields[column] != kTitle) return {};
+    return m_all[m_visible[row]].note;
+}
+
+std::vector<std::wstring> SongTableSource::CellBadges(size_t row, size_t column) const {
+    if (row >= m_visible.size() || column >= m_fields.size() || m_fields[column] != kArtist) return {};
+    return m_all[m_visible[row]].badges;
 }
 
 bool SongTableSource::IsPlaying(size_t row) const {
@@ -867,7 +879,31 @@ void SongTableSource::Activate(size_t row) {
         m_activate(row, RowIdentity(row));
         return;
     }
-    media::PlayItems(VisibleItems(), row);
+    PlayFrom(row);
+}
+
+void SongTableSource::PlayFrom(size_t row) const {
+    if (row >= m_visible.size()) return;
+    // The search box only filters the view: every song plays, in display order, from this one.
+    metadb_handle_list items;
+    size_t start = 0;
+    for (size_t index : m_order) {
+        if (index == m_visible[row]) start = items.get_count();
+        items.add_item(m_all[index].handle);
+    }
+    media::PlayItems(items, start);
+}
+
+void SongTableSource::PlayGroupFrom(size_t row) const {
+    if (row >= m_visible.size()) return;
+    for (const auto& group : m_groups) {
+        if (row < group.first || row >= group.first + group.count) continue;
+        metadb_handle_list items;
+        for (size_t r = group.first; r < group.first + group.count; ++r) items.add_item(m_all[m_visible[r]].handle);
+        media::PlayItems(items, row - group.first);
+        return;
+    }
+    PlayFrom(row);
 }
 
 void SongTableSource::ContextMenu(HWND owner, POINT screen) {

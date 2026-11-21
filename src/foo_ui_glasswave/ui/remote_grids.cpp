@@ -207,6 +207,10 @@ void AlbumGridSource::Activate(size_t row) {
     if (row < m_rows.size() && m_open) m_open(AlbumAt(row));
 }
 
+void AlbumGridSource::PlayTile(size_t row) {
+    if (const auto* album = AlbumAt(row)) PlayRemoteAlbum(m_provider, album->id);
+}
+
 void AlbumGridSource::ContextMenu(HWND, POINT screen) {
     if (m_menu && Focus() < m_rows.size()) m_menu(screen, AlbumAt(Focus()));
 }
@@ -360,6 +364,10 @@ std::wstring PlaylistGridSource::ArtKey(size_t row) const {
 
 void PlaylistGridSource::Activate(size_t row) {
     if (row < m_rows.size() && m_open) m_open(m_playlists[m_rows[row]]);
+}
+
+void PlaylistGridSource::PlayTile(size_t row) {
+    if (row < m_rows.size()) PlayRemotePlaylist(m_provider, m_playlists[m_rows[row]].id);
 }
 
 void PlaylistGridSource::ContextMenu(HWND, POINT screen) {

@@ -77,6 +77,17 @@ constexpr UINT_PTR kScrollAnimTimer = 3;
 constexpr UINT_PTR kScrollRepeatTimer = 4;
 constexpr UINT_PTR kPaneRevealTimer = 5;
 constexpr UINT_PTR kDetailTipTimer = 6;
+constexpr UINT_PTR kSuggestTimer = 7; // main_window_search.cpp: typing paused, ask for suggestions
+constexpr UINT_PTR kArtHoldTimer = 8;  // a new song's cover kept it waiting long enough
+constexpr UINT_PTR kWindowOpenTimer = 9;  // the opening animation ended: the shadow joins
+constexpr UINT_PTR kWindowCloseTimer = 10; // the closing animation ended: foobar2000 exits
+// Windows 7's window opening and closing (DWM): the window grows to its size from a little smaller
+// while it fades in, and shrinks a little as it fades out. Estimated from the owner's memory of
+// it, not measured yet (docs/design/visual-spec.md "Window open and close").
+constexpr float kOpenFrom = 0.92f, kCloseTo = 0.94f;
+constexpr int kOpenMs = 250, kCloseMs = 180;
+constexpr UINT kArtHoldMs = 1500;
+constexpr float kTabBand = 44.0f;     // DIP: the page's tabs over the list (main_window_search.cpp)
 constexpr int kPaneRevealMs = 300;
 constexpr UINT kFrameMessage = WM_APP + 0x32; // FrameClock: the lyrics pane draws a frame
 constexpr float kLyricsPaneWidth = 440.0f;    // DIP (new UI, no Win7 measurement)
@@ -173,6 +184,13 @@ cfg_var_modern::cfg_int cfg_viewRemotePlaylists(
 cfg_var_modern::cfg_int cfg_viewRemoteSongs(
     {0x6a1f3c61, 0x2b7e, 0x4d90, {0x8c, 0x15, 0x3e, 0x9a, 0x7b, 0x2d, 0x4f, 0x61}},
     static_cast<int>(media::ViewStyle::Details));
+// The search page's categories: songs (and lyrics), and artists, albums and playlists as tiles.
+cfg_var_modern::cfg_int cfg_viewSearchSongs(
+    {0x6a1f3c70, 0x2b7e, 0x4d90, {0x8c, 0x15, 0x3e, 0x9a, 0x7b, 0x2d, 0x4f, 0x61}},
+    static_cast<int>(media::ViewStyle::Details));
+cfg_var_modern::cfg_int cfg_viewSearchTiles(
+    {0x6a1f3c71, 0x2b7e, 0x4d90, {0x8c, 0x15, 0x3e, 0x9a, 0x7b, 0x2d, 0x4f, 0x61}},
+    static_cast<int>(media::ViewStyle::Icons));
 // Saved albums: cover tiles, or the saved albums' songs grouped by album.
 cfg_var_modern::cfg_int cfg_viewRemoteAlbums(
     {0x6a1f3c62, 0x2b7e, 0x4d90, {0x8c, 0x15, 0x3e, 0x9a, 0x7b, 0x2d, 0x4f, 0x61}},
@@ -387,6 +405,7 @@ View ProviderGroupsFallback(const stream::Provider& provider, const stream::Id& 
 // provider's Groups page instead of opening a track page with an obsolete group id.
 View NormalizeRemoteView(const stream::Provider& provider, View view, bool discardGroupTracks) {
     if (!view.IsRemote() || view.provider != provider.Key()) return view;
+    if (view.kind == View::Kind::Search) return view; // its sectionId is the tab, not a section
     const bool sectionValid =
         !view.sectionId.empty() && FindProviderSection(provider, view.sectionId).has_value();
     if (!sectionValid) view.sectionId.clear();
@@ -2980,6 +2999,7 @@ void MainWindow::RefreshPaneQueue(bool playbackChanged) {
             row.title = Wide(text);
             row.handle->format_title(nullptr, text, s_artist, nullptr);
             row.artist = Wide(text);
+            row.badges = stream::TrackBadges(row.handle);
             row.playlistIndex = next.playlistIndex < count && shownPhysical.insert(next.playlistIndex).second
                                     ? next.playlistIndex
                                     : QueueView::kExplicitQueueTag | next.queueIndex;
@@ -3002,6 +3022,7 @@ void MainWindow::RefreshPaneQueue(bool playbackChanged) {
         if (!row.handle.is_valid()) continue;
         row.title = Wide(it->title.c_str());
         row.artist = Wide(it->artist.c_str());
+        row.badges = stream::TrackBadges(row.handle);
         history.push_back(std::move(row));
     }
     // The newest record is the song playing now: it is the card, not history.
@@ -3552,8 +3573,9 @@ std::vector<MenuAction> MainWindow::ProviderSectionsMenu(stream::Provider& provi
     for (const auto& section : provider.Sections())
         if (!section.id.empty()) out.push_back({Tr(section.label), go(SectionView(provider, section))});
     if (provider.Can(stream::Capability::CatalogSearch))
-        out.push_back(
-            {Tr(L"Search " + provider.Name()), [this, &provider] { PromptCatalogSearch(*this, provider); }});
+        out.push_back({Tr(L"Search " + provider.Name()), [this, key = std::wstring(provider.Key())] {
+                           BeginSearch({SearchScope::Kind::Provider, key});
+                       }});
     return out;
 }
 
@@ -3646,29 +3668,24 @@ void MainWindow::AddRemoteCrumbs(std::vector<Crumb>& path, stream::Provider& pro
         break;
     case View::Kind::RemoteArtist:
         if (section) addSection(*section);
-        named(m_view.name, L"Artist", go(m_view));
+        named(view.name, L"Artist", go(view));
         break;
     case View::Kind::RemoteAlbum:
-        if (!m_view.parentId.empty()) { // opened from an artist page: keep the artist in the path
-            if (section) addSection(*section);
-            named(m_view.parentName, L"Artist",
-                  go(ArtistView(provider, m_view.parentId, m_view.parentName, m_view.sectionId)));
-        } else {
-            if (section) addSection(*section);
-        }
-        named(m_view.name, L"Album", go(m_view));
+        if (section) addSection(*section);
+        named(view.name, L"Album", go(view));
         break;
     case View::Kind::RemoteTopTracks:
         if (section) addSection(*section);
-        named(m_view.name, L"Artist",
-              go(ArtistView(provider, m_view.remoteId, m_view.name, m_view.sectionId)));
-        path.push_back({provider.ArtistTracksLabel(m_view.remoteId), go(m_view), {}});
+        named(view.name, L"Artist",
+              go(ArtistView(provider, view.remoteId, view.name, view.sectionId)));
+        path.push_back({provider.ArtistTracksLabel(view.remoteId), go(view), {}});
         break;
-    case View::Kind::RemoteSearch:
-        named(m_view.name, L"Search", go(m_view));
+    case View::Kind::Search:
+        // As the pages opened from it name it: "Search results (term)".
+        path.push_back({Tr(L"Search results") + L" (" + view.remoteId + L")", go(view), {}, true});
         break;
     case View::Kind::RemoteSong:
-        named(m_view.name, L"Song", go(m_view));
+        named(view.name, L"Song", go(view));
         break;
     default:
         break;
@@ -3808,24 +3825,26 @@ std::vector<MainWindow::Crumb> MainWindow::BuildCrumbPath() {
         home.library = View::Library::Local;
         home.kind = View::Kind::AllMusic;
         path.push_back({L"Local Music", go(home), [this] { return LocalSectionsMenu(); }});
-        if (m_view.kind == View::Kind::SmartPlaylists) {
-            path.push_back({L"Smart playlists", go(m_view), [this] { return PlaylistListMenu(true); }});
-        } else if (m_view.kind == View::Kind::Category) {
-            path.push_back({CategoryLabel(m_view.group), go(m_view),
-                            [this, kind = m_view.group] { return GroupListMenu(kind); }});
-        } else if (m_view.kind == View::Kind::Group) {
+        if (view.kind == View::Kind::SmartPlaylists) {
+            path.push_back({L"Smart playlists", go(view), [this] { return PlaylistListMenu(true); }});
+        } else if (view.kind == View::Kind::Category) {
+            path.push_back({CategoryLabel(view.group), go(view),
+                            [this, kind = view.group] { return GroupListMenu(kind); }});
+        } else if (view.kind == View::Kind::Group) {
             View category;
             category.library = View::Library::Local;
             category.kind = View::Kind::Category;
-            category.group = m_view.group;
-            path.push_back({CategoryLabel(m_view.group), go(category),
-                            [this, kind = m_view.group] { return GroupListMenu(kind); }});
-            path.push_back({m_view.name, go(m_view), {}, true});
+            category.group = view.group;
+            path.push_back({CategoryLabel(view.group), go(category),
+                            [this, kind = view.group] { return GroupListMenu(kind); }});
+            path.push_back({view.name, go(view), {}, true});
+        } else if (view.kind == View::Kind::Search) {
+            path.push_back({Tr(L"Search results") + L" (" + view.remoteId + L")", go(view), {}, true});
         }
         break;
     }
     case View::Library::Remote:
-        if (auto* provider = ViewProvider()) AddRemoteCrumbs(path, *provider);
+        if (auto* provider = stream::FindProvider(view.provider)) AddRemoteCrumbs(path, *provider, view);
         break;
     }
     return path;
@@ -3958,21 +3977,17 @@ bool MainWindow::LoadLastView(View& view, size_t& top) {
     v.shelf = static_cast<stream::Shelf>(shelf);
     v.shelfKnown = f[9] == L"1";
     v.remoteId = f[10];
-    v.parentId = f[11];
-    v.parentName = f[12];
-    if (v3) {
-        v.sectionId = f[13];
-        v.groupId = f[14];
-    }
-    const std::wstring& scrollText = f[v3 ? 15 : 13];
+    v.sectionId = f[11];
+    v.groupId = f[12];
+    const std::wstring& scrollText = f[13];
     const long long scroll = _wcstoi64(scrollText.c_str(), nullptr, 10);
     top = scroll < 0 ? SIZE_MAX : static_cast<size_t>(scroll);
     if (v.kind == View::Kind::Group && v.key.empty()) return false;
-    if (v.IsRemote() != (v.kind >= View::Kind::RemoteFavorites)) return false;
+    if (v.kind != View::Kind::Home && v.IsRemote() != (v.kind >= View::Kind::RemoteFavorites)) return false;
     if (v.IsRemote()) {
         auto* provider = stream::FindProvider(v.provider);
         if (!provider) return false;
-        if (v.kind == View::Kind::RemoteSearch && !provider->Can(stream::Capability::CatalogSearch)) return false;
+        if (v.kind == View::Kind::Search && !provider->Can(stream::Capability::CatalogSearch)) return false;
         v = NormalizeRemoteView(*provider, std::move(v), false);
     }
     switch (v.kind) {
@@ -3980,7 +3995,7 @@ bool MainWindow::LoadLastView(View& view, size_t& top) {
     case View::Kind::RemoteAlbum:
     case View::Kind::RemoteArtist:
     case View::Kind::RemoteTopTracks:
-    case View::Kind::RemoteSearch:
+    case View::Kind::Search:
     case View::Kind::RemoteSong:
         if (v.remoteId.empty()) return false;
         break;
@@ -4055,6 +4070,8 @@ void MainWindow::Navigate(const View& requested, bool push) {
             m_search->onChange = std::move(keep);
         }
     }
+    // A search page shows its scope and term in the box; another page the list scope.
+    if (m_search && (!sameView || view.kind == View::Kind::Search)) SyncSearchBox(view);
     // The page on screen goes first; results still in flight for it are dropped with it.
     m_page.reset();
     const bool reuse = !push && !m_forcePageRefresh;
@@ -4081,8 +4098,11 @@ void MainWindow::Navigate(const View& requested, bool push) {
             target = NavPane::Target::RemoteSection;
             navId = view.sectionId;
             break;
-        case View::Kind::RemoteSearch:
+        case View::Kind::Search:
             target = NavPane::Target::LibraryRemote;
+            break;
+        case View::Kind::RemoteHomeList: // opened from Home
+            target = NavPane::Target::Home;
             break;
         case View::Kind::RemotePlaylist:
             target = NavPane::Target::RemotePlaylist;
@@ -4250,14 +4270,39 @@ void MainWindow::PaintDetailHeader() {
 
         const float pad = 18, side = kDetailArt;
         const float ax = pad, ay = 14; // the artwork stays at the top-left of the band
+        const bool made = !m_detail.artBadge.empty() || !m_detail.artCaption.empty();
         if (art) {
             winrt::com_ptr<ID2D1Bitmap> bitmap;
             if (SUCCEEDED(dc->CreateBitmapFromWicBitmap(art.get(), nullptr, bitmap.put())))
                 dc->DrawBitmap(bitmap.get(), D2D1::RectF(ax, ay, ax + side, ay + side), 1.0f,
                                D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+        } else if (made) {
+            dc->FillRectangle({ax, ay, ax + side, ay + side},
+                              VGrad(dc, ay, ay + side, {{0.0f, 0x5B7DB8}, {1.0f, 0x2A3F66}}).get());
         } else if (!win7::DrawStretched(dc, win7::Module::Wmploc, L"ALBUM_0.PNG", {ax, ay, ax + side, ay + side})) {
             // WMP's own "no album art" picture, as the tiles show it; a plain plate without it.
             wp::RowPlate(dc, {ax, ay, ax + side, ay + side}, wp::RowState::Normal, false);
+        }
+        if (made) { // the made cover: a shade from the top and the foot, the mark and the caption
+            const D2D1_GRADIENT_STOP stops[] = {{0.0f, D2D1::ColorF(0, 0.38f)}, {0.42f, D2D1::ColorF(0, 0.0f)},
+                                                {0.58f, D2D1::ColorF(0, 0.0f)}, {1.0f, D2D1::ColorF(0, 0.55f)}};
+            com_ptr<ID2D1GradientStopCollection> list;
+            com_ptr<ID2D1LinearGradientBrush> shade;
+            dc->CreateGradientStopCollection(stops, 4, list.put());
+            if (list && SUCCEEDED(dc->CreateLinearGradientBrush({{0, ay}, {0, ay + side}}, list.get(), shade.put())))
+                dc->FillRectangle({ax, ay, ax + side, ay + side}, shade.get());
+            com_ptr<ID2D1SolidColorBrush> white, shadow;
+            dc->CreateSolidColorBrush(D2D1::ColorF(1, 1, 1, 1), white.put());
+            dc->CreateSolidColorBrush(D2D1::ColorF(0, 0.35f), shadow.put());
+            if (!m_detail.artBadge.empty()) {
+                auto badge = MakeText(m_detail.artBadge, side * 0.36f, DWRITE_FONT_WEIGHT_SEMI_BOLD, side, side * 0.5f);
+                dc->DrawTextLayout({ax + 8, ay + 3}, badge.get(), shadow.get());
+                dc->DrawTextLayout({ax + 7, ay + 2}, badge.get(), white.get());
+            }
+            if (!m_detail.artCaption.empty()) {
+                auto caption = MakeText(m_detail.artCaption, 12.0f, DWRITE_FONT_WEIGHT_BOLD, side - 14, 18);
+                dc->DrawTextLayout({ax + 7, ay + side - 22}, caption.get(), white.get());
+            }
         }
         com_ptr<ID2D1SolidColorBrush> edge;
         dc->CreateSolidColorBrush(Hex(0x9AA7B8), edge.put());
@@ -4680,14 +4725,24 @@ std::vector<ContextAction> MainWindow::BuildContextActions(metadb_handle_list_cr
     metadb_handle_list selected;
     selected.add_items(items);
 
-    auto artistLinks = BuildArtistLinks(items);
-    if (artistLinks.size() == 1)
-        actions.push_back({L"Go to artist", artistLinks.front().run});
-    else if (!artistLinks.empty())
-        actions.push_back({L"Go to artist", nullptr, std::move(artistLinks)});
-
+    // The same groups as an album's or a playlist's menu (ui/item_menu.h): where it leads (opened
+    // from this page: the path goes on from here), what to do with it, searches, the page's own.
     const metadb_handle_ptr& first = items[0];
     stream::Provider* provider = stream::ProviderOf(first);
+    std::wstring title, albumName;
+    std::vector<std::wstring> artistNames; // each credited artist, for "Search for artist"
+    if (provider) {
+        if (const auto track = provider->FindTrack(provider->TrackId(first))) {
+            title = track->title;
+            albumName = track->album;
+            for (const auto& artist : track->artists)
+                if (!artist.name.empty()) artistNames.push_back(artist.name);
+        }
+    } else if (const media::Track* track = first.is_valid() ? m_library.FindTrack(first) : nullptr) {
+        title = track->title;
+        albumName = track->album;
+        if (!track->artist.empty()) artistNames.push_back(track->artist);
+    }
     if (provider) {
         const auto track = provider->FindTrack(provider->TrackId(first));
         const bool onAlbumPage = track && m_view.kind == View::Kind::RemoteAlbum &&
@@ -5117,8 +5172,9 @@ void MainWindow::ShowRemoteNavMenu(const NavPane::Item& item, POINT screen) {
         return;
     default:
         if (item.target == NavPane::Target::LibraryRemote && provider.Can(stream::Capability::CatalogSearch))
-            actions.push_back({Tr(L"Search " + provider.Name()),
-                               [this, &provider] { PromptCatalogSearch(*this, provider); }});
+            actions.push_back({Tr(L"Search " + provider.Name()), [this, key = std::wstring(provider.Key())] {
+                                   BeginSearch({SearchScope::Kind::Provider, key});
+                               }});
         if (provider.Can(stream::Capability::CreatePlaylists) && provider.AccountVerified() &&
             FindProviderSection(provider, stream::SectionKind::PlaylistShelf, stream::Shelf::Created) &&
             (item.target == NavPane::Target::LibraryRemote ||
@@ -5180,10 +5236,13 @@ cfg_var_modern::cfg_int* MainWindow::ViewStyleSetting(const View& view) {
     case View::Kind::RemoteFavorites:
     case View::Kind::RemoteAlbum:
     case View::Kind::RemoteTopTracks:
-    case View::Kind::RemoteSearch:
     case View::Kind::RemoteSectionTracks:
     case View::Kind::RemoteGroupTracks:
+    case View::Kind::RemoteHomeList:
         return &cfg_viewRemoteSongs;
+    case View::Kind::Search:
+        if (view.sectionId == L"songs" || view.sectionId == L"lyrics") return &cfg_viewSearchSongs;
+        return view.sectionId.empty() ? nullptr : &cfg_viewSearchTiles;
     case View::Kind::RemoteArtist:
         return &cfg_viewRemoteArtist;
     case View::Kind::RemoteArtists:
@@ -5376,6 +5435,19 @@ void MainWindow::OnAlbumLink(size_t group, size_t line) {
         break;
     }
     Navigate(v, true);
+}
+
+void MainWindow::PlaceImeWindows() {
+    HIMC imc = ImmGetContext(m_hwnd);
+    if (!imc) return;
+    const RECT box = m_search->Bounds();
+    const POINT caret = m_search->CaretClientPoint();
+    COMPOSITIONFORM composition{CFS_POINT, caret, {}};
+    ImmSetCompositionWindow(imc, &composition);
+    // CFS_EXCLUDE keeps the list off the box: below it, or above near the screen bottom.
+    CANDIDATEFORM candidate{0, CFS_EXCLUDE, {caret.x, box.bottom}, box};
+    ImmSetCandidateWindow(imc, &candidate);
+    ImmReleaseContext(m_hwnd, imc);
 }
 
 void MainWindow::GoBack() {
@@ -5786,9 +5858,14 @@ void MainWindow::SetSearchFocus(bool focused) {
     m_search->SetFocused(focused);
     m_list->SetFocused(!focused);
     m_nav->SetFocused(false);
+    if (focused)
+        ShowSearchPopup();
+    else
+        HideSearchPopup();
 }
 
 void MainWindow::FocusNav() {
+    HideSearchPopup();
     m_search->SetFocused(false);
     m_list->SetFocused(false);
     m_nav->SetFocused(true);
@@ -6349,7 +6426,9 @@ void MainWindow::OnActivate(bool active) {
     if (m_active == active) return;
     m_active = active;
     if (!active) SetVolumeFlyout(false);
+    if (!active) HideSearchPopup();
     if (m_glass) m_glass->SetActive(active);
+    if (m_pane) m_pane->SetActive(active);
     for (auto& w : m_widgets)
         if (IsCaptionWidget(w->Id())) w->SetInactive(!active);
     if (m_title) gfx::CompositionHost::Get().AnimateOpacity(m_title, active ? 1.0f : 0.85f, 200);
@@ -6505,14 +6584,24 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
         if (wp == kDetailTipTimer) {
             KillTimer(hwnd, kDetailTipTimer);
             // Below the pointer, clear of the cursor, as Windows places its tooltips.
-            if (m_detailTipItem < m_detailCut.size())
-                ShowTip(m_detailCut[m_detailTipItem].text, static_cast<float>(m_detailTipAt.x),
-                        static_cast<float>(m_detailTipAt.y + PxI(20)), false);
+            // In the control bar, above the text instead (the window's bottom edge is near).
+            if (!m_tipText.empty())
+                ShowTip(m_tipText, static_cast<float>(m_detailTipAt.x),
+                        static_cast<float>(m_tipAbove ? m_tipRect.top - PxI(2) : m_detailTipAt.y + PxI(20)),
+                        m_tipAbove);
+            return 0;
+        }
+        if (wp == kSuggestTimer) {
+            KillTimer(hwnd, kSuggestTimer);
+            FetchSuggestions();
             return 0;
         }
         if (wp == kScrollAnimTimer) {
             bool active = m_list && m_list->AnimateScrollBar();
             active |= AnimateDetailScrollBar();
+            active |= m_crumbBar->Animate();
+            active |= AnimateTabs();
+            if (m_search) active |= m_search->Animate();
             if (!active) {
                 KillTimer(hwnd, kScrollAnimTimer);
                 m_scrollAnimActive = false;
@@ -6588,10 +6677,12 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
     }
 
     case WM_SIZE: {
+        HideSearchPopup();
         if (wp == SIZE_MINIMIZED) {
             m_playbackPresentationSuspended = true;
             if (m_frameClock) m_frameClock->Stop();
         }
+        if (m_list) m_list->SetMotion(wp != SIZE_MINIMIZED); // motion covers rest while minimized
         const bool wasMax = m_layout.border == 0;
         UpdateLayout();
         if (wp != SIZE_MINIMIZED) UpdatePlaybackPresentation();
@@ -6601,6 +6692,7 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
     }
 
     case WM_MOVE:
+        HideSearchPopup();
         if (m_glass) m_glass->UpdateReflectionAnchor(hwnd);
         return 0;
 
@@ -6745,6 +6837,10 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
             OnDetailBriefBarMove(pt);
             return 0;
         }
+        if (m_capture == Capture::Search) {
+            m_search->OnMouseDrag(pt);
+            return 0;
+        }
         if (m_capture == Capture::Nav) {
             m_nav->OnMouseMove(pt);
             return 0;
@@ -6765,7 +6861,10 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
             UpdateSplitPart(pt);
             m_list->OnMouseMove(pt);
             m_nav->OnMouseMove(pt);
-            UpdateCrumbHover(pt);
+            m_crumbBar->OnMouseMove(pt);
+            UpdateTabHover(pt);
+            m_search->SetClearHot(m_search->HitClear(pt));
+            if (m_search->Animating()) StartScrollAnimation();
             UpdateNowPlayingHover(pt);
             UpdateDetailBriefHover(pt);
             UpdateDetailTip(pt);
@@ -6800,7 +6899,10 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
         if (m_capture == Capture::None) {
             m_list->OnMouseLeave();
             m_nav->OnMouseLeave();
-            UpdateCrumbHover({-1, -1});
+            m_crumbBar->OnMouseLeave();
+            UpdateTabHover({-1, -1});
+            m_search->SetClearHot(false);
+            if (m_search->Animating()) StartScrollAnimation();
             UpdateNowPlayingHover({-1, -1});
             m_volumeHover = false;
             HideVolumeTip();
@@ -6866,10 +6968,25 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
             }
             return 0;
         }
-        if (m_search->HitTest(pt)) {
-            SetSearchFocus(true);
+        if (m_search->HitClear(pt)) { // held: the pressed plate; it clears when released on it
+            m_search->SetClearPressed(true);
+            StartScrollAnimation();
+            m_capture = Capture::SearchClear;
+            SetCapture(hwnd);
             return 0;
         }
+        if (m_search->HitTest(pt)) {
+            if (!m_search->Focused()) SetSearchFocus(true);
+            if (dbl) {
+                m_search->OnDoubleClick(pt);
+            } else {
+                m_search->OnMouseDown(pt, KeyDown(VK_SHIFT));
+                m_capture = Capture::Search;
+                SetCapture(hwnd);
+            }
+            return 0;
+        }
+        SetSearchFocus(false);
         return 0;
     }
     case WM_LBUTTONUP: {
@@ -6885,6 +7002,19 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
             m_capture = Capture::None;
             ReleaseCapture();
             OnDetailBriefBarUp();
+            return 0;
+        }
+        if (m_capture == Capture::Search) {
+            m_capture = Capture::None;
+            ReleaseCapture();
+            return 0;
+        }
+        if (m_capture == Capture::SearchClear) {
+            m_capture = Capture::None;
+            ReleaseCapture();
+            m_search->SetClearPressed(false);
+            StartScrollAnimation();
+            if (m_search->HitClear(pt)) OnSearchClear();
             return 0;
         }
         if (m_capture == Capture::Nav) {
@@ -7073,6 +7203,7 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
                 return 0;
             }
             if (m_search->Focused()) {
+                if (OnSearchKey(wp)) return 0;
                 if (m_search->OnKeyDown(static_cast<UINT>(wp), ctrl, hwnd)) return 0;
                 if (wp == VK_DOWN || wp == VK_TAB) {
                     SetSearchFocus(false);
@@ -7116,13 +7247,47 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
     case WM_CHAR:
         if (m_search->Focused() && m_search->OnChar(static_cast<wchar_t>(wp), hwnd)) return 0;
         break;
+    // The search field draws the IME composition itself (the IME's own composition window
+    // floated over the box) and keeps the candidate list just under the box.
+    case WM_IME_SETCONTEXT:
+        if (wp && m_search->Focused()) lp &= ~static_cast<LPARAM>(ISC_SHOWUICOMPOSITIONWINDOW);
+        break;
     case WM_IME_STARTCOMPOSITION:
         if (m_search->Focused()) {
+            PlaceImeWindows();
+            return 0;
+        }
+        break;
+    case WM_IME_COMPOSITION:
+        if (m_search->Focused()) {
             if (HIMC imc = ImmGetContext(hwnd)) {
-                COMPOSITIONFORM cf{CFS_POINT, m_search->CaretClientPoint(), {}};
-                ImmSetCompositionWindow(imc, &cf);
+                auto read = [imc](DWORD kind) {
+                    const LONG bytes = ImmGetCompositionStringW(imc, kind, nullptr, 0);
+                    std::wstring text(bytes > 0 ? static_cast<size_t>(bytes) / sizeof(wchar_t) : 0, L'\0');
+                    if (!text.empty())
+                        ImmGetCompositionStringW(imc, kind, text.data(), static_cast<DWORD>(bytes));
+                    return text;
+                };
+                if (lp & GCS_RESULTSTR) m_search->InsertText(read(GCS_RESULTSTR));
+                if (lp & GCS_COMPSTR) {
+                    const LONG cursor =
+                        (lp & GCS_CURSORPOS) ? ImmGetCompositionStringW(imc, GCS_CURSORPOS, nullptr, 0) : -1;
+                    std::wstring text = read(GCS_COMPSTR);
+                    const size_t at = cursor >= 0 ? static_cast<size_t>(cursor) : text.size();
+                    m_search->SetComposition(std::move(text), at);
+                } else if (lp & GCS_RESULTSTR) {
+                    m_search->SetComposition({}, 0);
+                }
                 ImmReleaseContext(hwnd, imc);
             }
+            PlaceImeWindows();
+            return 0;
+        }
+        break;
+    case WM_IME_ENDCOMPOSITION:
+        if (m_search->Focused()) {
+            m_search->SetComposition({}, 0);
+            return 0;
         }
         break;
     case WM_XBUTTONUP:
@@ -7177,6 +7342,8 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
         m_hover = m_pressed = nullptr;
         m_list.reset();
         m_nav.reset();
+        media::SetPlayQueueListener({});
+        m_searchPopup.reset();
         m_search.reset();
         m_frameClock.reset();
         m_paneLent = false;

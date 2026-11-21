@@ -1839,17 +1839,88 @@ void StreamProvider::FetchListPage(const stream::ListQuery& query, const stream:
             page.more = more && received != 0;
             break;
         }
-        case stream::ListKind::CatalogSearch: {
+        case stream::ListKind::CatalogSearch:
+        case stream::ListKind::CatalogSearchAlbums:
+        case stream::ListKind::CatalogSearchArtists:
+        case stream::ListKind::CatalogSearchPlaylists:
+        case stream::ListKind::CatalogSearchLyrics: {
             int offset = 0, count = 0;
             if (!ToInt(cursor.offset, offset, error) || !ToInt(limit, count, error)) break;
-            bool more = false;
-            size_t received = 0;
-            if (!client.SearchSongsPage(query.search, count, offset, *m_abort, hintSongs, more, page.total,
-                                        received, error))
-                break;
-            page.rows = ToTracks(hintSongs);
-            page.next = {{}, cursor.offset + received};
-            page.more = more && received != 0;
+            SearchPage found;
+            bool ok = false;
+            if (query.kind == stream::ListKind::CatalogSearch) {
+                ok = client.SearchSongsPage(query.search, count, offset, *m_abort, hintSongs, found, error);
+                if (ok) page.rows = ToTracks(hintSongs);
+            } else if (query.kind == stream::ListKind::CatalogSearchAlbums) {
+                std::vector<Album> albums;
+                ok = client.SearchAlbumsPage(query.search, count, offset, *m_abort, albums, found, error);
+                if (ok) {
+                    Catalog::Get().Put(albums);
+                    page.rows = ToAlbums(albums);
+                }
+            } else if (query.kind == stream::ListKind::CatalogSearchArtists) {
+                std::vector<Artist> artists;
+                ok = client.SearchArtistsPage(query.search, count, offset, *m_abort, artists, found, error);
+                if (ok) {
+                    for (const auto& artist : artists)
+                        Catalog::Get().Put(artist);
+                    page.rows = ToArtists(artists);
+                }
+            } else if (query.kind == stream::ListKind::CatalogSearchPlaylists) {
+                std::vector<Playlist> playlists;
+                ok = client.SearchPlaylistsPage(query.search, count, offset, *m_abort, playlists, found, error);
+                if (ok) {
+                    for (const auto& playlist : playlists)
+                        Catalog::Get().Put(playlist);
+                    page.rows = ToPlaylists(playlists);
+                }
+            } else {
+                std::vector<LyricHit> hits;
+                ok = client.SearchLyricsPage(query.search, count, offset, *m_abort, hits, found, error);
+                if (ok) {
+                    std::vector<stream::Track> tracks;
+                    for (auto& hit : hits) {
+                        tracks.push_back(ToTrack(hit.song));
+                        tracks.back().lyricMatch = std::move(hit.excerpt);
+                        tracks.back().lyricText = std::move(hit.text);
+                        hintSongs.push_back(std::move(hit.song));
+                    }
+                    page.rows = std::move(tracks);
+                }
+            }
+            if (!ok) break;
+            page.total = found.total;
+            page.next = {{}, cursor.offset + found.received};
+            page.more = found.more && found.received != 0;
+            break;
+        }
+        case stream::ListKind::CatalogSearchTopResults: {
+            // NetEase's best matches are one short list (an artist, an album) without pages.
+            std::vector<SearchHit> hits;
+            if (!client.SearchBestMatches(query.search, *m_abort, hits, error)) break;
+            std::vector<stream::CatalogSearchItem> items;
+            for (auto& hit : hits) {
+                std::visit(
+                    [&](auto& row) {
+                        using Row = std::decay_t<decltype(row)>;
+                        if constexpr (std::is_same_v<Row, Song>) {
+                            items.emplace_back(ToTrack(row));
+                            hintSongs.push_back(std::move(row));
+                        } else if constexpr (std::is_same_v<Row, Artist>) {
+                            Catalog::Get().Put(row);
+                            items.emplace_back(ToArtist(row));
+                        } else if constexpr (std::is_same_v<Row, Album>) {
+                            Catalog::Get().Put(row);
+                            items.emplace_back(ToAlbum(row));
+                        } else {
+                            Catalog::Get().Put(row);
+                            items.emplace_back(ToPlaylist(row));
+                        }
+                    },
+                    hit);
+            }
+            page.total = items.size();
+            page.rows = std::move(items);
             break;
         }
         case stream::ListKind::SectionTracks:

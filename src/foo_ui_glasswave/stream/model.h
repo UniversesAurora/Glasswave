@@ -26,11 +26,20 @@ struct ArtistRef {
 struct Track {
     Id id;
     std::wstring title;
+    // What the service shows in grey after the title, not part of it (NetEase's alias or
+    // translated title: "（ゲーム「FLOWERS 春篇」EDテーマ）"). Lists show it; names, tags, sorting,
+    // lyrics searches and matching use the title alone.
+    std::wstring note;
     std::wstring album;
     Id albumId;
     std::vector<ArtistRef> artists; // performers, in credit order
     int durationMs = 0;
     int popularity = 0; // provider's ranking score where it has one (orders hot songs by album)
+    // Short tags the service shows with the song, as untranslated UI keys ("Original": NetEase's
+    // 原唱). Every view draws them before the artist (ListSource::CellBadges, TileInfo::badges).
+    std::vector<std::wstring> badges;
+    // A lyrics search hit: the line that matched and the two after it, and the lyrics whole.
+    std::wstring lyricMatch, lyricText;
     bool operator==(const Track&) const = default;
 };
 
@@ -248,7 +257,71 @@ enum class ArtKind {
     Track,
     Album,
     Artist,
-    Playlist
+    Playlist,
+    Station
+};
+
+// ---- home page (Capability::Home) ------------------------------------------------------------
+// One of the featured cards at the top of a source's home page (Apple Music's Top Picks,
+// NetEase's daily recommendations), as the service sends it: words, picture and colours.
+struct HomeCard {
+    std::wstring key;      // stable and unique within the source
+    std::wstring label;    // the small line above the title ("Made for You", "私人漫游")
+    std::wstring title, subtitle;
+    std::wstring badge;    // a short mark drawn big on the picture (NetEase's daily date); empty: none
+    std::wstring imageUrl; // the picture
+    bool imageTall = false; // made for the card's 3:4 shape; else a square cover above the words
+    std::wstring videoUrl; // motion artwork (an HLS master playlist); empty: none
+    // The card's colours (0xRRGGBB): its background behind and below the picture, the title's
+    // and the other words' ink. Unknown: taken from the picture.
+    bool colors = false;
+    uint32_t background = 0, titleInk = 0, textInk = 0;
+    // What the card stands for; none of these: it only shows (a kind the UI cannot play yet).
+    // A record (its page opens, its play orb plays it):
+    std::optional<CatalogSearchItem> target;
+    // A song list of the source's own that changes daily (每日推荐, a style's daily songs): opened
+    // as a song list page, the rows of ListKind::HomeList with this id.
+    Id list;
+    // A station: an endless stream of songs the service picks as they play (Apple Music's
+    // stations, NetEase's personal FM); played in radio mode (Provider::FetchStationTracks).
+    Id station;
+    // A web page the service links the card to (Apple Music's 月度音乐回忆: replay.music.apple.com),
+    // opened in the browser; always https.
+    std::wstring link;
+};
+
+// A station: an endless stream of songs the service picks as they play (Apple Music's 心情主场,
+// "<artist> 与类似艺人"). It has no page; playing it starts radio mode (media/radio.h). Shown like
+// any record, a tile with its cover (ArtKind::Station), in the order the service gives.
+struct Station {
+    Id id;
+    std::wstring name;
+    std::wstring subtitle; // the service's one line about it; empty: "Station"
+    std::wstring coverUrl;
+    bool operator==(const Station&) const = default;
+};
+
+// What a home row holds, in the service's order: records and stations mixed (owner, 2026-11-21:
+// Apple Music's 最近播放 mixes playlists and stations, as tiles of one size).
+using HomeShelfItem = std::variant<Track, Artist, Album, Playlist, Station>;
+inline HomeShelfItem ToHomeShelfItem(const CatalogSearchItem& item) {
+    return std::visit([](const auto& v) -> HomeShelfItem { return v; }, item);
+}
+
+// One row of a source's home page below the cards, shown the way the service shows it: big cards
+// with their motion art (Apple Music's MusicNotesHeroShelf: 专属推荐歌单, 音乐回忆) or tiles of one
+// size (playlists, albums, artists, songs or stations, mixed). One of the two is filled.
+struct HomeShelf {
+    Id id;               // stable
+    std::wstring title;  // as the service writes it
+    std::vector<HomeCard> cards;
+    std::vector<HomeShelfItem> items;
+};
+
+struct Home {
+    std::wstring cardsTitle; // the service's heading of its cards; empty: the UI's
+    std::vector<HomeCard> cards;
+    std::vector<HomeShelf> shelves;
 };
 
 std::wstring JoinArtists(const std::vector<ArtistRef>& artists);

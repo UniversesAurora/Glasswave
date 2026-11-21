@@ -686,6 +686,63 @@ void Service::Start(const metadb_handle_ptr& track, bool useAutomaticCache,
     });
 }
 
+void Service::Lookup(const metadb_handle_ptr& track, std::function<void(const Result&)> done) {
+    if (!track.is_valid()) {
+        done({Status::NotFound, nullptr});
+        return;
+    }
+    const Query query = MakeQuery(track);
+    {
+        std::optional<CacheEntry> selected, automatic;
+        {
+            std::lock_guard lock(g_cacheMutex);
+            selected = ReadCache(query, true);
+            if (!(selected && !selected->notFound)) automatic = ReadCache(query);
+        }
+        if (selected && selected->none) return done({Status::NotFound, nullptr});
+        if (selected && !selected->notFound) return done({Status::Found, selected->lyrics});
+        if (automatic && automatic->notFound) return done({Status::NotFound, nullptr});
+        if (automatic && automatic->candidate && CandidateCurrent(*automatic->candidate))
+            return done({Status::Found, automatic->lyrics});
+    }
+    // Nothing known: the automatic search, as Start runs it, answered once at its end.
+    const auto searchers = scripts::Ordered(query.provider);
+    auto abort = std::make_shared<abort_callback_impl>();
+    Run(abort, [query, searchers, abort, done = std::move(done)] {
+        Result best{Status::NotFound, nullptr};
+        try {
+            bool nothing = false;
+            const bool complete = SearchAll(
+                query, searchers, std::nullopt, *abort, true, [&](std::vector<Candidate> candidates, bool) {
+                    if (candidates.empty()) {
+                        nothing = true;
+                        return;
+                    }
+                    const auto& top = candidates.front();
+                    if (!CandidateCurrent(top)) return;
+                    const auto source = std::find_if(searchers.begin(), searchers.end(), [&](const auto& searcher) {
+                        return searcher->Key() == top.sourceKey && searcher->Cacheable();
+                    });
+                    if (source != searchers.end()) {
+                        std::lock_guard lock(g_cacheMutex);
+                        WriteFile(CacheFile(query), Utf8(CachedText(top)));
+                    }
+                    best = FromCandidate(top);
+                });
+            if (complete && nothing && best.status != Status::Found) {
+                std::lock_guard lock(g_cacheMutex);
+                WriteFile(CacheFile(query),
+                          Utf8(cache_format::kNotFoundTag + std::to_wstring(_time64(nullptr)) + L"]\n"));
+            }
+        } catch (const exception_aborted&) {
+            return;
+        } catch (const std::exception& error) {
+            console::printf("Glasswave lyrics: %s", error.what());
+        }
+        fb2k::inMainThread([done, best] { done(best); });
+    });
+}
+
 void Service::FindCandidates(Query query, std::wstring source,
                              std::function<void(std::vector<Candidate>, bool)> done) {
     CancelSearch();

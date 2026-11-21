@@ -40,8 +40,14 @@ struct View {
     stream::Id remoteId;
     stream::Id sectionId;   // provider-defined section id
     stream::Id groupId;     // RemoteGroupTracks: BrowseGroup id
-    stream::Id parentId;    // RemoteAlbum opened from an artist page: that artist
-    std::wstring parentName;
+    // The page this one was opened from, inside that page (a home card, a search result, an
+    // artist's album...): the breadcrumb's levels above this page are that page's, unchanged
+    // (MainWindow::Open). Empty for a page opened from the navigation pane, the breadcrumb, Back
+    // to a section or at start-up: it shows its own place. Not part of the page's identity.
+    std::shared_ptr<const View> from;
+    // Shown with this song selected and scrolled to (a song's "View album"). Not part of the
+    // page's identity, and not kept in the history.
+    metadb_handle_ptr select;
 
     bool IsRemote() const { return library == Library::Remote; }
 };

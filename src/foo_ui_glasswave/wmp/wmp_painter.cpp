@@ -343,7 +343,123 @@ void NavArrow(ID2D1DeviceContext* dc, D2D1_SIZE_F size, Layer layer, bool back, 
     dc->FillGeometry(arrow.get(), Solid(dc, enabled ? Hex(0xFFFFFF) : Hex(0xB9C4D1)).get());
 }
 
-void SearchFrame(ID2D1DeviceContext* dc, D2D1_SIZE_F size, bool focused) {
+void GreenPlay(ID2D1DeviceContext* dc, D2D1_RECT_F box) {
+    com_ptr<ID2D1Factory> factory;
+    dc->GetFactory(factory.put());
+    const float w = box.right - box.left, h = box.bottom - box.top;
+    const D2D1_POINT_2F p[3] = {{box.left + w * 0.2f, box.top + h * 0.1f},
+                                {box.left + w * 0.2f, box.top + h * 0.9f},
+                                {box.left + w * 0.92f, box.top + h * 0.5f}};
+    const float r = w * 0.1f;
+    const auto toward = [](D2D1_POINT_2F a, D2D1_POINT_2F b, float d) {
+        const float len = std::hypot(b.x - a.x, b.y - a.y);
+        return D2D1_POINT_2F{a.x + (b.x - a.x) * d / len, a.y + (b.y - a.y) * d / len};
+    };
+    com_ptr<ID2D1PathGeometry> path;
+    com_ptr<ID2D1GeometrySink> sink;
+    factory->CreatePathGeometry(path.put());
+    path->Open(sink.put());
+    for (int i = 0; i < 3; ++i) {
+        const D2D1_POINT_2F in = toward(p[i], p[(i + 2) % 3], r), out = toward(p[i], p[(i + 1) % 3], r);
+        if (i == 0)
+            sink->BeginFigure(in, D2D1_FIGURE_BEGIN_FILLED);
+        else
+            sink->AddLine(in);
+        sink->AddQuadraticBezier({p[i], out});
+    }
+    sink->EndFigure(D2D1_FIGURE_END_CLOSED);
+    sink->Close();
+    D2D1_MATRIX_3X2_F current;
+    dc->GetTransform(&current);
+    dc->SetTransform(D2D1::Matrix3x2F::Translation(0.3f, 0.8f) * current);
+    dc->FillGeometry(path.get(), Solid(dc, D2D1::ColorF(0, 0, 0, 0.22f)).get());
+    dc->SetTransform(current);
+    dc->FillGeometry(path.get(), Vertical(dc, box.top, box.bottom,
+                                          {{0.0f, Hex(0x8CE36A)}, {0.5f, Hex(0x3DB52A)}, {1.0f, Hex(0x1E7F14)}})
+                                     .get());
+    dc->DrawGeometry(path.get(), Solid(dc, Hex(0xFFFFFF, 0.9f)).get(), 1.0f);
+}
+
+namespace {
+
+// A glass glyph after Windows 7 Explorer's search magnifier (owner's capture, 2026-11-15): the
+// strokes of `centre` filled with a light-to-dark blue gradient, a white rim around them and a
+// soft shadow under it. `hot` brightens the blue.
+void GlassStrokes(ID2D1DeviceContext* dc, ID2D1Geometry* centre, float width, float top, float bottom, bool hot) {
+    com_ptr<ID2D1Factory> factory;
+    dc->GetFactory(factory.put());
+    com_ptr<ID2D1StrokeStyle> round;
+    factory->CreateStrokeStyle(D2D1::StrokeStyleProperties(D2D1_CAP_STYLE_ROUND, D2D1_CAP_STYLE_ROUND,
+                                                           D2D1_CAP_STYLE_ROUND, D2D1_LINE_JOIN_ROUND),
+                               nullptr, 0, round.put());
+    com_ptr<ID2D1PathGeometry> body;
+    com_ptr<ID2D1GeometrySink> sink;
+    factory->CreatePathGeometry(body.put());
+    body->Open(sink.put());
+    centre->Widen(width, round.get(), nullptr, D2D1_DEFAULT_FLATTENING_TOLERANCE, sink.get());
+    sink->Close();
+    // Shadow, then the white rim (a wider stroke of the same body), then the blue body.
+    D2D1_MATRIX_3X2_F current;
+    dc->GetTransform(&current);
+    dc->SetTransform(D2D1::Matrix3x2F::Translation(0.4f, 0.9f) * current);
+    dc->DrawGeometry(body.get(), Solid(dc, D2D1::ColorF(0, 0, 0, 0.18f)).get(), 2.4f, round.get());
+    dc->SetTransform(current);
+    dc->DrawGeometry(body.get(), Solid(dc, Hex(0xFFFFFF)).get(), 2.0f, round.get());
+    dc->FillGeometry(body.get(), Vertical(dc, top, bottom,
+                                          {{0.0f, Hex(hot ? 0x8FD3FF : 0x6CC0FF)},
+                                           {0.55f, Hex(hot ? 0x3A95EE : 0x2A7FE0)},
+                                           {1.0f, Hex(hot ? 0x1D5FC0 : 0x13489E)}})
+                                     .get());
+}
+
+}  // namespace
+
+namespace {
+
+// WMP 12's clear button plates (wmploc WW_CLEAR_144, 39 x 30, states 2 and 3), at the box's right
+// end between its top and bottom edges, 25 DIP wide: square, a one-pixel side border, an inner
+// line and a two-tone fill with its step just under the middle. Hot: border #3C7FB1, inner line
+// #FAFDFE to #E8F5FC, fill #E9F6FD > #D8EFFC | #BEE6FD > #A6D8F4. Pressed: border #2C628B, an
+// inner shadow line #9EB0BA (top) and #A5BFCD > #5C97B9 (sides), fill #E6F2FA > #C5E5F6 |
+// #9DD4F0 > #6CB2D8.
+void ClearPlate(ID2D1DeviceContext* dc, D2D1_RECT_F box, bool pressed, float opacity) {
+    if (opacity <= 0) return;
+    const float L = Hairline(dc);
+    const float t = box.top, b = box.bottom;
+    const auto at = [&](float row) { return row / 30.0f; }; // the bitmap's rows as a share
+    const auto fill = pressed ? Vertical(dc, t, b,
+                                         {{0.0f, Hex(0xE6F2FA, opacity)},
+                                          {at(10), Hex(0xD8EDF8, opacity)},
+                                          {at(14.9f), Hex(0xC5E5F6, opacity)},
+                                          {at(15), Hex(0x9DD4F0, opacity)},
+                                          {1.0f, Hex(0x6CB2D8, opacity)}})
+                              : Vertical(dc, t, b,
+                                         {{0.0f, Hex(0xE9F6FD, opacity)},
+                                          {at(10), Hex(0xD8EFFC, opacity)},
+                                          {at(13.9f), Hex(0xDAF0FC, opacity)},
+                                          {at(14), Hex(0xBEE6FD, opacity)},
+                                          {1.0f, Hex(0xA6D8F4, opacity)}});
+    dc->FillRectangle(box, fill.get());
+    // The inner line: a light one hot, a shadow pressed (its top row and both sides).
+    const D2D1_RECT_F inner{box.left + L, box.top, box.right - L, box.bottom};
+    if (pressed) {
+        const auto side = Vertical(dc, t, b, {{0.0f, Hex(0xA5BFCD, opacity)}, {1.0f, Hex(0x5C97B9, opacity)}});
+        dc->FillRectangle({inner.left, t, inner.left + L, b}, side.get());
+        dc->FillRectangle({inner.right - L, t, inner.right, b}, side.get());
+        dc->FillRectangle({inner.left, t, inner.right, t + L}, Solid(dc, Hex(0x9EB0BA, opacity)).get());
+    } else {
+        const auto light = Vertical(dc, t, b, {{0.0f, Hex(0xFAFDFE, opacity)}, {1.0f, Hex(0xE8F5FC, opacity)}});
+        dc->DrawRectangle(Inset(inner, L / 2), light.get(), L);
+    }
+    const auto border = Solid(dc, Hex(pressed ? 0x2C628B : 0x3C7FB1, opacity));
+    dc->FillRectangle({box.left, t, box.left + L, b}, border.get());
+    dc->FillRectangle({box.right - L, t, box.right, b}, border.get());
+}
+
+} // namespace
+
+void SearchFrame(ID2D1DeviceContext* dc, D2D1_SIZE_F size, bool focused, bool clear, float clearHot,
+                 float clearPressed) {
     const float L = Hairline(dc);
     const D2D1_RECT_F rc{0, 0, Snap(dc, size.width), Snap(dc, size.height)};
     dc->FillRectangle(Inset(rc, L), Solid(dc, Hex(0xFFFFFF)).get());
@@ -351,11 +467,48 @@ void SearchFrame(ID2D1DeviceContext* dc, D2D1_SIZE_F size, bool focused) {
                                                                       {1.0f, focused ? Hex(0xA4C9E3) : Hex(0xE3E9EF)}})
                                             .get(),
                       L);
-    // Magnifier at the right
-    const D2D1_POINT_2F c{size.width - 12, size.height / 2 - 1};
-    auto ink = Solid(dc, Hex(0x2F5F95));
-    dc->DrawEllipse({c, 3.6f, 3.6f}, ink.get(), 1.4f);
-    dc->DrawLine({c.x - 2.5f, c.y + 2.5f}, {c.x - 6.0f, c.y + 6.0f}, ink.get(), 1.8f);
+    com_ptr<ID2D1Factory> factory;
+    dc->GetFactory(factory.put());
+    com_ptr<ID2D1PathGeometry> path;
+    com_ptr<ID2D1GeometrySink> sink;
+    factory->CreatePathGeometry(path.put());
+    path->Open(sink.put());
+    float top = 0, bottom = 0;
+    if (clear) {
+        // Windows 7's search box turns its magnifier into a cross while it holds a search; the
+        // cross is WMP 12's clear button: a plate under the mouse, and held down the plate sinks
+        // and the cross shrinks and moves down and right.
+        const float plateW = 25;
+        const D2D1_RECT_F plate{Snap(dc, rc.right - L - plateW), rc.top + L, rc.right - L, rc.bottom - L};
+        ClearPlate(dc, plate, false, clearHot * (1 - clearPressed));
+        ClearPlate(dc, plate, true, clearPressed);
+        const D2D1_POINT_2F c{(plate.left + plate.right) / 2 + clearPressed * 0.5f,
+                              size.height / 2 + clearPressed * 0.75f};
+        const float a = 3.6f * (1 - 0.15f * clearPressed);
+        sink->BeginFigure({c.x - a, c.y - a}, D2D1_FIGURE_BEGIN_HOLLOW);
+        sink->AddLine({c.x + a, c.y + a});
+        sink->EndFigure(D2D1_FIGURE_END_OPEN);
+        sink->BeginFigure({c.x - a, c.y + a}, D2D1_FIGURE_BEGIN_HOLLOW);
+        sink->AddLine({c.x + a, c.y - a});
+        sink->EndFigure(D2D1_FIGURE_END_OPEN);
+        top = c.y - a - 1;
+        bottom = c.y + a + 1;
+    } else {
+        // The magnifier: a ring with its handle to the lower left.
+        const D2D1_POINT_2F c{size.width - 11, size.height / 2 - 1.5f};
+        const float r = 3.6f;
+        sink->BeginFigure({c.x + r, c.y}, D2D1_FIGURE_BEGIN_HOLLOW);
+        sink->AddArc({{c.x - r, c.y}, {r, r}, 0, D2D1_SWEEP_DIRECTION_CLOCKWISE, D2D1_ARC_SIZE_SMALL});
+        sink->AddArc({{c.x + r, c.y}, {r, r}, 0, D2D1_SWEEP_DIRECTION_CLOCKWISE, D2D1_ARC_SIZE_SMALL});
+        sink->EndFigure(D2D1_FIGURE_END_CLOSED);
+        sink->BeginFigure({c.x - r * 0.72f, c.y + r * 0.72f}, D2D1_FIGURE_BEGIN_HOLLOW);
+        sink->AddLine({c.x - r - 2.6f, c.y + r + 2.6f});
+        sink->EndFigure(D2D1_FIGURE_END_OPEN);
+        top = c.y - r - 1;
+        bottom = c.y + r + 3.6f;
+    }
+    sink->Close();
+    GlassStrokes(dc, path.get(), clear ? 2.0f : 1.8f, top, bottom, clear && clearHot > 0.5f);
 }
 
 void SeekBar(ID2D1DeviceContext* dc, D2D1_SIZE_F size, float progress, bool hot, bool enabled, float ruleY) {

@@ -40,8 +40,14 @@ void ViewOptionsGlyph(ID2D1DeviceContext* dc, D2D1_SIZE_F size, media::ViewStyle
 // Explorer-style round back/forward button.
 void NavArrow(ID2D1DeviceContext* dc, D2D1_SIZE_F size, Layer layer, bool back, bool enabled);
 
-// Search box frame (white field, border, magnifier).
-void SearchFrame(ID2D1DeviceContext* dc, D2D1_SIZE_F size, bool focused);
+// A green play triangle (16 DIP box), the band's Play all: rounded corners, a white rim.
+void GreenPlay(ID2D1DeviceContext* dc, D2D1_RECT_F box);
+
+// Search box frame (white field, border, magnifier; a cross while it holds a search).
+// The cross is WMP 12's clear button (wmploc WW_CLEAR, measured at 144 DPI): `clearHot` and
+// `clearPressed` (0..1) fade in its hot and pressed plates.
+void SearchFrame(ID2D1DeviceContext* dc, D2D1_SIZE_F size, bool focused, bool clear = false, float clearHot = 0,
+                 float clearPressed = 0);
 
 // Seek bar: track, elapsed fill, and (when hot) the thumb.
 // WMP 12 seek bar: three rows under the transport band's top rule at `ruleY` (DIP).

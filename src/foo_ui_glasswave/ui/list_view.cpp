@@ -36,13 +36,44 @@ constexpr float kEdgeGrip = 4.0f;     // header edge hit width on each side (DIP
 constexpr float kMoveThreshold = 6.0f;
 constexpr size_t kGroupMinLines = 4;  // the album column needs four lines (cover + 4 text lines)
 constexpr float kTilePad = 8.0f;
+constexpr float kScrollStep = 48.0f; // DIP: a scroll bar arrow's step
+constexpr float kTileGroupHeader = 30.0f; // DIP: a group's header line among tiles
+constexpr size_t kMoreLink = 100;          // Hit::line of a group header's `more` link
 constexpr D2D1_SIZE_F kAlbumTile{132, 160};
 constexpr float kAlbumTileArt = 100;
 constexpr D2D1_SIZE_F kArtistTile{240, 108};
 constexpr float kArtistTileArt = 88;
+constexpr float kSourceBadge = 18;  // DIP: a mixed result's source mark on its cover
+// Song cards (TileStyle::Song, owner 2026-11-15 after Apple Music's song shelves): new UI values.
+constexpr D2D1_SIZE_F kSongTile{280, 60};
+constexpr float kSongTileArt = 44;
+constexpr float kShowAll = 19;         // DIP: a shelf's "show all" (aero's expando button, 19 px at 96 DPI)
+constexpr D2D1_SIZE_F kShelfArrow{26, 56}; // DIP: a shelf's paging arrow, tall as Apple Music's
+constexpr float kTilePlay = 30;        // DIP: the play orb on a cover
+constexpr float kSongPlay = 22;        // DIP: the play triangle on a song card's cover
+// A featured card's tile: the card and room around it for its lifted shadow (ui/card_layer.h).
+constexpr D2D1_POINT_2F kCardInset{10, 12}; // 20 DIP between cards, as Apple Music's
+constexpr D2D1_SIZE_F kCardTile{CardLayer::kCard.width + 2 * kCardInset.x, CardLayer::kCard.height + 30};
+// A shelf's page slides on the compositor with Windows 8.1's fast-out curve.
+constexpr int kShelfSlideMs = 500;
+constexpr int kShelfWheelMs = 220; // a horizontal wheel's step
+constexpr D2D1_POINT_2F kShelfP1{0.1f, 0.9f}, kShelfP2{0.2f, 1.0f};
+// A cubic-bezier easing's value at time t (x(u) = t solved by halving).
+float BezierAt(D2D1_POINT_2F p1, D2D1_POINT_2F p2, float t) {
+    const auto bez = [](float a, float b, float u) { return 3 * a * u * (1 - u) * (1 - u) + 3 * b * u * u * (1 - u) + u * u * u; };
+    float lo = 0, hi = 1, u = t;
+    for (int i = 0; i < 24; ++i) {
+        u = (lo + hi) / 2;
+        (bez(p1.x, p2.x, u) < t ? lo : hi) = u;
+    }
+    return bez(p1.y, p2.y, u);
+}
+float ShelfEase(float t) { return BezierAt(kShelfP1, kShelfP2, t); }
 
 constexpr uint32_t kInk = 0x1E1E1E, kSecondaryInk = 0x4A4A4A, kGreyInk = 0x7A7A7A, kPlayingInk = 0x1E5BA8;
 constexpr uint32_t kGroupInk = 0x2E64B4, kGroupRule = 0xC9D7E8, kLinkInk = 0x0066CC;
+constexpr uint32_t kNoteInk = 0x8C8C8C; // a title's note: lighter than the secondary columns
+constexpr uint32_t kBadgeInk = 0xE5484D; // a title's tag: NetEase's 原唱 red (owner capture, 2026-11-21)
 
 // {5E8B2C47-9A1D-4F63-B0E2-6C4A7D9F1B38}: column order and widths per column set
 cfg_var_modern::cfg_string cfg_columns({0x5e8b2c47, 0x9a1d, 0x4f63, {0xb0, 0xe2, 0x6c, 0x4a, 0x7d, 0x9f, 0x1b, 0x38}},
@@ -571,12 +602,247 @@ int ListView::LineHeightPx() const {
 }
 
 D2D1_SIZE_F ListView::TileSize() const {
-    return m_source && m_source->Tiles() == media::TileStyle::Artist ? kArtistTile : kAlbumTile;
+    return TileSizeOf(m_source ? m_source->Tiles() : media::TileStyle::Album);
 }
 
 size_t ListView::TileColumns() const {
+    return TileColumnsOf(m_source ? m_source->Tiles() : media::TileStyle::Album);
+}
+
+float ListView::TilePitch() const {
+    return TilePitchOf(m_source ? m_source->Tiles() : media::TileStyle::Album);
+}
+
+float ListView::TileLeft(size_t column) const {
+    return TileLeftOf(m_source ? m_source->Tiles() : media::TileStyle::Album, static_cast<float>(column));
+}
+
+media::TileStyle ListView::GroupTiles(size_t group) const {
+    const auto* groups = m_source ? m_source->Groups() : nullptr;
+    if (groups && group < groups->size() && (*groups)[group].tiles != media::TileStyle::None)
+        return (*groups)[group].tiles;
+    return m_source ? m_source->Tiles() : media::TileStyle::Album;
+}
+
+D2D1_SIZE_F ListView::TileSizeOf(media::TileStyle style) const {
+    switch (style) {
+    case media::TileStyle::Artist: return kArtistTile;
+    case media::TileStyle::Song: return kSongTile;
+    case media::TileStyle::Card: return kCardTile;
+    default: return kAlbumTile;
+    }
+}
+
+size_t ListView::TileColumnsOf(media::TileStyle style) const {
     const float w = RowsWidth() - 2 * kTilePad;
-    return static_cast<size_t>(std::max(1.0f, std::floor(w / TileSize().width)));
+    return static_cast<size_t>(std::max(1.0f, std::floor(w / TileSizeOf(style).width)));
+}
+
+// The row's spare width is shared out between the tiles (owner, 2026-11-14: it was all at
+// the right), so they spread as the window is resized. A shelf's tiles keep their own width
+// instead (owner, 2026-11-20, as the cards): the last one may show in part.
+float ListView::TilePitchOf(media::TileStyle style, bool shelf) const {
+    if (shelf || style == media::TileStyle::Card) return TileSizeOf(style).width;
+    return std::max(TileSizeOf(style).width, (RowsWidth() - 2 * kTilePad) / static_cast<float>(TileColumnsOf(style)));
+}
+
+float ListView::TileLeftOf(media::TileStyle style, float column, bool shelf) const {
+    const float pitch = TilePitchOf(style, shelf);
+    return std::round((kTilePad + column * pitch + (pitch - TileSizeOf(style).width) / 2) * m_scale) / m_scale;
+}
+
+size_t ListView::ShelfColumns(size_t group) const {
+    const auto& g = (*m_source->Groups())[group];
+    const size_t rows = std::max<size_t>(g.tileLines, 1);
+    return (g.count + rows - 1) / rows;
+}
+
+float ListView::ShelfPos(size_t group) const {
+    const auto& g = (*m_source->Groups())[group];
+    const auto it = m_shelves.find(g.key);
+    // A restored place beyond a shelf that came back shorter: its end.
+    return it == m_shelves.end() ? 0.0f : std::min(it->second.pos, ShelfLast(group));
+}
+
+std::map<std::wstring, float> ListView::ShelfPositions() const {
+    std::map<std::wstring, float> out;
+    for (const auto& [key, shelf] : m_shelves)
+        if (shelf.target > 0) out[key] = shelf.target;
+    return out;
+}
+
+void ListView::SetShelfPositions(const std::map<std::wstring, float>& positions) {
+    if (positions.empty()) return;
+    for (const auto& [key, pos] : positions) {
+        Shelf& shelf = m_shelves[key];
+        shelf.pos = shelf.target = pos;
+    }
+    PaintRows();
+}
+
+// How many of a shelf's columns the view holds (a part of one counts as that part).
+float ListView::ShelfVisible(size_t group) const {
+    return (RowsWidth() - 2 * kTilePad) / TilePitchOf(GroupTiles(group), true);
+}
+
+float ListView::ShelfLast(size_t group) const {
+    return std::max(0.0f, static_cast<float>(ShelfColumns(group)) - ShelfVisible(group));
+}
+
+bool ListView::ShelfCanPage(size_t group, bool right) const {
+    const auto& g = (*m_source->Groups())[group];
+    const auto it = m_shelves.find(g.key);
+    const float target = it == m_shelves.end() ? 0.0f : it->second.target;
+    return right ? target < ShelfLast(group) - 0.01f : target > 0.01f;
+}
+
+void ListView::PageShelf(size_t group, bool right) {
+    if (!ShelfCanPage(group, right) || group >= m_groupLine.size()) return;
+    const auto& g = (*m_source->Groups())[group];
+    const float page = std::max(1.0f, std::floor(ShelfVisible(group)));
+    const float target = m_shelves[g.key].target;
+    SlideShelf(group, target + (right ? page : -page), kShelfSlideMs);
+}
+
+// Where a shelf stands on screen now: mid-slide, between where it slid from and to.
+float ListView::ShelfShownPos(size_t group) const {
+    if (group != m_shelfSlide.group || m_shelfSlide.ms <= 0) return ShelfPos(group);
+    const float t = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - m_shelfSlide.start).count() /
+                    static_cast<float>(m_shelfSlide.ms);
+    if (t >= 1) return ShelfPos(group);
+    return m_shelfSlide.from + (m_shelfSlide.to - m_shelfSlide.from) * ShelfEase(std::max(t, 0.0f));
+}
+
+void ListView::SlideShelf(size_t group, float to, int ms) {
+    if (group >= m_groupLine.size()) return;
+    const auto& g = (*m_source->Groups())[group];
+    // From where it shows now, so a slide given while another runs carries on from it.
+    const float from = ShelfShownPos(group);
+    Shelf& shelf = m_shelves[g.key];
+    to = std::clamp(to, 0.0f, ShelfLast(group));
+    // Nothing to move (a wheel at the shelf's end): the strip, if one runs, finishes as it is.
+    if (std::abs(to - from) < 0.001f && std::abs(to - shelf.target) < 0.001f) return;
+    if (!m_slideKey.empty()) {
+        m_slideKey.clear();
+        m_slide.StopAnimation(L"Offset");
+        m_slideClip.IsVisible(false);
+    }
+    shelf.pos = shelf.target = to;
+    m_shelfSlide = {group, from, to, std::chrono::steady_clock::now(), ms};
+    const media::TileStyle style = GroupTiles(group);
+    if (style == media::TileStyle::Card) { // the cards' strip slides itself (LayoutCards)
+        m_cardSlideGroup = group;
+        m_cardSlideFrom = from;
+        m_cardSlideMs = ms;
+        PaintRows();
+        return;
+    }
+    // The strip: every column the slide passes over, the shelf's rows.
+    const size_t rows = std::max<size_t>(g.tileLines, 1), shown = std::min(rows, g.count);
+    const size_t header = m_groupLine[group];
+    if (header + 1 + shown >= m_lineTop.size()) {
+        PaintRows();
+        return;
+    }
+    const float tileH = TileSizeOf(style).height, pitch = TilePitchOf(style, true);
+    const size_t first = static_cast<size_t>(std::floor(std::min(from, to)));
+    const size_t end = std::min(ShelfColumns(group),
+                                static_cast<size_t>(std::ceil(std::max(from, to) + ShelfVisible(group))) + 1);
+    // In content coordinates (absolute: m_content's offset is minus the scroll position).
+    const float top = m_lineTop[header + 1];
+    const float stripW = TileLeftOf(style, static_cast<float>(end - first), true) + pitch;
+    const float stripH = tileH * static_cast<float>(shown);
+    const size_t focus = m_source->Focus();
+    auto& host = gfx::CompositionHost::Get();
+    const int wpx = std::max(1, static_cast<int>(std::ceil(stripW * m_scale)));
+    const int hpx = std::max(1, static_cast<int>(std::ceil(stripH * m_scale)));
+    host.Repaint(m_slide, wpx, hpx, m_scale, [&](ID2D1DeviceContext* dc) {
+        for (size_t c = first; c < end; ++c)
+            for (size_t k = 0; k < shown; ++k) {
+                const size_t idx = g.first + c * rows + k;
+                if (idx >= g.first + g.count) continue;
+                PaintTile(dc, idx, TileLeftOf(style, static_cast<float>(c - first), true), tileH * static_cast<float>(k),
+                          style, focus);
+            }
+    });
+    m_slideClip.Offset(float3{0, std::round(top * m_scale), 0});
+    m_slideClip.Size(float2{RowsWidth() * m_scale, static_cast<float>(hpx)});
+    m_slideClip.IsVisible(true);
+    const auto offsetOf = [&](float pos) {
+        return float3{std::round(-(pos - static_cast<float>(first)) * pitch * m_scale), 0, 0};
+    };
+    m_slide.Offset(offsetOf(from));
+    const auto& comp = host.Compositor();
+    auto slide = comp.CreateVector3KeyFrameAnimation();
+    slide.InsertKeyFrame(1.0f, offsetOf(to),
+                         comp.CreateCubicBezierEasingFunction({kShelfP1.x, kShelfP1.y}, {kShelfP2.x, kShelfP2.y}));
+    slide.Duration(std::chrono::milliseconds(ms));
+    m_slide.StartAnimation(L"Offset", slide);
+    m_slideKey = g.key;
+    m_slideEnd = GetTickCount64() + static_cast<ULONGLONG>(ms);
+    m_slideTop = ContentTopDip();
+    PaintRows(); // without the shelf's tiles, which the strip shows meanwhile
+    if (onScrollAnim) onScrollAnim();
+}
+
+void ListView::FinishSlide() {
+    if (m_slideKey.empty()) return;
+    m_slideKey.clear();
+    m_slide.StopAnimation(L"Offset");
+    m_slideClip.IsVisible(false);
+    PaintRows();
+}
+
+D2D1_RECT_F ListView::ShelfArrow(size_t, bool right, float top, float bottom) const {
+    const float y = std::round(((top + bottom - kShelfArrow.height) / 2) * m_scale) / m_scale;
+    const float x = right ? RowsWidth() - 2 - kShelfArrow.width : 2.0f;
+    return {x, y, x + kShelfArrow.width, y + kShelfArrow.height};
+}
+
+D2D1_RECT_F ListView::TilePlayRect(media::TileStyle style, float x, float y) const {
+    const D2D1_SIZE_F ts = TileSizeOf(style);
+    switch (style) {
+    case media::TileStyle::Card: {
+        const float r = x + kCardInset.x + CardLayer::kCard.width - CardLayer::kPlayInset;
+        const float b = y + kCardInset.y + CardLayer::kCard.height - CardLayer::kPlayInset;
+        return {r - CardLayer::kPlay, b - CardLayer::kPlay, r, b};
+    }
+    case media::TileStyle::Song: {
+        const float a = kSongTileArt, ay = y + (ts.height - a) / 2, cx = x + 8 + a / 2, cy = ay + a / 2;
+        return {cx - kSongPlay / 2, cy - kSongPlay / 2, cx + kSongPlay / 2, cy + kSongPlay / 2};
+    }
+    case media::TileStyle::Artist: {
+        const float a = kArtistTileArt, ax = x + 10, ay = y + (ts.height - a) / 2;
+        return {ax + a - kTilePlay - 4, ay + a - kTilePlay - 4, ax + a - 4, ay + a - 4};
+    }
+    default: {
+        const float a = kAlbumTileArt, ax = x + (ts.width - a) / 2, ay = y + 10;
+        return {ax + a - kTilePlay - 4, ay + a - kTilePlay - 4, ax + a - 4, ay + a - 4};
+    }
+    }
+}
+
+size_t ListView::TileAtLine(const Line& line, float x, float* left) const {
+    const auto& groups = *m_source->Groups();
+    const auto& g = groups[line.group];
+    const media::TileStyle style = GroupTiles(line.group);
+    const float pitch = TilePitchOf(style, g.carousel);
+    if (x < kTilePad || x >= RowsWidth()) return SIZE_MAX;
+    if (g.carousel) {
+        const float pos = ShelfPos(line.group);
+        const float column = std::floor((x - kTilePad) / pitch + pos);
+        if (column < 0) return SIZE_MAX;
+        const size_t rows = std::max<size_t>(g.tileLines, 1);
+        const size_t idx = g.first + static_cast<size_t>(column) * rows + line.sub;
+        if (idx >= g.first + g.count) return SIZE_MAX;
+        if (left) *left = TileLeftOf(style, column - pos, true);
+        return idx;
+    }
+    const size_t col = static_cast<size_t>((x - kTilePad) / pitch);
+    const size_t idx = line.row + col;
+    if (col >= TileColumnsOf(style) || idx >= TileGroupEnd(line.group)) return SIZE_MAX;
+    if (left) *left = TileLeftOf(style, static_cast<float>(col));
+    return idx;
 }
 
 RECT ListView::RowsRect() const {
@@ -811,9 +1077,36 @@ void ListView::BuildLines() {
     m_groupLine.clear();
     m_mode = Mode::Plain;
     m_groupArt = false;
+    m_tileGroups = false;
     if (!m_source) return;
     if (m_source->Tiles() != media::TileStyle::None) {
         m_mode = Mode::Tiles;
+        if (const auto* groups = m_source->Groups(); groups && !groups->empty()) {
+            m_tileGroups = true;
+            m_rowLine.assign(m_source->Count(), 0);
+            for (size_t gi = 0; gi < groups->size(); ++gi) {
+                const auto& g = (*groups)[gi];
+                const size_t cols = TileColumnsOf(GroupTiles(gi));
+                m_groupLine.push_back(m_lines.size());
+                m_lines.push_back({Line::GroupHeader, SIZE_MAX, gi, 0});
+                if (g.carousel) {  // a shelf: its rows, the tiles column by column across them
+                    const size_t rows = std::max<size_t>(g.tileLines, 1);
+                    const size_t first = m_lines.size();
+                    for (size_t k = 0; k < std::min(rows, g.count); ++k) m_lines.push_back({Line::Item, g.first, gi, k});
+                    for (size_t t = g.first; t < g.first + g.count && t < m_rowLine.size(); ++t)
+                        m_rowLine[t] = first + (t - g.first) % rows;
+                    continue;
+                }
+                const size_t end = TileGroupEnd(gi);
+                for (size_t r = g.first, k = 0; r < end; r += cols, ++k) {
+                    m_lines.push_back({Line::Item, r, gi, k});
+                    for (size_t t = r; t < std::min(end, r + cols); ++t) m_rowLine[t] = m_lines.size() - 1;
+                }
+                // Rows past the shown ones belong to the group's last line (for scrolling to them).
+                for (size_t t = end; t < g.first + g.count && t < m_rowLine.size(); ++t)
+                    m_rowLine[t] = m_lines.size() - 1;
+            }
+        }
     } else if (const auto* groups = m_source->Groups(); groups && !groups->empty()) {
         m_mode = Mode::Grouped;
         m_groupArt = m_source->GroupArt();
@@ -853,7 +1146,27 @@ void ListView::BuildLines() {
     }
 }
 
+// The header's `more` link: while the group hides rows or has more to load, and to collapse it.
+bool ListView::ShowsMore(size_t group) const {
+    const auto* groups = m_source ? m_source->Groups() : nullptr;
+    if (!groups || group >= groups->size()) return false;
+    const auto& g = (*groups)[group];
+    return !g.more.empty() &&
+           (g.carousel || g.tileLines == 0 || g.moreBeyond || TileGroupEnd(group) < g.first + g.count);
+}
+
+size_t ListView::TileGroupEnd(size_t group) const {
+    const auto* groups = m_source ? m_source->Groups() : nullptr;
+    if (!groups || group >= groups->size()) return 0;
+    const auto& g = (*groups)[group];
+    if (g.carousel) return std::min(g.first + g.count, m_source->Count());
+    const size_t shown = g.tileLines ? std::min(g.count, g.tileLines * TileColumnsOf(GroupTiles(group))) : g.count;
+    return std::min(g.first + shown, m_source->Count());
+}
+
 void ListView::SetSource(media::ListSource* source, bool resetScroll) {
+    if (source != m_source) m_cards->Clear();
+    m_cardPress = SIZE_MAX;
     m_source = source;
     if (m_source && m_source->CanGroup()) m_source->SetGrouping(cfg_showGroups.get() != 0);
     m_hot = SIZE_MAX;
@@ -1158,6 +1471,54 @@ void ListView::PaintRows() {
                               Brush(dc, 0x3399FF).get(), px);
         }
     });
+    if (drawn) { // shown with the offset set in this same message
+        m_rows.Brush(back.brush);
+        m_rowsFront ^= 1;
+    }
+    NoteGlow();
+    LayoutCards();
+    m_paintViewH = -1;
+    m_top = realTop;
+    m_topOffsetDip = realOffset;
+    PlaceThumb();
+}
+
+void ListView::LayoutCards() {
+    const size_t slideGroup = std::exchange(m_cardSlideGroup, SIZE_MAX);
+    std::vector<CardLayer::Shelf> shelves;
+    if (m_source && m_mode == Mode::Tiles && m_tileGroups && m_source->Groups()) {
+        const auto& groups = *m_source->Groups();
+        const float top0 = ContentTopDip(), viewH = RowsHeightDip();
+        constexpr auto style = media::TileStyle::Card;
+        const float pitch = TilePitchOf(style, true);
+        for (size_t gi = 0; gi < groups.size() && gi < m_groupLine.size(); ++gi) {
+            const auto& g = groups[gi];
+            if (GroupTiles(gi) != style || !g.carousel || !g.count) continue;
+            const size_t header = m_groupLine[gi];
+            if (header + 1 >= m_lineTop.size()) continue;
+            const float top = m_lineTop[header + 1] - top0;
+            if (top + kCardTile.height < 0 || top > viewH) continue;
+            // The whole shelf as one strip, scrolled to its page.
+            CardLayer::Shelf shelf;
+            shelf.key = g.key;
+            shelf.top = top + kCardInset.y;
+            shelf.scroll = ShelfPos(gi) * pitch;
+            if (gi == slideGroup) shelf.slideFrom = m_cardSlideFrom * pitch;
+            for (size_t c = 0; c < g.count; ++c)
+                shelf.cards.emplace_back(g.first + c, TileLeftOf(style, static_cast<float>(c)) + kCardInset.x);
+            shelves.push_back(std::move(shelf));
+        }
+    }
+    if (m_source) m_cards->Layout(*m_source, shelves, slideGroup != SIZE_MAX ? m_cardSlideMs : 0);
+}
+
+void ListView::SetMotion(bool on) { m_cards->SetMotion(on); }
+
+// The glow over a running bar starts the animation; it stops once none is painted.
+void ListView::NoteGlow() {
+    const bool was = m_glowing;
+    m_glowing = m_glowSeen;
+    if (m_glowing && !was && onScrollAnim) onScrollAnim();
 }
 
 void ListView::PaintCells(ID2D1DeviceContext* dc, size_t row, float y, float rowH, const std::vector<Col>& cols) {
@@ -1418,10 +1779,85 @@ void ListView::PaintGrouped(ID2D1DeviceContext* dc, D2D1_SIZE_F size) {
 
 void ListView::PaintTiles(ID2D1DeviceContext* dc) {
     const size_t n = m_source->Count();
-    const size_t cols = TileColumns();
-    const D2D1_SIZE_F ts = TileSize();
-    const bool beside = m_source->Tiles() == media::TileStyle::Artist;
     const size_t focus = m_source->Focus();
+    if (m_tileGroups) {
+        // A header per group as in the grouped details (blue title, a rule to the right edge),
+        // its `more` link at the right end; under it the group's rows of tiles.
+        const auto& groups = *m_source->Groups();
+        const float viewRight = RowsWidth();
+        const float viewH = RowsHeightDip();
+        float y = LineTopDip(m_top) - ContentTopDip();
+        for (size_t i = m_top; i < m_lines.size() && y < viewH; ++i) {
+            const Line& line = m_lines[i];
+            const float lineH = LineHeightDip(line);
+            if (line.kind == Line::GroupHeader) {
+                const auto& g = groups[line.group];
+                const float titleX = kTilePad + 2, baseY = y + lineH - 22;
+                float right = viewRight - 8;
+                if (ShowsMore(line.group)) {
+                    const bool hotLink = line.group == m_hotLinkGroup && m_hotLinkLine == kMoreLink;
+                    (void)hotLink;
+                    if (g.carousel) {
+                        // A shelf's "show all": the aero expand button turned to the right.
+                        const D2D1_RECT_F box{right - kShowAll, baseY + 10 - kShowAll / 2, right,
+                                              baseY + 10 + kShowAll / 2};
+                        const bool lit = line.group == m_moreGroup;
+                        RoundChevron(dc, box, lit ? m_moreHot : line.group == m_moreOldGroup ? m_moreOldHot : 0.0f,
+                                     lit ? m_morePress : 0.0f);
+                        right -= kShowAll + 6;
+                    } else {
+                        const float w = TextWidth(g.more, 200);
+                        Text(dc, g.more, {right - w, baseY, right, baseY + 20}, hotLink ? kLinkInk : kGroupInk,
+                             DWRITE_TEXT_ALIGNMENT_TRAILING, DWRITE_FONT_WEIGHT_NORMAL, hotLink);
+                        right -= w + 10;
+                    }
+                }
+                auto layout = MakeText(g.header, 14.0f, DWRITE_FONT_WEIGHT_NORMAL, std::max(40.0f, right - titleX), 20);
+                dc->DrawTextLayout({titleX, baseY - 1}, layout.get(), Brush(dc, kGroupInk).get());
+                DWRITE_TEXT_METRICS tm{};
+                layout->GetMetrics(&tm);
+                const float lx = titleX + tm.widthIncludingTrailingWhitespace + 8;
+                const float line1 = std::floor(m_scale) / m_scale;
+                const float ly = std::round((baseY + 11) * m_scale) / m_scale;
+                if (lx < right) dc->FillRectangle({lx, ly, right, ly + line1}, Brush(dc, kGroupRule).get());
+                y += lineH;
+                continue;
+            }
+            const auto& g = groups[line.group];
+            const media::TileStyle style = GroupTiles(line.group);
+            const size_t cols = TileColumnsOf(style);
+            if (g.carousel) {
+                if (!m_slideKey.empty() && g.key == m_slideKey) { // the compositor's strip shows it
+                    y += lineH;
+                    continue;
+                }
+                const float pos = ShelfPos(line.group);
+                const size_t rows = std::max<size_t>(g.tileLines, 1);
+                const size_t first = static_cast<size_t>(std::max(0.0f, std::floor(pos)));
+                const size_t span = static_cast<size_t>(std::ceil(ShelfVisible(line.group))) + 1;
+                dc->PushAxisAlignedClip({0, y, viewRight, y + lineH}, D2D1_ANTIALIAS_MODE_ALIASED);
+                for (size_t c = first; c <= first + span; ++c) {
+                    const size_t idx = g.first + c * rows + line.sub;
+                    if (idx >= g.first + g.count || idx >= n) break;
+                    PaintTile(dc, idx, TileLeftOf(style, static_cast<float>(c) - pos, true), y, style, focus);
+                }
+                dc->PopAxisAlignedClip();
+                y += lineH;
+                continue;
+            }
+            const size_t end = TileGroupEnd(line.group);
+            for (size_t c = 0; c < cols; ++c) {
+                const size_t idx = line.row + c;
+                if (idx >= end || idx >= n) break;
+                PaintTile(dc, idx, TileLeftOf(style, static_cast<float>(c)), y, style, focus);
+            }
+            y += lineH;
+        }
+        PaintShelfArrows(dc);
+        return;
+    }
+    const size_t cols = TileColumns();
+    const media::TileStyle style = m_source->Tiles();
     const float lineH = LineHeightPx() / m_scale;
     const size_t visible = VisibleLines() + 1;
     for (size_t i = 0; i < visible; ++i) {
@@ -1429,37 +1865,106 @@ void ListView::PaintTiles(ID2D1DeviceContext* dc) {
         for (size_t c = 0; c < cols; ++c) {
             const size_t idx = (m_top + i) * cols + c;
             if (idx >= n) return;
-            const float x = kTilePad + c * ts.width;
-            const D2D1_RECT_F cell{x + 2, y + 3, x + ts.width - 2, y + ts.height - 3};
-            const bool sel = m_source->IsSelected(idx), hot = idx == m_hot;
-            if (sel || hot) {
-                const wp::RowState st = sel ? (hot ? wp::RowState::SelectedHot : wp::RowState::Selected)
-                                            : wp::RowState::Hot;
-                wp::RowPlate(dc, cell, st, m_focused);
-            } else if (m_focused && idx == focus) {
-                dc->DrawRoundedRectangle({{cell.left + 0.5f, cell.top + 0.5f, cell.right - 0.5f, cell.bottom - 0.5f}, 2, 2},
-                                         Brush(dc, 0x7DA2CE, 0.6f).get(), 1.0f);
-            }
-            const media::TileInfo info = m_source->Tile(idx);
-            if (beside) {
-                const float a = kArtistTileArt, ay = y + (ts.height - a) / 2;
-                DrawArt(dc, m_source->ArtKey(idx), info.art, {x + 10, ay, x + 10 + a, ay + a});
-                const float tx = x + 10 + a + 12;
-                for (size_t k = 0; k < info.lines.size(); ++k)
-                    Text(dc, info.lines[k], {tx, ay + 2 + k * 18, x + ts.width - 6, ay + 2 + (k + 1) * 18},
-                         k == 0 ? kInk : kGreyInk);
-            } else {
-                const float a = kAlbumTileArt, ax = x + (ts.width - a) / 2, ay = y + 10;
-                if (info.icon)  // playlists page: WMP's large playlist icon instead of a cover
-                    win7::DrawStretched(dc, win7::Module::Wmploc, L"#" + std::to_wstring(info.icon), {ax + 10, ay + 10, ax + a - 10, ay + a - 10});
-                else
-                    DrawArt(dc, m_source->ArtKey(idx), info.art, {ax, ay, ax + a, ay + a});
-                for (size_t k = 0; k < 2; ++k)
-                    Text(dc, info.lines[k], {x + 6, ay + a + 5 + k * 17, x + ts.width - 6, ay + a + 5 + (k + 1) * 17},
-                         k == 0 ? kInk : kGreyInk, DWRITE_TEXT_ALIGNMENT_CENTER);
-            }
+            PaintTile(dc, idx, TileLeft(c), y, style, focus);
         }
     }
+}
+
+// The arrows at a shelf's ends, over its tiles, where it can page that way.
+void ListView::PaintShelfArrows(ID2D1DeviceContext* dc) {
+    const auto& groups = *m_source->Groups();
+    const float top0 = ContentTopDip(), viewH = RowsHeightDip();
+    for (size_t gi = 0; gi < groups.size() && gi < m_groupLine.size(); ++gi) {
+        const auto& g = groups[gi];
+        if (!g.carousel || !g.count) continue;
+        const size_t header = m_groupLine[gi];
+        const size_t rows = std::min(std::max<size_t>(g.tileLines, 1), g.count);
+        if (header + 1 + rows >= m_lineTop.size()) continue;
+        const float top = m_lineTop[header + 1] - top0, bottom = m_lineTop[header + 1 + rows] - top0;
+        if (bottom < 0 || top > viewH) continue;
+        const auto shown = m_shelfShown.find(g.key);
+        const float show = shown == m_shelfShown.end() ? 0.0f : shown->second;
+        for (const bool right : {false, true}) {
+            if (!ShelfCanPage(gi, right)) continue;
+            const bool hot = m_hotShelf == gi && m_hotShelfSide == (right ? 1u : 0u);
+            const bool held = m_shelfPressedGroup == gi && m_shelfPressedSide == (right ? 1u : 0u);
+            ShelfArrowButton(dc, ShelfArrow(gi, right, top, bottom), right, show, hot ? m_shelfPlate : 0.0f,
+                             held ? m_shelfPress : 0.0f);
+        }
+    }
+}
+
+void ListView::PaintTile(ID2D1DeviceContext* dc, size_t idx, float x, float y, media::TileStyle style, size_t focus) {
+    if (style == media::TileStyle::Card) return; // the card layer draws it
+    const D2D1_SIZE_F ts = TileSizeOf(style);
+    const D2D1_RECT_F cell{x + 2, y + 3, x + ts.width - 2, y + ts.height - 3};
+    const bool sel = m_source->IsSelected(idx), hot = idx == m_hot;
+    if (sel || hot) {
+        const wp::RowState st = sel ? (hot ? wp::RowState::SelectedHot : wp::RowState::Selected)
+                                    : wp::RowState::Hot;
+        wp::RowPlate(dc, cell, st, m_focused);
+    } else if (m_focused && idx == focus) {
+        dc->DrawRoundedRectangle({{cell.left + 0.5f, cell.top + 0.5f, cell.right - 0.5f, cell.bottom - 0.5f}, 2, 2},
+                                 Brush(dc, 0x7DA2CE, 0.6f).get(), 1.0f);
+    }
+    const media::TileInfo info = m_source->Tile(idx);
+    // The play button fades in on the tile under the mouse and out on the one it left; the
+    // source mark gives way to it.
+    const float play = idx == m_playRow ? m_playBlend : idx == m_playOldRow ? m_playOldBlend : 0.0f;
+    const float playHot = idx == m_playRow ? m_playHotBlend : 0.0f;
+    const D2D1_RECT_F playBox = TilePlayRect(style, x, y);
+    if (style == media::TileStyle::Song) {
+        const float a = kSongTileArt, ay = y + (ts.height - a) / 2;
+        const D2D1_RECT_F art{x + 8, ay, x + 8 + a, ay + a};
+        if (info.icon)
+            win7::DrawStretched(dc, win7::Module::Wmploc, L"#" + std::to_wstring(info.icon), art);
+        else
+            DrawArt(dc, m_source->ArtKey(idx), info.art, art);
+        if (!info.source.empty() && play < 1)  // the source mark gives way to the play button
+            DrawSourceBadge(dc, {art.right - 14, art.bottom - 14, art.right + 1, art.bottom + 1}, info.source,
+                            1.0f - play);
+        if (play > 0) {
+            dc->FillRectangle(art, Brush(dc, 0x000000, 0.22f * play).get());
+            PlayTriangle(dc, playBox, playHot, play);
+        }
+        const float tx = art.right + 10, mid = y + ts.height / 2;
+        Text(dc, info.lines[0], {tx, mid - 18, x + ts.width - 6, mid}, kInk);
+        const float right = x + ts.width - 6;
+        Text(dc, info.lines[1], {PaintBadges(dc, info.badges, tx, mid + 9, right), mid, right, mid + 18}, kGreyInk);
+        return;
+    }
+    if (style == media::TileStyle::Artist) {
+        const float a = kArtistTileArt, ay = y + (ts.height - a) / 2;
+        if (info.icon)
+            win7::DrawStretched(dc, win7::Module::Wmploc, L"#" + std::to_wstring(info.icon),
+                                {x + 20, ay + 10, x + a, ay + a - 10});
+        else
+            DrawArt(dc, m_source->ArtKey(idx), info.art, {x + 10, ay, x + 10 + a, ay + a});
+        if (!info.source.empty() && play < 1)
+            DrawSourceBadge(dc, {x + 10 + a - kSourceBadge + 3, ay + a - kSourceBadge + 3, x + 13 + a, ay + a + 3},
+                            info.source, 1.0f - play);
+        if (play > 0)
+            wmp::transport::PlayOrb(dc, playBox, playHot, play, idx == m_playPress && m_playHot ? 1.0f : 0.0f);
+        const float tx = x + 10 + a + 12;
+        for (size_t k = 0; k < info.lines.size(); ++k) {
+            const float top = ay + 2 + k * 18, right = x + ts.width - 6;
+            const float left = k == 1 ? PaintBadges(dc, info.badges, tx, top + 9, right) : tx;
+            Text(dc, info.lines[k], {left, top, right, top + 18}, k == 0 ? kInk : kGreyInk);
+        }
+        return;
+    }
+    const float a = kAlbumTileArt, ax = x + (ts.width - a) / 2, ay = y + 10;
+    if (info.icon)  // playlists page: WMP's large playlist icon instead of a cover
+        win7::DrawStretched(dc, win7::Module::Wmploc, L"#" + std::to_wstring(info.icon), {ax + 10, ay + 10, ax + a - 10, ay + a - 10});
+    else
+        DrawArt(dc, m_source->ArtKey(idx), info.art, {ax, ay, ax + a, ay + a});
+    if (!info.source.empty() && play < 1)  // mixed results: whose tile this is, on the cover's corner
+        DrawSourceBadge(dc, {ax + a - kSourceBadge - 4, ay + a - kSourceBadge - 4, ax + a - 4, ay + a - 4}, info.source,
+                        1.0f - play);
+    if (play > 0) wmp::transport::PlayOrb(dc, playBox, playHot, play, idx == m_playPress && m_playHot ? 1.0f : 0.0f);
+    for (size_t k = 0; k < 2; ++k)
+        Text(dc, info.lines[k], {x + 6, ay + a + 5 + k * 17, x + ts.width - 6, ay + a + 5 + (k + 1) * 17},
+             k == 0 ? kInk : kGreyInk, DWRITE_TEXT_ALIGNMENT_CENTER);
 }
 
 void ListView::DrawArt(ID2D1DeviceContext* dc, const std::wstring& key, const metadb_handle_ptr& track, D2D1_RECT_F box) {
@@ -1702,17 +2207,77 @@ ListView::Hit ListView::HitAt(POINT pt) const {
     if (!m_source) return hit;
     // Below the last grouped line is empty space; LineAtDip would clamp it to the last row.
     const float contentY = ContentPoint(pt).y;
-    if (m_mode == Mode::Grouped && !m_lineTop.empty() && contentY >= m_lineTop.back()) return hit;
+    if (Lined() && !m_lineTop.empty() && contentY >= m_lineTop.back()) return hit;
     const size_t line = LineAtDip(contentY);
     switch (m_mode) {
     case Mode::Tiles: {
         const size_t cols = TileColumns();
+        // A tile is what it draws (owner, 2026-11-20): the room spread between tiles is empty
+        // space, where the page's own menu opens.
+        const auto inside = [&](media::TileStyle style, float left, float top) {
+            const D2D1_SIZE_F ts = TileSizeOf(style);
+            const D2D1_RECT_F box = style == media::TileStyle::Card
+                                        ? D2D1_RECT_F{left + kCardInset.x, top + kCardInset.y,
+                                                      left + kCardInset.x + CardLayer::kCard.width,
+                                                      top + kCardInset.y + CardLayer::kCard.height}
+                                        : D2D1_RECT_F{left + 2, top + 3, left + ts.width - 2, top + ts.height - 3};
+            return x >= box.left && x < box.right && contentY >= box.top && contentY < box.bottom;
+        };
+        const auto playAt = [&](size_t idx, media::TileStyle style, float left, float top) {
+            if (!inside(style, left, top)) return;
+            const D2D1_RECT_F box = TilePlayRect(style, left, top);
+            hit.part = m_source->CanPlayTile(idx) && x >= box.left && x < box.right && contentY >= box.top &&
+                               contentY < box.bottom
+                           ? Part::TilePlay
+                           : Part::Row;
+            hit.row = idx;
+        };
+        if (m_tileGroups) {
+            // A shelf's arrows lie over its tiles.
+            const auto& groups = *m_source->Groups();
+            for (size_t gi = 0; gi < groups.size() && gi < m_groupLine.size(); ++gi) {
+                const auto& g = groups[gi];
+                if (!g.carousel || !g.count) continue;
+                const size_t header = m_groupLine[gi];
+                const size_t rows = std::min(std::max<size_t>(g.tileLines, 1), g.count);
+                if (header + 1 + rows >= m_lineTop.size()) continue;
+                const float top = m_lineTop[header + 1], bottom = m_lineTop[header + 1 + rows];
+                if (contentY < top || contentY >= bottom) continue;
+                for (const bool right : {false, true}) {
+                    const D2D1_RECT_F box = ShelfArrow(gi, right, top, bottom);
+                    if (ShelfCanPage(gi, right) && x >= box.left && x < box.right && contentY >= box.top &&
+                        contentY < box.bottom) {
+                        hit.part = Part::Carousel;
+                        hit.group = gi;
+                        hit.line = right ? 1 : 0;
+                        return hit;
+                    }
+                }
+            }
+            if (line >= m_lines.size()) return hit;
+            const Line& l = m_lines[line];
+            if (l.kind == Line::GroupHeader) {
+                hit.group = l.group;
+                const auto& g = groups[l.group];
+                const float right = RowsWidth() - 8;
+                const float w = g.carousel ? kShowAll : TextWidth(g.more, 200) + 2;
+                if (ShowsMore(l.group) && x >= right - w && x <= right) {
+                    hit.part = Part::Link;
+                    hit.line = kMoreLink;
+                }
+                return hit; // the header's title selects nothing here
+            }
+            float left = 0;
+            const size_t idx = TileAtLine(l, x, &left);
+            if (idx == SIZE_MAX) return hit;
+            playAt(idx, GroupTiles(l.group), left, m_lineTop[line]);
+            return hit;
+        }
         if (x < kTilePad) return hit;
-        const size_t col = static_cast<size_t>((x - kTilePad) / TileSize().width);
+        const size_t col = static_cast<size_t>((x - kTilePad) / TilePitch());
         const size_t idx = line * cols + col;
         if (col >= cols || idx >= m_source->Count()) return hit;
-        hit.part = Part::Row;
-        hit.row = idx;
+        playAt(idx, m_source->Tiles(), TileLeft(col), LineTopDip(line));
         return hit;
     }
     case Mode::Grouped: {
@@ -1761,7 +2326,9 @@ LPCWSTR ListView::CursorAt(POINT pt) const {
     if (m_drag == Drag::Resize) return IDC_SIZEWE;
     switch (HitAt(pt).part) {
     case Part::HeaderEdge: return IDC_SIZEWE;
-    case Part::Link: return IDC_HAND;
+    case Part::Link:
+    case Part::Carousel:
+    case Part::TilePlay: return IDC_HAND;
     default: return nullptr;
     }
 }
@@ -1819,7 +2386,51 @@ void ListView::OnMouseMove(POINT pt) {
         m_hotHeader = hotHeader;
         PaintHeader();
     }
-    const size_t hot = hit.part == Part::Row ? hit.row : SIZE_MAX;
+    const size_t hot = hit.part == Part::Row || hit.part == Part::TilePlay ? hit.row : SIZE_MAX;
+    // The tile play button: on the hot tile that can play, fading in (AnimateScrollBar).
+    const size_t playRow =
+        m_mode == Mode::Tiles && hot != SIZE_MAX && !IsCard(hot) && m_source->CanPlayTile(hot) ? hot : SIZE_MAX;
+    const bool playHot = hit.part == Part::TilePlay;
+    if (playRow != m_playRow || playHot != m_playHot) {
+        if (playRow != m_playRow) {
+            m_playOldRow = m_playRow;
+            m_playOldBlend = m_playBlend;
+            m_playRow = playRow;
+            m_playBlend = 0;
+            m_playHotBlend = 0;
+        }
+        m_playHot = playHot;
+        if (onScrollAnim) onScrollAnim();
+    }
+    // The shelf under the mouse shows its arrows (fading in); the arrow under it its plate.
+    std::wstring shelfKey;
+    if (m_mode == Mode::Tiles && m_tileGroups && hit.part != Part::None) {
+        const D2D1_POINT_2F c = ContentPoint(pt);
+        const auto& groups = *m_source->Groups();
+        for (size_t gi = 0; gi < groups.size() && gi < m_groupLine.size(); ++gi) {
+            const auto& g = groups[gi];
+            if (!g.carousel || !g.count) continue;
+            const size_t header = m_groupLine[gi];
+            const size_t rows = std::min(std::max<size_t>(g.tileLines, 1), g.count);
+            if (header + 1 + rows < m_lineTop.size() && c.y >= m_lineTop[header + 1] &&
+                c.y < m_lineTop[header + 1 + rows])
+                shelfKey = g.key;
+        }
+    }
+    if (shelfKey != m_shelfUnder) {
+        m_shelfUnder = shelfKey;
+        if (onScrollAnim) onScrollAnim();
+    }
+    m_cards->SetHot(m_source, IsCard(hot) ? hot : SIZE_MAX, playHot);
+    const size_t hotShelf = hit.part == Part::Carousel ? hit.group : SIZE_MAX;
+    const size_t hotShelfSide = hit.part == Part::Carousel ? hit.line : 0;
+    if (hotShelf != m_hotShelf || hotShelfSide != m_hotShelfSide) {
+        m_hotShelf = hotShelf;
+        m_hotShelfSide = hotShelfSide;
+        m_shelfPlate = 0;
+        if (onScrollAnim) onScrollAnim();
+        PaintRows();
+    }
     if (const int star = hot != SIZE_MAX ? StarAt(pt) : -1; star != m_hotStar) {
         m_hotStar = star;
         if (hot == m_hot) PaintRows();  // otherwise the hot-row change below repaints
@@ -2065,8 +2676,39 @@ void ListView::OnLButtonUp(POINT pt) {
         if (onScrollAnim) onScrollAnim();
     }
     switch (drag) {
+    case Drag::ShelfButton: {
+        const size_t group = m_shelfPressedGroup, side = m_shelfPressedSide;
+        m_shelfPressedGroup = SIZE_MAX;
+        if (onScrollAnim) onScrollAnim();
+        const Hit up = HitAt(pt);
+        if (up.part == Part::Carousel && up.group == group && up.line == side) PageShelf(group, side == 1);
+        break;
+    }
+    case Drag::MoreButton: {
+        const size_t group = m_morePressedGroup;
+        m_morePressedGroup = SIZE_MAX;
+        if (onScrollAnim) onScrollAnim();
+        const Hit up = HitAt(pt);
+        if (up.part == Part::Link && up.line == kMoreLink && up.group == group) m_source->ShowGroupMore(group);
+        break;
+    }
     case Drag::Thumb: PaintScrollBar(); break;
     case Drag::Marquee: PaintRows(); break;
+    case Drag::PlayPress: {
+        const size_t row = std::exchange(m_playPress, SIZE_MAX);
+        m_cards->SetPressed(m_source, SIZE_MAX);
+        const Hit up = HitAt(pt);
+        PaintRows();
+        if (up.part == Part::TilePlay && up.row == row && m_source) m_source->PlayTile(row);
+        break;
+    }
+    case Drag::CardPress: {
+        const size_t row = std::exchange(m_cardPress, SIZE_MAX);
+        m_cards->SetPressed(m_source, SIZE_MAX);
+        const Hit up = HitAt(pt);
+        if (up.part == Part::Row && up.row == row && m_source) m_source->Activate(row); // may leave the page
+        break;
+    }
     case Drag::Resize: SaveColumnLayout(); break;
     case Drag::PendingMove: {  // a click on a header sorts by that column
         const auto cols = Columns(RowsWidth());
@@ -2274,15 +2916,28 @@ void ListView::UpdateMarquee() {
 
 void ListView::OnWheel(int delta, bool horizontal) {
     if (horizontal) {  // Shift+wheel or a tilt wheel: sideways, no scrollbar shown
+        // Over a shelf it moves the shelf, 100 DIP a notch, gliding (MX Master's thumb wheel).
+        if (m_mode == Mode::Tiles && m_tileGroups && !m_shelfUnder.empty() && m_source && m_source->Groups()) {
+            const auto& groups = *m_source->Groups();
+            for (size_t gi = 0; gi < groups.size(); ++gi) {
+                if (groups[gi].key != m_shelfUnder || !groups[gi].carousel) continue;
+                const float pitch = TilePitchOf(GroupTiles(gi), true);
+                const bool running = m_shelfSlide.group == gi && ShelfShownPos(gi) != ShelfPos(gi);
+                const float base = running ? m_shelfSlide.to : ShelfPos(gi);
+                SlideShelf(gi, base - static_cast<float>(delta) / WHEEL_DELTA * 100.0f / pitch, kShelfWheelMs);
+                return;
+            }
+        }
         if (m_mode != Mode::Tiles) ScrollXTo(m_scrollX - delta / static_cast<float>(WHEEL_DELTA) * 48.0f);
         return;
     }
-    const int step = m_mode == Mode::Tiles ? 1 : 3;
-    const int lines = step * (-delta / WHEEL_DELTA);
-    if (lines < 0)
-        ScrollTo(m_top > static_cast<size_t>(-lines) ? m_top + lines : 0);
-    else
-        ScrollTo(m_top + lines);
+    // As browsers do: 100 DIP a notch for Windows' three lines (a page for "one screen"),
+    // fractions for fine wheels, added to the glide still running.
+    UINT lines = 3;
+    SystemParametersInfoW(SPI_GETWHEELSCROLLLINES, 0, &lines, 0);
+    const float notch = lines == WHEEL_PAGESCROLL ? RowsHeightDip() * 0.875f : 100.0f * static_cast<float>(lines) / 3.0f;
+    const float from = Gliding() ? m_glide.to : ContentTopDip();
+    GlideTo(from - static_cast<float>(delta) / WHEEL_DELTA * notch);
 }
 
 void ListView::MoveFocus(size_t row, bool ctrl, bool shift) {

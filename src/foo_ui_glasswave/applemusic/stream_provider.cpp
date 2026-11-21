@@ -2412,28 +2412,24 @@ void StreamProvider::Start() {
     SetAppleLocale(ui::UsingChinese());
     DisplayMetadata::Get().SetSourceStorefront({});
     LoadBootstrapSnapshot(generation);
+    // The restart catalog is installed here, on the main thread, before foobar2000 resumes
+    // playback or formats a list: a song opened before it was in (read on a worker before) got
+    // a stand-in title the player then kept in metadb (owner, 2026-11-21). The file is small
+    // (about 0.5 MB for 1700 songs) and only this account's (cache::AccountScope) is read.
     try {
-        std::string catalogAccountScope = cache::AccountScope("apple");
-        const uint64_t catalogAccountRevision = cache::AccountRevision("apple");
-        Post(generation, [this, generation, catalogAccountScope = std::move(catalogAccountScope),
-                          catalogAccountRevision]() mutable {
-            auto songs = Catalog::Get().ReadCacheFile();
-            if (songs.empty()) return;
-            PostMain(generation, [catalogAccountScope = std::move(catalogAccountScope),
-                                  catalogAccountRevision, songs = std::move(songs)]() mutable {
-                try {
-                    if (cache::AccountRevision("apple") != catalogAccountRevision ||
-                        cache::AccountScope("apple") != catalogAccountScope)
-                        return;
-                } catch (...) {
-                    return;
-                }
-                Catalog::Get().InstallCached(std::move(songs));
-            });
-        });
+        if (!cache::AccountScope("apple").empty()) Catalog::Get().InstallCached(Catalog::Get().ReadCacheFile());
     } catch (...) {
     }
     RefreshAccountAsync(generation, {});
+    // Songs asked for before the provider started (a queue restored and resumed at start-up,
+    // owner 2026-11-21: the resumed song kept "Apple Music <id>"): RequestUnknownSong keeps them
+    // and does not ask again for two minutes, so they are read now.
+    bool unknown = false;
+    {
+        std::lock_guard lock(m_unknownMutex);
+        unknown = !m_unknownSongs.empty();
+    }
+    if (unknown) Post(generation, [this] { ReadUnknownSongs(); });
 }
 
 void StreamProvider::Shutdown() {
@@ -5025,6 +5021,268 @@ void StreamProvider::FetchArtistBio(const stream::Id& artist, TextDone done) {
 
 // The song's catalog record and its credits. Audio traits and credits come only from the web
 // API surface (the bridge picks it for requests extending inFavorites; checked 2026-11-14).
+namespace {
+
+// The time zone as the recommendations request wants it ("+08:00").
+std::wstring UtcOffset() {
+    TIME_ZONE_INFORMATION zone{};
+    const DWORD kind = GetTimeZoneInformation(&zone);
+    long bias = -zone.Bias - (kind == TIME_ZONE_ID_DAYLIGHT ? zone.DaylightBias : 0);
+    const wchar_t sign = bias < 0 ? L'-' : L'+';
+    bias = std::abs(bias);
+    wchar_t text[16];
+    swprintf_s(text, L"%c%02ld:%02ld", sign, bias / 60, bias % 60);
+    return text;
+}
+
+// "{w}x{h}{c}.{f}" filled for a picture of w x h px.
+std::wstring SizedArtwork(std::wstring url, int w, int h) {
+    const auto put = [&url](std::wstring_view key, std::wstring_view value) {
+        for (size_t at = url.find(key); at != std::wstring::npos; at = url.find(key, at + value.size()))
+            url.replace(at, key.size(), value);
+    };
+    put(L"{w}", std::to_wstring(w));
+    put(L"{h}", std::to_wstring(h));
+    put(L"{c}", L"cc");
+    put(L"{f}", L"jpg");
+    return url;
+}
+
+uint32_t HexColor(const Object& artwork, const wchar_t* key, bool* found) {
+    const std::wstring text = json::GetString(artwork, key);
+    if (text.size() != 6) {
+        *found = false;
+        return 0;
+    }
+    return static_cast<uint32_t>(wcstoul(text.c_str(), nullptr, 16));
+}
+
+std::wstring Display(const Object& object, const wchar_t* key) {
+    const auto value = json::GetObject(object, key);
+    return value ? json::GetString(*value, L"stringForDisplay") : std::wstring();
+}
+
+// One of the Top Picks as a card: Apple's label, words, tall picture, motion video and colours.
+// `tall`: the top cards' tall editorial art and motion; a row's cards have the square cover.
+std::optional<stream::HomeCard> HomeCardOf(const Object& item, bool tall = true) {
+    const auto attributes = json::GetObject(item, L"attributes");
+    if (!attributes) return std::nullopt;
+    const std::wstring type = json::GetString(item, L"type");
+    stream::HomeCard card;
+    card.key = type + L":" + json::GetString(item, L"id");
+    const auto meta = json::GetObject(item, L"meta");
+    if (meta) {
+        if (const auto reason = json::GetObject(*meta, L"reason"))
+            card.label = json::GetString(*reason, L"stringForDisplay");
+        card.subtitle = Display(*meta, L"subtitle");
+    }
+    const auto notes = json::GetObject(*attributes, L"editorialNotes");
+    card.title = json::GetString(*attributes, L"name");
+    if (card.title.empty() && notes) card.title = json::GetString(*notes, L"name");
+    if (card.subtitle.empty() && notes) card.subtitle = json::GetString(*notes, L"short");
+    if (card.subtitle.empty()) card.subtitle = json::GetString(*attributes, L"artistName");
+    // The picture: the tall editorial art made for these cards, else the cover.
+    std::optional<Object> art;
+    if (const auto editorial = tall ? json::GetObject(*attributes, L"editorialArtwork") : std::nullopt)
+        for (const wchar_t* kind : {L"superHeroTall", L"staticDetailTall"})
+            if ((art = json::GetObject(*editorial, kind))) {
+                card.imageTall = true;
+                break;
+            }
+    if (!art) art = json::GetObject(*attributes, L"artwork");
+    if (!art) return std::nullopt;
+    const std::wstring url = json::GetString(*art, L"url");
+    if (url.empty()) return std::nullopt;
+    card.imageUrl = card.imageTall ? SizedArtwork(url, 750, 1000) : SizedArtwork(url, 750, 750);
+    bool colors = true;
+    card.background = HexColor(*art, L"bgColor", &colors);
+    card.titleInk = HexColor(*art, L"textColor1", &colors);
+    card.textInk = HexColor(*art, L"textColor2", &colors);
+    card.colors = colors;
+    if (const auto video = tall ? json::GetObject(*attributes, L"editorialVideo") : std::nullopt)
+        for (const wchar_t* kind : {L"motionTallVideo3x4", L"motionDetailTall"})
+            if (const auto motion = json::GetObject(*video, kind)) {
+                card.videoUrl = json::GetString(*motion, L"video");
+                // The video's first frame stands in until it plays.
+                if (const auto frame = json::GetObject(*motion, L"previewFrame"); frame && !card.imageTall) {
+                    if (const std::wstring still = json::GetString(*frame, L"url"); !still.empty()) {
+                        card.imageUrl = SizedArtwork(still, 750, 1000);
+                        card.imageTall = true;
+                    }
+                }
+                if (!card.videoUrl.empty()) break;
+            }
+    if (type == L"albums") {
+        if (auto album = ParseAlbum(item)) card.target = stream::CatalogSearchItem(std::move(*album));
+    } else if (type == L"playlists" || type == L"library-playlists") {
+        if (auto playlist = ParsePlaylist(item)) card.target = stream::CatalogSearchItem(std::move(*playlist));
+    } else if (type == L"stations" && !json::GetBool(*attributes, L"isLive")) {
+        // A live station or a radio show is a broadcast (HLS), not songs: it only shows.
+        card.station = json::GetString(item, L"id");
+    } else if (type == L"editorial-items") {
+        // A promotion with no record behind it (月度音乐回忆): the page Apple links it to.
+        if (const auto link = json::GetObject(*attributes, L"link")) {
+            const std::wstring page = json::GetString(*link, L"url");
+            if (page.starts_with(L"https://")) card.link = page;
+        }
+    }
+    return card;
+}
+
+// A station in a home row: its name, its line, its cover; none for a live one.
+std::optional<stream::Station> HomeStationOf(const Object& item) {
+    const auto attributes = json::GetObject(item, L"attributes");
+    if (!attributes || json::GetBool(*attributes, L"isLive")) return std::nullopt;
+    stream::Station station;
+    station.id = json::GetString(item, L"id");
+    station.name = json::GetString(*attributes, L"name");
+    if (station.id.empty() || station.name.empty()) return std::nullopt;
+    if (const auto notes = json::GetObject(*attributes, L"editorialNotes"))
+        station.subtitle = json::GetString(*notes, L"short");
+    if (const auto meta = json::GetObject(item, L"meta"); meta && station.subtitle.empty())
+        station.subtitle = Display(*meta, L"subtitle");
+    if (const auto art = json::GetObject(*attributes, L"artwork"))
+        station.coverUrl = json::GetString(*art, L"url");
+    return station;
+}
+
+} // namespace
+
+void StreamProvider::PutStations(const std::vector<stream::Station>& stations) {
+    for (const auto& station : stations) Catalog::Get().Put(station);
+}
+
+void StreamProvider::FetchHome(HomeDone done) {
+    uint64_t generation = 0;
+    std::wstring locale;
+    {
+        std::lock_guard lock(m_mutex);
+        generation = m_generation;
+        locale = m_locale;
+    }
+    Post(generation, [this, generation, locale, done = std::move(done)]() mutable {
+        stream::Home home;
+        std::wstring error;
+        try {
+            const Object response =
+                Apple(L"/v1/me/recommendations?name=listen-now&platform=web&timezone=" + Encode(UtcOffset()) +
+                          L"&with=friendsMix,library,social&extend=editorialVideo,editorialArtwork" +
+                          (locale.empty() ? std::wstring() : L"&l=" + locale),
+                      *m_abort);
+            std::vector<stream::Album> albums;
+            std::vector<stream::Playlist> playlists;
+            const auto shelves = json::GetArray(response, L"data");
+            for (const auto& shelf : shelves ? json::Objects(*shelves) : std::vector<Object>()) {
+                const auto attributes = json::GetObject(shelf, L"attributes");
+                if (!attributes) continue;
+                std::wstring title;
+                if (const auto heading = json::GetObject(*attributes, L"title"))
+                    title = json::GetString(*heading, L"stringForDisplay");
+                std::wstring display;
+                if (const auto layout = json::GetObject(*attributes, L"display"))
+                    display = json::GetString(*layout, L"kind");
+                const auto contents = EmbeddedRelationship(shelf, L"contents");
+                // Apple says how each row is shown: a hero shelf as big cards with motion art (the
+                // first one is the Top Picks, at the top of the page), any other as tiles.
+                const bool hero = display == L"MusicNotesHeroShelf";
+                if (hero && home.cards.empty()) {
+                    home.cardsTitle = title;
+                    for (const auto& item : contents)
+                        if (auto card = HomeCardOf(item)) home.cards.push_back(std::move(*card));
+                    continue;
+                }
+                stream::HomeShelf row;
+                row.id = json::GetString(shelf, L"id");
+                row.title = std::move(title);
+                if (hero) {
+                    for (const auto& item : contents)
+                        if (auto card = HomeCardOf(item)) row.cards.push_back(std::move(*card));
+                    if (row.cards.size() >= 2) home.shelves.push_back(std::move(row));
+                    continue;
+                }
+                for (const auto& item : contents) {
+                    const std::wstring type = json::GetString(item, L"type");
+                    if (type == L"albums") {
+                        if (auto album = ParseAlbum(item)) {
+                            albums.push_back(*album);
+                            row.items.emplace_back(std::move(*album));
+                        }
+                    } else if (type == L"playlists" || type == L"library-playlists") {
+                        if (auto playlist = ParsePlaylist(item)) {
+                            playlists.push_back(*playlist);
+                            row.items.emplace_back(std::move(*playlist));
+                        }
+                    } else if (type == L"stations") {
+                        // A tile like the others, where the service puts it. A live station is a
+                        // broadcast, not songs: it is left out.
+                        if (auto station = HomeStationOf(item)) {
+                            Catalog::Get().Put(*station);
+                            row.items.emplace_back(std::move(*station));
+                        }
+                    }
+                }
+                if (row.items.size() >= 2) home.shelves.push_back(std::move(row));
+            }
+            const auto keep = [&](const stream::HomeCard& card) {
+                if (card.target)
+                    std::visit(
+                        [&](const auto& v) {
+                            using T = std::decay_t<decltype(v)>;
+                            if constexpr (std::is_same_v<T, stream::Album>) albums.push_back(v);
+                            else if constexpr (std::is_same_v<T, stream::Playlist>) playlists.push_back(v);
+                        },
+                        *card.target);
+            };
+            for (const auto& card : home.cards) keep(card);
+            for (const auto& row : home.shelves)
+                for (const auto& card : row.cards) keep(card);
+            if (!PutIfCurrent(generation, albums)) return;
+            for (const auto& playlist : playlists)
+                if (!PutIfCurrent(generation, playlist)) return;
+        } catch (const exception_aborted&) {
+            return;
+        } catch (const std::exception& exception) {
+            error = Wide(exception.what());
+        }
+        PostMain(generation, [done = std::move(done), home = std::move(home), error = std::move(error)]() mutable {
+            if (done) done(std::move(home), std::move(error));
+        });
+    });
+}
+
+// A station's next songs (Apple's web player asks five at a time).
+void StreamProvider::FetchStationTracks(const stream::Id& station, TracksDone done) {
+    uint64_t generation = 0;
+    {
+        std::lock_guard lock(m_mutex);
+        generation = m_generation;
+    }
+    Post(generation, [this, generation, station, done = std::move(done)]() mutable {
+        std::vector<Song> songs;
+        std::wstring error;
+        try {
+            const Object response =
+                Apple(L"/v1/me/stations/next-tracks/" + Encode(station) + L"?limit=5", *m_abort, L"POST");
+            if (const auto data = json::GetArray(response, L"data"))
+                for (const auto& item : json::Objects(*data))
+                    if (auto song = ParseSong(item)) songs.push_back(std::move(*song));
+            if (!PutIfCurrent(generation, songs)) return;
+        } catch (const exception_aborted&) {
+            return;
+        } catch (const std::exception& exception) {
+            error = Wide(exception.what());
+        }
+        std::vector<stream::Track> tracks;
+        for (const auto& song : songs) tracks.push_back(song.track);
+        PostMain(generation, [done = std::move(done), songs = std::move(songs), tracks = std::move(tracks),
+                              error = std::move(error)]() mutable {
+            // Their titles reach foobar2000 before they are queued, or the queue shows addresses.
+            if (!songs.empty()) Catalog::Get().PutAndHint(songs);
+            if (done) done(std::move(tracks), std::move(error));
+        });
+    });
+}
+
 void StreamProvider::FetchSongDetails(const stream::Id& track, SongDetailsDone done) {
     uint64_t generation = 0;
     const std::wstring storefront = Storefront();

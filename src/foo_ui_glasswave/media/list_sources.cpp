@@ -379,6 +379,12 @@ void PlaylistSource::SetFilter(std::wstring_view filterLower) {
     Rebuild();
 }
 
+// A source's song keeps its tags before its artist in a foobar2000 playlist too.
+std::vector<std::wstring> PlaylistSource::CellBadges(size_t row, size_t column) const {
+    if (row >= m_rows.size() || column >= m_fields.size() || m_fields[column] != kPlArtist) return {};
+    return stream::TrackBadges(playlist_manager::get()->playlist_get_item_handle(m_playlist, m_rows[row]));
+}
+
 std::wstring PlaylistSource::Cell(size_t row, size_t column) const {
     const size_t item = m_rows[row];
     const int field = column < m_fields.size() ? m_fields[column] : -1;
@@ -609,9 +615,15 @@ void PlaylistSource::Activate(size_t row) {
         return;
     }
     // Any other playlist: the queue becomes this list (as shown) and plays from the song.
+    // The search box only filters the view: a filtered list still plays the whole playlist.
     metadb_handle_list items;
-    for (size_t r : m_rows) items.add_item(pm->playlist_get_item_handle(m_playlist, r));
-    PlayQueue(items, row);
+    if (m_filter.empty()) {
+        for (size_t r : m_rows) items.add_item(pm->playlist_get_item_handle(m_playlist, r));
+        PlayQueue(items, row);
+        return;
+    }
+    pm->playlist_get_all_items(m_playlist, items);
+    PlayQueue(items, m_rows[row]);
 }
 
 void PlaylistSource::ContextMenu(HWND owner, POINT screen) {
@@ -912,9 +924,11 @@ void TrackSource::SetSelection(const std::vector<size_t>& rows) {
 }
 
 void TrackSource::Activate(size_t row) {
+    if (row >= m_rows.size()) return;
+    // The search box only filters the view: play every song in display order from this one.
     metadb_handle_list items;
-    for (size_t r : m_rows) items.add_item(m_model.Tracks()[m_all[r]].handle);
-    PlayItems(items, row);
+    for (size_t r = 0; r < m_all.size(); ++r) items.add_item(m_model.Tracks()[m_all[r]].handle);
+    PlayItems(items, m_filter.empty() ? row : m_rows[row]);
 }
 
 void TrackSource::ContextMenu(HWND owner, POINT screen) {
@@ -1111,6 +1125,13 @@ void GroupSource::SetSelection(const std::vector<size_t>& rows) {
 
 void GroupSource::Activate(size_t row) {
     if (m_onOpen) m_onOpen(At(row));
+}
+
+void GroupSource::PlayTile(size_t row) {
+    if (row >= m_rows.size()) return;
+    metadb_handle_list items;
+    for (size_t t : At(row).tracks) items.add_item(m_model.Tracks()[t].handle);
+    if (items.get_count()) PlayItems(items, 0);
 }
 
 void GroupSource::ContextMenu(HWND owner, POINT screen) {

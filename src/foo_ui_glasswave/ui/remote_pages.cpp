@@ -567,13 +567,6 @@ stream::ListQuery SectionTracksQuery(const stream::Id& section, const stream::Id
     return query;
 }
 
-stream::ListQuery CatalogSearchQuery(const stream::Id& text) {
-    auto query = Query(stream::ListKind::CatalogSearch);
-    query.id = text;
-    query.search = text;
-    return query;
-}
-
 stream::ListQuery PlaylistsQuery(stream::Shelf shelf, const stream::Id& section) {
     auto query = Query(stream::ListKind::Playlists);
     query.shelf = shelf;
@@ -1462,17 +1455,6 @@ class GroupTracksPage final : public TrackPagedPage {
         : TrackPagedPage(host, provider, view, SectionTracksQuery(view.sectionId, view.groupId),
                          L"No songs found.") {}
 };
-
-// ---- catalog search --------------------------------------------------------------------------
-
-class CatalogSearchPage final : public TrackPagedPage {
-  public:
-    CatalogSearchPage(PageHost& host, stream::Provider& provider, View view)
-        : TrackPagedPage(host, provider, view, CatalogSearchQuery(view.remoteId), L"No search results.",
-                         true) {}
-};
-
-// ---- a shelf of playlists ----------------------------------------------------------------------
 
 class ShelfPage final : public PagedPage {
   public:
@@ -2550,8 +2532,6 @@ std::unique_ptr<Page> MakeRemotePage(PageHost& host, stream::Provider& provider,
         return std::make_unique<AlbumPage>(host, provider, view);
     case View::Kind::RemoteTopTracks:
         return std::make_unique<TopTracksPage>(host, provider, view);
-    case View::Kind::RemoteSearch:
-        return std::make_unique<CatalogSearchPage>(host, provider, view);
     case View::Kind::RemoteSectionTracks:
         return std::make_unique<SectionTracksPage>(host, provider, view);
     case View::Kind::RemoteGroups:
@@ -2675,13 +2655,6 @@ View TopTracksView(const stream::Provider& provider, const stream::Id& artistId,
     return view;
 }
 
-View CatalogSearchView(const stream::Provider& provider, std::wstring query) {
-    View view = RemoteView(provider, View::Kind::RemoteSearch);
-    view.remoteId = query;
-    view.name = std::move(query);
-    return view;
-}
-
 const wchar_t* ShelfLabel(Shelf shelf) {
     switch (shelf) {
     case Shelf::Saved:
@@ -2696,55 +2669,18 @@ const wchar_t* ShelfLabel(Shelf shelf) {
 
 // ---- playlist commands --------------------------------------------------------------------------
 
-void PromptCatalogSearch(PageHost& host, stream::Provider& provider) {
-    if (!provider.Can(stream::Capability::CatalogSearch)) return;
-    const std::wstring title = Tr(L"Search " + provider.Name());
-    PromptText(host.Owner(), title, Tr(L"Search"), {}, [&host, &provider](std::wstring query) {
-        const size_t first = query.find_first_not_of(L" \t\r\n");
-        if (first == std::wstring::npos) return;
-        const size_t last = query.find_last_not_of(L" \t\r\n");
-        host.Open(CatalogSearchView(provider, query.substr(first, last - first + 1)));
-    });
-}
-
 void ShowRemotePlaylistMenu(PageHost& host, stream::Provider& provider, const stream::Id& id,
                             const std::wstring& name, std::optional<Shelf> shelf, const stream::Id& sectionId,
                             POINT screen, std::function<void(const stream::Id&)> onUnsaved) {
-    std::vector<MenuAction> actions{
-        {L"View", [&host, &provider, id, name, shelf,
-                   sectionId] { host.Open(PlaylistView(provider, id, name, shelf, sectionId)); }},
-        {}};
-    AddBulkActions(actions, FetchPlaylistSongs(provider, id, &host), &provider, id);
-    const auto info = provider.FindPlaylist(id);
-    const bool own = shelf == Shelf::Created || (info && info->own);
-    const bool saved = provider.PlaylistSavedState(id).value_or(
-        shelf == Shelf::Saved || (info && info->saved) || Contains(provider.Playlists(Shelf::Saved), id));
-    if (provider.AccountVerified() && own) {
-        const auto offers = provider.Offers();
-        if (offers.Has(stream::Capability::RenamePlaylists) || offers.Has(stream::Capability::DeletePlaylists)) actions.push_back({});
-        if (offers.Has(stream::Capability::RenamePlaylists))
-            actions.push_back({ProviderPlaylistText(provider, L"Rename..."), [&host, &provider, id, name] {
-                                   RenameRemotePlaylist(host, provider, id, name);
-                               }});
-        if (offers.Has(stream::Capability::DeletePlaylists))
-            actions.push_back(
-                {ProviderPlaylistText(provider, L"Delete playlist"), [&host, &provider, id, name, sectionId] {
-                     DeleteRemotePlaylist(host, provider, id, name, sectionId);
-                 }});
-    } else if (provider.AccountVerified() && !own && provider.Can(stream::Capability::SavePlaylists)) {
-        actions.push_back({});
-        actions.push_back(
-            {ProviderPlaylistText(provider, saved ? L"Uncollect playlist" : L"Collect playlist"),
-             [&provider, id, saved, onUnsaved] {
-                 provider.SetPlaylistSaved(id, !saved, [&provider, id, saved, onUnsaved](std::wstring error) {
-                     if (!error.empty()) return ShowProviderError(provider, error);
-                     if (saved && onUnsaved) onUnsaved(id);
-                 });
-             }});
-    }
-    if (shelf != Shelf::Recommended)
-        actions.insert(actions.end(), {{}, {L"Refresh", [&host] { host.Refresh(); }}});
-    ShowActionMenu(host.Owner(), screen, actions);
+    stream::Playlist playlist;
+    playlist.id = id;
+    playlist.name = name;
+    RecordMenuContext context;
+    context.sectionId = sectionId;
+    context.shelf = shelf;
+    context.removed = std::move(onUnsaved);
+    if (shelf != Shelf::Recommended) context.page.push_back({L"Refresh", [&host] { host.Refresh(); }});
+    ShowRecordMenu(host, provider, playlist, screen, context);
 }
 
 void CreateRemotePlaylist(PageHost& host, stream::Provider& provider) {

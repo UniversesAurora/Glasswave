@@ -29,6 +29,10 @@ enum class ListKind {
     CatalogSearchAlbums,
     CatalogSearchPlaylists,
     CatalogSearchTopResults,
+    ArtistSimilarArtists, // rows: Artist
+    CatalogSearchLyrics,  // rows: Track, songs whose lyrics match (Track::lyricMatch)
+    HomeList,             // rows: Track, a home card's daily song list (HomeCard::list; page.playlist
+                          // names it)
 };
 enum class ListCachePolicy {
     None,
@@ -79,13 +83,13 @@ struct ListPage {
 };
 using ListPageDone = std::function<void(ListPage page, std::wstring error)>;
 
-// CatalogSearch is the existing Songs category. The appended kinds are independent requests,
-// cursors and optional cache entries; CatalogSearchTopResults preserves the server's mixed
-// ranking and must not be synthesized from the other categories.
+// CatalogSearch is the Songs category. The other kinds are independent requests, cursors and
+// optional cache entries; CatalogSearchTopResults preserves the server's mixed ranking (its
+// best matches) and must not be synthesized from the other categories.
 inline bool IsCatalogSearch(ListKind kind) {
     return kind == ListKind::CatalogSearch || kind == ListKind::CatalogSearchArtists ||
            kind == ListKind::CatalogSearchAlbums || kind == ListKind::CatalogSearchPlaylists ||
-           kind == ListKind::CatalogSearchTopResults;
+           kind == ListKind::CatalogSearchTopResults || kind == ListKind::CatalogSearchLyrics;
 }
 
 inline ListQuery ArtistSectionQuery(const Id& artist, const ArtistSection& section) {

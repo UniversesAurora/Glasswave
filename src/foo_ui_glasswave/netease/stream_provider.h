@@ -20,7 +20,9 @@ class StreamProvider final : public stream::Provider {
 
     std::wstring_view Key() const override { return L"ncm"; }
     std::wstring Name() const override { return L"NetEase Cloud Music"; }
+    std::vector<std::wstring> AppNames() const override { return {L"网易云音乐", L"NetEase Cloud Music"}; }
     stream::Capabilities Offers() const override;
+    std::vector<stream::ListKind> CatalogSearchKinds() const override;
     std::vector<settings::Field> SettingFields() override;
 
     bool SignedIn() const override;
@@ -66,6 +68,12 @@ class StreamProvider final : public stream::Provider {
     void FetchSavedAlbums(size_t offset, size_t limit, AlbumPageDone done) override;
     void FetchListPage(const stream::ListQuery& query, const stream::ListCursor& cursor, size_t limit,
                        stream::ListPageDone done) override;
+    void FetchCatalogSearchSuggestions(CatalogSearchSuggestionQuery query,
+                                       CatalogSearchSuggestionsDone done) override;
+    void FetchHome(HomeDone done) override;
+    void FetchStationTracks(const stream::Id& station, TracksDone done) override;
+    bool CanDislike(const stream::Id& station) const override;
+    void DislikeStationTrack(const stream::Id& station, const stream::Id& track, Done done) override;
     stream::ListCachePolicy ListPolicy(const stream::ListQuery& query) const override;
     void RestoreListRecords(const stream::ListPage& page) override;
 

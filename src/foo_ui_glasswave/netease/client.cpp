@@ -176,6 +176,18 @@ Song ParseSong(const json::Object& object) {
     song.durationMs = json::GetInt(object, L"dt", json::GetInt(object, L"duration", 0));
     song.fee = json::GetInt(object, L"fee");
     song.popularity = json::GetInt(object, L"pop");
+    // 原唱: the song objects of /song/detail, playlists, albums and searches carry it.
+    song.original = json::GetInt(object, L"originCoverType") == 1;
+    // The grey note after the title in NetEase's lists: the song's alias, else its translated
+    // title (older endpoints name them alias / transNames).
+    for (const wchar_t* key : {L"alia", L"alias", L"tns", L"transNames"}) {
+        if (!song.note.empty()) break;
+        if (const auto names = json::GetArray(object, key))
+            for (uint32_t i = 0; i < names->Size() && song.note.empty(); ++i)
+                if (const auto value = names->GetAt(i);
+                    value && value.ValueType() == winrt::Windows::Data::Json::JsonValueType::String)
+                    song.note = value.GetString().c_str();
+    }
 
     if (auto album = json::GetObject(object, L"al")) {
         song.album = json::GetString(*album, L"name");
@@ -564,26 +576,284 @@ bool Client::RecommendPlaylists(abort_callback& abort, std::vector<Playlist>& ou
     return true;
 }
 
-bool Client::SearchSongs(std::wstring_view query, int limit, int offset, abort_callback& abort,
-                         std::vector<Song>& out, std::wstring& error) {
-    bool more = false;
-    std::optional<size_t> total;
-    size_t received = 0;
-    return SearchSongsPage(query, limit, offset, abort, out, more, total, received, error);
+bool Client::Generic(std::wstring_view uri, std::wstring_view data, abort_callback& abort, json::Object& out,
+                     std::wstring& error) {
+    int code = 0;
+    if (!Request(L"/api", {{L"uri", std::wstring(uri)}, {L"data", std::wstring(data)}, {L"crypto", L"eapi"}}, false,
+                 abort, out, code, error))
+        return false;
+    if (code != 200) {
+        error = MessageOf(out, code);
+        return false;
+    }
+    return true;
 }
 
-bool Client::SearchSongsPage(std::wstring_view query, int limit, int offset, abort_callback& abort,
-                             std::vector<Song>& out, bool& more, std::optional<size_t>& total,
-                             size_t& received, std::wstring& error) {
+namespace {
+
+// The local time as the PC client sends it ("2026-11-15 14:03:00").
+std::wstring ClientTime() {
+    SYSTEMTIME t{};
+    GetLocalTime(&t);
+    wchar_t text[32];
+    swprintf_s(text, L"%04u-%02u-%02u %02u:%02u:%02u", t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond);
+    return text;
+}
+
+// A title object's text ({"title": "..."}), or the first of a list of them.
+std::wstring TitleOf(const json::Object& element, const wchar_t* key) {
+    if (auto title = json::GetObject(element, key)) return json::GetString(*title, L"title");
+    if (auto titles = json::GetArray(element, key))
+        for (const auto& title : json::Objects(*titles)) return json::GetString(title, L"title");
+    return {};
+}
+
+// A picture address without the service's processing parameters (the radar's watermark).
+std::wstring PlainImage(std::wstring url) {
+    if (const size_t q = url.find(L'?'); q != std::wstring::npos) url.resize(q);
+    return url;
+}
+
+// The rows the PC client asks for by name, in its order; a block the account has none of is not
+// returned. The request's cursor and extInfo are JSON texts inside the JSON body.
+std::wstring BlockPageData() {
+    static constexpr const wchar_t* kBlocks[] = {
+        L"HOMEPAGE_BLOCK_PLAYLIST_RCMD", L"HOMEPAGE_BLOCK_STYLE_RCMD", L"HOMEPAGE_BLOCK_RED_SIMILAR_SONG",
+        L"HOMPAGE_BLOCK_VIP_RCMD", L"HOMEPAGE_BLOCK_OFFICIAL_PLAYLIST"};
+    std::wstring order;
+    for (const wchar_t* block : kBlocks) order += (order.empty() ? L"\\\"" : L",\\\"") + std::wstring(block) + L"\\\"";
+    return L"{\"refresh\":false,\"cursor\":\"{\\\"offset\\\":0,\\\"blockCodeOrderList\\\":[" + order +
+           L"]}\",\"extInfo\":\"{\\\"abInfo\\\":{\\\"hp-new-homepageV3.1\\\":\\\"t3\\\"}}\",\"newStyle\":true}";
+}
+
+} // namespace
+
+bool Client::HomeCards(abort_callback& abort, std::vector<HomeCard>& out, std::wstring& error) {
     out.clear();
-    more = false;
-    total.reset();
-    received = 0;
+    json::Object body;
+    if (!Generic(L"/api/pc/daily/rcmd/block", L"{\"clientTime\":\"" + ClientTime() + L"\"}", abort, body, error))
+        return false;
+    const auto data = json::GetObject(body, L"data");
+    const auto items = data ? json::GetArray(*data, L"items") : std::nullopt;
+    if (!items) return true;
+    for (const auto& item : json::Objects(*items)) {
+        HomeCard card;
+        card.label = json::GetString(item, L"coverText");
+        card.title = json::GetString(item, L"title");
+        card.subtitle = json::GetString(item, L"simplifiedTitle");
+        card.coverUrl = json::GetString(item, L"coverUrl");
+        card.resourceType = json::GetString(item, L"resourceType");
+        card.subResourceType = json::GetString(item, L"subResourceType");
+        card.moduleType = json::GetString(item, L"moduleType");
+        card.resourceId = json::GetString(item, L"resourceId");
+        card.targetUrl = json::GetString(item, L"targetUrl");
+        if (card.title.empty() || card.coverUrl.empty()) continue;
+        out.push_back(std::move(card));
+    }
+    return true;
+}
+
+bool Client::HomeBlocks(abort_callback& abort, std::vector<HomeBlock>& out, std::wstring& error) {
+    out.clear();
+    json::Object body;
+    if (!Generic(L"/api/homepage/block/page", BlockPageData(), abort, body, error)) return false;
+    const auto data = json::GetObject(body, L"data");
+    const auto blocks = data ? json::GetArray(*data, L"blocks") : std::nullopt;
+    if (blocks) {
+        for (const auto& block : json::Objects(*blocks)) {
+            HomeBlock row;
+            row.code = json::GetString(block, L"blockCode");
+            if (auto element = json::GetObject(block, L"uiElement")) {
+                row.title = TitleOf(*element, L"mainTitle");
+                if (row.title.empty()) row.title = TitleOf(*element, L"subTitle");
+            }
+            const auto creatives = json::GetArray(block, L"creatives");
+            if (!creatives) continue;
+            for (const auto& creative : json::Objects(*creatives)) {
+                const auto resources = json::GetArray(creative, L"resources");
+                if (!resources) continue;
+                for (const auto& resource : json::Objects(*resources)) {
+                    const std::wstring type = json::GetString(resource, L"resourceType");
+                    if (type == L"song") {
+                        const auto ext = json::GetObject(resource, L"resourceExtInfo");
+                        const auto song = ext ? json::GetObject(*ext, L"songData") : std::nullopt;
+                        if (!song) continue;
+                        Song parsed = ParseSong(*song);
+                        if (parsed.coverUrl.empty())
+                            if (auto album = json::GetObject(*song, L"album"))
+                                parsed.coverUrl = json::GetString(*album, L"blurPicUrl");
+                        if (parsed.id) row.songs.push_back(std::move(parsed));
+                    } else if (type == L"list") {
+                        Playlist playlist;
+                        playlist.id = _wtoi64(json::GetString(resource, L"resourceId").c_str());
+                        if (auto element = json::GetObject(resource, L"uiElement")) {
+                            playlist.name = TitleOf(*element, L"mainTitle");
+                            if (auto image = json::GetObject(*element, L"image"))
+                                playlist.coverUrl = json::GetString(*image, L"imageUrl");
+                        }
+                        if (playlist.id && !playlist.name.empty()) row.playlists.push_back(std::move(playlist));
+                    }
+                }
+            }
+            if (!row.songs.empty() || !row.playlists.empty()) out.push_back(std::move(row));
+        }
+    }
+    // The radar playlists, rows of their own on the PC client (best effort).
+    json::Object custom;
+    std::wstring customError;
+    if (!Generic(L"/api/pc/customize/block/page", L"{\"newStyle\":true}", abort, custom, customError)) return true;
+    const auto customData = json::GetObject(custom, L"data");
+    const auto customBlocks = customData ? json::GetArray(*customData, L"blocks") : std::nullopt;
+    if (!customBlocks) return true;
+    for (const auto& block : json::Objects(*customBlocks)) {
+        HomeBlock row;
+        row.code = json::GetString(block, L"code");
+        if (auto element = json::GetObject(block, L"uiElement")) row.title = TitleOf(*element, L"mainTitle");
+        const auto creatives = json::GetArray(block, L"creatives");
+        if (!creatives) continue;
+        for (const auto& creative : json::Objects(*creatives)) {
+            if (json::GetString(creative, L"creativeType") != L"list") continue;
+            Playlist playlist;
+            playlist.id = _wtoi64(json::GetString(creative, L"creativeId").c_str());
+            if (auto element = json::GetObject(creative, L"uiElement")) {
+                playlist.name = TitleOf(*element, L"mainTitle");
+                if (auto images = json::GetArray(*element, L"images"))
+                    for (const auto& image : json::Objects(*images)) {
+                        playlist.coverUrl = PlainImage(json::GetString(image, L"imageUrl"));
+                        break;
+                    }
+            }
+            if (playlist.id && !playlist.name.empty()) row.playlists.push_back(std::move(playlist));
+        }
+        if (!row.playlists.empty()) out.push_back(std::move(row));
+    }
+    return true;
+}
+
+bool Client::StyleDailySongs(std::wstring_view category, std::wstring_view tag, std::wstring_view songs,
+                             abort_callback& abort, std::vector<Song>& out, std::wstring& error) {
+    out.clear();
+    json::Object body;
+    const std::wstring data = L"{\"source\":\"homepage\",\"categoryId\":\"" + std::wstring(category) +
+                              L"\",\"tagId\":\"" + std::wstring(tag) + L"\",\"songId\":\"" + std::wstring(songs) +
+                              L"\"}";
+    if (!Generic(L"/api/homepage/category/daily/song/list", data, abort, body, error)) return false;
+    const auto payload = json::GetObject(body, L"data");
+    const auto list = payload ? json::GetArray(*payload, L"dailySongs") : std::nullopt;
+    if (list)
+        for (const auto& object : json::Objects(*list)) {
+            Song song = ParseSong(object);
+            if (song.id) out.push_back(std::move(song));
+        }
+    return true;
+}
+
+bool Client::PersonalFm(abort_callback& abort, std::vector<Song>& out, std::wstring& error) {
+    out.clear();
+    json::Object body;
+    int code = 0;
+    if (!Request(L"/personal_fm", {}, false, abort, body, code, error)) return false;
+    if (code != 200) {
+        error = MessageOf(body, code);
+        return false;
+    }
+    if (const auto list = json::GetArray(body, L"data"))
+        for (const auto& object : json::Objects(*list)) {
+            Song song = ParseSong(object);
+            if (song.id) out.push_back(std::move(song));
+        }
+    return true;
+}
+
+bool Client::FmMode(std::wstring_view mode, std::wstring_view sourceIds, abort_callback& abort,
+                    std::vector<Song>& out, std::wstring& error) {
+    out.clear();
+    std::wstring escaped; // the ids' JSON text inside the JSON body
+    for (const wchar_t c : sourceIds) {
+        if (c == L'"' || c == L'\\') escaped += L'\\';
+        escaped += c;
+    }
+    json::Object body;
+    if (!Generic(L"/api/v1/radio/get",
+                 L"{\"imageFm\":1,\"mode\":\"" + std::wstring(mode) + L"\",\"sourceIds\":\"" + escaped + L"\"}",
+                 abort, body, error))
+        return false;
+    if (const auto list = json::GetArray(body, L"data"))
+        for (const auto& object : json::Objects(*list)) {
+            Song song = ParseSong(object);
+            if (song.id) out.push_back(std::move(song));
+        }
+    return true;
+}
+
+bool Client::Heartbeat(int64_t seed, int64_t likedPlaylist, abort_callback& abort, std::vector<Song>& out,
+                       std::wstring& error) {
+    out.clear();
+    json::Object body;
+    int code = 0;
+    if (!Request(L"/playmode/intelligence/list",
+                 {{L"id", std::to_wstring(seed)}, {L"pid", std::to_wstring(likedPlaylist)}}, false, abort, body,
+                 code, error))
+        return false;
+    if (code != 200) {
+        error = MessageOf(body, code);
+        return false;
+    }
+    if (const auto list = json::GetArray(body, L"data"))
+        for (const auto& object : json::Objects(*list))
+            if (const auto info = json::GetObject(object, L"songInfo")) {
+                Song song = ParseSong(*info);
+                if (song.id) out.push_back(std::move(song));
+            }
+    return true;
+}
+
+bool Client::FmTrash(int64_t songId, abort_callback& abort, std::wstring& error) {
+    json::Object body;
+    int code = 0;
+    if (!Request(L"/fm_trash", {{L"id", std::to_wstring(songId)}}, true, abort, body, code, error)) return false;
+    if (code != 200) {
+        error = MessageOf(body, code);
+        return false;
+    }
+    return true;
+}
+
+bool Client::DailySongs(abort_callback& abort, std::vector<Song>& out, std::wstring& error) {
+    out.clear();
+    json::Object body;
+    int code = 0;
+    if (!Request(L"/recommend/songs", {}, false, abort, body, code, error)) return false;
+    if (code != 200) {
+        error = MessageOf(body, code);
+        return false;
+    }
+    const auto data = json::GetObject(body, L"data");
+    const auto songs = data ? json::GetArray(*data, L"dailySongs") : std::nullopt;
+    if (songs)
+        for (const auto& object : json::Objects(*songs)) {
+            Song song = ParseSong(object);
+            if (song.id) out.push_back(std::move(song));
+        }
+    return true;
+}
+
+bool Client::SearchSongs(std::wstring_view query, int limit, int offset, abort_callback& abort,
+                         std::vector<Song>& out, std::wstring& error) {
+    SearchPage page;
+    return SearchSongsPage(query, limit, offset, abort, out, page, error);
+}
+
+bool Client::CloudSearch(std::wstring_view query, int type, int limit, int offset, const wchar_t* rowsKey,
+                         const wchar_t* countKey, abort_callback& abort, std::vector<json::Object>& rows,
+                         SearchPage& page, std::wstring& error) {
+    rows.clear();
+    page = {};
     json::Object body;
     int code = 0;
     if (!Request(L"/cloudsearch",
                  {{L"keywords", std::wstring(query)},
-                  {L"type", L"1"},
+                  {L"type", std::to_wstring(type)},
                   {L"limit", std::to_wstring(limit)},
                   {L"offset", std::to_wstring(offset)}},
                  false, abort, body, code, error))
@@ -597,32 +867,179 @@ bool Client::SearchSongsPage(std::wstring_view query, int limit, int offset, abo
         return false;
     }
     auto result = json::GetObject(body, L"result");
-    std::optional<json::Array> songs;
-    if (result) songs = json::GetArray(*result, L"songs");
-    if (!songs) songs = json::GetArray(body, L"songs");
-    if (songs) {
-        received = songs->Size();
-        for (const auto& object : json::Objects(*songs)) {
-            Song song = ParseSong(object);
-            if (song.id) out.push_back(std::move(song));
-        }
+    std::optional<json::Array> array;
+    if (result) array = json::GetArray(*result, rowsKey);
+    if (!array) array = json::GetArray(body, rowsKey);
+    if (array) {
+        page.received = array->Size();
+        rows = json::Objects(*array);
     }
-    const auto setTotal = [&total](int64_t count) {
+    const auto setTotal = [&page](int64_t count) {
         if (count >= 0 && static_cast<uint64_t>(count) <= std::numeric_limits<size_t>::max())
-            total = static_cast<size_t>(count);
+            page.total = static_cast<size_t>(count);
     };
-    if (result && result->HasKey(L"songCount"))
-        setTotal(json::GetInt64(*result, L"songCount"));
-    else if (body.HasKey(L"songCount"))
-        setTotal(json::GetInt64(body, L"songCount"));
-    if (total) {
-        const auto end = static_cast<uint64_t>(offset) + received;
-        more = end < *total;
+    if (result && result->HasKey(countKey))
+        setTotal(json::GetInt64(*result, countKey));
+    else if (body.HasKey(countKey))
+        setTotal(json::GetInt64(body, countKey));
+    if (page.total) {
+        page.more = static_cast<uint64_t>(offset) + page.received < *page.total;
     } else {
-        // The endpoint normally reports songCount. A full short page is the conservative
-        // fallback; an empty page always terminates.
-        more = received != 0 && limit > 0 && received >= static_cast<size_t>(limit);
+        // The endpoint normally reports its count. A full page is the conservative fallback;
+        // an empty page always terminates.
+        page.more = page.received != 0 && limit > 0 && page.received >= static_cast<size_t>(limit);
     }
+    return true;
+}
+
+bool Client::SearchSongsPage(std::wstring_view query, int limit, int offset, abort_callback& abort,
+                             std::vector<Song>& out, SearchPage& page, std::wstring& error) {
+    out.clear();
+    std::vector<json::Object> rows;
+    if (!CloudSearch(query, 1, limit, offset, L"songs", L"songCount", abort, rows, page, error)) return false;
+    for (const auto& object : rows)
+        if (Song song = ParseSong(object); song.id) out.push_back(std::move(song));
+    return true;
+}
+
+bool Client::SearchAlbumsPage(std::wstring_view query, int limit, int offset, abort_callback& abort,
+                              std::vector<Album>& out, SearchPage& page, std::wstring& error) {
+    out.clear();
+    std::vector<json::Object> rows;
+    if (!CloudSearch(query, 10, limit, offset, L"albums", L"albumCount", abort, rows, page, error)) return false;
+    for (const auto& object : rows)
+        if (Album album = ParseAlbum(object); album.id) out.push_back(std::move(album));
+    return true;
+}
+
+bool Client::SearchArtistsPage(std::wstring_view query, int limit, int offset, abort_callback& abort,
+                               std::vector<Artist>& out, SearchPage& page, std::wstring& error) {
+    out.clear();
+    std::vector<json::Object> rows;
+    if (!CloudSearch(query, 100, limit, offset, L"artists", L"artistCount", abort, rows, page, error))
+        return false;
+    for (const auto& object : rows)
+        if (Artist artist = ParseArtist(object); artist.id) out.push_back(std::move(artist));
+    return true;
+}
+
+bool Client::SearchPlaylistsPage(std::wstring_view query, int limit, int offset, abort_callback& abort,
+                                 std::vector<Playlist>& out, SearchPage& page, std::wstring& error) {
+    out.clear();
+    std::vector<json::Object> rows;
+    if (!CloudSearch(query, 1000, limit, offset, L"playlists", L"playlistCount", abort, rows, page, error))
+        return false;
+    for (const auto& object : rows)
+        if (Playlist playlist = ParsePlaylist(object); playlist.id) out.push_back(std::move(playlist));
+    return true;
+}
+
+bool Client::SearchLyricsPage(std::wstring_view query, int limit, int offset, abort_callback& abort,
+                              std::vector<LyricHit>& out, SearchPage& page, std::wstring& error) {
+    out.clear();
+    std::vector<json::Object> rows;
+    if (!CloudSearch(query, 1006, limit, offset, L"songs", L"songCount", abort, rows, page, error)) return false;
+    for (const auto& object : rows) {
+        LyricHit hit;
+        hit.song = ParseSong(object);
+        if (!hit.song.id) continue;
+        // `lyrics` is the song's lyrics, one line per entry; the service marks the match with <b>.
+        if (const auto lines = json::GetArray(object, L"lyrics")) {
+            std::vector<std::wstring> text;
+            size_t match = SIZE_MAX;
+            for (uint32_t i = 0; i < lines->Size(); ++i) {
+                const auto value = lines->GetAt(i);
+                if (!value || value.ValueType() != JsonValueType::String) continue;
+                std::wstring line = value.GetString().c_str();
+                if (match == SIZE_MAX && line.find(L"<b>") != std::wstring::npos) match = text.size();
+                for (const wchar_t* tag : {L"<b>", L"</b>"})
+                    for (size_t at; (at = line.find(tag)) != std::wstring::npos;)
+                        line.erase(at, wcslen(tag));
+                text.push_back(std::move(line));
+            }
+            if (match == SIZE_MAX) match = 0;
+            // The matched line and the two after it, as NetEase's results show them.
+            for (size_t i = match; i < text.size() && i < match + 3; ++i)
+                hit.excerpt += (hit.excerpt.empty() ? L"" : L" / ") + text[i];
+            for (const auto& line : text) hit.text += line + L"\r\n";
+        }
+        out.push_back(std::move(hit));
+    }
+    return true;
+}
+
+namespace {
+
+// A search result object as the record its kind names ("artist", "albums", ...).
+std::optional<SearchHit> ParseHit(std::wstring_view kind, const json::Object& object) {
+    if (kind.starts_with(L"song")) {
+        if (Song song = ParseSong(object); song.id) return song;
+    } else if (kind.starts_with(L"artist")) {
+        if (Artist artist = ParseArtist(object); artist.id) return artist;
+    } else if (kind.starts_with(L"album")) {
+        if (Album album = ParseAlbum(object); album.id) return album;
+    } else if (kind.starts_with(L"playlist")) {
+        if (Playlist playlist = ParsePlaylist(object); playlist.id) return playlist;
+    }
+    return std::nullopt;
+}
+
+// The objects of result.<kind> for each kind the result lists under `orderKey`, in that order.
+std::vector<SearchHit> HitsInOrder(const json::Object& result, const wchar_t* orderKey) {
+    std::vector<SearchHit> hits;
+    const auto order = json::GetArray(result, orderKey);
+    if (!order) return hits;
+    for (uint32_t i = 0; i < order->Size(); ++i) {
+        const auto name = order->GetAt(i);
+        if (!name || name.ValueType() != JsonValueType::String) continue;
+        const std::wstring kind = name.GetString().c_str();
+        if (const auto rows = json::GetArray(result, kind.c_str()))
+            for (const auto& object : json::Objects(*rows))
+                if (auto hit = ParseHit(kind, object)) hits.push_back(std::move(*hit));
+    }
+    return hits;
+}
+
+}  // namespace
+
+bool Client::SearchBestMatches(std::wstring_view query, abort_callback& abort, std::vector<SearchHit>& out,
+                               std::wstring& error) {
+    out.clear();
+    json::Object body;
+    int code = 0;
+    if (!Request(L"/search/multimatch", {{L"keywords", std::wstring(query)}}, false, abort, body, code, error))
+        return false;
+    if (code != 200) {
+        error = MessageOf(body, code);
+        return false;
+    }
+    if (const auto result = json::GetObject(body, L"result")) out = HitsInOrder(*result, L"orders");
+    return true;
+}
+
+bool Client::SearchSuggest(std::wstring_view query, abort_callback& abort, SearchSuggestions& out,
+                           std::wstring& error) {
+    out = {};
+    json::Object body;
+    int code = 0;
+    if (!Request(L"/search/suggest", {{L"keywords", std::wstring(query)}, {L"type", L"mobile"}}, false, abort,
+                 body, code, error))
+        return false;
+    if (code != 200) {
+        error = MessageOf(body, code);
+        return false;
+    }
+    if (const auto result = json::GetObject(body, L"result"))
+        if (const auto matches = json::GetArray(*result, L"allMatch"))
+            for (const auto& match : json::Objects(*matches))
+                if (std::wstring term = json::GetString(match, L"keyword"); !term.empty())
+                    out.terms.push_back(std::move(term));
+    // The top items are a second request; without them the completions still help.
+    json::Object items;
+    std::wstring itemsError;
+    if (Request(L"/search/suggest", {{L"keywords", std::wstring(query)}}, false, abort, items, code, itemsError) &&
+        code == 200)
+        if (const auto result = json::GetObject(items, L"result")) out.items = HitsInOrder(*result, L"order");
     return true;
 }
 

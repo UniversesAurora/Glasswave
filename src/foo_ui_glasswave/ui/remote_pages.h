@@ -22,20 +22,16 @@ View PlaylistView(const stream::Provider& provider, const stream::Id& id, std::w
                   std::optional<stream::Shelf> shelf, stream::Id sectionId = {});
 View ArtistView(const stream::Provider& provider, const stream::Id& id, std::wstring name,
                 stream::Id sectionId = {});
-View AlbumView(const stream::Provider& provider, const stream::Id& id, std::wstring name, const stream::Id& artistId = {},
-               std::wstring artistName = {}, stream::Id sectionId = {});
+View AlbumView(const stream::Provider& provider, const stream::Id& id, std::wstring name, stream::Id sectionId = {});
 View SongView(const stream::Provider& provider, const stream::Id& track, std::wstring title);
+// A home card's daily song list (每日推荐): a page of songs like a playlist's, read again each day.
+View HomeListView(const stream::Provider& provider, const stream::Id& list, std::wstring name);
 View TopTracksView(const stream::Provider& provider, const stream::Id& artistId, std::wstring artistName,
                    stream::Id sectionId = {});
-View CatalogSearchView(const stream::Provider& provider, std::wstring query);
 const wchar_t* ShelfLabel(stream::Shelf shelf);
 
 // Drops provider-owned page state kept for Back/Forward after account or language changes.
 void InvalidateRemotePageCache(std::wstring_view provider);
-
-// Asks for a catalog query and opens its results page. The title and action label use the
-// provider's display name rather than an Apple-specific string.
-void PromptCatalogSearch(PageHost& host, stream::Provider& provider);
 
 // Playlist commands shared by pages, tiles and the navigation pane.
 // The context menu of one playlist (tile or navigation row); onUnsaved runs after an

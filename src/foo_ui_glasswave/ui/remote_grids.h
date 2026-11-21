@@ -96,6 +96,8 @@ public:
     media::ViewStyle GetViewStyle() const override { return media::ViewStyle::Icons; }
     void Activate(size_t row) override;
     void ContextMenu(HWND owner, POINT screen) override;
+    bool CanPlayTile(size_t row) const override { return AlbumAt(row) != nullptr; }
+    void PlayTile(size_t row) override;
 
     void ReplaceAlbums(const std::vector<stream::Album>& albums);
     void AppendAlbums(const std::vector<stream::Album>& albums);
@@ -171,6 +173,8 @@ public:
     void SetViewStyle(media::ViewStyle style) override;
     void Activate(size_t row) override;
     void ContextMenu(HWND owner, POINT screen) override;
+    bool CanPlayTile(size_t row) const override { return m_style == media::ViewStyle::Icons && row < m_rows.size(); }
+    void PlayTile(size_t row) override;
 
     void ReplacePlaylists(const std::vector<stream::Playlist>& playlists);
     void AppendPlaylists(const std::vector<stream::Playlist>& playlists);

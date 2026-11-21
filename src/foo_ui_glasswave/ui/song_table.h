@@ -17,10 +17,14 @@ struct SongTableRow {
     stream::Provider* provider = nullptr;  // nullptr: a local file
     stream::Id trackId, albumId, artistId;  // provider ids (album column links)
     std::wstring title;
+    std::wstring note; // grey after the title (stream::Track::note)
+    std::vector<std::wstring> badges; // tags after the title (stream::Track::badges)
     std::wstring artist;
     std::wstring album;
     std::wstring length;
     std::wstring source;    // provider or "Local Music", when the Source column is shown
+    std::wstring lyric;     // a lyrics search: the line that matched and the two after it
+    std::wstring lyricText; // ... and the lyrics whole
     std::wstring albumKey;  // album grouping key
     std::wstring artKey;
     std::wstring search;    // lower-cased title/artist/album for filtering
@@ -40,6 +44,8 @@ public:
     std::wstring ColumnSetKey() const override;
     size_t Count() const override { return m_visible.size(); }
     std::wstring Cell(size_t row, size_t column) const override;
+    std::wstring CellNote(size_t row, size_t column) const override;
+    std::vector<std::wstring> CellBadges(size_t row, size_t column) const override;
     std::wstring EmptyText() const override { return m_emptyText; }
     bool IsPlaying(size_t row) const override;
     const std::vector<media::RowGroup>* Groups() const override { return &m_groups; }
@@ -79,6 +85,13 @@ public:
 
     // Every visible row, in display order (the page's bulk actions).
     metadb_handle_list VisibleItems() const;
+    // Plays the whole list in display order, ignoring the search filter, from visible `row`.
+    void PlayFrom(size_t row) const;
+    // Only the songs of the row's group (an album in the expanded tile view), from this one.
+    void PlayGroupFrom(size_t row) const;
+    void ActivateGroup(size_t group) override {
+        if (group < m_groups.size() && m_groups[group].count) PlayGroupFrom(m_groups[group].first);
+    }
     // Re-reads the play counts (a track started while this list is on screen).
     void RefreshPlayCounts();
     // Re-reads the favorite flag of every provider row.
@@ -184,6 +197,29 @@ public:
     using RemoteFavorites = std::vector<std::pair<stream::Provider*, std::vector<stream::Track>>>;
     AllFavoritesSource(const std::vector<metadb_handle_ptr>& local, const RemoteFavorites& remote);
     void ReplaceFavorites(const std::vector<metadb_handle_ptr>& local, const RemoteFavorites& remote);
+};
+
+// Songs a search found, from any mix of sources in the order given (a Source column when more
+// than one source answered), with the lyric line that matched for a lyrics search.
+class SearchSongSource : public SongTableSource {
+public:
+    struct Hit {
+        stream::Provider* provider = nullptr;  // nullptr: a local file
+        stream::Track track;                   // provider hits
+        metadb_handle_ptr local;               // local hits
+    };
+    SearchSongSource(const std::vector<Hit>& hits, bool showSource, bool lyrics, std::wstring emptyText);
+    // The hits found so far, a longer list with the same beginning.
+    void ReplaceHits(const std::vector<Hit>& hits);
+    // The whole lyrics of a lyrics search hit (empty for anything else).
+    std::wstring LyricsOf(const metadb_handle_ptr& item) const;
+};
+
+// An audio CD's tracks, in disc order. Playing one makes the queue the disc. `emptyText`
+// says why there are none (no disc, still reading).
+class DiscSource : public SongTableSource {
+public:
+    DiscSource(const metadb_handle_list& tracks, std::wstring emptyText);
 };
 
 // Recently Played / Most Played, rows in the order given, with the Count column shown.

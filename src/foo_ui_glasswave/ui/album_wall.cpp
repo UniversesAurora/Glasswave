@@ -266,18 +266,96 @@ void AlbumWall::Rebuild(bool fillByFalling) {
 // least kMinDeck cards when there are few.
 void AlbumWall::BuildDeck() {
     m_deck.clear();
-    size_t firstColor = m_slots.size();
+    std::vector<size_t> colors;
     for (size_t i = 0; i < m_slots.size(); ++i) {
-        if (!m_slots[i].track.is_valid()) {
-            firstColor = std::min(firstColor, i);
+        if (!m_slots[i].track.is_valid())
+            colors.push_back(i);
+        else if (!m_slots[i].missing)
+            m_deck.push_back(i);
+    }
+    if (colors.empty()) return;
+    for (size_t k = Random() % colors.size(); m_deck.size() < kMinDeck; ++k)
+        m_deck.push_back(colors[k % colors.size()]);
+}
+
+void AlbumWall::UpdateAlbums(std::vector<metadb_handle_ptr> albums) {
+    std::unordered_set<const void*> known;
+    for (const auto& slot : m_slots)
+        if (slot.track.is_valid()) known.insert(slot.track.get_ptr());
+    const bool keeps = std::any_of(albums.begin(), albums.end(),
+                                   [&](const metadb_handle_ptr& track) { return known.count(track.get_ptr()) != 0; });
+    if (!keeps || m_slots.empty()) {
+        SetAlbums(std::move(albums));
+        return;
+    }
+    constexpr int kColorCount = static_cast<int>(std::size(kColors));
+    std::vector<size_t> added;
+    for (auto& track : albums) {
+        if (known.count(track.get_ptr()) || m_slots.size() >= kMaxAlbums + kColorCount) continue;
+        Slot slot;
+        slot.track = std::move(track);
+        slot.color = static_cast<int>(Random() % kColorCount);
+        added.push_back(m_slots.size());
+        m_slots.push_back(std::move(slot));
+    }
+    if (added.empty()) return;
+    BuildDeck();
+    // Somewhere among the next cards (the hand is dealt from its back).
+    for (const size_t slot : added) {
+        const size_t reach = std::min<size_t>(m_hand.size(), 6);
+        const size_t at = m_hand.size() - (reach ? Random() % (reach + 1) : 0);
+        m_hand.insert(m_hand.begin() + static_cast<std::ptrdiff_t>(at), slot);
+        if (m_tile > 0) RequestCover(m_slots[slot]);
+        m_newcomers.push_back(slot);
+    }
+    PlaceNewcomers();
+    Preload();
+}
+
+// New albums whose covers are ready take the places of coloured tiles on the wall, at random.
+void AlbumWall::PlaceNewcomers() {
+    if (m_newcomers.empty() || m_tile <= 0) return;
+    std::vector<Tile*> placeholders;
+    for (auto& row : m_rows)
+        for (auto& tile : row)
+            if (tile.slot < m_slots.size() && !m_slots[tile.slot].track.is_valid()) placeholders.push_back(&tile);
+    std::erase_if(m_newcomers, [this](size_t slot) { return m_slots[slot].missing; });
+    for (size_t i = 0; i < m_newcomers.size() && !placeholders.empty();) {
+        const size_t slot = m_newcomers[i];
+        if (!m_slots[slot].ready) {
+            ++i;
             continue;
         }
-        if (!m_slots[i].missing) m_deck.push_back(i);
+        const size_t pick = Random() % placeholders.size();
+        ShowOnTile(*placeholders[pick], slot);
+        placeholders.erase(placeholders.begin() + static_cast<std::ptrdiff_t>(pick));
+        m_newcomers.erase(m_newcomers.begin() + static_cast<std::ptrdiff_t>(i));
     }
-    const size_t colors = m_slots.size() - firstColor;
-    if (colors == 0) return;
-    for (size_t k = Random() % colors; m_deck.size() < kMinDeck; ++k)
-        m_deck.push_back(firstColor + k % colors);
+}
+
+// A tile changes to another album with the old picture fading out over it (as CrossFade does).
+void AlbumWall::ShowOnTile(Tile& tile, size_t slot) {
+    const auto& comp = gfx::CompositionHost::Get().Compositor();
+    const auto old = tile.visual.Brush();
+    Assign(tile, slot);
+    if (tile.cell != INT64_MIN) m_cells[tile.cell] = slot;
+    if (!old) return;
+    if (!tile.previous) {
+        tile.previous = comp.CreateSpriteVisual();
+        tile.previous.RelativeSizeAdjustment(float2{1, 1});
+        tile.holder.Children().InsertAbove(tile.previous, tile.visual);
+    }
+    tile.previous.Brush(old);
+    auto batch = comp.CreateScopedBatch(wuc::CompositionBatchTypes::Animation);
+    auto fade = comp.CreateScalarKeyFrameAnimation();
+    fade.InsertKeyFrame(0.0f, 1.0f);
+    fade.InsertKeyFrame(1.0f, 0.0f, comp.CreateCubicBezierEasingFunction({0.4f, 0.0f}, {0.2f, 1.0f}));
+    fade.Duration(std::chrono::milliseconds(kArriveMs));
+    tile.previous.StartAnimation(L"Opacity", fade);
+    batch.End();
+    batch.Completed([previous = tile.previous, old](const auto&, const auto&) {
+        if (previous.Brush() == old) previous.Brush(nullptr);
+    });
 }
 
 void AlbumWall::ShuffleIn() {
