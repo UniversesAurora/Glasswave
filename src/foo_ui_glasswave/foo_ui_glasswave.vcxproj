@@ -293,6 +293,10 @@
     <ClCompile Include="ui\main_window_pane.cpp" />
     <ClCompile Include="ui\main_window_player.cpp" />
     <ClCompile Include="ui\main_window_provider.cpp" />
+    <ClCompile Include="ui\player_window_paint.cpp" />
+    <ClCompile Include="ui\player_window_seek.cpp" />
+    <ClCompile Include="ui\player_window_volume.cpp" />
+    <ClCompile Include="ui\player_window_widgets.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="cd\disc.h" />
@@ -444,6 +448,7 @@
     <ClInclude Include="ui\fling.h" />
     <ClInclude Include="ui\win32.h" />
     <ClInclude Include="ui\main_window_parts.h" />
+    <ClInclude Include="ui\player_window_parts.h" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="$(SdkRoot)pfc\pfc.vcxproj">
