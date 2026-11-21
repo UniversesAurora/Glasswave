@@ -23,7 +23,6 @@ namespace glasswave::ui {
 using core::Utf8;
 using core::Wide;
 
-
 namespace {
 
 namespace wuc = winrt::Windows::UI::Composition;
@@ -767,7 +766,7 @@ void CardLayer::UpdateVideo(Card& card) {
         });
         player.MediaFailed([key = card.info.key](auto&&, const playback::MediaPlayerFailedEventArgs& args) {
             core::Log(L"home: motion cover of " + key + L" failed: " + std::wstring(args.ErrorMessage()) +
-                         L" (" + std::to_wstring(static_cast<int>(args.Error())) + L")");
+                      L" (" + std::to_wstring(static_cast<int>(args.Error())) + L")");
         });
         card.player = player;
     } catch (const winrt::hresult_error&) {

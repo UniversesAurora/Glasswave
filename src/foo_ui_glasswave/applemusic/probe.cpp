@@ -933,7 +933,8 @@ void RunProbe(const ProbePaths paths, std::shared_ptr<abort_callback_impl> abort
         try {
             abort->check();
             std::optional<ScopedFixtureProbeTransaction> transaction;
-            if (request->verify_metadata && request->input_path == Catalog::Get().Records().SongPath(stream::Id(kMetadataFixtureId)))
+            if (request->verify_metadata &&
+                request->input_path == Catalog::Get().Records().SongPath(stream::Id(kMetadataFixtureId)))
                 transaction.emplace();
             if (request->atmos) {
                 const ScopedAtmosPlaybackOverride preference(true, request->atmos_output);
@@ -946,7 +947,8 @@ void RunProbe(const ProbePaths paths, std::shared_ptr<abort_callback_impl> abort
         } catch (...) {
             SetFailure(result, L"unexpected_failure");
         }
-        if (request->verify_metadata && request->input_path == Catalog::Get().Records().SongPath(stream::Id(kMetadataFixtureId)))
+        if (request->verify_metadata &&
+            request->input_path == Catalog::Get().Records().SongPath(stream::Id(kMetadataFixtureId)))
             result.fixture_transaction_restored = ProbeTransactionTag() == previousTransaction;
     }
     WriteResult(paths.result, result);

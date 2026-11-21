@@ -24,4 +24,4 @@ std::optional<Array> GetArray(const Object& object, const wchar_t* key);
 std::vector<Object> Objects(const Array& array);
 std::wstring Stringify(const Object& object);
 
-}  // namespace glasswave::core::json
+} // namespace glasswave::core::json

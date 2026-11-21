@@ -21,4 +21,4 @@ std::wstring WideStrict(std::string_view utf8);
 std::wstring LowerAscii(std::wstring_view text);
 std::string LowerAscii(std::string_view text);
 
-}  // namespace glasswave::core
+} // namespace glasswave::core

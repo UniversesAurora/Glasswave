@@ -32,8 +32,8 @@ thread_local bool t_cacheOnly = false;
 thread_local bool t_cacheMiss = false;
 thread_local int t_sizeHint = 0;
 
-using core::Wide;
 using core::Utf8;
+using core::Wide;
 
 bool EndsWith(const std::vector<unsigned char>& bytes, std::initializer_list<unsigned char> suffix) {
     if (bytes.size() < suffix.size()) return false;
@@ -187,9 +187,9 @@ std::wstring_view RunFailureReasonName(RunFailureReason reason) {
 void LogImageRunDiagnostic(std::string_view artKey, unsigned long status, RunFailureReason reason,
                            std::wstring_view detail = {}) noexcept {
     try {
-        core::Log(L"image cache: art=" + Wide(artKey) + L" status=" + std::to_wstring(status) +
-                     L" reason=" + std::wstring(RunFailureReasonName(reason)) +
-                     (detail.empty() ? std::wstring() : L" (" + std::wstring(detail) + L")"));
+        core::Log(L"image cache: art=" + Wide(artKey) + L" status=" + std::to_wstring(status) + L" reason=" +
+                  std::wstring(RunFailureReasonName(reason)) +
+                  (detail.empty() ? std::wstring() : L" (" + std::wstring(detail) + L")"));
     } catch (...) {
         // Diagnostics must never affect image delivery.
     }
@@ -804,8 +804,7 @@ struct Images::Impl {
         m_invalidations.push_back({std::string(prefix), ++m_invalidation});
         for (auto& [digest, flight] : m_flights) {
             (void)digest;
-            if (flight->pending && ArtKeyHasPrefix(flight->pending->artKey, prefix))
-                flight->dirty = true;
+            if (flight->pending && ArtKeyHasPrefix(flight->pending->artKey, prefix)) flight->dirty = true;
         }
         if (m_invalidations.size() > kInvalidationEntries)
             m_invalidations.erase(

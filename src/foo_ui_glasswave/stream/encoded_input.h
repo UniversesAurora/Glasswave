@@ -91,7 +91,8 @@ class EncodedInputBase : public input_stubs {
     // tier): a remembered source is only reused for the same request.
     virtual std::string BeginOpen(abort_callback& abort) = 0;
     // The source a remembered memo names, without a fetcher; nullopt when it cannot be used.
-    virtual std::optional<EncodedSource> Recall(const std::vector<std::string>& memo, abort_callback& abort) = 0;
+    virtual std::optional<EncodedSource> Recall(const std::vector<std::string>& memo,
+                                                abort_callback& abort) = 0;
     // Asks the service. nullopt: the song is skipped as unavailable (the source has said so);
     // there is nothing to decode and the core goes on to the next one.
     virtual std::optional<EncodedSource> Resolve(abort_callback& abort) = 0;
@@ -106,7 +107,9 @@ class EncodedInputBase : public input_stubs {
     virtual void ApplyDynamicMetadata(file_info&) {}
     virtual void ReportFailure(std::string_view /*stage*/, std::string_view /*errorClass*/,
                                std::string_view /*what*/) noexcept {}
-    virtual stream::atmos::OutputTarget AtmosTarget() const { return stream::atmos::OutputTarget::StereoSpeakers; }
+    virtual stream::atmos::OutputTarget AtmosTarget() const {
+        return stream::atmos::OutputTarget::StereoSpeakers;
+    }
 
     // ---- for the source ------------------------------------------------------------------
     bool HasOutput() const noexcept { return m_decoder.is_valid() || m_atmos; }
@@ -122,8 +125,7 @@ class EncodedInputBase : public input_stubs {
     void InvalidateCache() noexcept;
 
     // Runs `fn`; a failure other than an abort invalidates the cache entry and is reported.
-    template <class Fn>
-    decltype(auto) Guarded(std::string_view stage, Fn&& fn) {
+    template <class Fn> decltype(auto) Guarded(std::string_view stage, Fn&& fn) {
         try {
             return fn();
         } catch (const exception_aborted&) {

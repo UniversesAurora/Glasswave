@@ -28,9 +28,9 @@ Session& Ncm() {
     return Session::Get();
 }
 
+using core::LowerAscii;
 using core::Utf8;
 using core::Wide;
-using core::LowerAscii;
 
 std::string SnapshotContext() {
     const std::array<std::string_view, 1> parts{"ncm-bootstrap-v1"};
@@ -544,49 +544,51 @@ void StreamProvider::FetchCatalogSearchSuggestions(CatalogSearchSuggestionQuery 
         if (done) done({}, {});
         return;
     }
-    m_exec.Post(kReadQueue, m_exec.Generation(), [this, query = std::move(query), done = std::move(done)]() mutable {
-        if (ListCancelled(query.cancelled) || m_exec.Abort().is_aborting()) return;
-        std::wstring error;
-        SearchSuggestions found;
-        if (Ncm().Service().EnsureStarted(m_exec.Abort(), &error))
-            Ncm().Api().SearchSuggest(query.term, m_exec.Abort(), found, error);
-        if (m_exec.Abort().is_aborting() || ListCancelled(query.cancelled)) return;
-        CatalogSearchSuggestions suggestions;
-        for (auto& term : found.terms)
-            suggestions.ordered.emplace_back(CatalogSearchSuggestionTerm{term, term});
-        // The suggested songs are summaries (no cover, no quality); they are shown, and opened
-        // through the song page, but never written over a known song's record. Opening a
-        // suggested artist, album or playlist finds it in the catalog.
-        const auto followed = Ncm().FollowedArtists();
-        for (auto& hit : found.items) {
-            std::visit(
-                [&](auto& row) {
-                    using Row = std::decay_t<decltype(row)>;
-                    if constexpr (std::is_same_v<Row, Song>) {
-                        suggestions.ordered.emplace_back(ToTrack(row));
-                    } else if constexpr (std::is_same_v<Row, Artist>) {
-                        Catalog::Get().Records().Put(ToArtist(row));
-                        suggestions.ordered.emplace_back(AccountArtist(row, followed));
-                    } else if constexpr (std::is_same_v<Row, Album>) {
-                        const stream::Album album = ToAlbum(row);
-                        Catalog::Get().Records().Put(album);
-                        suggestions.ordered.emplace_back(album);
-                    } else {
-                        const stream::Playlist playlist = AccountPlaylist(row);
-                        Catalog::Get().Records().Put(playlist);
-                        suggestions.ordered.emplace_back(playlist);
-                    }
-                },
-                hit);
-        }
-        if (!suggestions.ordered.empty()) error.clear();
-        m_exec.PostMain(m_exec.Generation(), [cancelled = query.cancelled, done = std::move(done),
-                            suggestions = std::move(suggestions),
-                            error = error.empty() ? std::wstring() : ErrorOf(std::move(error))]() mutable {
-            if (ListCancelled(cancelled)) return;
-            if (done) done(std::move(suggestions), std::move(error));
+    m_exec.Post(
+        kReadQueue, m_exec.Generation(), [this, query = std::move(query), done = std::move(done)]() mutable {
+            if (ListCancelled(query.cancelled) || m_exec.Abort().is_aborting()) return;
+            std::wstring error;
+            SearchSuggestions found;
+            if (Ncm().Service().EnsureStarted(m_exec.Abort(), &error))
+                Ncm().Api().SearchSuggest(query.term, m_exec.Abort(), found, error);
+            if (m_exec.Abort().is_aborting() || ListCancelled(query.cancelled)) return;
+            CatalogSearchSuggestions suggestions;
+            for (auto& term : found.terms)
+                suggestions.ordered.emplace_back(CatalogSearchSuggestionTerm{term, term});
+            // The suggested songs are summaries (no cover, no quality); they are shown, and opened
+            // through the song page, but never written over a known song's record. Opening a
+            // suggested artist, album or playlist finds it in the catalog.
+            const auto followed = Ncm().FollowedArtists();
+            for (auto& hit : found.items) {
+                std::visit(
+                    [&](auto& row) {
+                        using Row = std::decay_t<decltype(row)>;
+                        if constexpr (std::is_same_v<Row, Song>) {
+                            suggestions.ordered.emplace_back(ToTrack(row));
+                        } else if constexpr (std::is_same_v<Row, Artist>) {
+                            Catalog::Get().Records().Put(ToArtist(row));
+                            suggestions.ordered.emplace_back(AccountArtist(row, followed));
+                        } else if constexpr (std::is_same_v<Row, Album>) {
+                            const stream::Album album = ToAlbum(row);
+                            Catalog::Get().Records().Put(album);
+                            suggestions.ordered.emplace_back(album);
+                        } else {
+                            const stream::Playlist playlist = AccountPlaylist(row);
+                            Catalog::Get().Records().Put(playlist);
+                            suggestions.ordered.emplace_back(playlist);
+                        }
+                    },
+                    hit);
+            }
+            if (!suggestions.ordered.empty()) error.clear();
+            m_exec.PostMain(m_exec.Generation(),
+                            [cancelled = query.cancelled, done = std::move(done),
+                             suggestions = std::move(suggestions),
+                             error = error.empty() ? std::wstring() : ErrorOf(std::move(error))]() mutable {
+                                if (ListCancelled(cancelled)) return;
+                                if (done) done(std::move(suggestions), std::move(error));
+                            });
         });
-    });
 }
 
 namespace {
@@ -671,7 +673,8 @@ void StreamProvider::FetchHome(HomeDone done) {
         if (Ncm().Service().EnsureStarted(m_exec.Abort(), &error)) {
             std::wstring blockError;
             if (!Ncm().Api().HomeCards(m_exec.Abort(), cards, error)) cards.clear();
-            if (!Ncm().Api().HomeBlocks(m_exec.Abort(), blocks, blockError) && error.empty()) error = blockError;
+            if (!Ncm().Api().HomeBlocks(m_exec.Abort(), blocks, blockError) && error.empty())
+                error = blockError;
         }
         if (m_exec.Abort().is_aborting()) return;
         if (!cards.empty() || !blocks.empty()) error.clear();
@@ -713,11 +716,12 @@ void StreamProvider::FetchHome(HomeDone done) {
             }
             if (!shelf.items.empty()) home.shelves.push_back(std::move(shelf));
         }
-        m_exec.PostMain(m_exec.Generation(), [done = std::move(done), home = std::move(home), songs = std::move(songs),
-                            error = error.empty() ? std::wstring() : ErrorOf(std::move(error))]() mutable {
-            if (!songs.empty()) Catalog::Get().PutAndHint(songs);
-            if (done) done(std::move(home), std::move(error));
-        });
+        m_exec.PostMain(m_exec.Generation(),
+                        [done = std::move(done), home = std::move(home), songs = std::move(songs),
+                         error = error.empty() ? std::wstring() : ErrorOf(std::move(error))]() mutable {
+                            if (!songs.empty()) Catalog::Get().PutAndHint(songs);
+                            if (done) done(std::move(home), std::move(error));
+                        });
     });
 }
 
@@ -741,25 +745,30 @@ void StreamProvider::FetchStationTracks(const stream::Id& station, TracksDone do
             if (station == kPersonalFm) {
                 client.PersonalFm(m_exec.Abort(), songs, error);
             } else if (station.starts_with(kSimilar)) {
-                client.FmMode(L"FAMILIAR", std::wstring_view(station).substr(kSimilar.size()), m_exec.Abort(), songs, error);
+                client.FmMode(L"FAMILIAR", std::wstring_view(station).substr(kSimilar.size()), m_exec.Abort(),
+                              songs, error);
             } else {
                 // The first seed is one of the liked songs; later ones, the last song played.
                 int64_t seed = m_heartbeatSeed.load();
                 if (!seed) {
                     std::vector<int64_t> liked;
-                    if (client.Likelist(Ncm().CurrentAccount().userId, m_exec.Abort(), liked, error) && !liked.empty())
+                    if (client.Likelist(Ncm().CurrentAccount().userId, m_exec.Abort(), liked, error) &&
+                        !liked.empty())
                         seed = liked[GetTickCount64() % std::min<size_t>(liked.size(), 50)];
                 }
-                if (seed && client.Heartbeat(seed, Ncm().LikedPlaylistId(), m_exec.Abort(), songs, error) && !songs.empty())
+                if (seed && client.Heartbeat(seed, Ncm().LikedPlaylistId(), m_exec.Abort(), songs, error) &&
+                    !songs.empty())
                     m_heartbeatSeed = songs.back().id;
             }
         }
         if (m_exec.Abort().is_aborting()) return;
-        m_exec.PostMain(m_exec.Generation(), [done = std::move(done), songs = ToSongs(songs),
-                            error = error.empty() ? std::wstring() : ErrorOf(std::move(error))]() mutable {
-            if (!songs.empty()) Catalog::Get().PutAndHint(songs);
-            if (done) done(TracksOf(songs), songs.empty() ? std::move(error) : std::wstring());
-        });
+        m_exec.PostMain(m_exec.Generation(),
+                        [done = std::move(done), songs = ToSongs(songs),
+                         error = error.empty() ? std::wstring() : ErrorOf(std::move(error))]() mutable {
+                            if (!songs.empty()) Catalog::Get().PutAndHint(songs);
+                            if (done)
+                                done(TracksOf(songs), songs.empty() ? std::move(error) : std::wstring());
+                        });
     });
 }
 
@@ -777,7 +786,8 @@ void StreamProvider::DislikeStationTrack(const stream::Id& station, const stream
     m_exec.Post(kReadQueue, m_exec.Generation(), [this, id = Num(track), done = std::move(done)]() mutable {
         if (m_exec.Abort().is_aborting()) return;
         std::wstring error;
-        if (Ncm().Service().EnsureStarted(m_exec.Abort(), &error)) Ncm().Api().FmTrash(id, m_exec.Abort(), error);
+        if (Ncm().Service().EnsureStarted(m_exec.Abort(), &error))
+            Ncm().Api().FmTrash(id, m_exec.Abort(), error);
         fb2k::inMainThread([done = std::move(done), error = error.empty() ? std::wstring() : ErrorOf(std::move(error))] {
             if (done) done(error);
         });
@@ -1038,7 +1048,8 @@ stream::Catalog* StreamProvider::Records() const {
 }
 
 metadb_handle_ptr StreamProvider::ArtItem(stream::ArtKind kind, const Id& id) const {
-    if (kind == stream::ArtKind::Station) return {}; // its stations are cards (personal FM, heartbeat), never tiles
+    if (kind == stream::ArtKind::Station)
+        return {}; // its stations are cards (personal FM, heartbeat), never tiles
     if (kind == stream::ArtKind::Track) return Catalog::Get().Records().Handle(id); // the song itself
     return Catalog::Get().Records().CoverHandle(kind, id);
 }
@@ -1142,8 +1153,10 @@ void StreamProvider::FetchSongDetails(const Id& track, SongDetailsDone done) {
                 details.version = info.originCoverType == 1   ? L"Original"
                                   : info.originCoverType == 2 ? L"Cover"
                                                               : L"";
-                if (info.hiRes) details.traits.push_back(L"Hi-Res Lossless");
-                else if (info.lossless) details.traits.push_back(L"Lossless");
+                if (info.hiRes)
+                    details.traits.push_back(L"Hi-Res Lossless");
+                else if (info.lossless)
+                    details.traits.push_back(L"Lossless");
                 details.genres = info.styles;
                 details.tags = info.tags;
                 details.language = info.language;
@@ -1151,19 +1164,21 @@ void StreamProvider::FetchSongDetails(const Id& track, SongDetailsDone done) {
                 songs.push_back(info.song);
                 std::vector<Song> similar;
                 std::wstring ignored;
-                if (!info.similar.empty() && SongDetailsInBatches(client, Unique(info.similar), m_exec.Abort(), similar, ignored)) {
+                if (!info.similar.empty() &&
+                    SongDetailsInBatches(client, Unique(info.similar), m_exec.Abort(), similar, ignored)) {
                     details.similar = ToTracks(OrderDetails(info.similar, similar));
                     songs.insert(songs.end(), similar.begin(), similar.end());
                 }
             }
         }
         if (m_exec.Abort().is_aborting()) return;
-        m_exec.PostMain(m_exec.Generation(), [done = std::move(done), details = std::move(details), songs = ToSongs(songs),
-                            error = ErrorOf(std::move(error))]() mutable {
-            if (!songs.empty()) Catalog::Get().PutAndHint(songs);
-            if (!details.track.id.empty()) error.clear();
-            if (done) done(std::move(details), std::move(error));
-        });
+        m_exec.PostMain(m_exec.Generation(),
+                        [done = std::move(done), details = std::move(details), songs = ToSongs(songs),
+                         error = ErrorOf(std::move(error))]() mutable {
+                            if (!songs.empty()) Catalog::Get().PutAndHint(songs);
+                            if (!details.track.id.empty()) error.clear();
+                            if (done) done(std::move(details), std::move(error));
+                        });
     });
 }
 
@@ -1186,16 +1201,18 @@ void StreamProvider::RestoreListRecords(const stream::ListPage& page) {
     if (page.artist) records.Restore(*page.artist);
 }
 
-void StreamProvider::PostListPage(stream::ListPageDone done, stream::ListPage page, std::vector<SongRecord> songs,
-                                  std::wstring error, std::shared_ptr<std::atomic_bool> cancelled) {
+void StreamProvider::PostListPage(stream::ListPageDone done, stream::ListPage page,
+                                  std::vector<SongRecord> songs, std::wstring error,
+                                  std::shared_ptr<std::atomic_bool> cancelled) {
     if (ListCancelled(cancelled)) return;
-    m_exec.PostMain(m_exec.Generation(), [this, done = std::move(done), page = std::move(page), songs = std::move(songs),
-                        error = std::move(error), cancelled = std::move(cancelled)]() mutable {
-        if (ListCancelled(cancelled)) return;
-        if (error.empty() && !songs.empty()) Catalog::Get().PutAndHint(songs, false);
-        if (ListCancelled(cancelled)) return;
-        if (done) done(std::move(page), std::move(error));
-    });
+    m_exec.PostMain(m_exec.Generation(),
+                    [this, done = std::move(done), page = std::move(page), songs = std::move(songs),
+                     error = std::move(error), cancelled = std::move(cancelled)]() mutable {
+                        if (ListCancelled(cancelled)) return;
+                        if (error.empty() && !songs.empty()) Catalog::Get().PutAndHint(songs, false);
+                        if (ListCancelled(cancelled)) return;
+                        if (done) done(std::move(page), std::move(error));
+                    });
 }
 
 void StreamProvider::ClearIdSnapshots() {
@@ -1252,316 +1269,320 @@ void StreamProvider::FetchListPage(const stream::ListQuery& query, const stream:
         PostListPage(std::move(done), {}, {}, L"The NetEase provider has not started.", query.cancelled);
         return;
     }
-    m_exec.Post(kReadQueue, m_exec.Generation(), [this, query, cursor, limit, done = std::move(done)]() mutable {
-        if (ListCancelled(query.cancelled) || m_exec.Abort().is_aborting()) return;
-        std::wstring error;
-        if (!Ncm().Service().EnsureStarted(m_exec.Abort(), &error)) {
-            PostListPage(std::move(done), {}, {}, ErrorOf(std::move(error)), query.cancelled);
-            return;
-        }
-        if (ListCancelled(query.cancelled)) return;
+    m_exec.Post(
+        kReadQueue, m_exec.Generation(), [this, query, cursor, limit, done = std::move(done)]() mutable {
+            if (ListCancelled(query.cancelled) || m_exec.Abort().is_aborting()) return;
+            std::wstring error;
+            if (!Ncm().Service().EnsureStarted(m_exec.Abort(), &error)) {
+                PostListPage(std::move(done), {}, {}, ErrorOf(std::move(error)), query.cancelled);
+                return;
+            }
+            if (ListCancelled(query.cancelled)) return;
 
-        Client& client = Ncm().Api();
-        const auto snapshots = m_idSnapshots;
-        if (!snapshots) {
-            PostListPage(std::move(done), {}, {}, L"The NetEase list cache is unavailable.", query.cancelled);
-            return;
-        }
-        const uint64_t accountRevision = cache::AccountRevision("ncm");
-        stream::ListPage page;
-        std::vector<SongRecord> hintSongs; // the page's songs, for the catalog
-        std::vector<Song> found; // what the client read, before it is converted
+            Client& client = Ncm().Api();
+            const auto snapshots = m_idSnapshots;
+            if (!snapshots) {
+                PostListPage(std::move(done), {}, {}, L"The NetEase list cache is unavailable.",
+                             query.cancelled);
+                return;
+            }
+            const uint64_t accountRevision = cache::AccountRevision("ncm");
+            stream::ListPage page;
+            std::vector<SongRecord> hintSongs; // the page's songs, for the catalog
+            std::vector<Song> found;           // what the client read, before it is converted
 
-        switch (query.kind) {
-        case stream::ListKind::PlaylistTracks: {
-            const int64_t playlistId = Num(query.id);
-            if (!playlistId) {
-                error = L"The playlist id is invalid.";
+            switch (query.kind) {
+            case stream::ListKind::PlaylistTracks: {
+                const int64_t playlistId = Num(query.id);
+                if (!playlistId) {
+                    error = L"The playlist id is invalid.";
+                    break;
+                }
+                if (cursor.offset != 0 && cursor.value.empty()) {
+                    error = L"The playlist cursor has no snapshot revision.";
+                    break;
+                }
+                std::shared_ptr<const IdSnapshotStore::Snapshot> snapshot;
+                if (!snapshots->PageFromIdSnapshot(
+                        {accountRevision, IdSnapshotStore::Kind::Playlist, playlistId},
+                        IdSnapshotStore::kPlaylistWording, cursor, limit, client, m_exec.Abort(),
+                        [&](std::vector<int64_t>& ids, Playlist& info, std::wstring& revision,
+                            std::wstring& fetchError) {
+                            PlaylistSnapshot fresh;
+                            if (!client.GetPlaylistSnapshot(playlistId, m_exec.Abort(), fresh, fetchError))
+                                return false;
+                            revision = IdsRevision(accountRevision, fresh.trackIds, fresh.trackUpdateTime);
+                            ids = std::move(fresh.trackIds);
+                            info = std::move(fresh.info);
+                            return true;
+                        },
+                        page, hintSongs, snapshot, error))
+                    break;
+                page.playlist = AccountPlaylist(snapshot->info);
+                Catalog::Get().Records().Put(*page.playlist);
                 break;
             }
-            if (cursor.offset != 0 && cursor.value.empty()) {
-                error = L"The playlist cursor has no snapshot revision.";
-                break;
-            }
-            std::shared_ptr<const IdSnapshotStore::Snapshot> snapshot;
-            if (!snapshots->PageFromIdSnapshot(
-                    {accountRevision, IdSnapshotStore::Kind::Playlist, playlistId},
-                    IdSnapshotStore::kPlaylistWording, cursor, limit, client, m_exec.Abort(),
-                    [&](std::vector<int64_t>& ids, Playlist& info, std::wstring& revision,
+            case stream::ListKind::Favorites: {
+                const int64_t userId = Ncm().CurrentAccount().userId;
+                if (!userId) {
+                    error = L"The NetEase account is not ready. Refresh the library and try again.";
+                    break;
+                }
+                if (cursor.offset != 0 && cursor.value.empty()) {
+                    error = L"The favorites cursor has no snapshot revision.";
+                    break;
+                }
+                std::shared_ptr<const IdSnapshotStore::Snapshot> snapshot;
+                snapshots->PageFromIdSnapshot(
+                    {accountRevision, IdSnapshotStore::Kind::Favorites, 0},
+                    IdSnapshotStore::kFavoritesWording, cursor, limit, client, m_exec.Abort(),
+                    [&](std::vector<int64_t>& ids, Playlist&, std::wstring& revision,
                         std::wstring& fetchError) {
-                        PlaylistSnapshot fresh;
-                        if (!client.GetPlaylistSnapshot(playlistId, m_exec.Abort(), fresh, fetchError))
-                            return false;
-                        revision = IdsRevision(accountRevision, fresh.trackIds, fresh.trackUpdateTime);
-                        ids = std::move(fresh.trackIds);
-                        info = std::move(fresh.info);
+                        if (!client.Likelist(userId, m_exec.Abort(), ids, fetchError)) return false;
+                        revision = IdsRevision(accountRevision, ids);
                         return true;
                     },
-                    page, hintSongs, snapshot, error))
-                break;
-            page.playlist = AccountPlaylist(snapshot->info);
-            Catalog::Get().Records().Put(*page.playlist);
-            break;
-        }
-        case stream::ListKind::Favorites: {
-            const int64_t userId = Ncm().CurrentAccount().userId;
-            if (!userId) {
-                error = L"The NetEase account is not ready. Refresh the library and try again.";
+                    page, hintSongs, snapshot, error);
                 break;
             }
-            if (cursor.offset != 0 && cursor.value.empty()) {
-                error = L"The favorites cursor has no snapshot revision.";
-                break;
-            }
-            std::shared_ptr<const IdSnapshotStore::Snapshot> snapshot;
-            snapshots->PageFromIdSnapshot(
-                {accountRevision, IdSnapshotStore::Kind::Favorites, 0}, IdSnapshotStore::kFavoritesWording,
-                cursor, limit, client, m_exec.Abort(),
-                [&](std::vector<int64_t>& ids, Playlist&, std::wstring& revision, std::wstring& fetchError) {
-                    if (!client.Likelist(userId, m_exec.Abort(), ids, fetchError)) return false;
-                    revision = IdsRevision(accountRevision, ids);
-                    return true;
-                },
-                page, hintSongs, snapshot, error);
-            break;
-        }
-        case stream::ListKind::HomeList: {
-            stream::Playlist info;
-            info.id = query.id;
-            if (query.id == kDailyList) {
-                info.name = L"每日推荐";
-                info.tagline = L"根据你的音乐口味生成，每天6:00更新";
-                client.DailySongs(m_exec.Abort(), found, error);
-            } else if (query.id.starts_with(kStyleList)) {
-                std::vector<std::wstring> parts;
-                std::wstring_view rest = std::wstring_view(query.id).substr(kStyleList.size());
-                for (size_t i = 0; i < 2; ++i) {
-                    const size_t colon = rest.find(L':');
-                    parts.emplace_back(rest.substr(0, colon));
-                    rest = colon == std::wstring_view::npos ? std::wstring_view() : rest.substr(colon + 1);
-                }
-                info.tagline = L"根据你的音乐口味生成，每天更新";
-                client.StyleDailySongs(parts[0], parts[1], rest, m_exec.Abort(), found, error);
-            } else {
-                error = L"This list is unavailable.";
-                break;
-            }
-            hintSongs = ToSongs(found);
-            page.rows = TracksOf(hintSongs);
-            page.playlist = std::move(info);
-            page.total = hintSongs.size();
-            break;
-        }
-        case stream::ListKind::AlbumTracks: {
-            const int64_t albumId = Num(query.id);
-            if (!albumId) {
-                error = L"The album id is invalid.";
-                break;
-            }
-            Album info;
-            if (!client.GetAlbum(albumId, m_exec.Abort(), info, found, error)) break;
-            hintSongs = ToSongs(found);
-            page.rows = TracksOf(hintSongs);
-            page.album = ToAlbum(info);
-            page.total = hintSongs.size();
-            Catalog::Get().Records().Put(*page.album);
-            break;
-        }
-        case stream::ListKind::ArtistTopTracks: {
-            const int64_t artistId = Num(query.id);
-            if (!artistId) {
-                error = L"The artist id is invalid.";
-                break;
-            }
-            OffsetWindow window;
-            if (!OffsetWindowOf(cursor, limit, window, error)) break;
-            bool more = false;
-            size_t received = 0;
-            if (!client.GetArtistSongsPage(artistId, window.offset, window.count, L"hot", m_exec.Abort(), found,
-                                           &more, error, &received))
-                break;
-            hintSongs = ToSongs(found);
-            page.rows = TracksOf(hintSongs);
-            stream::SetOffsetNext(page, cursor, received, more);
-            break;
-        }
-        case stream::ListKind::ArtistAlbums: {
-            const int64_t artistId = Num(query.id);
-            if (!artistId) {
-                error = L"The artist id is invalid.";
-                break;
-            }
-            OffsetWindow window;
-            if (!OffsetWindowOf(cursor, limit, window, error)) break;
-            std::vector<Album> albums;
-            bool more = false;
-            size_t received = 0;
-            if (!client.GetArtistAlbumsPage(artistId, window.offset, window.count, m_exec.Abort(), albums, nullptr,
-                                            &more, error, &received))
-                break;
-            auto rows = ToAlbums(albums);
-            Catalog::Get().Records().Put(rows);
-            page.rows = std::move(rows);
-            stream::SetOffsetNext(page, cursor, received, more);
-            break;
-        }
-        case stream::ListKind::SavedAlbums: {
-            OffsetWindow window;
-            if (!OffsetWindowOf(cursor, limit, window, error)) break;
-            std::vector<Album> albums;
-            bool more = false;
-            size_t received = 0;
-            if (!client.GetCollectedAlbumsPage(window.offset, window.count, m_exec.Abort(), albums, more, error,
-                                               &received))
-                break;
-            auto rows = ToAlbums(albums);
-            Catalog::Get().Records().Put(rows);
-            page.rows = std::move(rows);
-            stream::SetOffsetNext(page, cursor, received, more);
-            break;
-        }
-        case stream::ListKind::ArtistSimilarArtists: {
-            const int64_t artistId = Num(query.id);
-            if (!artistId) {
-                error = L"The artist id is invalid.";
-                break;
-            }
-            std::vector<Artist> artists;
-            if (!client.GetSimilarArtists(artistId, m_exec.Abort(), artists, error)) break;
-            auto rows = AccountArtists(artists);
-            Catalog::Get().Records().Put(rows);
-            page.total = rows.size();
-            page.rows = std::move(rows);
-            break;
-        }
-        case stream::ListKind::FollowedArtists: {
-            OffsetWindow window;
-            if (!OffsetWindowOf(cursor, limit, window, error)) break;
-            std::vector<Artist> artists;
-            bool more = false;
-            size_t received = 0;
-            if (!client.GetFollowedArtistsPage(window.offset, window.count, m_exec.Abort(), artists, more, received,
-                                               error))
-                break;
-            auto rows = AccountArtists(artists);
-            Catalog::Get().Records().Put(rows);
-            page.rows = std::move(rows);
-            stream::SetOffsetNext(page, cursor, received, more);
-            break;
-        }
-        case stream::ListKind::CatalogSearch:
-        case stream::ListKind::CatalogSearchAlbums:
-        case stream::ListKind::CatalogSearchArtists:
-        case stream::ListKind::CatalogSearchPlaylists:
-        case stream::ListKind::CatalogSearchLyrics: {
-            OffsetWindow window;
-            if (!OffsetWindowOf(cursor, limit, window, error)) break;
-            SearchPage searched;
-            bool ok = false;
-            if (query.kind == stream::ListKind::CatalogSearch) {
-                ok = client.SearchSongsPage(query.search, window.count, window.offset, m_exec.Abort(), found,
-                                         searched, error);
-                if (ok) {
-                    hintSongs = ToSongs(found);
-                    page.rows = TracksOf(hintSongs);
-                }
-            } else if (query.kind == stream::ListKind::CatalogSearchAlbums) {
-                std::vector<Album> albums;
-                ok = client.SearchAlbumsPage(query.search, window.count, window.offset, m_exec.Abort(), albums,
-                                         searched, error);
-                if (ok) {
-                    auto rows = ToAlbums(albums);
-                    Catalog::Get().Records().Put(rows);
-                    page.rows = std::move(rows);
-                }
-            } else if (query.kind == stream::ListKind::CatalogSearchArtists) {
-                std::vector<Artist> artists;
-                ok = client.SearchArtistsPage(query.search, window.count, window.offset, m_exec.Abort(), artists,
-                                         searched, error);
-                if (ok) {
-                    auto rows = AccountArtists(artists);
-                    Catalog::Get().Records().Put(rows);
-                    page.rows = std::move(rows);
-                }
-            } else if (query.kind == stream::ListKind::CatalogSearchPlaylists) {
-                std::vector<Playlist> playlists;
-                ok = client.SearchPlaylistsPage(query.search, window.count, window.offset, m_exec.Abort(), playlists,
-                                         searched, error);
-                if (ok) {
-                    auto rows = AccountPlaylists(playlists);
-                    Catalog::Get().Records().Put(rows);
-                    page.rows = std::move(rows);
-                }
-            } else {
-                std::vector<LyricHit> hits;
-                ok = client.SearchLyricsPage(query.search, window.count, window.offset, m_exec.Abort(), hits,
-                                         searched, error);
-                if (ok) {
-                    std::vector<stream::Track> tracks;
-                    for (auto& hit : hits) {
-                        hintSongs.push_back(ToSong(hit.song));
-                        tracks.push_back(hintSongs.back().track);
-                        tracks.back().lyricMatch = std::move(hit.excerpt);
-                        tracks.back().lyricText = std::move(hit.text);
+            case stream::ListKind::HomeList: {
+                stream::Playlist info;
+                info.id = query.id;
+                if (query.id == kDailyList) {
+                    info.name = L"每日推荐";
+                    info.tagline = L"根据你的音乐口味生成，每天6:00更新";
+                    client.DailySongs(m_exec.Abort(), found, error);
+                } else if (query.id.starts_with(kStyleList)) {
+                    std::vector<std::wstring> parts;
+                    std::wstring_view rest = std::wstring_view(query.id).substr(kStyleList.size());
+                    for (size_t i = 0; i < 2; ++i) {
+                        const size_t colon = rest.find(L':');
+                        parts.emplace_back(rest.substr(0, colon));
+                        rest =
+                            colon == std::wstring_view::npos ? std::wstring_view() : rest.substr(colon + 1);
                     }
-                    page.rows = std::move(tracks);
+                    info.tagline = L"根据你的音乐口味生成，每天更新";
+                    client.StyleDailySongs(parts[0], parts[1], rest, m_exec.Abort(), found, error);
+                } else {
+                    error = L"This list is unavailable.";
+                    break;
                 }
+                hintSongs = ToSongs(found);
+                page.rows = TracksOf(hintSongs);
+                page.playlist = std::move(info);
+                page.total = hintSongs.size();
+                break;
             }
-            if (!ok) break;
-            page.total = searched.total;
-            stream::SetOffsetNext(page, cursor, searched.received, searched.more);
-            break;
-        }
-        case stream::ListKind::CatalogSearchTopResults: {
-            // NetEase's best matches are one short list (an artist, an album) without pages.
-            std::vector<SearchHit> hits;
-            if (!client.SearchBestMatches(query.search, m_exec.Abort(), hits, error)) break;
-            std::vector<stream::CatalogSearchItem> items;
-            for (auto& hit : hits) {
-                std::visit(
-                    [&](auto& row) {
-                        using Row = std::decay_t<decltype(row)>;
-                        if constexpr (std::is_same_v<Row, Song>) {
-                            hintSongs.push_back(ToSong(row));
-                            items.emplace_back(hintSongs.back().track);
-                        } else if constexpr (std::is_same_v<Row, Artist>) {
-                            stream::Artist artist = AccountArtist(row, Ncm().FollowedArtists());
-                            Catalog::Get().Records().Put(artist);
-                            items.emplace_back(std::move(artist));
-                        } else if constexpr (std::is_same_v<Row, Album>) {
-                            stream::Album album = ToAlbum(row);
-                            Catalog::Get().Records().Put(album);
-                            items.emplace_back(std::move(album));
-                        } else {
-                            stream::Playlist playlist = AccountPlaylist(row);
-                            Catalog::Get().Records().Put(playlist);
-                            items.emplace_back(std::move(playlist));
+            case stream::ListKind::AlbumTracks: {
+                const int64_t albumId = Num(query.id);
+                if (!albumId) {
+                    error = L"The album id is invalid.";
+                    break;
+                }
+                Album info;
+                if (!client.GetAlbum(albumId, m_exec.Abort(), info, found, error)) break;
+                hintSongs = ToSongs(found);
+                page.rows = TracksOf(hintSongs);
+                page.album = ToAlbum(info);
+                page.total = hintSongs.size();
+                Catalog::Get().Records().Put(*page.album);
+                break;
+            }
+            case stream::ListKind::ArtistTopTracks: {
+                const int64_t artistId = Num(query.id);
+                if (!artistId) {
+                    error = L"The artist id is invalid.";
+                    break;
+                }
+                OffsetWindow window;
+                if (!OffsetWindowOf(cursor, limit, window, error)) break;
+                bool more = false;
+                size_t received = 0;
+                if (!client.GetArtistSongsPage(artistId, window.offset, window.count, L"hot", m_exec.Abort(),
+                                               found, &more, error, &received))
+                    break;
+                hintSongs = ToSongs(found);
+                page.rows = TracksOf(hintSongs);
+                stream::SetOffsetNext(page, cursor, received, more);
+                break;
+            }
+            case stream::ListKind::ArtistAlbums: {
+                const int64_t artistId = Num(query.id);
+                if (!artistId) {
+                    error = L"The artist id is invalid.";
+                    break;
+                }
+                OffsetWindow window;
+                if (!OffsetWindowOf(cursor, limit, window, error)) break;
+                std::vector<Album> albums;
+                bool more = false;
+                size_t received = 0;
+                if (!client.GetArtistAlbumsPage(artistId, window.offset, window.count, m_exec.Abort(), albums,
+                                                nullptr, &more, error, &received))
+                    break;
+                auto rows = ToAlbums(albums);
+                Catalog::Get().Records().Put(rows);
+                page.rows = std::move(rows);
+                stream::SetOffsetNext(page, cursor, received, more);
+                break;
+            }
+            case stream::ListKind::SavedAlbums: {
+                OffsetWindow window;
+                if (!OffsetWindowOf(cursor, limit, window, error)) break;
+                std::vector<Album> albums;
+                bool more = false;
+                size_t received = 0;
+                if (!client.GetCollectedAlbumsPage(window.offset, window.count, m_exec.Abort(), albums, more,
+                                                   error, &received))
+                    break;
+                auto rows = ToAlbums(albums);
+                Catalog::Get().Records().Put(rows);
+                page.rows = std::move(rows);
+                stream::SetOffsetNext(page, cursor, received, more);
+                break;
+            }
+            case stream::ListKind::ArtistSimilarArtists: {
+                const int64_t artistId = Num(query.id);
+                if (!artistId) {
+                    error = L"The artist id is invalid.";
+                    break;
+                }
+                std::vector<Artist> artists;
+                if (!client.GetSimilarArtists(artistId, m_exec.Abort(), artists, error)) break;
+                auto rows = AccountArtists(artists);
+                Catalog::Get().Records().Put(rows);
+                page.total = rows.size();
+                page.rows = std::move(rows);
+                break;
+            }
+            case stream::ListKind::FollowedArtists: {
+                OffsetWindow window;
+                if (!OffsetWindowOf(cursor, limit, window, error)) break;
+                std::vector<Artist> artists;
+                bool more = false;
+                size_t received = 0;
+                if (!client.GetFollowedArtistsPage(window.offset, window.count, m_exec.Abort(), artists, more,
+                                                   received, error))
+                    break;
+                auto rows = AccountArtists(artists);
+                Catalog::Get().Records().Put(rows);
+                page.rows = std::move(rows);
+                stream::SetOffsetNext(page, cursor, received, more);
+                break;
+            }
+            case stream::ListKind::CatalogSearch:
+            case stream::ListKind::CatalogSearchAlbums:
+            case stream::ListKind::CatalogSearchArtists:
+            case stream::ListKind::CatalogSearchPlaylists:
+            case stream::ListKind::CatalogSearchLyrics: {
+                OffsetWindow window;
+                if (!OffsetWindowOf(cursor, limit, window, error)) break;
+                SearchPage searched;
+                bool ok = false;
+                if (query.kind == stream::ListKind::CatalogSearch) {
+                    ok = client.SearchSongsPage(query.search, window.count, window.offset, m_exec.Abort(),
+                                                found, searched, error);
+                    if (ok) {
+                        hintSongs = ToSongs(found);
+                        page.rows = TracksOf(hintSongs);
+                    }
+                } else if (query.kind == stream::ListKind::CatalogSearchAlbums) {
+                    std::vector<Album> albums;
+                    ok = client.SearchAlbumsPage(query.search, window.count, window.offset, m_exec.Abort(),
+                                                 albums, searched, error);
+                    if (ok) {
+                        auto rows = ToAlbums(albums);
+                        Catalog::Get().Records().Put(rows);
+                        page.rows = std::move(rows);
+                    }
+                } else if (query.kind == stream::ListKind::CatalogSearchArtists) {
+                    std::vector<Artist> artists;
+                    ok = client.SearchArtistsPage(query.search, window.count, window.offset, m_exec.Abort(),
+                                                  artists, searched, error);
+                    if (ok) {
+                        auto rows = AccountArtists(artists);
+                        Catalog::Get().Records().Put(rows);
+                        page.rows = std::move(rows);
+                    }
+                } else if (query.kind == stream::ListKind::CatalogSearchPlaylists) {
+                    std::vector<Playlist> playlists;
+                    ok = client.SearchPlaylistsPage(query.search, window.count, window.offset, m_exec.Abort(),
+                                                    playlists, searched, error);
+                    if (ok) {
+                        auto rows = AccountPlaylists(playlists);
+                        Catalog::Get().Records().Put(rows);
+                        page.rows = std::move(rows);
+                    }
+                } else {
+                    std::vector<LyricHit> hits;
+                    ok = client.SearchLyricsPage(query.search, window.count, window.offset, m_exec.Abort(),
+                                                 hits, searched, error);
+                    if (ok) {
+                        std::vector<stream::Track> tracks;
+                        for (auto& hit : hits) {
+                            hintSongs.push_back(ToSong(hit.song));
+                            tracks.push_back(hintSongs.back().track);
+                            tracks.back().lyricMatch = std::move(hit.excerpt);
+                            tracks.back().lyricText = std::move(hit.text);
                         }
-                    },
-                    hit);
+                        page.rows = std::move(tracks);
+                    }
+                }
+                if (!ok) break;
+                page.total = searched.total;
+                stream::SetOffsetNext(page, cursor, searched.received, searched.more);
+                break;
             }
-            page.total = items.size();
-            page.rows = std::move(items);
-            break;
-        }
-        case stream::ListKind::SectionTracks:
-        case stream::ListKind::Groups:
-        case stream::ListKind::Playlists:
-            error = L"This NetEase list is unavailable.";
-            break;
-        }
+            case stream::ListKind::CatalogSearchTopResults: {
+                // NetEase's best matches are one short list (an artist, an album) without pages.
+                std::vector<SearchHit> hits;
+                if (!client.SearchBestMatches(query.search, m_exec.Abort(), hits, error)) break;
+                std::vector<stream::CatalogSearchItem> items;
+                for (auto& hit : hits) {
+                    std::visit(
+                        [&](auto& row) {
+                            using Row = std::decay_t<decltype(row)>;
+                            if constexpr (std::is_same_v<Row, Song>) {
+                                hintSongs.push_back(ToSong(row));
+                                items.emplace_back(hintSongs.back().track);
+                            } else if constexpr (std::is_same_v<Row, Artist>) {
+                                stream::Artist artist = AccountArtist(row, Ncm().FollowedArtists());
+                                Catalog::Get().Records().Put(artist);
+                                items.emplace_back(std::move(artist));
+                            } else if constexpr (std::is_same_v<Row, Album>) {
+                                stream::Album album = ToAlbum(row);
+                                Catalog::Get().Records().Put(album);
+                                items.emplace_back(std::move(album));
+                            } else {
+                                stream::Playlist playlist = AccountPlaylist(row);
+                                Catalog::Get().Records().Put(playlist);
+                                items.emplace_back(std::move(playlist));
+                            }
+                        },
+                        hit);
+                }
+                page.total = items.size();
+                page.rows = std::move(items);
+                break;
+            }
+            case stream::ListKind::SectionTracks:
+            case stream::ListKind::Groups:
+            case stream::ListKind::Playlists:
+                error = L"This NetEase list is unavailable.";
+                break;
+            }
 
-        if (m_exec.Abort().is_aborting()) return;
-        if (cache::AccountRevision("ncm") != accountRevision) {
-            snapshots->Clear();
-            error = L"The NetEase account changed while the list was loading.";
-            page = {};
-            hintSongs.clear();
-        }
-        std::wstring resultError = error.empty() ? std::wstring() : ErrorOf(std::move(error));
-        PostListPage(std::move(done), std::move(page), std::move(hintSongs), std::move(resultError),
-                     query.cancelled);
-    });
+            if (m_exec.Abort().is_aborting()) return;
+            if (cache::AccountRevision("ncm") != accountRevision) {
+                snapshots->Clear();
+                error = L"The NetEase account changed while the list was loading.";
+                page = {};
+                hintSongs.clear();
+            }
+            std::wstring resultError = error.empty() ? std::wstring() : ErrorOf(std::move(error));
+            PostListPage(std::move(done), std::move(page), std::move(hintSongs), std::move(resultError),
+                         query.cancelled);
+        });
 }
 
 void StreamProvider::WriteFavorite(const Id& track, bool favorite, Done done) {

@@ -31,8 +31,8 @@ std::filesystem::path ServiceDir() {
 
 constexpr char kServiceSha256[] = "f196774ab85dc1039ec3ca6b5297cbc3e086b0bbbfc744498e6064ea94ceaa02";
 
-using core::Wide;
 using core::Utf8;
+using core::Wide;
 
 std::wstring Win32Error(DWORD code) {
     wchar_t* buffer = nullptr;
@@ -380,7 +380,7 @@ bool ServiceManager::StartLocked(abort_callback& abort, std::wstring* error) {
         }
         if (attempt == 0 || attempt == 20 || attempt == 60 || attempt == 119) {
             core::Log(L"service: probe " + std::to_wstring(attempt) + L" failed: " +
-                (response.error.empty() ? L"no HTTP response" : response.error));
+                      (response.error.empty() ? L"no HTTP response" : response.error));
         }
         Sleep(250);
     }

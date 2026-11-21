@@ -206,12 +206,12 @@ public:
     void SetLoadingText(std::wstring text) { m_loadingText = std::move(text); }
 
 private:
-    static uint64_t NextId() {
-        static uint64_t last = 0;
-        return ++last;
-    }
-    const uint64_t m_id = NextId();
-    std::wstring m_loadingText;
+  static uint64_t NextId() {
+      static uint64_t last = 0;
+      return ++last;
+  }
+  const uint64_t m_id = NextId();
+  std::wstring m_loadingText;
 };
 
 // A foobar2000 playlist. Selection and focus live in the playlist itself so foobar2000's

@@ -112,7 +112,7 @@ class Catalog {
   private:
     Catalog();
     static stream::CatalogTraits Traits(Catalog& self);
-        std::wstring EncodeExtra(const stream::Id& id) const;
+    std::wstring EncodeExtra(const stream::Id& id) const;
     void WriteTags(const stream::Track& stored, file_info& info) const;
     // Under m_mutex: reads the measured lengths file once, then corrects a song's length.
     void LoadMeasuredLocked() const;

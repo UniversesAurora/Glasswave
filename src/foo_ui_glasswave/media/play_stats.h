@@ -45,7 +45,7 @@ public:
     // Writes pending changes now (quitting); a no-op when nothing changed.
     static void Flush();
 
-private:
+  private:
     void Load();
     void Save() const;
     // Marks the file out of date; one write follows a few seconds later whatever the number of

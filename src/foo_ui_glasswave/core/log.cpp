@@ -65,9 +65,11 @@ void Write(std::wstring_view message) {
     }
 }
 
-}  // namespace
+} // namespace
 
-void Log(std::wstring_view message) { Write(message); }
+void Log(std::wstring_view message) {
+    Write(message);
+}
 
 void LogHttp(std::wstring_view method, std::wstring_view path, unsigned long status, long long elapsedMs) {
     std::wstring line(method);
@@ -86,4 +88,4 @@ std::wstring LogPath() {
     return path.empty() ? std::wstring() : path.wstring();
 }
 
-}  // namespace glasswave::core
+} // namespace glasswave::core

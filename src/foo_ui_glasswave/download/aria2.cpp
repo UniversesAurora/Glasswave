@@ -52,7 +52,9 @@ std::wstring g_version;
 std::wstring g_lastError;
 bool g_failed = false; // until the next download command (RetryAfterFailure)
 
-std::filesystem::path Folder() { return core::ProfileDir(L"aria2"); }
+std::filesystem::path Folder() {
+    return core::ProfileDir(L"aria2");
+}
 
 std::filesystem::path ExePath() {
     const auto folder = Folder();
@@ -187,13 +189,14 @@ bool StartEngine(std::wstring& error) {
     const std::wstring secret = RandomSecret();
     const auto exe = ExePath();
     const auto folder = exe.parent_path();
-    std::wstring command = L"\"" + exe.wstring() + L"\" --no-conf=true --enable-rpc=true --rpc-listen-all=false" +
-                           L" --rpc-listen-port=" + std::to_wstring(port) + L" --rpc-secret=" + secret +
-                           L" --stop-with-process=" + std::to_wstring(GetCurrentProcessId()) +
-                           L" --max-concurrent-downloads=16 --continue=true --file-allocation=none" +
-                           L" --auto-file-renaming=false --allow-overwrite=true --max-tries=5 --retry-wait=2" +
-                           L" --disk-cache=16M --summary-interval=0 --show-console-readout=false --console-log-level=error" +
-                           L" --log-level=warn --log=\"" + (folder / L"aria2.log").wstring() + L"\"";
+    std::wstring command =
+        L"\"" + exe.wstring() + L"\" --no-conf=true --enable-rpc=true --rpc-listen-all=false" +
+        L" --rpc-listen-port=" + std::to_wstring(port) + L" --rpc-secret=" + secret +
+        L" --stop-with-process=" + std::to_wstring(GetCurrentProcessId()) +
+        L" --max-concurrent-downloads=16 --continue=true --file-allocation=none" +
+        L" --auto-file-renaming=false --allow-overwrite=true --max-tries=5 --retry-wait=2" +
+        L" --disk-cache=16M --summary-interval=0 --show-console-readout=false --console-log-level=error" +
+        L" --log-level=warn --log=\"" + (folder / L"aria2.log").wstring() + L"\"";
     STARTUPINFOW startup{};
     startup.cb = sizeof(startup);
     PROCESS_INFORMATION process{};

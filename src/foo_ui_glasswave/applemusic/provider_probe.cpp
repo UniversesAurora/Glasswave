@@ -884,11 +884,10 @@ void ReadAlbum(stream::Provider& provider, const stream::Id& album,
     stream::ListQuery query;
     query.kind = stream::ListKind::AlbumTracks;
     query.id = album;
-    stream::ReadList(provider, std::move(query),
-                     [done = std::move(done)](stream::ListPage page, std::wstring error) {
-                         done(page.album.value_or(stream::Album{}), stream::RowsOf<stream::Track>(page),
-                              std::move(error));
-                     });
+    stream::ReadList(
+        provider, std::move(query), [done = std::move(done)](stream::ListPage page, std::wstring error) {
+            done(page.album.value_or(stream::Album{}), stream::RowsOf<stream::Track>(page), std::move(error));
+        });
 }
 
 std::vector<stream::Id> ExpectedPagedTrackIds() {
@@ -2589,14 +2588,14 @@ void Continue(const std::shared_ptr<State>& state, unsigned step) {
     } else if (step == 2) {
         const stream::Id section = SongsSection(*provider);
         if (section.empty()) return Fail(state, L"fetch_library_songs", L"library_songs_section_missing");
-        ReadSectionTracks(*provider, 
-            section, L"", [state](std::vector<stream::Track> tracks, std::wstring error) {
-                if (!Live(state)) return;
-                if (!error.empty() || !HasTrack(tracks, kSongCatalog))
-                    return Fail(state, L"fetch_library_songs", L"library_songs_read_failed");
-                AddOperation(state, L"fetch_library_songs", true);
-                Continue(state, 3);
-            });
+        ReadSectionTracks(*provider, section, L"",
+                          [state](std::vector<stream::Track> tracks, std::wstring error) {
+                              if (!Live(state)) return;
+                              if (!error.empty() || !HasTrack(tracks, kSongCatalog))
+                                  return Fail(state, L"fetch_library_songs", L"library_songs_read_failed");
+                              AddOperation(state, L"fetch_library_songs", true);
+                              Continue(state, 3);
+                          });
     } else if (step == 3) {
         provider->SetFavorite(kSongCatalog, true, [state](std::wstring error) {
             if (!Live(state)) return;
@@ -2660,8 +2659,8 @@ void Continue(const std::shared_ptr<State>& state, unsigned step) {
         });
     } else if (step == 9 || step == 11) {
         const bool added = step == 9;
-        ReadPlaylist(*provider, 
-            state->scratch,
+        ReadPlaylist(
+            *provider, state->scratch,
             [state, added](stream::Playlist, std::vector<stream::Track> tracks, std::wstring error) {
                 if (!Live(state)) return;
                 const bool present = HasTrack(tracks, kSongCatalog);
@@ -3231,8 +3230,8 @@ void Continue(const std::shared_ptr<State>& state, unsigned step) {
             if (section.empty())
                 return Fail(state, L"restore_list_page_preserves_canonical",
                             L"library_songs_section_missing");
-            ReadSectionTracks(*current, 
-                section, L"",
+            ReadSectionTracks(
+                *current, section, L"",
                 [state, sourceSong, sourceAlbum, sourceArtist](std::vector<stream::Track> rows,
                                                                std::wstring songsError) {
                     if (!Live(state)) return;
@@ -3274,7 +3273,9 @@ void Continue(const std::shared_ptr<State>& state, unsigned step) {
             Continue(state, 36);
         });
     } else if (step == 36) {
-        ReadAlbumTracks(*provider, RegionalDetailAlbumCatalogId(*state), [state](std::vector<stream::Track> tracks, std::wstring error) {
+        ReadAlbumTracks(
+            *provider, RegionalDetailAlbumCatalogId(*state),
+            [state](std::vector<stream::Track> tracks, std::wstring error) {
                 if (!Live(state)) return;
                 if (!error.empty()) {
                     return Fail(state, L"provider_regional_japan_song_first", L"song_first_fetch_failed");
@@ -3287,23 +3288,23 @@ void Continue(const std::shared_ptr<State>& state, unsigned step) {
                 Continue(state, 37);
             });
     } else if (step == 37) {
-        ReadAlbum(*provider, RegionalDetailAlbumCatalogId(*state), [state](stream::Album album,
-                                                                           std::vector<stream::Track> tracks,
-                                                                           std::wstring error) {
-            if (!Live(state)) return;
-            if (!error.empty()) {
-                return Fail(state, L"provider_regional_japan_album", L"album_detail_fetch_failed");
-            }
-            const auto problem = RegionalAlbumProblem(*state, album, tracks, AppleMusicDisplayRegion::Japan);
-            if (!problem.empty()) {
-                return Fail(state, L"provider_regional_japan_album", problem);
-            }
-            state->regional.japanProviderFetch = true;
-            state->regional.albumDescriptionOverlay = true;
-            state->regional.identityDurationPreserved = true;
-            AddOperation(state, L"provider_regional_japan_album", true);
-            Continue(state, 38);
-        });
+        ReadAlbum(*provider, RegionalDetailAlbumCatalogId(*state),
+                  [state](stream::Album album, std::vector<stream::Track> tracks, std::wstring error) {
+                      if (!Live(state)) return;
+                      if (!error.empty()) {
+                          return Fail(state, L"provider_regional_japan_album", L"album_detail_fetch_failed");
+                      }
+                      const auto problem =
+                          RegionalAlbumProblem(*state, album, tracks, AppleMusicDisplayRegion::Japan);
+                      if (!problem.empty()) {
+                          return Fail(state, L"provider_regional_japan_album", problem);
+                      }
+                      state->regional.japanProviderFetch = true;
+                      state->regional.albumDescriptionOverlay = true;
+                      state->regional.identityDurationPreserved = true;
+                      AddOperation(state, L"provider_regional_japan_album", true);
+                      Continue(state, 38);
+                  });
     } else if (step == 38) {
         provider->FetchArtist(RegionalDetailArtistCatalogId(*state), [state](stream::Artist artist,
                                                                              std::wstring error) {
@@ -3389,7 +3390,9 @@ void Continue(const std::shared_ptr<State>& state, unsigned step) {
             Continue(state, 41);
         });
     } else if (step == 41) {
-        ReadAlbumTracks(*provider, RegionalDetailAlbumCatalogId(*state), [state](std::vector<stream::Track> tracks, std::wstring error) {
+        ReadAlbumTracks(
+            *provider, RegionalDetailAlbumCatalogId(*state),
+            [state](std::vector<stream::Track> tracks, std::wstring error) {
                 if (!Live(state)) return;
                 if (!error.empty()) {
                     return Fail(state, L"provider_regional_china_song_first",
@@ -3403,21 +3406,22 @@ void Continue(const std::shared_ptr<State>& state, unsigned step) {
                 Continue(state, 42);
             });
     } else if (step == 42) {
-        ReadAlbum(*provider, RegionalDetailAlbumCatalogId(*state), [state](stream::Album album,
-                                                                           std::vector<stream::Track> tracks,
-                                                                           std::wstring error) {
-            if (!Live(state)) return;
-            if (!error.empty()) {
-                return Fail(state, L"provider_regional_china_album", L"china_album_detail_fetch_failed");
-            }
-            const auto problem = RegionalAlbumProblem(*state, album, tracks, AppleMusicDisplayRegion::China);
-            if (!problem.empty()) {
-                return Fail(state, L"provider_regional_china_album", problem);
-            }
-            state->regional.chinaProviderFetch = true;
-            AddOperation(state, L"provider_regional_china_album", true);
-            Continue(state, 43);
-        });
+        ReadAlbum(*provider, RegionalDetailAlbumCatalogId(*state),
+                  [state](stream::Album album, std::vector<stream::Track> tracks, std::wstring error) {
+                      if (!Live(state)) return;
+                      if (!error.empty()) {
+                          return Fail(state, L"provider_regional_china_album",
+                                      L"china_album_detail_fetch_failed");
+                      }
+                      const auto problem =
+                          RegionalAlbumProblem(*state, album, tracks, AppleMusicDisplayRegion::China);
+                      if (!problem.empty()) {
+                          return Fail(state, L"provider_regional_china_album", problem);
+                      }
+                      state->regional.chinaProviderFetch = true;
+                      AddOperation(state, L"provider_regional_china_album", true);
+                      Continue(state, 43);
+                  });
     } else if (step == 43) {
         provider->FetchArtist(
             RegionalDetailArtistCatalogId(*state), [state](stream::Artist artist, std::wstring error) {
@@ -3468,8 +3472,8 @@ void Continue(const std::shared_ptr<State>& state, unsigned step) {
             Continue(state, 46);
         });
     } else if (step == 46) {
-        ReadAlbum(*provider, 
-            RegionalDetailAlbumCatalogId(*state),
+        ReadAlbum(
+            *provider, RegionalDetailAlbumCatalogId(*state),
             [state](stream::Album album, std::vector<stream::Track> tracks, std::wstring error) {
                 if (!Live(state)) return;
                 if (!error.empty()) {
@@ -3559,7 +3563,8 @@ void Continue(const std::shared_ptr<State>& state, unsigned step) {
             });
         });
     } else if (step == 61) {
-        ReadAlbumTracks(*provider, kMutationAlbumLibrary, [state](std::vector<stream::Track> tracks, std::wstring error) {
+        ReadAlbumTracks(
+            *provider, kMutationAlbumLibrary, [state](std::vector<stream::Track> tracks, std::wstring error) {
                 if (!Live(state)) return;
                 const auto counters = ReadAlbumResolverFixtureCounters();
                 if (!error.empty() || !HasTrack(tracks, kMutationCatalogSong) || !counters ||

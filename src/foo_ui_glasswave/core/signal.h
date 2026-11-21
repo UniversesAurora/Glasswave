@@ -22,7 +22,7 @@ template <class... Args> class Signal {
     };
 
   public:
-    using Token = uint64_t;  // never 0, so callers may use 0 for "not connected"
+    using Token = uint64_t; // never 0, so callers may use 0 for "not connected"
 
     // Disconnects on destruction or Disconnect(); safe to outlive the signal.
     class Connection {
@@ -83,7 +83,7 @@ template <class... Args> class Signal {
         // The state outlives this call even when a listener destroys the signal's owner.
         const auto state = m_state;
         std::vector<std::pair<Token, std::function<void(Args...)>>> snapshot(state->slots.begin(),
-                                                                              state->slots.end());
+                                                                             state->slots.end());
         for (const auto& [token, listener] : snapshot) {
             if (state->slots.count(token) == 0) continue;
             if (listener) listener(args...);
@@ -94,4 +94,4 @@ template <class... Args> class Signal {
     std::shared_ptr<State> m_state;
 };
 
-}  // namespace glasswave::core
+} // namespace glasswave::core

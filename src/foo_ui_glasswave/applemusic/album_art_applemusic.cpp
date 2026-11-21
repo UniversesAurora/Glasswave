@@ -38,8 +38,8 @@ Artwork ArtworkFor(int sizePx) {
     return {L"1200", L"jpg", "1200-jpg-bb-v1", kMaxArtworkBytes};
 }
 
-using core::Wide;
 using core::Utf8;
+using core::Wide;
 
 std::optional<Object> FirstObject(const Object& response, const wchar_t* key) {
     const auto array = json::GetArray(response, key);
@@ -175,7 +175,8 @@ struct AppleArt {
     static stream::Id AlbumOf(const stream::Id& song) { return Catalog::Get().SongAlbum(song); }
     static Rendition RenditionFor(int sizePx) { return ArtworkFor(sizePx); }
 
-    static std::wstring KnownUrl(const stream::ArtRef& ref, const stream::Id& album, const Rendition& artwork) {
+    static std::wstring KnownUrl(const stream::ArtRef& ref, const stream::Id& album,
+                                 const Rendition& artwork) {
         std::wstring url = Catalog::Get().CoverUrl(ref.kind, ref.id);
         if (url.empty() && !album.empty()) url = Catalog::Get().CoverUrl(stream::ArtKind::Album, album);
         return ResizeArtwork(std::move(url), artwork);

@@ -268,7 +268,7 @@ struct AllSongsRequest {
     std::wstring name;                  // the list's name, set before `ready` runs
     std::shared_ptr<stream::ListSession> session;
     PageHost* host = nullptr;
-    LoadingBadge badge;                 // "Loading..." on the list showing when the read began
+    LoadingBadge badge; // "Loading..." on the list showing when the read began
     std::weak_ptr<int> alive;
     bool active = false;
     bool settling = false;              // a look at the settled state is queued
@@ -846,8 +846,7 @@ class PagedPage : public RemotePage {
                                          ? std::min(CurrentListState().metadataReadyRows, tracks.size())
                                          : tracks.size();
             if (row < published && MatchesPublishedPrefix(*source, m_provider, tracks, published) &&
-                PagedPlaybackFeed::Start(m_provider, m_query, tracks, published, row, m_host,
-                                         source))
+                PagedPlaybackFeed::Start(m_provider, m_query, tracks, published, row, m_host, source))
                 return;
         }
         if (!m_state.error.empty() && !m_state.loading) {
@@ -2212,7 +2211,9 @@ class AllFavoritesPage final : public Page {
         for (auto* provider : stream::Providers())
             if (HasFavorites(*provider)) now.push_back(provider);
         if (!std::equal(now.begin(), now.end(), m_feeds.begin(), m_feeds.end(),
-                        [](const stream::Provider* provider, const Feed& feed) { return provider == feed.provider; })) {
+                        [](const stream::Provider* provider, const Feed& feed) {
+                            return provider == feed.provider;
+                        })) {
             m_host.Reload(); // destroys this page
             return;
         }
@@ -2588,7 +2589,8 @@ class SongPage final : public Page {
 
     std::unique_ptr<media::ListSource> Start(bool) override {
         AfterStart([this] {
-            m_provider.FetchSongDetails(m_view.remoteId, Guard([this](stream::SongDetails details, std::wstring error) {
+            m_provider.FetchSongDetails(m_view.remoteId,
+                                        Guard([this](stream::SongDetails details, std::wstring error) {
                                             m_error = std::move(error);
                                             if (m_error.empty()) {
                                                 m_details = std::move(details);

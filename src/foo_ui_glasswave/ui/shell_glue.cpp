@@ -15,7 +15,6 @@ namespace glasswave::ui {
 
 using core::Wide;
 
-
 namespace {
 
 // The picture's own type from its first bytes; the file keeps the provider's encoding.

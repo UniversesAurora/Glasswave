@@ -38,11 +38,11 @@ void LogArtFailure(const std::string& artKey, std::wstring_view what) {
     {
         std::lock_guard lock(mutex);
         const ULONGLONG now = GetTickCount64();
-        if (const auto found = last.find(artKey); found != last.end() && now - found->second < kQuietMs) return;
+        if (const auto found = last.find(artKey); found != last.end() && now - found->second < kQuietMs)
+            return;
         if (last.size() >= kMaxKeys) {
-            const auto oldest = std::min_element(last.begin(), last.end(), [](const auto& a, const auto& b) {
-                return a.second < b.second;
-            });
+            const auto oldest = std::min_element(
+                last.begin(), last.end(), [](const auto& a, const auto& b) { return a.second < b.second; });
             last.erase(oldest);
         }
         last[artKey] = now;

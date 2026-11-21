@@ -21,7 +21,6 @@ namespace glasswave::ui {
 using core::Utf8;
 using core::Wide;
 
-
 namespace wuc = winrt::Windows::UI::Composition;
 namespace wp = wmp::paint;
 using winrt::Windows::Foundation::Numerics::float2;
@@ -2810,7 +2809,9 @@ void ListView::OnLButtonDown(POINT pt, bool ctrl, bool shift) {
         if (kind == static_cast<int>(CellKind::Rating) && StarAt(pt) >= 0) {
             if (const auto item = m_source->Item(hit.row); item.is_valid() && !RateTrack(item, StarAt(pt) + 1))
                 popup_message::g_show(
-                    core::Utf8(Tr(L"Ratings need foobar2000's Playback Statistics (Library > Playback Statistics).")).c_str(),
+                    core::Utf8(
+                        Tr(L"Ratings need foobar2000's Playback Statistics (Library > Playback Statistics)."))
+                        .c_str(),
                     core::Utf8(Tr(L"Rating")).c_str());
         } else if (kind == static_cast<int>(CellKind::Favorite)) {
             if (const auto item = m_source->Item(hit.row); item.is_valid()) media::ToggleFavorite(item);

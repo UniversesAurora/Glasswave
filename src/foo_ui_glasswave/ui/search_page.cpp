@@ -19,7 +19,6 @@ namespace glasswave::ui {
 
 using core::Wide;
 
-
 namespace {
 
 using Value = std::variant<stream::Track, stream::Artist, stream::Album, stream::Playlist>;

@@ -41,7 +41,9 @@ std::string Message(std::string_view label, std::string_view text) {
 
 // ---- opening ----------------------------------------------------------------------------
 
-bool EncodedInputBase::OpenOffline(unsigned, abort_callback&) { return false; }
+bool EncodedInputBase::OpenOffline(unsigned, abort_callback&) {
+    return false;
+}
 
 void EncodedInputBase::decode_initialize(unsigned flags, abort_callback& abort) {
     m_flags = flags;
@@ -142,9 +144,8 @@ void EncodedInputBase::Validate(const EncodedSource& source, file_info& actual) 
     if (source.bitDepth > 0 && actual.info_get_int("bitspersample") != source.bitDepth)
         throw exception_io_data(Message(Label(), "decoder returned the wrong bit depth").c_str());
     const double actualSeconds = actual.get_length();
-    if (!std::isfinite(actualSeconds) ||
-        (m_complete && actualSeconds > 0 && m_durationSeconds > 0 &&
-         actualSeconds + kFullSongToleranceSeconds < m_durationSeconds))
+    if (!std::isfinite(actualSeconds) || (m_complete && actualSeconds > 0 && m_durationSeconds > 0 &&
+                                          actualSeconds + kFullSongToleranceSeconds < m_durationSeconds))
         throw exception_io_data(Message(Label(), "decoder did not receive the complete song").c_str());
     if (m_durationSeconds <= 0 && actualSeconds > 0) m_durationSeconds = actualSeconds;
 }
@@ -176,7 +177,8 @@ bool EncodedInputBase::decode_run(audio_chunk& chunk, abort_callback& abort) {
                 m_positionSeconds += static_cast<double>(chunk.get_sample_count()) / chunk.get_sample_rate();
         } else if (m_complete && m_durationSeconds > 0 &&
                    m_positionSeconds + kFullSongToleranceSeconds < m_durationSeconds) {
-            throw exception_io_data(Message(Label(), "stream ended before the complete song arrived").c_str());
+            throw exception_io_data(
+                Message(Label(), "stream ended before the complete song arrived").c_str());
         } else {
             OnComplete();
         }
@@ -325,9 +327,9 @@ void EncodedInputBase::DescribeAtmos(file_info& out) const {
     if (m_atmosTarget == stream::atmos::OutputTarget::Headphones) out.info_set_int("headroom_db", 6);
     if (m_durationSeconds > 0) out.set_length(m_durationSeconds);
     out.info_set("atmos_output", m_atmosTarget == stream::atmos::OutputTarget::Headphones ? "headphones"
-                                 : m_atmosInfo.channels == 6                             ? "5.1 speakers"
-                                 : m_atmosInfo.channels == 8                             ? "7.1 speakers"
-                                                                                         : "stereo speakers");
+                                 : m_atmosInfo.channels == 6                              ? "5.1 speakers"
+                                 : m_atmosInfo.channels == 8 ? "7.1 speakers"
+                                                             : "stereo speakers");
 }
 
 // ---- release ------------------------------------------------------------------------------

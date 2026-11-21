@@ -18,7 +18,6 @@ namespace glasswave::ui {
 
 using core::Wide;
 
-
 namespace {
 
 enum SongField {

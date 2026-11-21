@@ -222,7 +222,7 @@ namespace {
 // A change the service never answers, or one the source never confirms, stops overriding the
 // source's state after this long (as a favorite does).
 constexpr auto kEditTimeout = std::chrono::minutes(2);
-}  // namespace
+} // namespace
 
 std::optional<bool> Provider::PendingEditState(EditKind kind, const Id& id) const {
     std::lock_guard lock(m_editsMutex);
@@ -312,7 +312,8 @@ void Provider::FinishEdit(EditKind kind, const std::vector<Id>& ids, uint64_t se
         }
     }
     if (!error.empty())
-        console::print("Glasswave: library change failed: ", pfc::stringcvt::string_utf8_from_wide(error.c_str()).get_ptr());
+        console::print("Glasswave: library change failed: ",
+                       pfc::stringcvt::string_utf8_from_wide(error.c_str()).get_ptr());
     if (tookBack) NotifyLibraryChanged();
     if (done) done(std::move(error));
 }

@@ -28,8 +28,8 @@ std::vector<std::shared_ptr<Searcher>>& Registry() {
     return searchers;
 }
 
-using core::Wide;
 using core::Utf8;
+using core::Wide;
 
 std::optional<std::string> ReadFile(const std::filesystem::path& path) {
     return core::ReadFileLimited(path, 4 * 1024 * 1024);
@@ -399,9 +399,13 @@ uint64_t Service::SubscribeChanges(std::function<void(const metadb_handle_ptr&)>
     return m_changeListeners.Add(std::move(listener));
 }
 
-void Service::UnsubscribeChanges(uint64_t token) { m_changeListeners.Remove(token); }
+void Service::UnsubscribeChanges(uint64_t token) {
+    m_changeListeners.Remove(token);
+}
 
-void Service::NotifyChanged(const metadb_handle_ptr& track) { m_changeListeners.Emit(track); }
+void Service::NotifyChanged(const metadb_handle_ptr& track) {
+    m_changeListeners.Emit(track);
+}
 
 void Service::CancelSearch() {
     ++m_searchGeneration;

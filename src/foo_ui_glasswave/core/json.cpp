@@ -16,7 +16,7 @@ IJsonValue Lookup(const Object& object, const wchar_t* key) {
     return object.Lookup(name);
 }
 
-}  // namespace
+} // namespace
 
 std::optional<Object> Parse(std::string_view utf8, std::wstring* error) {
     try {
@@ -81,4 +81,4 @@ std::wstring Stringify(const Object& object) {
     return std::wstring(object.Stringify().c_str());
 }
 
-}  // namespace glasswave::core::json
+} // namespace glasswave::core::json

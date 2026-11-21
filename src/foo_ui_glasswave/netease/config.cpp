@@ -20,8 +20,8 @@ cfg_var_modern::cfg_int cfg_account_id({0x1f9a7c53, 0x6e2d, 0x4b80, {0x85, 0x3f,
 // {5A2C8F17-7D3E-4A92-B61C-4F8E279A3D50}
 cfg_var_modern::cfg_string cfg_account_name({0x5a2c8f17, 0x7d3e, 0x4a92, {0xb6, 0x1c, 0x4f, 0x8e, 0x27, 0x9a, 0x3d, 0x50}}, "");
 
-using core::Wide;
 using core::Utf8;
+using core::Wide;
 
 }  // namespace
 

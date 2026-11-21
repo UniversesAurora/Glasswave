@@ -37,7 +37,7 @@ int ToInt(const std::string& text) {
     return static_cast<int>(_strtoi64(text.c_str(), nullptr, 10));
 }
 
-}  // namespace
+} // namespace
 
 Catalog::Catalog() : m_records(Traits(*this)) {}
 
@@ -143,12 +143,14 @@ void Catalog::Load() {
             size_t start = 0;
             while (start <= extra.size()) {
                 const size_t end = extra.find(kFieldSeparator, start);
-                fields.push_back(extra.substr(start, end == std::string::npos ? std::string::npos : end - start));
+                fields.push_back(
+                    extra.substr(start, end == std::string::npos ? std::string::npos : end - start));
                 if (end == std::string::npos) break;
                 start = end + 1;
             }
             if (fields.size() != kExtraFields) continue;
-            tech.emplace(song.track.id, SongTech{Wide(fields[0]), ToInt(fields[1]), ToInt(fields[2]), ToInt(fields[3])});
+            tech.emplace(song.track.id,
+                         SongTech{Wide(fields[0]), ToInt(fields[1]), ToInt(fields[2]), ToInt(fields[3])});
         }
         installed = m_records.InstallMissing(std::move(songs));
         for (const auto& id : installed)
@@ -157,4 +159,4 @@ void Catalog::Load() {
     m_records.Hint(installed);
 }
 
-}  // namespace glasswave::netease
+} // namespace glasswave::netease

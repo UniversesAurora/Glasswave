@@ -14,4 +14,4 @@ std::filesystem::path ProfileDir(std::wstring_view name);
 // Creates the directory tree; returns false when it could not be created.
 bool EnsureDir(const std::filesystem::path& dir);
 
-}  // namespace glasswave::core
+} // namespace glasswave::core

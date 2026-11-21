@@ -113,37 +113,40 @@ class OpenPageCommand : public commandline_handler {
         if (text == "/glasswave:queue") { // what Up Next shows and what the queue holds, to the log
             auto& scheduler = media::PlaybackScheduler::Get();
             const t_size queue = media::QueuePlaylist(false);
-            core::Log(L"dev: up next " + std::to_wstring(scheduler.DisplayUpcomingSnapshot().size()) +
-                         L", scheduled " + std::to_wstring(scheduler.ScheduledUpcomingIndices().size()) +
-                         L", queue rows " +
-                         std::to_wstring(queue == SIZE_MAX ? 0 : playlist_manager::get()->playlist_get_item_count(queue)) +
-                         L", repeat " + std::to_wstring(scheduler.QueueRepeatMode()) + L", order " +
-                         [] {
-                             auto pm = playlist_manager::get();
-                             const t_size active = pm->playback_order_get_active();
-                             return active < pm->playback_order_get_count()
-                                        ? Wide(pm->playback_order_get_name(active))
-                                        : std::wstring();
-                         }() +
-                         L", playing " + [] {
-                             metadb_handle_ptr now;
-                             pfc::string8 title;
-                             static titleformat_object::ptr script;
-                             if (!script) titleformat_compiler::get()->compile_safe(script, "%title%");
-                             if (playback_control::get()->get_now_playing(now))
-                                 now->format_title(nullptr, title, script, nullptr);
-                             return Wide(title.c_str());
-                         }() +
-                         L", format " + [] { // as the transport band shows it (playback info)
-                             pfc::string8 format;
-                             static titleformat_object::ptr script;
-                             if (!script)
-                                 titleformat_compiler::get()->compile_safe(
-                                     script, "[%codec%] [%bitrate% kbps] [%samplerate% Hz] [$info(bitspersample) bit]");
-                             playback_control::get()->playback_format_title(nullptr, format, script, nullptr,
-                                                                            playback_control::display_level_all);
-                             return Wide(format.c_str());
-                         }());
+            core::Log(
+                L"dev: up next " + std::to_wstring(scheduler.DisplayUpcomingSnapshot().size()) +
+                L", scheduled " + std::to_wstring(scheduler.ScheduledUpcomingIndices().size()) +
+                L", queue rows " +
+                std::to_wstring(queue == SIZE_MAX ? 0
+                                                  : playlist_manager::get()->playlist_get_item_count(queue)) +
+                L", repeat " + std::to_wstring(scheduler.QueueRepeatMode()) + L", order " +
+                [] {
+                    auto pm = playlist_manager::get();
+                    const t_size active = pm->playback_order_get_active();
+                    return active < pm->playback_order_get_count() ? Wide(pm->playback_order_get_name(active))
+                                                                   : std::wstring();
+                }() +
+                L", playing " +
+                [] {
+                    metadb_handle_ptr now;
+                    pfc::string8 title;
+                    static titleformat_object::ptr script;
+                    if (!script) titleformat_compiler::get()->compile_safe(script, "%title%");
+                    if (playback_control::get()->get_now_playing(now))
+                        now->format_title(nullptr, title, script, nullptr);
+                    return Wide(title.c_str());
+                }() +
+                L", format " + [] { // as the transport band shows it (playback info)
+                    pfc::string8 format;
+                    static titleformat_object::ptr script;
+                    if (!script)
+                        titleformat_compiler::get()->compile_safe(
+                            script,
+                            "[%codec%] [%bitrate% kbps] [%samplerate% Hz] [$info(bitspersample) bit]");
+                    playback_control::get()->playback_format_title(nullptr, format, script, nullptr,
+                                                                   playback_control::display_level_all);
+                    return Wide(format.c_str());
+                }());
             return RESULT_PROCESSED;
         }
         if (text == "/glasswave:visuals") {
@@ -151,7 +154,7 @@ class OpenPageCommand : public commandline_handler {
                 RECT client{};
                 GetClientRect(window->Hwnd(), &client);
                 core::Log(L"dev: visuals of the main window, client " + std::to_wstring(client.right) + L"x" +
-                             std::to_wstring(client.bottom));
+                          std::to_wstring(client.bottom));
                 int count = 0;
                 LogVisual(window->VisualRoot(), 0, 0,
                           float2{static_cast<float>(client.right), static_cast<float>(client.bottom)}, L"0", count);

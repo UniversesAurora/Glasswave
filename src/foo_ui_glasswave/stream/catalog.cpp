@@ -45,7 +45,8 @@ std::vector<std::string_view> Split(std::string_view text, char separator) {
     size_t start = 0;
     while (start <= text.size()) {
         const size_t end = text.find(separator, start);
-        values.push_back(text.substr(start, end == std::string_view::npos ? std::string_view::npos : end - start));
+        values.push_back(
+            text.substr(start, end == std::string_view::npos ? std::string_view::npos : end - start));
         if (end == std::string_view::npos) break;
         start = end + 1;
     }
@@ -72,7 +73,8 @@ const char* KindName(ArtKind kind) {
     return "song";
 }
 
-constexpr ArtKind kKinds[] = {ArtKind::Track, ArtKind::Album, ArtKind::Artist, ArtKind::Playlist, ArtKind::Station};
+constexpr ArtKind kKinds[] = {ArtKind::Track, ArtKind::Album, ArtKind::Artist, ArtKind::Playlist,
+                              ArtKind::Station};
 
 bool Unnamed(const std::wstring& name) {
     return name.empty() || name == L"Unknown";
@@ -123,7 +125,8 @@ void WriteTrackTags(const Track& track, file_info& info) {
     if (track.durationMs > 0) info.set_length(static_cast<double>(track.durationMs) / 1000.0);
 }
 
-std::vector<ArtistRef> MergeArtistRefs(std::vector<ArtistRef> primary, const std::vector<ArtistRef>& fallback) {
+std::vector<ArtistRef> MergeArtistRefs(std::vector<ArtistRef> primary,
+                                       const std::vector<ArtistRef>& fallback) {
     for (const auto& candidate : fallback) {
         auto found = std::find_if(primary.begin(), primary.end(), [&candidate](const ArtistRef& item) {
             if (!candidate.id.empty() && item.id == candidate.id) return true;
@@ -322,8 +325,8 @@ void Catalog::Restore(const TrackRecord& song) {
         if (found == m_tracks.end()) {
             post = StoreLocked(song);
         } else {
-            TrackRecord merged{MergeTrack(found->second.track, song.track), PreferText(found->second.cover, song.cover),
-                               song.retag};
+            TrackRecord merged{MergeTrack(found->second.track, song.track),
+                               PreferText(found->second.cover, song.cover), song.retag};
             post = StoreLocked(merged);
         }
     }
@@ -419,7 +422,8 @@ std::wstring Catalog::CoverUrl(ArtKind kind, const Id& id) const {
         if (const auto found = m_artists.find(id); found != m_artists.end()) return found->second.avatarUrl;
         break;
     case ArtKind::Playlist:
-        if (const auto found = m_playlists.find(id); found != m_playlists.end()) return found->second.coverUrl;
+        if (const auto found = m_playlists.find(id); found != m_playlists.end())
+            return found->second.coverUrl;
         break;
     case ArtKind::Station:
         if (const auto found = m_stations.find(id); found != m_stations.end()) return found->second.coverUrl;
@@ -521,7 +525,8 @@ void Catalog::Hint(const std::vector<Id>& ids) const {
     {
         std::lock_guard lock(m_mutex);
         for (const auto& id : ids)
-            if (const auto found = m_tracks.find(id); found != m_tracks.end()) tracks.push_back(found->second.track);
+            if (const auto found = m_tracks.find(id); found != m_tracks.end())
+                tracks.push_back(found->second.track);
     }
     Hint(tracks);
 }
@@ -615,18 +620,20 @@ void Catalog::SaveLocked() const {
             songs.push_back(entry);
     }
     if (songs.empty()) return;
-    std::sort(songs.begin(), songs.end(), [](const TrackEntry& a, const TrackEntry& b) { return a.track.id < b.track.id; });
+    std::sort(songs.begin(), songs.end(),
+              [](const TrackEntry& a, const TrackEntry& b) { return a.track.id < b.track.id; });
 
     std::string out = m_traits.cacheHeader;
     out.push_back('\n');
     for (const auto& song : songs) {
         const Track& track = song.track;
-        out += Clean(track.id) + '\t' + std::to_string(track.durationMs) + '\t' + std::to_string(track.popularity) + '\t' +
-               Clean(track.title) + '\t' + Clean(track.note) + '\t' + Clean(track.album) + '\t' +
-               Clean(track.albumId) + '\t' +
+        out += Clean(track.id) + '\t' + std::to_string(track.durationMs) + '\t' +
+               std::to_string(track.popularity) + '\t' + Clean(track.title) + '\t' + Clean(track.note) +
+               '\t' + Clean(track.album) + '\t' + Clean(track.albumId) + '\t' +
                Pack(track.artists, [](const ArtistRef& artist) { return artist.name; }) + '\t' +
                Pack(track.artists, [](const ArtistRef& artist) { return artist.id; }) + '\t' +
-               Pack(track.badges, [](const std::wstring& badge) { return badge; }) + '\t' + Clean(song.cover) + '\t' +
+               Pack(track.badges, [](const std::wstring& badge) { return badge; }) + '\t' +
+               Clean(song.cover) + '\t' +
                Clean(m_traits.encodeExtra ? m_traits.encodeExtra(track.id) : std::wstring()) + '\n';
     }
     try {

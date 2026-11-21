@@ -51,7 +51,8 @@ std::vector<std::string_view> Split(std::string_view text, char separator) {
     size_t start = 0;
     while (start <= text.size()) {
         const size_t end = text.find(separator, start);
-        values.push_back(text.substr(start, end == std::string_view::npos ? std::string_view::npos : end - start));
+        values.push_back(
+            text.substr(start, end == std::string_view::npos ? std::string_view::npos : end - start));
         if (end == std::string_view::npos) break;
         start = end + 1;
     }
@@ -125,7 +126,8 @@ bool DecodeId(std::string_view segment, stream::Id& id) {
 
 // What the metadb tags show of a song beyond its track: a change here re-tags it.
 bool SameExtraTags(const SongExtra& a, const SongExtra& b) {
-    return a.composerName == b.composerName && a.composerNames == b.composerNames && a.genreNames == b.genreNames;
+    return a.composerName == b.composerName && a.composerNames == b.composerNames &&
+           a.genreNames == b.genreNames;
 }
 
 std::wstring JoinNames(const std::vector<std::wstring>& names) {
@@ -281,7 +283,8 @@ void Catalog::PutSongAlbum(const stream::Id& songId, const stream::Id& albumId) 
 }
 
 stream::Id Catalog::SongAlbum(const stream::Id& songId) const {
-    if (const auto track = m_records.FindTrack(songId); track && !track->albumId.empty()) return track->albumId;
+    if (const auto track = m_records.FindTrack(songId); track && !track->albumId.empty())
+        return track->albumId;
     std::lock_guard lock(m_mutex);
     const auto found = m_songAlbums.find(songId);
     return found == m_songAlbums.end() ? stream::Id() : found->second;
@@ -294,7 +297,8 @@ std::optional<Song> Catalog::FindSongRaw(const stream::Id& id) const {
     song.track = std::move(*track);
     song.coverUrl = m_records.CoverUrl(stream::ArtKind::Track, id);
     std::lock_guard lock(m_mutex);
-    if (const auto extra = m_extras.find(id); extra != m_extras.end()) static_cast<SongExtra&>(song) = extra->second;
+    if (const auto extra = m_extras.find(id); extra != m_extras.end())
+        static_cast<SongExtra&>(song) = extra->second;
     return song;
 }
 
@@ -414,9 +418,9 @@ void Catalog::WriteTags(const stream::Track& stored, file_info& info) const {
     DisplayMetadata::Get().Apply(display, DisplayMetadata::Get().SourceStorefront());
     stream::WriteTrackTags(display.track, info);
     if (!display.composerNames.empty() || !display.composerName.empty())
-        info.meta_set("composer",
-                      Utf8(display.composerNames.empty() ? display.composerName : JoinNames(display.composerNames))
-                          .c_str());
+        info.meta_set("composer", Utf8(display.composerNames.empty() ? display.composerName
+                                                                     : JoinNames(display.composerNames))
+                                      .c_str());
     if (!display.genreNames.empty()) info.meta_set("genre", Utf8(JoinNames(display.genreNames)).c_str());
 }
 
@@ -483,8 +487,8 @@ void Catalog::InstallCached(std::vector<Song> songs) {
         entries.reserve(songs.size());
         for (auto& song : songs) {
             if (song.track.id.empty()) continue;
-            if (!song.track.albumId.empty() && !song.libraryAlbumId.empty() && IsLibraryId(song.libraryAlbumId) &&
-                song.libraryAlbumId[0] == L'l') {
+            if (!song.track.albumId.empty() && !song.libraryAlbumId.empty() &&
+                IsLibraryId(song.libraryAlbumId) && song.libraryAlbumId[0] == L'l') {
                 m_albumLibraryIds[song.track.albumId] = song.libraryAlbumId;
             }
             if (!song.track.albumId.empty()) m_songAlbums.try_emplace(song.track.id, song.track.albumId);

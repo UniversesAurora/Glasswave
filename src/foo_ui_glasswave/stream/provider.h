@@ -470,7 +470,12 @@ class Provider {
 
     // A library change not confirmed by the source yet: what the user asked for, and where it
     // stands. Per kind and id; the latest click on an id decides what it shows.
-    enum class EditKind { Follow, Album, Playlist, Song };
+    enum class EditKind {
+        Follow,
+        Album,
+        Playlist,
+        Song
+    };
     struct PendingEdit {
         bool value = false;
         uint64_t serial = 0;
@@ -479,8 +484,7 @@ class Provider {
     };
     using EditKey = std::pair<EditKind, Id>;
     std::optional<bool> PendingEditState(EditKind kind, const Id& id) const;
-    void SetEdit(EditKind kind, std::vector<Id> ids, bool value, Done done,
-                 std::function<void(Done)> write);
+    void SetEdit(EditKind kind, std::vector<Id> ids, bool value, Done done, std::function<void(Done)> write);
     void FinishEdit(EditKind kind, const std::vector<Id>& ids, uint64_t serial, std::wstring error,
                     Done done);
 
@@ -505,27 +509,23 @@ inline bool IsRequestDropped(std::wstring_view error) {
 
 namespace detail {
 
-template <class Fn>
-struct DoneArgs;
+template <class Fn> struct DoneArgs;
 
 // Calls a completion with default-constructed results and `error` in the last place.
-template <class... Args>
-struct DoneArgs<std::function<void(Args...)>> {
+template <class... Args> struct DoneArgs<std::function<void(Args...)>> {
     using Fn = std::function<void(Args...)>;
     static void Fail(Fn& fn, std::wstring error) {
         Fail(fn, std::move(error), std::make_index_sequence<sizeof...(Args) - 1>{});
     }
 
   private:
-    template <size_t... I>
-    static void Fail(Fn& fn, std::wstring error, std::index_sequence<I...>) {
+    template <size_t... I> static void Fail(Fn& fn, std::wstring error, std::index_sequence<I...>) {
         using Tuple = std::tuple<Args...>;
         fn(std::tuple_element_t<I, Tuple>{}..., std::move(error));
     }
 };
 
-template <class Fn>
-struct GuardState {
+template <class Fn> struct GuardState {
     Fn fn;
     std::wstring error;
     std::shared_ptr<std::atomic_bool> cancelled;
@@ -548,8 +548,7 @@ struct GuardState {
 // original, and when the last copy is destroyed without a call (a queued task was dropped at
 // shutdown or on an account change) the original receives kRequestDropped on the main thread,
 // with default-constructed results. A set `cancelled` token waives that last step.
-template <class Fn>
-Fn GuardDone(Fn done, std::shared_ptr<std::atomic_bool> cancelled = {}) {
+template <class Fn> Fn GuardDone(Fn done, std::shared_ptr<std::atomic_bool> cancelled = {}) {
     if (!done) return done;
     auto state = std::make_shared<detail::GuardState<Fn>>();
     state->fn = std::move(done);

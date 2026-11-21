@@ -25,11 +25,11 @@ struct Handle {
 };
 
 [[noreturn]] void Fail(const std::filesystem::path& path, const char* what, DWORD error) {
-    throw std::runtime_error(std::string(what) + " " + Utf8(path.wstring()) + " (error " + std::to_string(error) +
-                             ")");
+    throw std::runtime_error(std::string(what) + " " + Utf8(path.wstring()) + " (error " +
+                             std::to_string(error) + ")");
 }
 
-}  // namespace
+} // namespace
 
 void WriteFileAtomic(const std::filesystem::path& path, std::string_view bytes) {
     std::error_code ec;
@@ -72,8 +72,9 @@ void WriteFileAtomic(const std::filesystem::path& path, std::string_view bytes) 
 }
 
 std::optional<std::string> ReadFileLimited(const std::filesystem::path& path, size_t maxBytes) {
-    Handle file(CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                            nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN, nullptr));
+    Handle file(CreateFileW(path.c_str(), GENERIC_READ,
+                            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+                            FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN, nullptr));
     if (!file) return std::nullopt;
     LARGE_INTEGER size{};
     if (!GetFileSizeEx(file.value, &size) || size.QuadPart < 0 ||
@@ -87,11 +88,11 @@ std::optional<std::string> ReadFileLimited(const std::filesystem::path& path, si
         const DWORD want = static_cast<DWORD>(std::min<size_t>(bytes.size() - total, 1u << 30));
         DWORD read = 0;
         if (!ReadFile(file.value, bytes.data() + total, want, &read, nullptr)) return std::nullopt;
-        if (read == 0) break;  // shorter than reported: keep what exists
+        if (read == 0) break; // shorter than reported: keep what exists
         total += read;
     }
     bytes.resize(total);
     return bytes;
 }
 
-}  // namespace glasswave::core
+} // namespace glasswave::core

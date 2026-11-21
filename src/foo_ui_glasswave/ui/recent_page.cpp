@@ -21,7 +21,6 @@ namespace glasswave::ui {
 using core::Utf8;
 using core::Wide;
 
-
 namespace {
 
 // One album or playlist of the Albums and Playlists tabs.

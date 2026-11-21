@@ -175,8 +175,9 @@ class Renderer::Impl {
         if (!m_api.ready()) throw exception_io_not_found();
         m_bridge = std::make_unique<ReadBridge>();
         m_bridge->source = std::move(source);
-        const uint32_t status = m_api.create(kAbiVersion, m_target.mode, m_target.layout, static_cast<uint32_t>(kFramesPerRead),
-                                             m_bridge.get(), &ReadBridge::Pull, &m_handle);
+        const uint32_t status =
+            m_api.create(kAbiVersion, m_target.mode, m_target.layout, static_cast<uint32_t>(kFramesPerRead),
+                         m_bridge.get(), &ReadBridge::Pull, &m_handle);
         if (status != kStatusOk || !m_handle) {
             m_bridge->StoreCallFailure();
             m_bridge->ThrowStored();

@@ -17,8 +17,8 @@ namespace {
 constexpr wchar_t kSourceOrder[] = L"source";
 constexpr wchar_t kSidecarOrder[] = L"sidecar";
 
-using core::Wide;
 using core::Utf8;
+using core::Wide;
 
 struct Scope {
     std::wstring value;

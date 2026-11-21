@@ -328,8 +328,8 @@ class DuplicateKeyScanner {
     std::size_t m_at = 0;
 };
 
-using core::Wide;
 using core::Utf8;
+using core::Wide;
 
 std::size_t StringBytes(std::wstring_view text) {
     return Utf8(text).size();

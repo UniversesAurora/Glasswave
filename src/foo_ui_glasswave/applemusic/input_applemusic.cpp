@@ -49,7 +49,9 @@ void EndSkipRun() {
 using core::Utf8;
 using core::Wide;
 
-std::string Lower(std::wstring_view text) { return core::LowerAscii(Utf8(text)); }
+std::string Lower(std::wstring_view text) {
+    return core::LowerAscii(Utf8(text));
+}
 
 // Ends playback sessions on a worker. A session is released by whichever thread drops the last
 // reference to its fetcher (a cache worker, the decoder, the main thread), and the DELETE is a
@@ -130,7 +132,7 @@ cache::audio::Fetcher AppleEncodedFetch(std::string url, std::string token,
         source.target.headers.emplace_back("X-Glasswave-Probe-Transaction", cleanup->transactionTag);
     // The cleanup rides with the fetcher: the session ends when the transfer is dropped.
     return [source = std::move(source), cleanup = std::move(cleanup)](cache::audio::Sink& sink,
-                                                                     abort_callback& abort) {
+                                                                      abort_callback& abort) {
         net::FetchResumable(source, net::WriteTo(sink), abort);
     };
 }
@@ -183,10 +185,17 @@ struct DeliveredSource {
         return codec == L"atmos" ? "audio/eac3" : codec == L"mp3" ? "audio/mpeg" : "audio/mp4";
     }
     std::vector<std::string> Memo() const {
-        return {Utf8(asset),      Utf8(codec),       Utf8(extension),
-                Utf8(spatial),    Utf8(mime),        sourceVersion,
-                std::to_string(durationMs), std::to_string(sampleRate), std::to_string(bitDepth),
-                std::to_string(bitRate),    std::to_string(channels)};
+        return {Utf8(asset),
+                Utf8(codec),
+                Utf8(extension),
+                Utf8(spatial),
+                Utf8(mime),
+                sourceVersion,
+                std::to_string(durationMs),
+                std::to_string(sampleRate),
+                std::to_string(bitDepth),
+                std::to_string(bitRate),
+                std::to_string(channels)};
     }
     bool Parse(const std::vector<std::string>& fields) {
         if (fields.size() != 11) return false;
@@ -212,7 +221,8 @@ class AppleInput : public stream::EncodedInputBase {
   public:
     void open(file::ptr, const char* path, t_input_open_reason reason, abort_callback&) {
         if (reason == input_open_info_write) throw exception_tagging_unsupported();
-        if (!Catalog::Get().Records().ParseSongPath(path, m_id)) throw exception_io_data("Invalid Apple Music track");
+        if (!Catalog::Get().Records().ParseSongPath(path, m_id))
+            throw exception_io_data("Invalid Apple Music track");
         m_path = path;
         m_cacheKey = {};
     }
@@ -264,7 +274,8 @@ class AppleInput : public stream::EncodedInputBase {
                                                      : "stereo";
     }
 
-    std::optional<stream::EncodedSource> Recall(const std::vector<std::string>& memo, abort_callback&) override {
+    std::optional<stream::EncodedSource> Recall(const std::vector<std::string>& memo,
+                                                abort_callback&) override {
         if (!m_transactionTag.empty()) return std::nullopt;
         DeliveredSource known;
         if (!known.Parse(memo) || (known.codec == L"atmos" && !m_rendererAvailable)) return std::nullopt;
@@ -310,7 +321,8 @@ class AppleInput : public stream::EncodedInputBase {
     void OnComplete() override { playback_log::Complete(m_id, m_positionSeconds); }
     void ApplyDynamicMetadata(file_info& out) override { ApplyMetadata(out); }
 
-    void ReportFailure(std::string_view stage, std::string_view errorClass, std::string_view what) noexcept override {
+    void ReportFailure(std::string_view stage, std::string_view errorClass,
+                       std::string_view what) noexcept override {
         if (errorClass == "non_std_exception")
             playback_log::UnknownFailure(m_id, stage, m_positionSeconds);
         else
@@ -350,7 +362,8 @@ class AppleInput : public stream::EncodedInputBase {
         capabilities.Insert(L"hiRes", winrt::Windows::Data::Json::JsonValue::CreateBooleanValue(
                                           m_quality == AudioQuality::HiResLossless));
         Object request;
-        request.Insert(L"preferAtmos", winrt::Windows::Data::Json::JsonValue::CreateBooleanValue(m_preferAtmos));
+        request.Insert(L"preferAtmos",
+                       winrt::Windows::Data::Json::JsonValue::CreateBooleanValue(m_preferAtmos));
         request.Insert(L"assetId", winrt::Windows::Data::Json::JsonValue::CreateStringValue(assetId));
         request.Insert(L"capabilities", capabilities);
         return Request(L"/api/v1/playback", abort, L"POST", Utf8(json::Stringify(request)));
@@ -410,14 +423,14 @@ class AppleInput : public stream::EncodedInputBase {
             throw exception_io_data("Apple Music returned an incomplete full-song session");
         if (delivered.codec == L"atmos" && !m_rendererAvailable)
             throw exception_io_data("The Dolby Atmos renderer is unavailable");
-        delivered.sourceVersion = AppleSourceVersion(session, json::GetString(session, L"container"),
-                                                     delivered.extension, delivered.mime, delivered.spatial,
-                                                     delivered.durationMs);
+        delivered.sourceVersion =
+            AppleSourceVersion(session, json::GetString(session, L"container"), delivered.extension,
+                               delivered.mime, delivered.spatial, delivered.durationMs);
         m_delivered = delivered;
         stream::EncodedSource source = Describe(delivered);
-        source.fetch = AppleEncodedFetch(
-            Utf8(bridge + audio + (delivered.codec == L"atmos" ? L"?container=ec3" : L"")), std::move(token),
-            std::move(cleanup));
+        source.fetch =
+            AppleEncodedFetch(Utf8(bridge + audio + (delivered.codec == L"atmos" ? L"?container=ec3" : L"")),
+                              std::move(token), std::move(cleanup));
         return source;
     }
 

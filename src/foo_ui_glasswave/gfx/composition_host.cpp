@@ -82,7 +82,8 @@ void CompositionHost::CreateDevices() {
     CreateRenderingDevices();
     auto interop = m_compositor.as<abi_comp::ICompositorInterop>();
     winrt::check_hresult(interop->CreateGraphicsDevice(
-        m_d2dDevice.get(), reinterpret_cast<abi_comp::ICompositionGraphicsDevice**>(winrt::put_abi(m_graphics))));
+        m_d2dDevice.get(),
+        reinterpret_cast<abi_comp::ICompositionGraphicsDevice**>(winrt::put_abi(m_graphics))));
     // The compositor says when it has dropped its device (the one we gave it is gone).
     m_replacedRevoker = m_graphics.RenderingDeviceReplaced(winrt::auto_revoke, [](auto&&, auto&&) {
         fb2k::inMainThread([] {

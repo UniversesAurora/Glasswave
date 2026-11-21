@@ -102,8 +102,7 @@ struct Request {
 // was asked for (the quality setting), so another setting resolves afresh. Scoped to the
 // current account; never contains a URL or a credential. Call from a decode worker.
 // The description is a list of text fields, stored length-prefixed: a field may hold any byte.
-std::optional<std::vector<std::string>> RecallSource(const std::string& provider,
-                                                     const std::string& identity,
+std::optional<std::vector<std::string>> RecallSource(const std::string& provider, const std::string& identity,
                                                      const std::string& request);
 void RememberSource(const std::string& provider, const std::string& identity, const std::string& request,
                     const std::vector<std::string>& description);

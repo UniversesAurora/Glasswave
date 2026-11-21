@@ -85,8 +85,7 @@ class EmptyArtPaths : public album_art_path_list {
     t_size get_count() const override { return 0; }
 };
 
-template <class Traits>
-class ArtInstance : public album_art_extractor_instance_v2 {
+template <class Traits> class ArtInstance : public album_art_extractor_instance_v2 {
   public:
     explicit ArtInstance(std::string path) : m_path(std::move(path)) {}
 
@@ -110,17 +109,19 @@ class ArtInstance : public album_art_extractor_instance_v2 {
         const auto rendition = Traits::RenditionFor(cache::SizeHint());
         const std::string kind = ArtKindName(ref.kind);
         cache::ImageRequest request;
-        request.identity = album.empty() ? cache::ImageIdentity{Traits::kProvider, kind, core::Utf8(ref.id),
-                                                               rendition.version}
-                                         : cache::ImageIdentity{Traits::kProvider, ArtKindName(ArtKind::Album),
-                                                               core::Utf8(album), rendition.version};
+        request.identity =
+            album.empty()
+                ? cache::ImageIdentity{Traits::kProvider, kind, core::Utf8(ref.id), rendition.version}
+                : cache::ImageIdentity{Traits::kProvider, ArtKindName(ArtKind::Album), core::Utf8(album),
+                                       rendition.version};
         if (!album.empty())
             request.alternates.push_back({Traits::kProvider, kind, core::Utf8(ref.id), rendition.version});
         request.limits.maxBodyBytes = rendition.maxBodyBytes;
         const auto failure = std::make_shared<ArtFailure>();
         const uint64_t account = cache::AccountRevision(Traits::kProvider);
         request.resolve = [ref, album, rendition, failure, account, identity = request.identity,
-                           epoch = cache::art_absence::Epoch()](abort_callback& workerAbort, unsigned attempt) {
+                           epoch = cache::art_absence::Epoch()](abort_callback& workerAbort,
+                                                                unsigned attempt) {
             // The account this was asked for is gone: the picture is no longer wanted, which is
             // not an abort of the caller.
             if (cache::AccountRevision(Traits::kProvider) != account) throw cache::AccountChanged();
@@ -180,8 +181,7 @@ class ArtInstance : public album_art_extractor_instance_v2 {
     std::string m_path;
 };
 
-template <class Traits>
-class ArtExtractor : public album_art_extractor_v2 {
+template <class Traits> class ArtExtractor : public album_art_extractor_v2 {
   public:
     bool is_our_path(const char* path, const char*) override {
         ArtRef ref;
@@ -197,11 +197,10 @@ class ArtExtractor : public album_art_extractor_v2 {
 
 // Some art-manager paths never reach a registered extractor; this fallback handles the online
 // lookup when the local/default sources have nothing.
-template <class Traits>
-class ArtFallback : public album_art_fallback {
+template <class Traits> class ArtFallback : public album_art_fallback {
   public:
-    album_art_extractor_instance_v2::ptr open(metadb_handle_list_cref items, pfc::list_base_const_t<GUID> const&,
-                                              abort_callback&) override {
+    album_art_extractor_instance_v2::ptr open(metadb_handle_list_cref items,
+                                              pfc::list_base_const_t<GUID> const&, abort_callback&) override {
         for (t_size i = 0; i < items.get_count(); ++i) {
             const char* path = items[i].is_valid() ? items[i]->get_path() : nullptr;
             ArtRef ref;

@@ -60,7 +60,6 @@ namespace glasswave::ui {
 
 using core::Wide;
 
-
 namespace m = aero::metrics;
 namespace paint = aero::paint;
 namespace wp = wmp::paint;
@@ -2353,7 +2352,8 @@ void MainWindow::OnDeviceReplaced() {
     m_timePaintedW = 0;
     RepaintScaleDependent();
     UpdateLayout();
-    for (auto& w : m_widgets) w->Invalidate();
+    for (auto& w : m_widgets)
+        w->Invalidate();
     m_seekPaint.Request();
     FlushPlaybackPaints();
     RepaintNowPlaying();

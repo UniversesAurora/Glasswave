@@ -146,7 +146,8 @@ inline void Invalidate(std::string_view prefix) {
     constexpr size_t kMaxInvalidations = 256;
     if (invalidations.size() > kMaxInvalidations)
         invalidations.erase(invalidations.begin(),
-                            invalidations.begin() + static_cast<std::ptrdiff_t>(invalidations.size() - kMaxInvalidations));
+                            invalidations.begin() +
+                                static_cast<std::ptrdiff_t>(invalidations.size() - kMaxInvalidations));
     for (auto& [key, entry] : entries)
         if (ArtKeyHasPrefix(key, prefix)) entry.invalidated = true;
 }

@@ -24,7 +24,8 @@ std::string ToUtf8(std::wstring_view text, bool strict) {
         return {};
     }
     std::string out(static_cast<size_t>(size), '\0');
-    if (WideCharToMultiByte(CP_UTF8, flags, text.data(), length, out.data(), size, nullptr, nullptr) != size) {
+    if (WideCharToMultiByte(CP_UTF8, flags, text.data(), length, out.data(), size, nullptr, nullptr) !=
+        size) {
         if (strict) throw std::runtime_error("UTF-8 conversion failed.");
         return {};
     }
@@ -52,21 +53,36 @@ std::wstring ToWide(std::string_view utf8, bool strict) {
     return out;
 }
 
-template <class String> String Fold(typename String::value_type a, typename String::value_type z, String text) {
+template <class String>
+String Fold(typename String::value_type a, typename String::value_type z, String text) {
     for (auto& c : text)
         if (c >= a && c <= z) c = static_cast<typename String::value_type>(c + ('a' - 'A'));
     return text;
 }
 
-}  // namespace
+} // namespace
 
-std::string Utf8(std::wstring_view text) { return ToUtf8(text, false); }
-std::wstring Wide(std::string_view utf8) { return ToWide(utf8, false); }
-std::wstring Wide(const char* utf8) { return utf8 ? ToWide(utf8, false) : std::wstring(); }
-std::string Utf8Strict(std::wstring_view text) { return ToUtf8(text, true); }
-std::wstring WideStrict(std::string_view utf8) { return ToWide(utf8, true); }
+std::string Utf8(std::wstring_view text) {
+    return ToUtf8(text, false);
+}
+std::wstring Wide(std::string_view utf8) {
+    return ToWide(utf8, false);
+}
+std::wstring Wide(const char* utf8) {
+    return utf8 ? ToWide(utf8, false) : std::wstring();
+}
+std::string Utf8Strict(std::wstring_view text) {
+    return ToUtf8(text, true);
+}
+std::wstring WideStrict(std::string_view utf8) {
+    return ToWide(utf8, true);
+}
 
-std::wstring LowerAscii(std::wstring_view text) { return Fold<std::wstring>(L'A', L'Z', std::wstring(text)); }
-std::string LowerAscii(std::string_view text) { return Fold<std::string>('A', 'Z', std::string(text)); }
+std::wstring LowerAscii(std::wstring_view text) {
+    return Fold<std::wstring>(L'A', L'Z', std::wstring(text));
+}
+std::string LowerAscii(std::string_view text) {
+    return Fold<std::string>('A', 'Z', std::string(text));
+}
 
-}  // namespace glasswave::core
+} // namespace glasswave::core

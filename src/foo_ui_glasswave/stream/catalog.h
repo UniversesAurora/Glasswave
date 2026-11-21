@@ -63,7 +63,8 @@ void WriteTrackTags(const Track& track, file_info& info);
 
 // Merge-on-restore: `primary` stays, `fallback` only fills what `primary` lacks. A sparse record
 // (a row of a list cache, a search summary) never overwrites a richer one.
-std::vector<ArtistRef> MergeArtistRefs(std::vector<ArtistRef> primary, const std::vector<ArtistRef>& fallback);
+std::vector<ArtistRef> MergeArtistRefs(std::vector<ArtistRef> primary,
+                                       const std::vector<ArtistRef>& fallback);
 Track MergeTrack(const Track& primary, const Track& fallback);
 Playlist MergePlaylist(const Playlist& primary, const Playlist& fallback, bool mergeFlags);
 Album MergeAlbum(const Album& primary, const Album& fallback);
@@ -172,7 +173,7 @@ class Catalog {
     std::atomic_bool m_saveDirty = false;
     std::atomic_bool m_savePosted = false;
     std::atomic_bool m_saveClosed = false; // FlushPendingSave ran: quitting
-    std::vector<Id> m_hintQueue; // songs new or shown differently, for metadb
+    std::vector<Id> m_hintQueue;           // songs new or shown differently, for metadb
     bool m_hintPosted = false;
     std::unordered_map<Id, TrackEntry> m_tracks;
     std::unordered_map<Id, Album> m_albums;

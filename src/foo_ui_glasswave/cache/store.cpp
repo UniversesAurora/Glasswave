@@ -501,8 +501,8 @@ std::optional<Snapshot> Store::Commit(Writer& writer, Metadata metadata, bool fl
     // caller that flushed the file already (a large audio file, outside this lock) skips it.
     if (!flushed) {
         HANDLE file = CreateFileW(writer.m_path.c_str(), GENERIC_WRITE,
-                                  FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
-                                  FILE_ATTRIBUTE_NORMAL, nullptr);
+                                  FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                                  OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
         if (file == INVALID_HANDLE_VALUE) return std::nullopt;
         const BOOL ok = FlushFileBuffers(file);
         CloseHandle(file);

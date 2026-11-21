@@ -118,7 +118,8 @@ void FetchResumable(const ResumableSource& source, const ByteSink& sink, abort_c
             }
             pfc::string8 range;
             http_reply::ptr http;
-            if (status == 206 && reply->service_query_t(http) && http->get_http_header("content-range", range)) {
+            if (status == 206 && reply->service_query_t(http) &&
+                http->get_http_header("content-range", range)) {
                 // "bytes <first>-<last>/<total>": it must start where this one stopped.
                 unsigned long long first = 0, last = 0, total = 0;
                 if (sscanf_s(range.get_ptr(), "bytes %llu-%llu/%llu", &first, &last, &total) != 3 ||

@@ -12,7 +12,7 @@ namespace glasswave::core {
 // A small fixed-size worker pool for blocking network calls. Results are delivered by the
 // task itself (normally through fb2k::inMainThread).
 class TaskQueue {
-public:
+  public:
     explicit TaskQueue(int threads = 2);
     ~TaskQueue();
     TaskQueue(const TaskQueue&) = delete;
@@ -21,7 +21,7 @@ public:
     void Post(std::function<void()> task);
     void Stop();
 
-private:
+  private:
     void Worker();
     std::mutex m_mutex;
     std::condition_variable m_cv;
@@ -30,4 +30,4 @@ private:
     bool m_stopping = false;
 };
 
-}  // namespace glasswave::core
+} // namespace glasswave::core

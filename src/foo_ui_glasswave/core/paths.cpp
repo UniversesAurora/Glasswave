@@ -30,4 +30,4 @@ bool EnsureDir(const std::filesystem::path& dir) {
     return !ec;
 }
 
-}  // namespace glasswave::core
+} // namespace glasswave::core

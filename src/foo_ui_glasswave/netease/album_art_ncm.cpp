@@ -54,7 +54,8 @@ struct NcmArt {
     }
     static Rendition RenditionFor(int sizePx) { return netease::RenditionFor(sizePx); }
 
-    static std::wstring KnownUrl(const stream::ArtRef& ref, const stream::Id& album, const Rendition& rendition) {
+    static std::wstring KnownUrl(const stream::ArtRef& ref, const stream::Id& album,
+                                 const Rendition& rendition) {
         const stream::Catalog& records = Catalog::Get().Records();
         std::wstring url = records.CoverUrl(ref.kind, ref.id);
         if (ref.kind == stream::ArtKind::Track && url.empty() && !album.empty())
@@ -68,7 +69,8 @@ struct NcmArt {
         auto& provider = Session::Get();
         std::wstring error;
         if (ref.kind == stream::ArtKind::Track && (known.empty() || attempt > 0)) {
-            if (!provider.Service().EnsureStarted(abort, &error)) Fail(error, "NetEase service is unavailable");
+            if (!provider.Service().EnsureStarted(abort, &error))
+                Fail(error, "NetEase service is unavailable");
             std::vector<Song> songs;
             if (!provider.Api().SongDetails({Num(ref.id)}, abort, songs, error))
                 Fail(error, "Cannot read the song's details");
@@ -80,7 +82,8 @@ struct NcmArt {
         // song's details do for a song (a never-opened album's cover stayed away until a restart,
         // owner 2026-11-14).
         if (ref.kind == stream::ArtKind::Album && known.empty()) {
-            if (!provider.Service().EnsureStarted(abort, &error)) Fail(error, "NetEase service is unavailable");
+            if (!provider.Service().EnsureStarted(abort, &error))
+                Fail(error, "NetEase service is unavailable");
             Album info;
             std::vector<Song> songs;
             if (!provider.Api().GetAlbum(Num(ref.id), abort, info, songs, error))

@@ -212,9 +212,13 @@ int AddDiscsListener(std::function<void()> listener) {
     return static_cast<int>(g_listeners.Add(std::move(listener)));
 }
 
-void RemoveDiscsListener(int token) { g_listeners.Remove(static_cast<core::Signal<>::Token>(token)); }
+void RemoveDiscsListener(int token) {
+    g_listeners.Remove(static_cast<core::Signal<>::Token>(token));
+}
 
-void NotifyDiscsChanged() { g_listeners.Emit(); }
+void NotifyDiscsChanged() {
+    g_listeners.Emit();
+}
 
 void Eject(wchar_t drive) {
     fb2k::splitTask([drive] {

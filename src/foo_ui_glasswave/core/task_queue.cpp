@@ -6,10 +6,13 @@ namespace glasswave::core {
 
 TaskQueue::TaskQueue(int threads) {
     const int n = threads > 0 ? threads : 1;
-    for (int i = 0; i < n; ++i) m_threads.emplace_back([this] { Worker(); });
+    for (int i = 0; i < n; ++i)
+        m_threads.emplace_back([this] { Worker(); });
 }
 
-TaskQueue::~TaskQueue() { Stop(); }
+TaskQueue::~TaskQueue() {
+    Stop();
+}
 
 void TaskQueue::Post(std::function<void()> task) {
     if (!task) return;
@@ -58,4 +61,4 @@ void TaskQueue::Worker() {
     }
 }
 
-}  // namespace glasswave::core
+} // namespace glasswave::core

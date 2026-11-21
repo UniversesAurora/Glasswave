@@ -62,9 +62,9 @@ int ParseTime(std::wstring_view s) {
 // The ID tags an LRC file carries (lower case). Any other "[word: text]" is lyric text: a
 // section note such as "[Chorus: x2]" is a line of the song, not metadata to drop.
 bool IsMetadataKey(const std::wstring& key) {
-    static constexpr std::wstring_view kKeys[] = {L"ti", L"ar", L"al", L"au", L"by",   L"offset", L"length",
-                                                  L"re", L"ve", L"id", L"total", L"sign", L"qq",   L"hash",
-                                                  L"tool", L"lang", L"language", L"encoding"};
+    static constexpr std::wstring_view kKeys[] = {
+        L"ti", L"ar",    L"al",   L"au", L"by",   L"offset", L"length", L"re",       L"ve",
+        L"id", L"total", L"sign", L"qq", L"hash", L"tool",   L"lang",   L"language", L"encoding"};
     return std::find(std::begin(kKeys), std::end(kKeys), key) != std::end(kKeys);
 }
 

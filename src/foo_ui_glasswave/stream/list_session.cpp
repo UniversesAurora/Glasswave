@@ -381,13 +381,14 @@ void Read::LoadCache() {
         self->cacheLoading = false;
         self->initializing = false;
         core::Log(L"list cache: " + std::wstring(self->provider.Key()) + L" kind " +
-                     std::to_wstring(static_cast<int>(self->query.kind)) + L" id " + self->query.id +
-                     L" section " + self->query.section +
-                     (cached ? L" hit rows " + std::to_wstring(RowCount(cached->page)) + L" pages " +
-                                   std::to_wstring(cached->pages) + (cached->page.more ? L" partial" : L" complete") +
-                                   L" described " + std::to_wstring(cached->metadataReadyRows) + L" age " +
-                                   std::to_wstring(cache::Store::Now() - cached->validatedAt) + L"s"
-                             : std::wstring(L" miss")));
+                  std::to_wstring(static_cast<int>(self->query.kind)) + L" id " + self->query.id +
+                  L" section " + self->query.section +
+                  (cached ? L" hit rows " + std::to_wstring(RowCount(cached->page)) + L" pages " +
+                                std::to_wstring(cached->pages) +
+                                (cached->page.more ? L" partial" : L" complete") + L" described " +
+                                std::to_wstring(cached->metadataReadyRows) + L" age " +
+                                std::to_wstring(cache::Store::Now() - cached->validatedAt) + L"s"
+                          : std::wstring(L" miss")));
         if (cached && cached->page.rows.index() == self->state.page.rows.index()) {
             self->provider.RestoreListRecords(cached->page);
             self->state.page = std::move(cached->page);
@@ -512,8 +513,8 @@ void Read::SaveCompleted(uint64_t id, bool success) {
     pendingSaves.erase(id);
     if (!success)
         core::Log(L"list cache: " + std::wstring(provider.Key()) + L" kind " +
-                     std::to_wstring(static_cast<int>(query.kind)) + L" id " + query.id +
-                     L" page was not persisted");
+                  std::to_wstring(static_cast<int>(query.kind)) + L" id " + query.id +
+                  L" page was not persisted");
     if (!success && (!firstFailedSave || id < *firstFailedSave)) firstFailedSave = id;
     ResolveSaveWaiters();
 }
@@ -687,7 +688,7 @@ void Read::Received(uint64_t id, ListPage page, std::wstring error) {
     inFlight = false;
     if (!error.empty())
         core::Log(L"list: " + std::wstring(provider.Key()) + L" kind " +
-                     std::to_wstring(static_cast<int>(query.kind)) + L" id " + query.id + L" failed: " + error);
+                  std::to_wstring(static_cast<int>(query.kind)) + L" id " + query.id + L" failed: " + error);
     if (error.empty() && page.rows.index() != state.page.rows.index())
         error = L"The service returned a different list type.";
     if (error.empty() && page.more && cursors.contains(CursorKey(page.next)))
@@ -698,8 +699,8 @@ void Read::Received(uint64_t id, ListPage page, std::wstring error) {
         // A continuation saved with the rows may no longer be accepted (it expired, or an
         // earlier build made it): the list is read again from its start rather than failing.
         core::Log(L"list: " + std::wstring(provider.Key()) + L" kind " +
-                     std::to_wstring(static_cast<int>(query.kind)) + L" id " + query.id +
-                     L" saved cursor rejected; reading from the start");
+                  std::to_wstring(static_cast<int>(query.kind)) + L" id " + query.id +
+                  L" saved cursor rejected; reading from the start");
         cursorRejected = true;
         resumedCursor = false;
         changedByWrite = true; // the re-read must not stop at an unchanged first page

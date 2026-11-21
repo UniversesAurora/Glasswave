@@ -18,9 +18,9 @@ namespace glasswave::netease {
 
 namespace {
 
+using core::LowerAscii;
 using core::Utf8;
 using core::Wide;
-using core::LowerAscii;
 
 std::string ExtensionFor(const SongUrl& url) {
     const std::wstring type = LowerAscii(url.type);
@@ -94,7 +94,8 @@ class NcmInput : public stream::EncodedInputBase {
     void open(service_ptr_t<file>, const char* path, t_input_open_reason reason, abort_callback&) {
         if (reason == input_open_info_write) throw exception_tagging_unsupported();
         stream::Id id;
-        if (!Catalog::Get().Records().ParseSongPath(path, id)) throw exception_io_data("Invalid NetEase track");
+        if (!Catalog::Get().Records().ParseSongPath(path, id))
+            throw exception_io_data("Invalid NetEase track");
         m_id = Num(id);
         m_path = path;
         m_cacheKey = {};
@@ -107,8 +108,8 @@ class NcmInput : public stream::EncodedInputBase {
             if (const auto local = download::LocalFile(L"ncm", std::to_wstring(m_id))) {
                 try {
                     service_ptr_t<input_info_reader> reader;
-                    input_entry::g_open_for_info_read(reader, nullptr, ("file://" + Utf8(*local)).c_str(), abort,
-                                                      true);
+                    input_entry::g_open_for_info_read(reader, nullptr, ("file://" + Utf8(*local)).c_str(),
+                                                      abort, true);
                     reader->get_info(0, info, abort);
                     return;
                 } catch (const exception_aborted&) {
@@ -175,7 +176,8 @@ class NcmInput : public stream::EncodedInputBase {
         return "quality-" + std::to_string(static_cast<int>(GetQuality()));
     }
 
-    std::optional<stream::EncodedSource> Recall(const std::vector<std::string>& memo, abort_callback&) override {
+    std::optional<stream::EncodedSource> Recall(const std::vector<std::string>& memo,
+                                                abort_callback&) override {
         SongUrl known;
         if (!ParseSourceMemo(memo, known)) return std::nullopt;
         core::Log(L"input: song " + std::to_wstring(m_id) + L" from the cache, level " + known.level);
@@ -206,7 +208,8 @@ class NcmInput : public stream::EncodedInputBase {
                 return std::nullopt;
             }
             if (!requestError.empty()) error = requestError;
-            throw exception_io_data(Utf8(error.empty() ? L"No playable source for this song." : error).c_str());
+            throw exception_io_data(
+                Utf8(error.empty() ? L"No playable source for this song." : error).c_str());
         }
         if (resolved.trial) core::Log(L"input: playing a free trial for song " + std::to_wstring(m_id));
         core::Log(L"input: song " + std::to_wstring(m_id) + L", level " + resolved.level + L", type " +

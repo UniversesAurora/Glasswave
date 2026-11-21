@@ -783,7 +783,8 @@ bool LyricsView::Tick() {
         // A sleeping view has not ticked for as long as the line lasted: measure against the
         // clock, not against one frame.
         const double expected =
-            m_lastNow + ((m_playing && !m_paused) ? std::chrono::duration<double>(frame - m_lastNowAt).count() : 0);
+            m_lastNow +
+            ((m_playing && !m_paused) ? std::chrono::duration<double>(frame - m_lastNowAt).count() : 0);
         const bool seek = std::abs(now - expected) > 0.6;
         m_lastNow = now;
         m_lastNowAt = frame;

@@ -17,4 +17,4 @@ void WriteFileAtomic(const std::filesystem::path& path, std::string_view bytes);
 // Reads while other programs hold the file open for reading or writing.
 std::optional<std::string> ReadFileLimited(const std::filesystem::path& path, size_t maxBytes);
 
-}  // namespace glasswave::core
+} // namespace glasswave::core

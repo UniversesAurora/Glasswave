@@ -165,11 +165,20 @@ stream::Artist ToArtist(const Artist& artist) {
     out.videoCount = artist.videoCount < 0 ? stream::kUnknownCount : artist.videoCount;
     // The wiki's codes, as the service's artist lists name them. Untranslated UI keys.
     switch (artist.area) {
-    case 7: out.area = L"Chinese"; break;
-    case 96: out.area = L"Western"; break;
-    case 8: out.area = L"Japanese"; break;
-    case 16: out.area = L"Korean"; break;
-    default: break;
+    case 7:
+        out.area = L"Chinese";
+        break;
+    case 96:
+        out.area = L"Western";
+        break;
+    case 8:
+        out.area = L"Japanese";
+        break;
+    case 16:
+        out.area = L"Korean";
+        break;
+    default:
+        break;
     }
     out.kind = artist.type == 1   ? stream::ArtistKind::Male
                : artist.type == 2 ? stream::ArtistKind::Female

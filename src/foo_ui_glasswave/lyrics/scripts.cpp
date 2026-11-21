@@ -23,8 +23,8 @@ cfg_var_modern::cfg_string cfg_disabled(
 cfg_var_modern::cfg_string cfg_order(
     {0xded15512, 0x49c7, 0x41a9, {0x90, 0x5e, 0x83, 0xe1, 0x06, 0x64, 0x58, 0x22}}, "");
 
-using core::Wide;
 using core::Utf8;
+using core::Wide;
 
 std::vector<std::filesystem::path> Roots() {
     const std::filesystem::path own(Service::CacheFolder());

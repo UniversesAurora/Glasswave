@@ -10,7 +10,6 @@ namespace glasswave::ui {
 using core::Utf8;
 using core::Wide;
 
-
 namespace {
 
 constexpr size_t kHistoryLimit = 20;

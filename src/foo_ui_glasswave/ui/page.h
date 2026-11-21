@@ -86,7 +86,7 @@ protected:
 // its id, not its address, and the text taken back is the one put there, so a source made
 // in between (at the same address, or in another language) is left alone.
 class LoadingBadge {
-public:
+  public:
     LoadingBadge() = default;
     LoadingBadge(const LoadingBadge&) = delete;
     LoadingBadge& operator=(const LoadingBadge&) = delete;
@@ -113,7 +113,7 @@ public:
         host->ListChanged();
     }
 
-private:
+  private:
     PageHost* m_host = nullptr;
     std::weak_ptr<int> m_alive;
     uint64_t m_id = 0;

@@ -842,7 +842,8 @@ void PlayerWindow::OnDeviceReplaced() {
     if (!m_shown || !m_hwnd) return;
     PaintSideHighlights();
     UpdateLayout(false);
-    for (auto& w : m_widgets) w->Invalidate();
+    for (auto& w : m_widgets)
+        w->Invalidate();
 }
 
 PlayerWindow::~PlayerWindow() {

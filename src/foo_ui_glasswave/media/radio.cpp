@@ -46,15 +46,17 @@ core::Signal<> g_listeners;
 using core::Utf8;
 using core::Wide;
 
-void Notify() { g_listeners.Emit(); }
+void Notify() {
+    g_listeners.Emit();
+}
 
 void Save() {
     if (!g_state.active || !g_state.provider) {
         cfg_station = "";
         return;
     }
-    std::string text = Utf8(g_state.provider->Key()) + kField + Utf8(g_state.station) + kField +
-                       Utf8(g_state.name) + kField;
+    std::string text =
+        Utf8(g_state.provider->Key()) + kField + Utf8(g_state.station) + kField + Utf8(g_state.name) + kField;
     for (size_t i = 0; i < g_state.queued.size(); ++i) {
         if (i) text += kItem;
         text += g_state.queued[i]->get_path();
@@ -126,7 +128,7 @@ void TopUp() {
     }
     if (add.get_count()) {
         core::Log(L"radio: " + std::to_wstring(add.get_count()) + L" more queued, " +
-                     std::to_wstring(g_state.pending.size()) + L" waiting");
+                  std::to_wstring(g_state.pending.size()) + L" waiting");
         for (size_t i = 0; i < add.get_count(); ++i) g_state.queued.push_back(add[i]);
         Save();
         if (!AppendSourceBatch(add, g_state.generation)) {
@@ -202,9 +204,7 @@ void Restore() {
         start = end + 1;
     }
     const std::string paths = start <= text.size() ? text.substr(start) : std::string();
-    stream::Provider* provider =
-        fields.size() == 3 ? stream::FindProvider(Wide(fields[0]))
-                           : nullptr;
+    stream::Provider* provider = fields.size() == 3 ? stream::FindProvider(Wide(fields[0])) : nullptr;
     const t_size queue = QueuePlaylist(false);
     metadb_handle_list items;
     if (queue != SIZE_MAX) playlist_manager::get()->playlist_get_all_items(queue, items);
@@ -229,7 +229,8 @@ void Restore() {
     g_state.generation = QueueContentGeneration();
     g_state.active = true;
     ++g_serial;
-    core::Log(L"radio: " + g_state.name + L" restored with " + std::to_wstring(items.get_count()) + L" songs");
+    core::Log(L"radio: " + g_state.name + L" restored with " + std::to_wstring(items.get_count()) +
+              L" songs");
     ListenToSchedule();
     Notify();
 }
@@ -279,8 +280,9 @@ void Play(stream::Provider& provider, const stream::Id& station, std::wstring na
             Notify();
             // A read dropped because the source stopped or signed out is nothing to report.
             if (!stream::IsRequestDropped(error))
-                popup_message::g_show(Utf8(ui::Tr(error.empty() ? L"The station sent no songs." : error)).c_str(),
-                                      Utf8(name).c_str());
+                popup_message::g_show(
+                    Utf8(ui::Tr(error.empty() ? L"The station sent no songs." : error)).c_str(),
+                    Utf8(name).c_str());
             return;
         }
         // The first songs go into the queue; the rest wait until they are a song away.
@@ -302,7 +304,8 @@ void Play(stream::Provider& provider, const stream::Id& station, std::wstring na
         g_state.generation = QueueContentGeneration();
         g_state.active = true;
         Save();
-        core::Log(L"radio: " + g_state.name + L" started, " + std::to_wstring(tracks.size()) + L" songs sent");
+        core::Log(L"radio: " + g_state.name + L" started, " + std::to_wstring(tracks.size()) +
+                  L" songs sent");
         Notify();
         TopUp();
     });
@@ -343,6 +346,8 @@ int Subscribe(std::function<void()> callback) {
     return static_cast<int>(g_listeners.Add(std::move(callback)));
 }
 
-void Unsubscribe(int token) { g_listeners.Remove(static_cast<core::Signal<>::Token>(token)); }
+void Unsubscribe(int token) {
+    g_listeners.Remove(static_cast<core::Signal<>::Token>(token));
+}
 
 } // namespace glasswave::media::radio

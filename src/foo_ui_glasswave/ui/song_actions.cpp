@@ -13,7 +13,6 @@ namespace glasswave::ui {
 
 using core::Wide;
 
-
 std::vector<LocalPlaylistTarget> LocalPlaylistTargets(size_t exclude) {
     auto pm = playlist_manager::get();
     std::vector<LocalPlaylistTarget> out;

@@ -145,7 +145,12 @@ class StreamProvider final : public stream::Provider {
 
     // The worker queues of m_exec: reads, library writes (one at a time, in order), playlist
     // details and the second stage of page enrichment.
-    enum Queue : size_t { kTasks, kMutations, kDetails, kEnrich };
+    enum Queue : size_t {
+        kTasks,
+        kMutations,
+        kDetails,
+        kEnrich
+    };
     // Adds an album or a playlist to the library, or removes it (the two differ only in the
     // resource, the checks before a removal and the lists a change touches).
     void WriteLibraryItem(bool album, const stream::Id& id, bool saved, Done done);

@@ -49,8 +49,7 @@ struct FetchPolicy {
 using ByteSink = std::function<void(const void* bytes, size_t size, abort_callback& abort)>;
 
 // Adapts any sink with Write(bytes, size, abort) (cache::audio::Sink) to a ByteSink.
-template <class Sink>
-ByteSink WriteTo(Sink& sink) {
+template <class Sink> ByteSink WriteTo(Sink& sink) {
     return [&sink](const void* bytes, size_t size, abort_callback& abort) { sink.Write(bytes, size, abort); };
 }
 

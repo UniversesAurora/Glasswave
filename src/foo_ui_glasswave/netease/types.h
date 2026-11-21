@@ -18,7 +18,7 @@ struct Song {
     std::wstring note; // alia, else tns: shown in grey after the title (stream::Track::note)
     std::wstring album;
     std::vector<std::wstring> artists;
-    std::vector<ArtistRef> artistRefs;  // ids for artist pages
+    std::vector<ArtistRef> artistRefs; // ids for artist pages
     int64_t albumId = 0;
     std::wstring coverUrl;
     int durationMs = 0;

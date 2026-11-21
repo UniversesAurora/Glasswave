@@ -33,13 +33,15 @@ std::vector<stream::Playlist> PutPlaylists(const std::vector<Playlist>& playlist
         converted.push_back(ToPlaylist(playlist, userId, scope));
         Catalog::Get().Records().Put(converted.back());
         if (scope == PlaylistScope::Recommended && playlist.id == kPersonalRadarId)
-            Catalog::Get().Records().PreferCover(stream::ArtKind::Playlist, converted.back().id, playlist.coverUrl);
+            Catalog::Get().Records().PreferCover(stream::ArtKind::Playlist, converted.back().id,
+                                                 playlist.coverUrl);
     }
     return converted;
 }
 
 std::vector<stream::Playlist>::iterator FindById(std::vector<stream::Playlist>& list, const stream::Id& id) {
-    return std::find_if(list.begin(), list.end(), [&id](const stream::Playlist& playlist) { return playlist.id == id; });
+    return std::find_if(list.begin(), list.end(),
+                        [&id](const stream::Playlist& playlist) { return playlist.id == id; });
 }
 
 }  // namespace
@@ -62,7 +64,7 @@ void Session::Initialize() {
     m_service.Initialize();
     Catalog::Get().Load();
     core::Log(L"art: extractor supports ncm://song/ = " +
-        std::wstring(album_art_extractor::g_is_supported_path("ncm://song/1") ? L"yes" : L"no"));
+              std::wstring(album_art_extractor::g_is_supported_path("ncm://song/1") ? L"yes" : L"no"));
     std::lock_guard lock(m_mutex);
     m_account = {};
     m_account.nickname = GetAccountName();
@@ -95,7 +97,9 @@ void Session::Shutdown() {
     m_liked.clear();
 }
 
-bool Session::LoggedIn() const { return SessionCookieHasMusicU(); }
+bool Session::LoggedIn() const {
+    return SessionCookieHasMusicU();
+}
 
 Account Session::CurrentAccount() const {
     std::lock_guard lock(m_mutex);
@@ -151,7 +155,8 @@ Session::PlaylistScope Session::FindPlaylistScope(int64_t playlistId) const {
 
 Session::PlaylistScope Session::ScopeLocked(const stream::Id& id) const {
     const auto in = [&id](const std::vector<stream::Playlist>& list) {
-        return std::any_of(list.begin(), list.end(), [&id](const stream::Playlist& playlist) { return playlist.id == id; });
+        return std::any_of(list.begin(), list.end(),
+                           [&id](const stream::Playlist& playlist) { return playlist.id == id; });
     };
     if (in(m_createdPlaylists)) return PlaylistScope::Created;
     if (in(m_collectedPlaylists)) return PlaylistScope::Collected;
@@ -313,7 +318,8 @@ void Session::ApplyPlaylistOrder(const std::vector<int64_t>& ids) {
     std::lock_guard lock(m_mutex);
     auto apply = [&ids](std::vector<stream::Playlist>& list) {
         std::map<stream::Id, stream::Playlist> byId;
-        for (auto& playlist : list) byId.emplace(playlist.id, std::move(playlist));
+        for (auto& playlist : list)
+            byId.emplace(playlist.id, std::move(playlist));
         std::vector<stream::Playlist> ordered;
         ordered.reserve(list.size());
         for (int64_t number : ids) {
@@ -322,7 +328,8 @@ void Session::ApplyPlaylistOrder(const std::vector<int64_t>& ids) {
             ordered.push_back(std::move(it->second));
             byId.erase(it);
         }
-        for (auto& [id, playlist] : byId) ordered.push_back(std::move(playlist));
+        for (auto& [id, playlist] : byId)
+            ordered.push_back(std::move(playlist));
         list = std::move(ordered);
     };
     apply(m_createdPlaylists);
@@ -410,7 +417,8 @@ void Session::RefreshAccount(DoneCallback done) {
             if (generation != m_accountGeneration) return superseded();
             std::lock_guard liked(m_likedMutex);
             m_liked.clear();
-            for (int64_t id : ids) m_liked.insert(id);
+            for (int64_t id : ids)
+                m_liked.insert(id);
         }
         std::vector<Playlist> playlists;
         int64_t likedPlaylist = 0;
@@ -463,7 +471,8 @@ void Session::RefreshAccount(DoneCallback done) {
             m_recommendedPlaylists = std::move(converted);
         }
         core::Log(L"account: saved lists: " + std::to_wstring(followedCount) + L" artists, " +
-            std::to_wstring(albumCount) + L" albums, " + std::to_wstring(recommendedCount) + L" recommended");
+                  std::to_wstring(albumCount) + L" albums, " + std::to_wstring(recommendedCount) +
+                  L" recommended");
         PostMain([done = std::move(done)] {
             if (done) done(true, {});
         });
@@ -621,7 +630,7 @@ void Session::SetArtistFollow(int64_t artistId, bool follow, DoneCallback done) 
             if (auto artist = Catalog::Get().Records().FindArtist(id)) {
                 artist->followed = follow;
                 artist->followKnown = true;
-                Catalog::Get().Records().Put(*artist);  // FindArtist returns a copy
+                Catalog::Get().Records().Put(*artist); // FindArtist returns a copy
                 std::lock_guard lock(m_mutex);
                 auto it = std::find_if(m_followedArtists.begin(), m_followedArtists.end(),
                                        [&id](const stream::Artist& a) { return a.id == id; });
@@ -761,7 +770,8 @@ void Session::SetPlaylistSubscribed(int64_t playlistId, bool subscribed, DoneCal
                         for (const auto& playlist : m_recommendedPlaylists)
                             if (playlist.id == id) known = playlist;
                 }
-                if (known.id.empty()) known = Catalog::Get().Records().FindPlaylist(id).value_or(stream::Playlist{});
+                if (known.id.empty())
+                    known = Catalog::Get().Records().FindPlaylist(id).value_or(stream::Playlist{});
                 known.id = id;
                 known.saved = subscribed && !known.own;
                 Catalog::Get().Records().Put(known);
@@ -886,9 +896,10 @@ void Session::DeletePlaylist(int64_t playlistId, DoneCallback done) {
             std::lock_guard lock(m_mutex);
             const stream::Id id = IdText(playlistId);
             auto remove = [&id](std::vector<stream::Playlist>& list) {
-                list.erase(std::remove_if(list.begin(), list.end(),
-                                          [&id](const stream::Playlist& playlist) { return playlist.id == id; }),
-                           list.end());
+                list.erase(
+                    std::remove_if(list.begin(), list.end(),
+                                   [&id](const stream::Playlist& playlist) { return playlist.id == id; }),
+                    list.end());
             };
             remove(m_createdPlaylists);
             remove(m_collectedPlaylists);

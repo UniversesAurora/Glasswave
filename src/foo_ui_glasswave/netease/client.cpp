@@ -18,8 +18,8 @@ namespace {
 using winrt::Windows::Data::Json::IJsonValue;
 using winrt::Windows::Data::Json::JsonValueType;
 
-using core::Wide;
 using core::Utf8;
+using core::Wide;
 
 std::wstring MessageOf(const core::json::Object& body, int code) {
     std::wstring message = core::json::GetString(body, L"message");
@@ -51,8 +51,9 @@ Album ParseAlbum(const core::json::Object& object) {
     Album album;
     album.id = core::json::GetInt64(object, L"id");
     album.name = core::json::GetString(object, L"name");
-    album.coverUrl = core::json::GetString(object, L"picUrl",
-                                     core::json::GetString(object, L"coverImgUrl", core::json::GetString(object, L"blurPicUrl")));
+    album.coverUrl = core::json::GetString(
+        object, L"picUrl",
+        core::json::GetString(object, L"coverImgUrl", core::json::GetString(object, L"blurPicUrl")));
     album.trackCount = core::json::GetInt(object, L"size", core::json::GetInt(object, L"trackCount"));
     album.publishTime = core::json::GetInt64(object, L"publishTime");
     album.artistRefs = ArtistRefs(object);
@@ -79,10 +80,11 @@ Artist ParseArtist(const core::json::Object& object) {
     Artist artist;
     artist.id = core::json::GetInt64(object, L"id");
     artist.name = core::json::GetString(object, L"name");
-    artist.avatarUrl = core::json::GetString(object, L"picUrl",
-                                       core::json::GetString(object, L"avatar",
-                                                       core::json::GetString(object, L"img1v1Url",
-                                                                       core::json::GetString(object, L"cover"))));
+    artist.avatarUrl = core::json::GetString(
+        object, L"picUrl",
+        core::json::GetString(
+            object, L"avatar",
+            core::json::GetString(object, L"img1v1Url", core::json::GetString(object, L"cover"))));
     artist.brief = core::json::GetString(object, L"briefDesc");
     artist.albumCount = core::json::GetInt(object, L"albumSize");
     artist.songCount = core::json::GetInt(object, L"musicSize");
@@ -197,7 +199,8 @@ Playlist ParsePlaylist(const core::json::Object& object) {
     Playlist playlist;
     playlist.id = core::json::GetInt64(object, L"id");
     playlist.name = core::json::GetString(object, L"name");
-    playlist.coverUrl = core::json::GetString(object, L"coverImgUrl", core::json::GetString(object, L"picUrl"));
+    playlist.coverUrl =
+        core::json::GetString(object, L"coverImgUrl", core::json::GetString(object, L"picUrl"));
     playlist.trackCount = core::json::GetInt(object, L"trackCount");
     playlist.subscribed = core::json::GetBool(object, L"subscribed");
     playlist.description = core::json::GetString(object, L"description");
@@ -224,8 +227,8 @@ Playlist ParsePlaylist(const core::json::Object& object) {
 }
 
 bool Client::Request(std::wstring_view path, const std::vector<std::pair<std::wstring, std::wstring>>& params,
-                     bool post, abort_callback& abort, core::json::Object& out, int& apiCode, std::wstring& error,
-                     std::vector<std::wstring>* responseCookies) {
+                     bool post, abort_callback& abort, core::json::Object& out, int& apiCode,
+                     std::wstring& error, std::vector<std::wstring>* responseCookies) {
     const std::string base = m_service.BaseUrl();
     if (base.empty()) {
         error = L"The NetEase service is not running.";
@@ -313,7 +316,8 @@ bool Client::QrKey(abort_callback& abort, QrLogin& out, std::wstring& error) {
     }
     out.key = core::json::GetString(*data, L"unikey");
     if (out.key.empty()) {
-        if (auto nested = core::json::GetObject(*data, L"data")) out.key = core::json::GetString(*nested, L"unikey");
+        if (auto nested = core::json::GetObject(*data, L"data"))
+            out.key = core::json::GetString(*nested, L"unikey");
     }
     if (out.key.empty()) {
         error = L"The login service returned an empty QR key.";
@@ -371,9 +375,10 @@ QrStatus Client::QrCheck(std::wstring_view key, abort_callback& abort) {
     status.cookie = NormalizeCookie(rawCookie);
     if (code == 803 || !status.cookie.empty()) {
         core::Log(L"login: qr check code " + std::to_wstring(code) + L", json/header cookies " +
-            std::to_wstring(responseCookies.size()) + L", normalized " + std::to_wstring(status.cookie.size()) +
-            (CookieHasMusicU(status.cookie) ? L", MUSIC_U ok" : L", MUSIC_U missing") + L", names [" +
-            CookieNames(status.cookie) + L"]");
+                  std::to_wstring(responseCookies.size()) + L", normalized " +
+                  std::to_wstring(status.cookie.size()) +
+                  (CookieHasMusicU(status.cookie) ? L", MUSIC_U ok" : L", MUSIC_U missing") + L", names [" +
+                  CookieNames(status.cookie) + L"]");
     }
     return status;
 }
@@ -384,7 +389,8 @@ bool Client::GetAccount(abort_callback& abort, Account& out, std::wstring& error
     auto account = core::json::GetObject(body, L"account");
     auto profile = core::json::GetObject(body, L"profile");
     out = {};
-    if (!account || account->Size() == 0 || !profile || core::json::GetBool(*account, L"anonimousUser")) return true;
+    if (!account || account->Size() == 0 || !profile || core::json::GetBool(*account, L"anonimousUser"))
+        return true;
     out.loggedIn = true;
     out.userId = core::json::GetInt64(*account, L"id");
     if (out.userId == 0) out.userId = core::json::GetInt64(*profile, L"userId");
@@ -530,8 +536,8 @@ bool Client::RecommendPlaylists(abort_callback& abort, std::vector<Playlist>& ou
     return true;
 }
 
-bool Client::Generic(std::wstring_view uri, std::wstring_view data, abort_callback& abort, core::json::Object& out,
-                     std::wstring& error) {
+bool Client::Generic(std::wstring_view uri, std::wstring_view data, abort_callback& abort,
+                     core::json::Object& out, std::wstring& error) {
     if (!Call(L"/api", {{L"uri", std::wstring(uri)}, {L"data", std::wstring(data)}, {L"crypto", L"eapi"}},
               false, abort, out, error))
         return false;
@@ -553,7 +559,8 @@ std::wstring ClientTime() {
 std::wstring TitleOf(const core::json::Object& element, const wchar_t* key) {
     if (auto title = core::json::GetObject(element, key)) return core::json::GetString(*title, L"title");
     if (auto titles = core::json::GetArray(element, key))
-        for (const auto& title : core::json::Objects(*titles)) return core::json::GetString(title, L"title");
+        for (const auto& title : core::json::Objects(*titles))
+            return core::json::GetString(title, L"title");
     return {};
 }
 
@@ -657,7 +664,8 @@ bool Client::HomeBlocks(abort_callback& abort, std::vector<HomeBlock>& out, std:
     for (const auto& block : core::json::Objects(*customBlocks)) {
         HomeBlock row;
         row.code = core::json::GetString(block, L"code");
-        if (auto element = core::json::GetObject(block, L"uiElement")) row.title = TitleOf(*element, L"mainTitle");
+        if (auto element = core::json::GetObject(block, L"uiElement"))
+            row.title = TitleOf(*element, L"mainTitle");
         const auto creatives = core::json::GetArray(block, L"creatives");
         if (!creatives) continue;
         for (const auto& creative : core::json::Objects(*creatives)) {
@@ -774,8 +782,8 @@ bool Client::SearchSongs(std::wstring_view query, int limit, int offset, abort_c
 }
 
 bool Client::CloudSearch(std::wstring_view query, int type, int limit, int offset, const wchar_t* rowsKey,
-                         const wchar_t* countKey, abort_callback& abort, std::vector<core::json::Object>& rows,
-                         SearchPage& page, std::wstring& error) {
+                         const wchar_t* countKey, abort_callback& abort,
+                         std::vector<core::json::Object>& rows, SearchPage& page, std::wstring& error) {
     rows.clear();
     page = {};
     core::json::Object body;
@@ -950,7 +958,8 @@ bool Client::SearchSuggest(std::wstring_view query, abort_callback& abort, Searc
     std::wstring itemsError;
     if (Request(L"/search/suggest", {{L"keywords", std::wstring(query)}}, false, abort, items, code, itemsError) &&
         code == 200)
-        if (const auto result = core::json::GetObject(items, L"result")) out.items = HitsInOrder(*result, L"order");
+        if (const auto result = core::json::GetObject(items, L"result"))
+            out.items = HitsInOrder(*result, L"order");
     return true;
 }
 
@@ -1128,8 +1137,9 @@ bool Client::GetArtistDetail(int64_t artistId, abort_callback& abort, Artist& ou
     out.id = core::json::GetInt64(*artist, L"id");
     if (!out.id) out.id = artistId;
     out.name = core::json::GetString(*artist, L"name");
-    out.avatarUrl = core::json::GetString(*artist, L"avatar",
-                                    core::json::GetString(*artist, L"cover", core::json::GetString(*artist, L"picUrl")));
+    out.avatarUrl = core::json::GetString(
+        *artist, L"avatar",
+        core::json::GetString(*artist, L"cover", core::json::GetString(*artist, L"picUrl")));
     out.brief = core::json::GetString(*artist, L"briefDesc");
     out.albumCount = core::json::GetInt(*artist, L"albumSize");
     out.songCount = core::json::GetInt(*artist, L"musicSize");
@@ -1212,7 +1222,8 @@ bool Client::GetSongInfo(int64_t songId, abort_callback& abort, SongInfo& out, s
         const auto ui = core::json::GetObject(item, L"uiElement");
         if (const auto texts = ui ? core::json::GetArray(*ui, L"textLinks") : std::nullopt)
             for (const auto& link : core::json::Objects(*texts))
-                if (auto text = core::json::GetString(link, L"text"); !text.empty()) out.push_back(std::move(text));
+                if (auto text = core::json::GetString(link, L"text"); !text.empty())
+                    out.push_back(std::move(text));
         return out;
     };
     for (const auto& block : core::json::Objects(*blocks)) {
@@ -1223,13 +1234,15 @@ bool Client::GetSongInfo(int64_t songId, abort_callback& abort, SongInfo& out, s
             const std::wstring type = core::json::GetString(creative, L"creativeType");
             std::vector<std::wstring> names; // the resources' titles (style and tag words)
             const auto resources = core::json::GetArray(creative, L"resources");
-            const auto items = resources ? core::json::Objects(*resources) : std::vector<core::json::Object>{};
+            const auto items =
+                resources ? core::json::Objects(*resources) : std::vector<core::json::Object>{};
             for (const auto& resource : items)
                 if (auto name = title(resource); !name.empty()) names.push_back(std::move(name));
             if (kind == L"SONG_PLAY_ABOUT_SIMILAR_SONG") {
                 for (const auto& resource : items)
                     if (core::json::GetString(resource, L"resourceType") == L"SONG")
-                        if (const int64_t id = _wtoi64(core::json::GetString(resource, L"resourceId").c_str()))
+                        if (const int64_t id =
+                                _wtoi64(core::json::GetString(resource, L"resourceId").c_str()))
                             out.similar.push_back(id);
             } else if (type == L"songTag") {
                 out.styles = std::move(names);
@@ -1550,7 +1563,8 @@ bool Client::CreatePlaylist(std::wstring_view name, abort_callback& abort, int64
         return false;
     id = core::json::GetInt64(body, L"id");
     if (!id) {
-        if (auto playlist = core::json::GetObject(body, L"playlist")) id = core::json::GetInt64(*playlist, L"id");
+        if (auto playlist = core::json::GetObject(body, L"playlist"))
+            id = core::json::GetInt64(*playlist, L"id");
     }
     if (!id) {
         error = L"The service did not return the new playlist id.";

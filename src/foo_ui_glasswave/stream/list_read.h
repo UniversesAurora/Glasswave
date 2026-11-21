@@ -9,8 +9,7 @@
 namespace glasswave::stream {
 
 // The rows of one kind from a page; empty when the page holds another kind.
-template <class Row>
-std::vector<Row> RowsOf(ListPage& page) {
+template <class Row> std::vector<Row> RowsOf(ListPage& page) {
     if (auto* rows = std::get_if<std::vector<Row>>(&page.rows)) return std::move(*rows);
     return {};
 }

@@ -312,9 +312,9 @@ void PlaylistSource::BuildGroups() {
         }
         // A row without an album stays its own group; otherwise the album name is the key
         // (soundtracks often credit a different artist per track).
-        info.key = f[0].empty()
-                       ? std::wstring(L"\x1f") + (info.item.is_valid() ? core::Wide(info.item->get_path()) : L"")
-                       : f[0];
+        info.key = f[0].empty() ? std::wstring(L"\x1f") +
+                                      (info.item.is_valid() ? core::Wide(info.item->get_path()) : L"")
+                                : f[0];
         info.album = f[0];
         info.albumArtist = f[1];
         info.genre = f[2];

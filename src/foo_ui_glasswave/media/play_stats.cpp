@@ -165,16 +165,16 @@ void PlayStats::Save() const {
     }
     try {
         core::WriteFileAtomic(file, out.str());
-    } catch (const std::exception& e) {  // disk full or similar: the previous file stays
+    } catch (const std::exception& e) { // disk full or similar: the previous file stays
         core::Log(L"play stats: cannot save: " + core::Wide(e.what()));
     }
 }
 
 namespace {
 constexpr double kSaveDelaySeconds = 5.0;
-bool g_saveDirty = false;  // main thread
+bool g_saveDirty = false; // main thread
 bool g_savePosted = false;
-}  // namespace
+} // namespace
 
 void PlayStats::QueueSave() {
     g_saveDirty = true;
@@ -194,11 +194,11 @@ void PlayStats::Flush() {
 
 namespace {
 class SaveAtQuit : public initquit {
-public:
+  public:
     void on_quit() override { PlayStats::Flush(); }
 };
 FB2K_SERVICE_FACTORY(SaveAtQuit);
-}  // namespace
+} // namespace
 
 void PlayStats::Prune() {
     const size_t limit = MaxRecords();

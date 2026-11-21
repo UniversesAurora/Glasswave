@@ -359,7 +359,9 @@ void SetAppleLocale(bool chinese) {
     g_localeKnown.store(true, std::memory_order_release);
 }
 
-std::wstring Encode(std::wstring_view value) { return Wide(core::UrlEncode(value)); }
+std::wstring Encode(std::wstring_view value) {
+    return Wide(core::UrlEncode(value));
+}
 
 namespace {
 

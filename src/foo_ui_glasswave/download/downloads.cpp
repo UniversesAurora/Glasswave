@@ -175,7 +175,7 @@ void Save() {
     if (file.empty()) return;
     try {
         core::WriteFileAtomic(file, text);
-    } catch (const std::exception& e) {  // the previous list stays
+    } catch (const std::exception& e) { // the previous list stays
         core::Log(L"downloads: cannot save the list: " + Wide(e.what()));
     }
 }
@@ -446,7 +446,7 @@ void WriteLyrics(const std::wstring& path, const std::wstring& text) {
     if (sidecar && !text.empty()) {
         const std::string bytes = "\xEF\xBB\xBF" + Utf8(text); // UTF-8 with a BOM, as players expect
         try {
-            core::WriteFileAtomic(lrc, bytes);  // a failed write leaves an existing .lrc as it was
+            core::WriteFileAtomic(lrc, bytes); // a failed write leaves an existing .lrc as it was
         } catch (const std::exception& e) {
             core::Log(L"downloads: cannot write the lyrics file: " + Wide(e.what()));
         }
@@ -1006,8 +1006,12 @@ std::optional<std::wstring> LocalFile(std::wstring_view provider, std::wstring_v
     return path;
 }
 
-uint64_t Subscribe(std::function<void()> listener) { return g_listeners.Add(std::move(listener)); }
+uint64_t Subscribe(std::function<void()> listener) {
+    return g_listeners.Add(std::move(listener));
+}
 
-void Unsubscribe(uint64_t token) { g_listeners.Remove(token); }
+void Unsubscribe(uint64_t token) {
+    g_listeners.Remove(token);
+}
 
 } // namespace glasswave::download
