@@ -99,7 +99,7 @@ enum Id : int {
 };
 
 inline winrt::Windows::UI::Color Rgba(uint32_t rgb, float alpha) {
-    return winrt::Windows::UI::ColorHelper::FromHex(static_cast<uint8_t>(std::lround(alpha * 255)),
+    return winrt::Windows::UI::ColorHelper::FromArgb(static_cast<uint8_t>(std::lround(alpha * 255)),
                                                      static_cast<uint8_t>(rgb >> 16),
                                                      static_cast<uint8_t>(rgb >> 8), static_cast<uint8_t>(rgb));
 }
