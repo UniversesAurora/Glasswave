@@ -2188,71 +2188,52 @@ void StreamProvider::ClearPlaylistDetailsLocked() {
 }
 
 bool StreamProvider::PutIfCurrent(uint64_t generation, const Song& song) {
-    {
-        std::lock_guard lock(m_mutex);
-        if (!m_started || generation != m_exec.Generation()) return false;
-    }
-    // Outside the lock: the catalog writes files and the UI takes this lock.
+    // Under the lock: a sign-out that bumps the generation cannot slip between the check and the
+    // put and leave the old account's records in the catalog it has just cleared.
+    std::lock_guard lock(m_mutex);
+    if (!m_started || generation != m_exec.Generation()) return false;
     Catalog::Get().Put(song);
     return true;
 }
 
 bool StreamProvider::PutIfCurrent(uint64_t generation, const std::vector<Song>& songs) {
-    {
-        std::lock_guard lock(m_mutex);
-        if (!m_started || generation != m_exec.Generation()) return false;
-    }
-    // Outside the lock: the catalog writes files and the UI takes this lock.
+    std::lock_guard lock(m_mutex);
+    if (!m_started || generation != m_exec.Generation()) return false;
     Catalog::Get().Put(songs);
     return true;
 }
 
 bool StreamProvider::PutIfCurrent(uint64_t generation, const stream::Playlist& playlist) {
-    {
-        std::lock_guard lock(m_mutex);
-        if (!m_started || generation != m_exec.Generation()) return false;
-    }
-    // Outside the lock: the catalog writes files and the UI takes this lock.
+    std::lock_guard lock(m_mutex);
+    if (!m_started || generation != m_exec.Generation()) return false;
     Catalog::Get().Put(playlist);
     return true;
 }
 
 bool StreamProvider::PutIfCurrent(uint64_t generation, const stream::Album& album) {
-    {
-        std::lock_guard lock(m_mutex);
-        if (!m_started || generation != m_exec.Generation()) return false;
-    }
-    // Outside the lock: the catalog writes files and the UI takes this lock.
+    std::lock_guard lock(m_mutex);
+    if (!m_started || generation != m_exec.Generation()) return false;
     Catalog::Get().Put(album);
     return true;
 }
 
 bool StreamProvider::PutIfCurrent(uint64_t generation, const std::vector<stream::Album>& albums) {
-    {
-        std::lock_guard lock(m_mutex);
-        if (!m_started || generation != m_exec.Generation()) return false;
-    }
-    // Outside the lock: the catalog writes files and the UI takes this lock.
+    std::lock_guard lock(m_mutex);
+    if (!m_started || generation != m_exec.Generation()) return false;
     Catalog::Get().Put(albums);
     return true;
 }
 
 bool StreamProvider::PutIfCurrent(uint64_t generation, const stream::Artist& artist) {
-    {
-        std::lock_guard lock(m_mutex);
-        if (!m_started || generation != m_exec.Generation()) return false;
-    }
-    // Outside the lock: the catalog writes files and the UI takes this lock.
+    std::lock_guard lock(m_mutex);
+    if (!m_started || generation != m_exec.Generation()) return false;
     Catalog::Get().Put(artist);
     return true;
 }
 
 bool StreamProvider::PutIfCurrent(uint64_t generation, const std::vector<stream::Artist>& artists) {
-    {
-        std::lock_guard lock(m_mutex);
-        if (!m_started || generation != m_exec.Generation()) return false;
-    }
-    // Outside the lock: the catalog writes files and the UI takes this lock.
+    std::lock_guard lock(m_mutex);
+    if (!m_started || generation != m_exec.Generation()) return false;
     Catalog::Get().Put(artists);
     return true;
 }
