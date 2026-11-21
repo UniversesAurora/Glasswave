@@ -1966,10 +1966,11 @@ bool PlayerWindow::LyricLineLive() const {
 }
 
 // The seek bar's head and the times follow the music on the same frames, a device pixel and a
-// second at a time, instead of jumping with the playback time callback once a second.
+// second at a time, instead of jumping with the playback time callback once a second. Only
+// while the control bar is up: away, the once-a-second callback is all that is drawn.
 bool PlayerWindow::SeekLive() const {
-    return m_shown && m_hwnd && !IsIconic(m_hwnd) && m_playing && !m_paused && m_length > 0 &&
-           !Empty(m_layout.seek);
+    return m_shown && m_hwnd && !IsIconic(m_hwnd) && m_chromeShown && m_playing && !m_paused &&
+           m_length > 0 && !Empty(m_layout.seek);
 }
 
 bool PlayerWindow::TickSeek() {
@@ -2120,6 +2121,7 @@ void PlayerWindow::TogglePane(NowPlayingPane::Mode mode) {
 void PlayerWindow::ShowChrome(bool show) {
     if (show == m_chromeShown) return;
     m_chromeShown = show;
+    if (show && SeekLive()) StartFrames(); // the head catches up on the next frame
     // Only the full screen hides the pointer with its chrome. Leaving it with the chrome away
     // (Escape, a double click) used to keep the pointer hidden over the mini window.
     const bool hideCursor = !show && m_mode == Mode::Full;
