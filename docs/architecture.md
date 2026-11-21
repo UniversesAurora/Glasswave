@@ -54,6 +54,22 @@ foobar2000.exe (core: decoding, playlists, library, DSP, output, components)
   state and notifies again, so whatever still shows that song shows the service's (old) state;
   it is reported on the console, not in a dialog. An answer that never comes stops counting
   after two minutes.
+- Library edits (follow an artist, save an album, a playlist or songs) work the same way:
+  `SetFollowed`, `SetAlbumSaved`, `SetPlaylistSaved` and `SetSongsSaved` record the new state,
+  notify `OnLibraryChanged` at once and call the source's `Write*` hook. `IsAlbumSaved`,
+  `PlaylistSavedState`, `ArtistPreferenceState` and `SongsSavedState` read the pending state
+  first and the source's `Read*` hook next. A failure takes the change back and notifies again.
+  After the service's answer the change keeps showing until the source's next library read
+  confirms it (`LibraryEditMark` / `ConfirmLibraryEdits`; NetEase confirms when its session
+  reports the changed lists, Apple Music after a refresh that began after the answer) or two
+  minutes pass. Apple Music's own mutation records, which also shape the lists it returns,
+  stay behind its `Write*` hooks.
+- Provider plumbing every source shares lives in `stream/`: `Executor` (worker queues, the
+  abort callback and a generation that stale tasks are checked against; a post after shutdown
+  is dropped), `AccountGate` (verified / pending / restoring flags with named transitions) and
+  `SnapshotSaver` (the bootstrap snapshot: load, a write that re-runs once when changes arrive
+  during it, the final write at shutdown). A source supplies only what it knows: its service
+  calls, whether a snapshot may be written now and how to fill it.
 - Downloads (`download/downloads.h`, `ui/downloads_page.h`): sources with
   `Capability::Download` describe a song's file (`Provider::ResolveDownload`: an HTTP link and
   its tags); the service queues, names, tags and remembers files and fetches them with aria2 (a
