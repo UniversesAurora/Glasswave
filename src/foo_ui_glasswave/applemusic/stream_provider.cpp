@@ -2117,14 +2117,21 @@ StreamProvider::~StreamProvider() {
     Shutdown();
 }
 
+namespace {
+
+// What a completion hears when its request is dropped (sign-out, account change, shutdown).
+constexpr wchar_t kRequestDropped[] = L"Apple Music stopped or changed accounts before the request finished.";
+
+} // namespace
+
 void StreamProvider::Post(uint64_t generation, std::function<void()> callback) {
-    core::TaskQueue* tasks = nullptr;
-    {
-        std::lock_guard lock(m_mutex);
-        if (!m_started || generation != m_generation || !m_tasks || !m_abort) return;
-        tasks = m_tasks.get();
-    }
-    tasks->Post([this, generation, callback = std::move(callback)] {
+    // Posted under the lock: Shutdown resets the queue under it, so a late post from another
+    // thread either lands before the reset (the queue drops it with its pending tasks) or sees
+    // no queue. Dropping destroys the callback, which completes a Done it captured with an error
+    // (stream::GuardDone).
+    std::lock_guard lock(m_mutex);
+    if (!m_started || generation != m_generation || !m_tasks || !m_abort) return;
+    m_tasks->Post([this, generation, callback = std::move(callback)] {
         {
             std::lock_guard lock(m_mutex);
             if (!m_started || generation != m_generation || !m_abort) return;
@@ -2134,13 +2141,9 @@ void StreamProvider::Post(uint64_t generation, std::function<void()> callback) {
 }
 
 void StreamProvider::PostMutation(uint64_t generation, std::function<void()> callback) {
-    core::TaskQueue* tasks = nullptr;
-    {
-        std::lock_guard lock(m_mutex);
-        if (!m_started || generation != m_generation || !m_mutationTasks || !m_abort) return;
-        tasks = m_mutationTasks.get();
-    }
-    tasks->Post([this, generation, callback = std::move(callback)] {
+    std::lock_guard lock(m_mutex);
+    if (!m_started || generation != m_generation || !m_mutationTasks || !m_abort) return;
+    m_mutationTasks->Post([this, generation, callback = std::move(callback)] {
         {
             std::lock_guard lock(m_mutex);
             if (!m_started || generation != m_generation || !m_abort) return;
@@ -2150,13 +2153,9 @@ void StreamProvider::PostMutation(uint64_t generation, std::function<void()> cal
 }
 
 bool StreamProvider::PostDetail(uint64_t generation, std::function<void()> callback) {
-    core::TaskQueue* tasks = nullptr;
-    {
-        std::lock_guard lock(m_mutex);
-        if (!m_started || generation != m_generation || !m_detailTasks || !m_abort) return false;
-        tasks = m_detailTasks.get();
-    }
-    tasks->Post([this, generation, callback = std::move(callback)] {
+    std::lock_guard lock(m_mutex);
+    if (!m_started || generation != m_generation || !m_detailTasks || !m_abort) return false;
+    m_detailTasks->Post([this, generation, callback = std::move(callback)] {
         {
             std::lock_guard lock(m_mutex);
             if (!m_started || generation != m_generation || !m_abort) return;
@@ -3571,6 +3570,7 @@ void StreamProvider::SignOut() {
 }
 
 void StreamProvider::RefreshAccountAsync(uint64_t generation, Done done, bool preservePlaylistDetails) {
+    done = stream::GuardDone(std::move(done), kRequestDropped);
     std::vector<Done> superseded;
     std::wstring startError;
     uint64_t mutationEpoch = 0;
@@ -4598,6 +4598,7 @@ std::optional<bool> StreamProvider::SongsSavedState(const std::vector<stream::Id
 }
 
 void StreamProvider::SetSongsSaved(std::vector<stream::Id> tracks, bool saved, Done done) {
+    done = stream::GuardDone(std::move(done), kRequestDropped);
     std::wstring signInError;
     if (!RequireSignedIn(signInError)) {
         if (done) done(signInError);
@@ -4672,6 +4673,7 @@ void StreamProvider::SetSongsSaved(std::vector<stream::Id> tracks, bool saved, D
 }
 
 void StreamProvider::RefreshLibrarySongsAsync(uint64_t generation, TracksDone done) {
+    done = stream::GuardDone(std::move(done), kRequestDropped);
     Post(generation, [this, generation, done = std::move(done)]() mutable {
         std::vector<Song> songs;
         std::wstring error;
@@ -4708,6 +4710,7 @@ void StreamProvider::FetchFavorites(TracksDone done) {
 }
 
 void StreamProvider::FetchFavoritesWithInvalidation(TracksDone done, bool invalidateLists) {
+    done = stream::GuardDone(std::move(done), kRequestDropped);
     std::wstring signInError;
     if (!RequireSignedIn(signInError)) {
         if (done) done({}, signInError);
@@ -4766,6 +4769,7 @@ void StreamProvider::FetchFavoritesWithInvalidation(TracksDone done, bool invali
 }
 
 void StreamProvider::FetchPlaylists(stream::Shelf shelf, PlaylistsDone done) {
+    done = stream::GuardDone(std::move(done), kRequestDropped);
     std::wstring signInError;
     if (!RequireSignedIn(signInError)) {
         if (done) done({}, signInError);
@@ -4807,6 +4811,7 @@ void StreamProvider::FetchPlaylists(stream::Shelf shelf, PlaylistsDone done) {
 }
 
 void StreamProvider::FetchPlaylist(const stream::Id& playlist, PlaylistDone done) {
+    done = stream::GuardDone(std::move(done), kRequestDropped);
     std::wstring signInError;
     if (!RequireSignedIn(signInError)) {
         if (done) done({}, {}, signInError);
@@ -4931,6 +4936,7 @@ void StreamProvider::FetchPlaylist(const stream::Id& playlist, PlaylistDone done
 }
 
 void StreamProvider::FetchAlbum(const stream::Id& album, AlbumDone done) {
+    done = stream::GuardDone(std::move(done), kRequestDropped);
     std::wstring signInError;
     if (!RequireSignedIn(signInError)) {
         if (done) done({}, {}, signInError);
@@ -4997,6 +5003,7 @@ void StreamProvider::FetchAlbum(const stream::Id& album, AlbumDone done) {
 }
 
 void StreamProvider::FetchAlbumsTracks(std::vector<stream::Id> albums, TracksDone done) {
+    done = stream::GuardDone(std::move(done), kRequestDropped);
     std::wstring signInError;
     if (!RequireSignedIn(signInError)) {
         if (done) done({}, signInError);
@@ -5038,6 +5045,7 @@ void StreamProvider::FetchAlbumsTracks(std::vector<stream::Id> albums, TracksDon
 }
 
 void StreamProvider::FetchArtist(const stream::Id& artist, ArtistDone done) {
+    done = stream::GuardDone(std::move(done), kRequestDropped);
     std::wstring signInError;
     if (!RequireSignedIn(signInError)) {
         if (done) done({}, signInError);
@@ -5133,6 +5141,7 @@ void StreamProvider::FetchArtist(const stream::Id& artist, ArtistDone done) {
 }
 
 void StreamProvider::FetchArtistBio(const stream::Id& artist, TextDone done) {
+    done = stream::GuardDone(std::move(done), kRequestDropped);
     const auto region = GetAppleMusicDisplayRegion();
     const std::wstring sourceStorefront = DisplayMetadata::Get().SourceStorefront();
     if (const auto cached = Catalog::Get().FindArtist(artist);
@@ -5314,6 +5323,7 @@ void StreamProvider::PutStations(const std::vector<stream::Station>& stations) {
 }
 
 void StreamProvider::FetchHome(HomeDone done) {
+    done = stream::GuardDone(std::move(done), kRequestDropped);
     uint64_t generation = 0;
     std::wstring locale;
     {
@@ -5413,6 +5423,7 @@ void StreamProvider::FetchHome(HomeDone done) {
 
 // A station's next songs (Apple's web player asks five at a time).
 void StreamProvider::FetchStationTracks(const stream::Id& station, TracksDone done) {
+    done = stream::GuardDone(std::move(done), kRequestDropped);
     uint64_t generation = 0;
     {
         std::lock_guard lock(m_mutex);
@@ -5445,6 +5456,7 @@ void StreamProvider::FetchStationTracks(const stream::Id& station, TracksDone do
 }
 
 void StreamProvider::FetchSongDetails(const stream::Id& track, SongDetailsDone done) {
+    done = stream::GuardDone(std::move(done), kRequestDropped);
     uint64_t generation = 0;
     const std::wstring storefront = Storefront();
     {
@@ -5532,6 +5544,7 @@ void StreamProvider::FetchSongDetails(const stream::Id& track, SongDetailsDone d
 
 void StreamProvider::FetchArtistAlbums(const stream::Id& artist, size_t offset, size_t limit,
                                        AlbumPageDone done) {
+    done = stream::GuardDone(std::move(done), kRequestDropped);
     uint64_t generation = 0;
     const std::wstring storefront = Storefront();
     bool library = IsLibraryId(artist) && artist[0] == L'r';
@@ -5588,6 +5601,7 @@ void StreamProvider::FetchArtistAlbums(const stream::Id& artist, size_t offset, 
 
 void StreamProvider::FetchArtistTopTracks(const stream::Id& artist, size_t offset, size_t limit,
                                           TrackPageDone done) {
+    done = stream::GuardDone(std::move(done), kRequestDropped);
     uint64_t generation = 0;
     const std::wstring storefront = Storefront();
     bool library = IsLibraryId(artist) && artist[0] == L'r';
@@ -5696,6 +5710,7 @@ void StreamProvider::FetchArtistTopTracks(const stream::Id& artist, size_t offse
 }
 
 void StreamProvider::FetchFollowedArtists(ArtistsDone done) {
+    done = stream::GuardDone(std::move(done), kRequestDropped);
     std::wstring signInError;
     if (!RequireSignedIn(signInError)) {
         if (done) done({}, signInError);
@@ -5726,6 +5741,7 @@ void StreamProvider::FetchFollowedArtists(ArtistsDone done) {
 }
 
 void StreamProvider::FetchSavedAlbums(size_t offset, size_t limit, AlbumPageDone done) {
+    done = stream::GuardDone(std::move(done), kRequestDropped);
     std::wstring signInError;
     if (!RequireSignedIn(signInError)) {
         if (done) done({}, false, std::nullopt, signInError);
@@ -5926,6 +5942,7 @@ void StreamProvider::RestoreListRecords(const stream::ListPage& page) {
 
 void StreamProvider::FetchListPage(const stream::ListQuery& sourceQuery, const stream::ListCursor& cursor,
                                    size_t limit, stream::ListPageDone done) {
+    done = stream::GuardDone(std::move(done), kRequestDropped, sourceQuery.cancelled);
     uint64_t generation = 0;
     std::wstring storefront;
     std::wstring locale;
@@ -6890,7 +6907,8 @@ bool StreamProvider::EnrichListPage(const stream::ListQuery& query, const stream
                              albums = std::move(albums), artists = std::move(artists),
                              playlists = std::move(playlists), catalogItems = std::move(catalogItems),
                              groupSongs = std::move(groupSongs), derivedGroupsPage, derivedGenres,
-                             enrichedPage = std::move(enrichedPage), done = std::move(done)]() mutable {
+                             enrichedPage = std::move(enrichedPage),
+                             done = stream::GuardDone(std::move(done), kRequestDropped, cancelled)]() mutable {
             abort_callback* providerAbort = nullptr;
             {
                 std::lock_guard lock(m_mutex);
@@ -7009,6 +7027,7 @@ bool StreamProvider::EnrichListPage(const stream::ListQuery& query, const stream
 }
 
 void StreamProvider::WriteFavorite(const stream::Id& track, bool favorite, Done done) {
+    done = stream::GuardDone(std::move(done), kRequestDropped);
     std::wstring signInError;
     if (!RequireSignedIn(signInError)) {
         if (done) done(signInError);
@@ -7097,6 +7116,7 @@ void StreamProvider::WriteFavorite(const stream::Id& track, bool favorite, Done 
 }
 
 void StreamProvider::SetFollowed(const stream::Id& artist, bool follow, Done done) {
+    done = stream::GuardDone(std::move(done), kRequestDropped);
     std::wstring signInError;
     if (!RequireSignedIn(signInError)) {
         if (done) done(signInError);
@@ -7223,6 +7243,7 @@ void StreamProvider::SetFollowed(const stream::Id& artist, bool follow, Done don
 }
 
 void StreamProvider::SetAlbumSaved(const stream::Id& album, bool saved, Done done) {
+    done = stream::GuardDone(std::move(done), kRequestDropped);
     std::wstring signInError;
     if (!RequireSignedIn(signInError)) {
         if (done) done(signInError);
@@ -7337,6 +7358,7 @@ void StreamProvider::SetAlbumSaved(const stream::Id& album, bool saved, Done don
 }
 
 void StreamProvider::SetPlaylistSaved(const stream::Id& playlist, bool saved, Done done) {
+    done = stream::GuardDone(std::move(done), kRequestDropped);
     std::wstring signInError;
     if (!RequireSignedIn(signInError)) {
         if (done) done(signInError);
@@ -7636,6 +7658,7 @@ void StreamProvider::EnrichArtistCountsAsync(uint64_t generation) {
 }
 
 void StreamProvider::AddToPlaylist(const stream::Id& playlist, std::vector<stream::Id> tracks, Done done) {
+    done = stream::GuardDone(std::move(done), kRequestDropped);
     if (tracks.empty()) {
         if (done) done(L"No songs selected.");
         return;
@@ -7706,6 +7729,7 @@ void StreamProvider::AddToPlaylist(const stream::Id& playlist, std::vector<strea
 
 void StreamProvider::RemoveFromPlaylist(const stream::Id& playlist, std::vector<stream::Id> tracks,
                                         Done done) {
+    done = stream::GuardDone(std::move(done), kRequestDropped);
     if (tracks.empty()) {
         if (done) done(L"No songs selected.");
         return;
@@ -7797,6 +7821,7 @@ void StreamProvider::RemoveFromPlaylist(const stream::Id& playlist, std::vector<
 }
 
 void StreamProvider::CreatePlaylist(std::wstring name, CreatedDone done) {
+    done = stream::GuardDone(std::move(done), kRequestDropped);
     if (name.empty()) {
         if (done) done({}, L"The playlist name is empty.");
         return;
@@ -7844,6 +7869,7 @@ void StreamProvider::CreatePlaylist(std::wstring name, CreatedDone done) {
 }
 
 void StreamProvider::RenamePlaylist(const stream::Id& playlist, std::wstring name, Done done) {
+    done = stream::GuardDone(std::move(done), kRequestDropped);
     if (name.empty()) {
         if (done) done(L"The playlist name is empty.");
         return;
@@ -7902,6 +7928,7 @@ void StreamProvider::RenamePlaylist(const stream::Id& playlist, std::wstring nam
 }
 
 void StreamProvider::DeletePlaylist(const stream::Id& playlist, Done done) {
+    done = stream::GuardDone(std::move(done), kRequestDropped);
     std::wstring signInError;
     if (!RequireSignedIn(signInError)) {
         if (done) done(signInError);
@@ -7970,6 +7997,7 @@ void StreamProvider::ReorderPlaylists(std::vector<stream::Id> playlists, Done do
 }
 
 void StreamProvider::SearchCatalog(std::wstring query, TracksDone done) {
+    done = stream::GuardDone(std::move(done), kRequestDropped);
     if (query.empty()) {
         if (done) done({}, L"The search text is empty.");
         return;
@@ -8011,6 +8039,7 @@ void StreamProvider::SearchCatalog(std::wstring query, TracksDone done) {
 
 void StreamProvider::FetchCatalogSearchSuggestions(CatalogSearchSuggestionQuery query,
                                                    CatalogSearchSuggestionsDone done) {
+    done = stream::GuardDone(std::move(done), kRequestDropped, query.cancelled);
     if (ListCancelled(query.cancelled)) return;
     if (query.term.empty()) {
         if (done) done({}, {});
@@ -8100,6 +8129,7 @@ void StreamProvider::FetchCatalogSearchSuggestions(CatalogSearchSuggestionQuery 
 }
 
 void StreamProvider::FetchGroups(const stream::Id& section, GroupsDone done) {
+    done = stream::GuardDone(std::move(done), kRequestDropped);
     const bool genres = section == kGenresSection;
     const bool composers = section == kComposersSection;
     if (!genres && !composers) {
@@ -8148,6 +8178,7 @@ void StreamProvider::FetchGroups(const stream::Id& section, GroupsDone done) {
 }
 
 void StreamProvider::FetchSectionTracks(const stream::Id& section, const stream::Id& group, TracksDone done) {
+    done = stream::GuardDone(std::move(done), kRequestDropped);
     if (section == kFavoritesSection) {
         FetchFavorites(std::move(done));
         return;
@@ -8217,6 +8248,7 @@ void StreamProvider::FetchSectionTracks(const stream::Id& section, const stream:
 }
 
 void StreamProvider::RefreshKnownPlaylist(const stream::Id& id, Done done, bool invalidateLists) {
+    done = stream::GuardDone(std::move(done), kRequestDropped);
     uint64_t generation = 0;
     uint64_t epoch = 0;
     const std::wstring storefront = Storefront();

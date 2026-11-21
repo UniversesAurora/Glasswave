@@ -11,6 +11,8 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <tuple>
+#include <utility>
 #include <vector>
 
 // A streaming music provider behind a library section of the navigation pane (ADR 0009).
@@ -21,7 +23,17 @@
 //
 // Threading: every method is called on foobar2000's main thread, and every callback is
 // delivered there. A callback can arrive after the page that asked for it is gone; the
-// caller decides whether the result still matters (see ui::PageToken).
+// caller decides whether the result still matters (see ui::PageToken). Providers may call
+// their own thread-safe helpers (a Catalog) from worker threads.
+//
+// Completion: a `done` handed to any method runs exactly once, on the main thread, with an
+// empty error on success. A provider that is shut down, signed out or switched to another
+// account while a call is in flight, or that was never started, completes it with an error
+// instead of dropping it; GuardDone below is the tool for that. The one exception is a call
+// that carries a cancellation token (ListQuery::cancelled,
+// CatalogSearchSuggestionQuery::cancelled): once the token is set, `done` may be dropped
+// without running. What is not covered: a callback queued to the main thread when
+// foobar2000 quits never runs.
 namespace glasswave::stream {
 
 // One thing a source can do. A source declares exactly the abilities its service has and
@@ -422,6 +434,65 @@ class Provider {
     mutable std::map<Id, PendingFavorite> m_pendingFavorites;
     uint64_t m_favoriteSerial = 0;
 };
+
+namespace detail {
+
+template <class Fn>
+struct DoneArgs;
+
+// Calls a completion with default-constructed results and `error` in the last place.
+template <class... Args>
+struct DoneArgs<std::function<void(Args...)>> {
+    using Fn = std::function<void(Args...)>;
+    static void Fail(Fn& fn, std::wstring error) {
+        Fail(fn, std::move(error), std::make_index_sequence<sizeof...(Args) - 1>{});
+    }
+
+  private:
+    template <size_t... I>
+    static void Fail(Fn& fn, std::wstring error, std::index_sequence<I...>) {
+        using Tuple = std::tuple<Args...>;
+        fn(std::tuple_element_t<I, Tuple>{}..., std::move(error));
+    }
+};
+
+template <class Fn>
+struct GuardState {
+    Fn fn;
+    std::wstring error;
+    std::shared_ptr<std::atomic_bool> cancelled;
+
+    ~GuardState() {
+        if (!fn || (cancelled && cancelled->load(std::memory_order_acquire))) return;
+        try {
+            fb2k::inMainThread([fn = std::move(fn), error = std::move(error)]() mutable {
+                DoneArgs<Fn>::Fail(fn, std::move(error));
+            });
+        } catch (...) {
+        }
+    }
+};
+
+} // namespace detail
+
+// Wraps a completion (any Provider::*Done type: the last parameter is the error text) so it
+// runs exactly once. The wrapper is copyable and shares one state: the first call runs the
+// original, and when the last copy is destroyed without a call (a queued task was dropped at
+// shutdown or on an account change) the original receives `error` on the main thread, with
+// default-constructed results. A set `cancelled` token waives that last step.
+template <class Fn>
+Fn GuardDone(Fn done, std::wstring error, std::shared_ptr<std::atomic_bool> cancelled = {}) {
+    if (!done) return done;
+    auto state = std::make_shared<detail::GuardState<Fn>>();
+    state->fn = std::move(done);
+    state->error = std::move(error);
+    state->cancelled = std::move(cancelled);
+    return [state](auto&&... args) {
+        Fn fn = std::move(state->fn);
+        state->fn = nullptr;
+        if (fn) fn(std::forward<decltype(args)>(args)...);
+    };
+}
 
 // The providers compiled into the component, in navigation order. Providers register
 // themselves while the component loads; Providers() is safe from then on (main thread).
