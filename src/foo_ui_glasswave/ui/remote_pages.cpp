@@ -227,6 +227,13 @@ bool VisiblyLoading(const stream::ListState& state) {
     return std::visit([](const auto& rows) { return rows.empty(); }, state.page.rows);
 }
 
+// The band over a page's list (ListSource::SetLoadingText): "Loading..." while the page reads
+// what it must show, else the error that stopped a read, else nothing.
+std::wstring LoadingStatus(bool loading, const std::wstring& error = {}) {
+    if (loading) return Tr(L"Loading...");
+    return error.empty() ? std::wstring() : Tr(error);
+}
+
 std::wstring LoadingArtistTracksLabel(const stream::Provider& provider, const stream::Id& artist) {
     std::wstring label = provider.ArtistTracksLabel(artist);
     if (label.empty()) return L"Loading songs...";
@@ -813,12 +820,11 @@ class PagedPage : public RemotePage {
         return Rows<T>(CurrentListState().page.rows);
     }
 
+    // The whole list is wanted (a presentation that needs it, or a drain) and still being read.
+    bool Draining() const { return (m_allMode || m_drainRequested) && !m_state.complete && m_state.error.empty(); }
+
     virtual std::wstring StatusText() const {
-        if ((m_session && VisiblyLoading(CurrentListState())) ||
-            ((m_allMode || m_drainRequested) && !m_state.complete && m_state.error.empty()))
-            return Tr(L"Loading...");
-        if (!m_state.error.empty()) return Tr(m_state.error);
-        return {};
+        return LoadingStatus((m_session && VisiblyLoading(CurrentListState())) || Draining(), m_state.error);
     }
 
     void UpdateLoadingText() {
@@ -1035,17 +1041,13 @@ class TrackPagedPage : public PagedPage {
     }
 
     std::wstring StatusText() const override {
-        if (!m_state.error.empty()) return Tr(m_state.error);
+        if (!m_state.error.empty()) return LoadingStatus(false, m_state.error); // before any loading
         auto* source = SongSource();
         const auto& tracks = CurrentRows<stream::Track>();
         const bool metadataPending = source && source->NeedsAlbumIdentity() &&
                                      UsableTrackCount(CurrentListState(), source) < tracks.size();
-        if (metadataPending) return Tr(L"Loading...");
         const bool hasRows = source && source->Count() != 0;
-        if (!hasRows && (m_state.loading || m_state.refreshing)) return Tr(L"Loading...");
-        if ((m_allMode || m_drainRequested) && !m_state.complete && m_state.error.empty())
-            return Tr(L"Loading...");
-        return {};
+        return LoadingStatus(metadataPending || (!hasRows && (m_state.loading || m_state.refreshing)) || Draining());
     }
 
     void AddPageSpecificActions(std::vector<MenuAction>& actions) override {
@@ -1653,13 +1655,14 @@ class AlbumBrowsePage : public PagedPage {
     bool HasPagedError() const override { return PagedPage::HasPagedError() || !m_trackError.empty(); }
 
     std::wstring StatusText() const override {
-        if (!m_trackError.empty()) return Tr(m_trackError);
-        if (Expanded() && CompleteNeeded() && !AlbumsAndTracksComplete() && m_state.error.empty())
-            return Tr(L"Loading...");
-        if (Expanded() && m_filling && m_state.error.empty()) return Tr(L"Loading...");
-        for (const auto& [id, session] : m_albumTrackSessions)
-            if (session && VisiblyLoading(session->View())) return Tr(L"Loading...");
-        return PagedPage::StatusText();
+        if (!m_trackError.empty()) return LoadingStatus(false, m_trackError);
+        const bool expanding =
+            Expanded() && m_state.error.empty() && ((CompleteNeeded() && !AlbumsAndTracksComplete()) || m_filling);
+        const bool albumLoading = std::any_of(m_albumTrackSessions.begin(), m_albumTrackSessions.end(),
+                                              [](const auto& entry) {
+                                                  return entry.second && VisiblyLoading(entry.second->View());
+                                              });
+        return expanding || albumLoading ? LoadingStatus(true) : PagedPage::StatusText();
     }
 
     void RetryPage() override {
@@ -1906,12 +1909,12 @@ class ArtistPage final : public AlbumBrowsePage {
         for (const auto& session : m_sectionSessions) {
             if (!session) continue;
             const auto& state = session->View();
-            if (VisiblyLoading(state)) return Tr(L"Loading...");
+            if (VisiblyLoading(state)) return LoadingStatus(true);
             any |= std::visit([](const auto& rows) { return !rows.empty(); }, state.page.rows);
             if (error.empty() && !state.error.empty() && !state.loading) error = state.error;
         }
         // A section that failed is left out; only an overview with nothing at all says why.
-        return any ? std::wstring() : Tr(error);
+        return LoadingStatus(false, any ? std::wstring() : error);
     }
 
     std::unique_ptr<media::ListSource> Start(bool reuse) override {
@@ -2300,13 +2303,12 @@ class AllFavoritesPage final : public Page {
     }
 
     std::wstring LoadingText() const {
-        if (std::any_of(m_feeds.begin(), m_feeds.end(),
-                        [](const Feed& feed) { return VisiblyLoading(feed.State()); }) ||
-            ((m_allMode || m_drainRequested) && !Complete() && !HasError()))
-            return Tr(L"Loading...");
+        const bool loading =
+            std::any_of(m_feeds.begin(), m_feeds.end(), [](const Feed& feed) { return VisiblyLoading(feed.State()); }) ||
+            ((m_allMode || m_drainRequested) && !Complete() && !HasError());
         const auto failed = std::find_if(m_feeds.begin(), m_feeds.end(),
                                          [](const Feed& feed) { return !feed.State().error.empty(); });
-        return failed == m_feeds.end() ? std::wstring() : Tr(failed->State().error);
+        return LoadingStatus(loading, failed == m_feeds.end() ? std::wstring() : failed->State().error);
     }
 
     void Publish() {
