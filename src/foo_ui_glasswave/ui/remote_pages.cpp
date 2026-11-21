@@ -1744,8 +1744,8 @@ class AlbumBrowsePage : public PagedPage {
     }
 
     // One album's songs at a time, the next only when wanted (the list reached its end, or
-    // everything is needed) and never sooner than kAlbumTrackGapMs after the last request: NetEase
-    // answers a quick run of requests with "操作频繁" (owner, 2026-11-14).
+    // everything is needed) and never sooner than the source's gap between album reads after the
+    // last request (Provider::ListRequestGap; NetEase answers a quick run with "操作频繁").
     void StartNextAlbumTracks() {
         if (!Expanded() || !m_trackError.empty()) return;
         const bool all = CompleteNeeded();
@@ -1755,9 +1755,11 @@ class AlbumBrowsePage : public PagedPage {
                 if (!all && !m_tracksWanted) return;
                 // The gap counts from the last request that went to the service: albums the
                 // disk cache holds follow one another at once.
+                const ULONGLONG gap = static_cast<ULONGLONG>(
+                    m_provider.ListRequestGap(stream::ListKind::AlbumTracks).count());
                 const ULONGLONG now = GetTickCount64(), since = now - m_lastTrackRequest;
-                if (m_lastTrackRequest && since < kAlbumTrackGapMs) {
-                    ScheduleAlbumTracks(kAlbumTrackGapMs - since);
+                if (m_lastTrackRequest && since < gap) {
+                    ScheduleAlbumTracks(gap - since);
                     return;
                 }
                 m_tracksWanted = false;
@@ -1897,7 +1899,6 @@ class AlbumBrowsePage : public PagedPage {
     std::map<stream::Id, uint64_t> m_albumTrackGenerations;
     std::vector<std::function<void(bool)>> m_waiters;
     std::wstring m_trackError;
-    static constexpr ULONGLONG kAlbumTrackGapMs = 600;
     bool m_tracksWanted = true; // the first album's songs fill the empty list
     bool m_trackTimerArmed = false;
     bool m_filling = false; // filling the screen from the service: the band stays until it is full

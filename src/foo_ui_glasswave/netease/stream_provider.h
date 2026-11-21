@@ -28,6 +28,10 @@ class StreamProvider final : public stream::Provider {
     std::vector<settings::Field> SettingFields() override;
     std::wstring_view TextContext() const override { return L"NetEase Cloud Music"; }
     std::wstring HomeListBadge(const stream::Id& list) const override;
+    // The service answers a quick run of album reads with "操作频繁" (owner, 2026-11-14).
+    std::chrono::milliseconds ListRequestGap(stream::ListKind kind) const override {
+        return kind == stream::ListKind::AlbumTracks ? std::chrono::milliseconds(600) : std::chrono::milliseconds();
+    }
     std::string PlaybackSettings() const override;
 
     bool SignedIn() const override;

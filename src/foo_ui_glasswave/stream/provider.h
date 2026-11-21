@@ -413,6 +413,13 @@ class Provider {
     // visit and after a restart and is re-read behind its rows. A source overrides this only for a
     // list of its own that must not outlive the run.
     virtual ListCachePolicy ListPolicy(const ListQuery& query) const;
+    // The least time between two reads of this kind of list that a page makes one after another
+    // (an artist page reading its albums' songs): a service that refuses a quick run of requests
+    // says how long to wait. Default: none.
+    virtual std::chrono::milliseconds ListRequestGap(ListKind kind) const {
+        (void)kind;
+        return {};
+    }
     // Rehydrate metadata required by TrackItem/FindTrack and artwork on a disk cache hit.
     virtual void RestoreListRecords(const ListPage& page) { (void)page; }
     // Stations a page shows (a home row), so their covers resolve (ArtKind::Station).
