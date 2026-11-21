@@ -3,7 +3,7 @@
 #include "core/text.h"
 #include "core/url.h"
 #include "netease/cookie.h"
-#include "net/http.h"
+#include "net/json_client.h"
 #include "core/log.h"
 #include "lyrics/lyrics.h"
 
@@ -245,48 +245,67 @@ bool Client::Request(std::wstring_view path, const std::vector<std::pair<std::ws
     // parameter keeps account state, QR polls and short-lived playback URLs fresh.
     append(L"_t", std::to_wstring(GetTickCount64()));
 
-    const std::wstring url = Wide(base) + std::wstring(path) + (query.empty() ? L"" : L"?" + Wide(query));
-    const std::wstring method = post ? L"POST" : L"GET";
-    const auto started = std::chrono::steady_clock::now();
+    net::JsonCall call;
+    call.method = post ? L"POST" : L"GET";
+    call.url = Wide(base) + std::wstring(path) + (query.empty() ? L"" : L"?" + Wide(query));
+    call.logPath = std::wstring(path);
+    call.noProxy = true;
+    call.timeoutMs = 25000;
+    call.maxBody = 48u * 1024u * 1024u;
+    // The service answers errors with a JSON envelope of its own: the status is read below.
+    call.throwOnStatus = false;
+    call.headers = {{L"Accept", L"application/json"}};
+    if (!cookie.empty()) call.headers.emplace_back(L"Cookie", cookie);
 
-    net::HttpOptions options;
-    options.method = method;
-    options.noProxy = true;
-    options.timeoutMs = 25000;
-    options.maxBodyBytes = 48u * 1024u * 1024u;
-    options.headers = {{L"Accept", L"application/json"}};
-    if (!cookie.empty()) options.headers.emplace_back(L"Cookie", cookie);
-    const net::HttpResponse response = net::SendHttp(url, options, abort);
-    const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
-                             std::chrono::steady_clock::now() - started)
-                             .count();
-    core::LogHttp(method, path, response.status, elapsed);
-
-    if (responseCookies) *responseCookies = response.setCookies;
-    if (response.status == 0) {
-        error = response.error.empty() ? L"Cannot reach the NetEase service." : response.error;
+    net::JsonReply reply;
+    try {
+        reply = net::CallJson(std::move(call), abort);
+    } catch (const net::TransportError& e) {
+        error = e.reason().empty() ? L"Cannot reach the NetEase service." : e.reason();
         return false;
     }
-    std::wstring parseError;
-    const auto parsed = core::json::Parse(response.body, &parseError);
-    if (!parsed) {
+
+    if (responseCookies) *responseCookies = std::move(reply.setCookies);
+    if (!reply.json) {
         error = L"Invalid JSON from the NetEase service";
-        if (!parseError.empty()) error += L": " + parseError;
+        if (!reply.parseError.empty()) error += L": " + reply.parseError;
         return false;
     }
-    out = *parsed;
-    apiCode = core::json::GetInt(out, L"code", static_cast<int>(response.status));
+    out = *reply.json;
+    apiCode = core::json::GetInt(out, L"code", static_cast<int>(reply.status));
+    return true;
+}
+
+bool Client::Call(std::wstring_view path, const std::vector<std::pair<std::wstring, std::wstring>>& params,
+                  bool post, abort_callback& abort, core::json::Object& out, std::wstring& error) {
+    int code = 0;
+    if (!Request(path, params, post, abort, out, code, error)) return false;
+    if (code != 200) {
+        error = MessageOf(out, code);
+        return false;
+    }
+    return true;
+}
+
+bool Client::CallSignedIn(std::wstring_view path,
+                          const std::vector<std::pair<std::wstring, std::wstring>>& params, bool post,
+                          abort_callback& abort, core::json::Object& out, std::wstring& error) {
+    int code = 0;
+    if (!Request(path, params, post, abort, out, code, error)) return false;
+    if (code == 301) {
+        error = L"Please sign in to NetEase Cloud Music.";
+        return false;
+    }
+    if (code != 200) {
+        error = MessageOf(out, code);
+        return false;
+    }
     return true;
 }
 
 bool Client::QrKey(abort_callback& abort, QrLogin& out, std::wstring& error) {
     core::json::Object body;
-    int code = 0;
-    if (!Request(L"/login/qr/key", {}, true, abort, body, code, error)) return false;
-    if (code != 200) {
-        error = MessageOf(body, code);
-        return false;
-    }
+    if (!Call(L"/login/qr/key", {}, true, abort, body, error)) return false;
     auto data = core::json::GetObject(body, L"data");
     if (!data) {
         error = L"The login service returned no QR key.";
@@ -305,14 +324,9 @@ bool Client::QrKey(abort_callback& abort, QrLogin& out, std::wstring& error) {
 
 bool Client::QrCreate(std::wstring_view key, abort_callback& abort, QrLogin& out, std::wstring& error) {
     core::json::Object body;
-    int code = 0;
-    if (!Request(L"/login/qr/create", {{L"key", std::wstring(key)}, {L"qrimg", L"true"}}, false, abort, body, code,
-                 error))
+    if (!Call(L"/login/qr/create", {{L"key", std::wstring(key)}, {L"qrimg", L"true"}}, false, abort, body,
+              error))
         return false;
-    if (code != 200) {
-        error = MessageOf(body, code);
-        return false;
-    }
     auto data = core::json::GetObject(body, L"data");
     if (!data) {
         error = L"The login service returned no QR image.";
@@ -366,12 +380,7 @@ QrStatus Client::QrCheck(std::wstring_view key, abort_callback& abort) {
 
 bool Client::GetAccount(abort_callback& abort, Account& out, std::wstring& error) {
     core::json::Object body;
-    int code = 0;
-    if (!Request(L"/user/account", {}, false, abort, body, code, error)) return false;
-    if (code != 200) {
-        error = MessageOf(body, code);
-        return false;
-    }
+    if (!Call(L"/user/account", {}, false, abort, body, error)) return false;
     auto account = core::json::GetObject(body, L"account");
     auto profile = core::json::GetObject(body, L"profile");
     out = {};
@@ -390,17 +399,12 @@ bool Client::UserPlaylists(int64_t userId, abort_callback& abort, std::vector<Pl
     int offset = 0;
     for (int page = 0; page < 20; ++page) {
         core::json::Object body;
-        int code = 0;
-        if (!Request(L"/user/playlist",
-                     {{L"uid", std::to_wstring(userId)},
-                      {L"limit", L"1000"},
-                      {L"offset", std::to_wstring(offset)}},
-                     false, abort, body, code, error))
+        if (!Call(L"/user/playlist",
+                  {{L"uid", std::to_wstring(userId)},
+                   {L"limit", L"1000"},
+                   {L"offset", std::to_wstring(offset)}},
+                  false, abort, body, error))
             return false;
-        if (code != 200) {
-            error = MessageOf(body, code);
-            return false;
-        }
         auto list = core::json::GetArray(body, L"playlist");
         if (!list) break;
         for (const auto& object : core::json::Objects(*list)) {
@@ -427,15 +431,9 @@ bool Client::UserPlaylists(int64_t userId, abort_callback& abort, std::vector<Pl
 bool Client::GetPlaylist(int64_t playlistId, abort_callback& abort, PlaylistDetail& out,
                          std::wstring& error) {
     core::json::Object body;
-    int code = 0;
-    if (!Request(L"/playlist/detail",
-                 {{L"id", std::to_wstring(playlistId)}, {L"n", L"1000"}, {L"s", L"8"}}, false, abort, body, code,
-                 error))
+    if (!Call(L"/playlist/detail", {{L"id", std::to_wstring(playlistId)}, {L"n", L"1000"}, {L"s", L"8"}},
+              false, abort, body, error))
         return false;
-    if (code != 200) {
-        error = MessageOf(body, code);
-        return false;
-    }
     auto playlist = core::json::GetObject(body, L"playlist");
     if (!playlist) {
         error = L"The playlist response has no playlist object.";
@@ -484,14 +482,9 @@ bool Client::GetPlaylistSnapshot(int64_t playlistId, abort_callback& abort, Play
                                  std::wstring& error) {
     out = {};
     core::json::Object body;
-    int code = 0;
-    if (!Request(L"/playlist/detail", {{L"id", std::to_wstring(playlistId)}, {L"n", L"1"}, {L"s", L"8"}},
-                 false, abort, body, code, error))
+    if (!Call(L"/playlist/detail", {{L"id", std::to_wstring(playlistId)}, {L"n", L"1"}, {L"s", L"8"}}, false,
+              abort, body, error))
         return false;
-    if (code != 200) {
-        error = MessageOf(body, code);
-        return false;
-    }
     auto playlist = core::json::GetObject(body, L"playlist");
     if (!playlist) {
         error = L"The playlist response has no playlist object.";
@@ -511,17 +504,9 @@ bool Client::GetPlaylistSnapshot(int64_t playlistId, abort_callback& abort, Play
 
 bool Client::GetPlaylistInfo(int64_t playlistId, abort_callback& abort, Playlist& out, std::wstring& error) {
     core::json::Object body;
-    int code = 0;
-    if (!Request(L"/playlist/detail",
-                 {{L"id", std::to_wstring(playlistId)},
-                  {L"n", L"1"},
-                  {L"_t", std::to_wstring(GetTickCount64())}},
-                 false, abort, body, code, error))
+    if (!Call(L"/playlist/detail", {{L"id", std::to_wstring(playlistId)}, {L"n", L"1"}}, false, abort, body,
+              error))
         return false;
-    if (code != 200) {
-        error = MessageOf(body, code);
-        return false;
-    }
     auto playlist = core::json::GetObject(body, L"playlist");
     if (!playlist) {
         error = L"The playlist response has no playlist object.";
@@ -535,12 +520,7 @@ bool Client::GetPlaylistInfo(int64_t playlistId, abort_callback& abort, Playlist
 bool Client::RecommendPlaylists(abort_callback& abort, std::vector<Playlist>& out, std::wstring& error) {
     out.clear();
     core::json::Object body;
-    int code = 0;
-    if (!Request(L"/recommend/resource", {}, false, abort, body, code, error)) return false;
-    if (code != 200) {
-        error = MessageOf(body, code);
-        return false;
-    }
+    if (!Call(L"/recommend/resource", {}, false, abort, body, error)) return false;
     if (auto list = core::json::GetArray(body, L"recommend")) {
         for (const auto& object : core::json::Objects(*list)) {
             Playlist playlist = ParsePlaylist(object);
@@ -552,14 +532,9 @@ bool Client::RecommendPlaylists(abort_callback& abort, std::vector<Playlist>& ou
 
 bool Client::Generic(std::wstring_view uri, std::wstring_view data, abort_callback& abort, core::json::Object& out,
                      std::wstring& error) {
-    int code = 0;
-    if (!Request(L"/api", {{L"uri", std::wstring(uri)}, {L"data", std::wstring(data)}, {L"crypto", L"eapi"}}, false,
-                 abort, out, code, error))
+    if (!Call(L"/api", {{L"uri", std::wstring(uri)}, {L"data", std::wstring(data)}, {L"crypto", L"eapi"}},
+              false, abort, out, error))
         return false;
-    if (code != 200) {
-        error = MessageOf(out, code);
-        return false;
-    }
     return true;
 }
 
@@ -725,12 +700,7 @@ bool Client::StyleDailySongs(std::wstring_view category, std::wstring_view tag, 
 bool Client::PersonalFm(abort_callback& abort, std::vector<Song>& out, std::wstring& error) {
     out.clear();
     core::json::Object body;
-    int code = 0;
-    if (!Request(L"/personal_fm", {}, false, abort, body, code, error)) return false;
-    if (code != 200) {
-        error = MessageOf(body, code);
-        return false;
-    }
+    if (!Call(L"/personal_fm", {}, false, abort, body, error)) return false;
     if (const auto list = core::json::GetArray(body, L"data"))
         for (const auto& object : core::json::Objects(*list)) {
             Song song = ParseSong(object);
@@ -764,15 +734,10 @@ bool Client::Heartbeat(int64_t seed, int64_t likedPlaylist, abort_callback& abor
                        std::wstring& error) {
     out.clear();
     core::json::Object body;
-    int code = 0;
-    if (!Request(L"/playmode/intelligence/list",
-                 {{L"id", std::to_wstring(seed)}, {L"pid", std::to_wstring(likedPlaylist)}}, false, abort, body,
-                 code, error))
+    if (!Call(L"/playmode/intelligence/list",
+              {{L"id", std::to_wstring(seed)}, {L"pid", std::to_wstring(likedPlaylist)}}, false, abort, body,
+              error))
         return false;
-    if (code != 200) {
-        error = MessageOf(body, code);
-        return false;
-    }
     if (const auto list = core::json::GetArray(body, L"data"))
         for (const auto& object : core::json::Objects(*list))
             if (const auto info = core::json::GetObject(object, L"songInfo")) {
@@ -784,24 +749,14 @@ bool Client::Heartbeat(int64_t seed, int64_t likedPlaylist, abort_callback& abor
 
 bool Client::FmTrash(int64_t songId, abort_callback& abort, std::wstring& error) {
     core::json::Object body;
-    int code = 0;
-    if (!Request(L"/fm_trash", {{L"id", std::to_wstring(songId)}}, true, abort, body, code, error)) return false;
-    if (code != 200) {
-        error = MessageOf(body, code);
-        return false;
-    }
+    if (!Call(L"/fm_trash", {{L"id", std::to_wstring(songId)}}, true, abort, body, error)) return false;
     return true;
 }
 
 bool Client::DailySongs(abort_callback& abort, std::vector<Song>& out, std::wstring& error) {
     out.clear();
     core::json::Object body;
-    int code = 0;
-    if (!Request(L"/recommend/songs", {}, false, abort, body, code, error)) return false;
-    if (code != 200) {
-        error = MessageOf(body, code);
-        return false;
-    }
+    if (!Call(L"/recommend/songs", {}, false, abort, body, error)) return false;
     const auto data = core::json::GetObject(body, L"data");
     const auto songs = data ? core::json::GetArray(*data, L"dailySongs") : std::nullopt;
     if (songs)
@@ -824,22 +779,13 @@ bool Client::CloudSearch(std::wstring_view query, int type, int limit, int offse
     rows.clear();
     page = {};
     core::json::Object body;
-    int code = 0;
-    if (!Request(L"/cloudsearch",
-                 {{L"keywords", std::wstring(query)},
-                  {L"type", std::to_wstring(type)},
-                  {L"limit", std::to_wstring(limit)},
-                  {L"offset", std::to_wstring(offset)}},
-                 false, abort, body, code, error))
+    if (!CallSignedIn(L"/cloudsearch",
+                      {{L"keywords", std::wstring(query)},
+                       {L"type", std::to_wstring(type)},
+                       {L"limit", std::to_wstring(limit)},
+                       {L"offset", std::to_wstring(offset)}},
+                      false, abort, body, error))
         return false;
-    if (code == 301) {
-        error = L"Please sign in to NetEase Cloud Music.";
-        return false;
-    }
-    if (code != 200) {
-        error = MessageOf(body, code);
-        return false;
-    }
     auto result = core::json::GetObject(body, L"result");
     std::optional<core::json::Array> array;
     if (result) array = core::json::GetArray(*result, rowsKey);
@@ -980,13 +926,8 @@ bool Client::SearchBestMatches(std::wstring_view query, abort_callback& abort, s
                                std::wstring& error) {
     out.clear();
     core::json::Object body;
-    int code = 0;
-    if (!Request(L"/search/multimatch", {{L"keywords", std::wstring(query)}}, false, abort, body, code, error))
+    if (!Call(L"/search/multimatch", {{L"keywords", std::wstring(query)}}, false, abort, body, error))
         return false;
-    if (code != 200) {
-        error = MessageOf(body, code);
-        return false;
-    }
     if (const auto result = core::json::GetObject(body, L"result")) out = HitsInOrder(*result, L"orders");
     return true;
 }
@@ -996,13 +937,9 @@ bool Client::SearchSuggest(std::wstring_view query, abort_callback& abort, Searc
     out = {};
     core::json::Object body;
     int code = 0;
-    if (!Request(L"/search/suggest", {{L"keywords", std::wstring(query)}, {L"type", L"mobile"}}, false, abort,
-                 body, code, error))
+    if (!Call(L"/search/suggest", {{L"keywords", std::wstring(query)}, {L"type", L"mobile"}}, false, abort,
+              body, error))
         return false;
-    if (code != 200) {
-        error = MessageOf(body, code);
-        return false;
-    }
     if (const auto result = core::json::GetObject(body, L"result"))
         if (const auto matches = core::json::GetArray(*result, L"allMatch"))
             for (const auto& match : core::json::Objects(*matches))
@@ -1022,12 +959,7 @@ bool Client::SongDetails(const std::vector<int64_t>& ids, abort_callback& abort,
     out.clear();
     if (ids.empty()) return true;
     core::json::Object body;
-    int code = 0;
-    if (!Request(L"/song/detail", {{L"ids", JoinIds(ids)}}, false, abort, body, code, error)) return false;
-    if (code != 200) {
-        error = MessageOf(body, code);
-        return false;
-    }
+    if (!Call(L"/song/detail", {{L"ids", JoinIds(ids)}}, false, abort, body, error)) return false;
     if (auto songs = core::json::GetArray(body, L"songs")) {
         for (const auto& object : core::json::Objects(*songs)) {
             Song song = ParseSong(object);
@@ -1117,12 +1049,7 @@ std::wstring LyricText(const core::json::Object& body, const wchar_t* key) {
 bool Client::GetLyrics(int64_t id, abort_callback& abort, std::wstring& lrc, std::wstring& error) {
     lrc.clear();
     core::json::Object body;
-    int code = 0;
-    if (!Request(L"/lyric/new", {{L"id", std::to_wstring(id)}}, false, abort, body, code, error)) return false;
-    if (code != 200) {
-        error = MessageOf(body, code);
-        return false;
-    }
+    if (!Call(L"/lyric/new", {{L"id", std::to_wstring(id)}}, false, abort, body, error)) return false;
     const std::wstring yrc = LyricText(body, L"yrc");
     const std::wstring line = LyricText(body, L"lrc");
     std::wstring translation = LyricText(body, L"ytlrc");
@@ -1189,13 +1116,8 @@ stream::SourceStatus Client::GetSongUrl(int64_t id, std::wstring_view level, abo
 bool Client::GetArtistDetail(int64_t artistId, abort_callback& abort, Artist& out, std::wstring& error) {
     out = {};
     core::json::Object body;
-    int code = 0;
-    if (!Request(L"/artist/detail", {{L"id", std::to_wstring(artistId)}}, false, abort, body, code, error))
+    if (!Call(L"/artist/detail", {{L"id", std::to_wstring(artistId)}}, false, abort, body, error))
         return false;
-    if (code != 200) {
-        error = MessageOf(body, code);
-        return false;
-    }
     std::optional<core::json::Object> artist;
     if (auto data = core::json::GetObject(body, L"data")) artist = core::json::GetObject(*data, L"artist");
     if (!artist) artist = core::json::GetObject(body, L"artist");
@@ -1247,11 +1169,7 @@ bool Client::GetSongInfo(int64_t songId, abort_callback& abort, SongInfo& out, s
     out = {};
     core::json::Object body;
     int code = 0;
-    if (!Request(L"/song/detail", {{L"ids", std::to_wstring(songId)}}, false, abort, body, code, error)) return false;
-    if (code != 200) {
-        error = MessageOf(body, code);
-        return false;
-    }
+    if (!Call(L"/song/detail", {{L"ids", std::to_wstring(songId)}}, false, abort, body, error)) return false;
     const auto songs = core::json::GetArray(body, L"songs");
     const auto list = songs ? core::json::Objects(*songs) : std::vector<core::json::Object>{};
     if (list.empty()) {
@@ -1348,13 +1266,7 @@ bool Client::GetArtistDescription(int64_t artistId, abort_callback& abort, std::
     brief.clear();
     full.clear();
     core::json::Object body;
-    int code = 0;
-    if (!Request(L"/artist/desc", {{L"id", std::to_wstring(artistId)}}, false, abort, body, code, error))
-        return false;
-    if (code != 200) {
-        error = MessageOf(body, code);
-        return false;
-    }
+    if (!Call(L"/artist/desc", {{L"id", std::to_wstring(artistId)}}, false, abort, body, error)) return false;
     brief = core::json::GetString(body, L"briefDesc");
     if (auto introduction = core::json::GetArray(body, L"introduction")) {
         for (const auto& section : core::json::Objects(*introduction)) {
@@ -1378,17 +1290,12 @@ bool Client::GetArtistAlbumsPage(int64_t artistId, int offset, int limit, abort_
     if (more) *more = false;
     if (received) *received = 0;
     core::json::Object body;
-    int code = 0;
-    if (!Request(L"/artist/album",
-                 {{L"id", std::to_wstring(artistId)},
-                  {L"limit", std::to_wstring(limit)},
-                  {L"offset", std::to_wstring(offset)}},
-                 false, abort, body, code, error))
+    if (!Call(L"/artist/album",
+              {{L"id", std::to_wstring(artistId)},
+               {L"limit", std::to_wstring(limit)},
+               {L"offset", std::to_wstring(offset)}},
+              false, abort, body, error))
         return false;
-    if (code != 200) {
-        error = MessageOf(body, code);
-        return false;
-    }
     if (followed) {
         if (auto artist = core::json::GetObject(body, L"artist"); artist && artist->HasKey(L"followed"))
             *followed = core::json::GetBool(*artist, L"followed");
@@ -1411,18 +1318,13 @@ bool Client::GetArtistSongsPage(int64_t artistId, int offset, int limit, std::ws
     if (more) *more = false;
     if (received) *received = 0;
     core::json::Object body;
-    int code = 0;
-    if (!Request(L"/artist/songs",
-                 {{L"id", std::to_wstring(artistId)},
-                  {L"limit", std::to_wstring(limit)},
-                  {L"offset", std::to_wstring(offset)},
-                  {L"order", std::wstring(order)}},
-                 false, abort, body, code, error))
+    if (!Call(L"/artist/songs",
+              {{L"id", std::to_wstring(artistId)},
+               {L"limit", std::to_wstring(limit)},
+               {L"offset", std::to_wstring(offset)},
+               {L"order", std::wstring(order)}},
+              false, abort, body, error))
         return false;
-    if (code != 200) {
-        error = MessageOf(body, code);
-        return false;
-    }
     if (more) *more = core::json::GetBool(body, L"more");
     if (auto songs = core::json::GetArray(body, L"songs")) {
         if (received) *received = songs->Size();
@@ -1439,12 +1341,7 @@ bool Client::GetAlbum(int64_t albumId, abort_callback& abort, Album& info, std::
     info = {};
     songs.clear();
     core::json::Object body;
-    int code = 0;
-    if (!Request(L"/album", {{L"id", std::to_wstring(albumId)}}, false, abort, body, code, error)) return false;
-    if (code != 200) {
-        error = MessageOf(body, code);
-        return false;
-    }
+    if (!Call(L"/album", {{L"id", std::to_wstring(albumId)}}, false, abort, body, error)) return false;
     if (auto album = core::json::GetObject(body, L"album")) info = ParseAlbum(*album);
     info.id = info.id ? info.id : albumId;
     if (auto list = core::json::GetArray(body, L"songs")) {
@@ -1462,19 +1359,10 @@ bool Client::GetFollowedArtistsPage(int offset, int limit, abort_callback& abort
     more = false;
     received = 0;
     core::json::Object body;
-    int code = 0;
-    if (!Request(L"/artist/sublist",
-                 {{L"limit", std::to_wstring(limit)}, {L"offset", std::to_wstring(offset)}}, false, abort,
-                 body, code, error))
+    if (!CallSignedIn(L"/artist/sublist",
+                      {{L"limit", std::to_wstring(limit)}, {L"offset", std::to_wstring(offset)}}, false,
+                      abort, body, error))
         return false;
-    if (code == 301) {
-        error = L"Please sign in to NetEase Cloud Music.";
-        return false;
-    }
-    if (code != 200) {
-        error = MessageOf(body, code);
-        return false;
-    }
     auto artists = core::json::GetArray(body, L"data"); // the helper returns followed artists here
     if (!artists) artists = core::json::GetArray(body, L"artists");
     if (artists) {
@@ -1495,17 +1383,8 @@ bool Client::GetSimilarArtists(int64_t artistId, abort_callback& abort, std::vec
                                std::wstring& error) {
     out.clear();
     core::json::Object body;
-    int code = 0;
-    if (!Request(L"/simi/artist", {{L"id", std::to_wstring(artistId)}}, false, abort, body, code, error))
+    if (!CallSignedIn(L"/simi/artist", {{L"id", std::to_wstring(artistId)}}, false, abort, body, error))
         return false;
-    if (code == 301) {
-        error = L"Please sign in to NetEase Cloud Music.";
-        return false;
-    }
-    if (code != 200) {
-        error = MessageOf(body, code);
-        return false;
-    }
     if (const auto artists = core::json::GetArray(body, L"artists"))
         for (const auto& object : core::json::Objects(*artists))
             if (Artist artist = ParseArtist(object); artist.id) out.push_back(std::move(artist));
@@ -1534,19 +1413,10 @@ bool Client::GetCollectedAlbumsPage(int offset, int limit, abort_callback& abort
     more = false;
     if (received) *received = 0;
     core::json::Object body;
-    int code = 0;
-    if (!Request(L"/album/sublist",
-                 {{L"limit", std::to_wstring(limit)}, {L"offset", std::to_wstring(offset)}}, false, abort, body, code,
-                 error))
+    if (!CallSignedIn(L"/album/sublist",
+                      {{L"limit", std::to_wstring(limit)}, {L"offset", std::to_wstring(offset)}}, false,
+                      abort, body, error))
         return false;
-    if (code == 301) {
-        error = L"Please sign in to NetEase Cloud Music.";
-        return false;
-    }
-    if (code != 200) {
-        error = MessageOf(body, code);
-        return false;
-    }
     auto albums = core::json::GetArray(body, L"data");
     if (!albums) return true;
     const size_t receivedCount = albums->Size();
@@ -1577,44 +1447,25 @@ bool Client::GetCollectedAlbums(abort_callback& abort, std::vector<Album>& out, 
 
 bool Client::SetArtistFollow(int64_t artistId, bool follow, abort_callback& abort, std::wstring& error) {
     core::json::Object body;
-    int code = 0;
-    if (!Request(L"/artist/sub", {{L"id", std::to_wstring(artistId)}, {L"t", follow ? L"1" : L"0"}}, true, abort,
-                 body, code, error))
+    if (!CallSignedIn(L"/artist/sub", {{L"id", std::to_wstring(artistId)}, {L"t", follow ? L"1" : L"0"}},
+                      true, abort, body, error))
         return false;
-    if (code == 301) {
-        error = L"Please sign in to NetEase Cloud Music.";
-        return false;
-    }
-    if (code != 200) {
-        error = MessageOf(body, code);
-        return false;
-    }
     return true;
 }
 
 bool Client::Likelist(int64_t userId, abort_callback& abort, std::vector<int64_t>& out, std::wstring& error) {
     out.clear();
     core::json::Object body;
-    int code = 0;
-    if (!Request(L"/likelist", {{L"uid", std::to_wstring(userId)}}, false, abort, body, code, error)) return false;
-    if (code != 200) {
-        error = MessageOf(body, code);
-        return false;
-    }
+    if (!Call(L"/likelist", {{L"uid", std::to_wstring(userId)}}, false, abort, body, error)) return false;
     if (auto ids = core::json::GetArray(body, L"ids")) out = IdsOf(*ids);
     return true;
 }
 
 bool Client::SetLike(int64_t id, bool like, abort_callback& abort, std::wstring& error) {
     core::json::Object body;
-    int code = 0;
-    if (!Request(L"/like", {{L"id", std::to_wstring(id)}, {L"like", like ? L"true" : L"false"}}, true, abort, body,
-                 code, error))
+    if (!Call(L"/like", {{L"id", std::to_wstring(id)}, {L"like", like ? L"true" : L"false"}}, true, abort,
+              body, error))
         return false;
-    if (code != 200) {
-        error = MessageOf(body, code);
-        return false;
-    }
     return true;
 }
 
@@ -1636,86 +1487,45 @@ bool Client::AddToPlaylist(int64_t playlistId, const std::vector<int64_t>& ids, 
 bool Client::RemoveFromPlaylist(int64_t playlistId, const std::vector<int64_t>& ids, abort_callback& abort,
                                 std::wstring& error) {
     core::json::Object body;
-    int code = 0;
-    if (!Request(L"/playlist/tracks",
-                 {{L"op", L"del"}, {L"pid", std::to_wstring(playlistId)}, {L"tracks", JoinIds(ids)}}, true, abort,
-                 body, code, error))
+    if (!Call(L"/playlist/tracks",
+              {{L"op", L"del"}, {L"pid", std::to_wstring(playlistId)}, {L"tracks", JoinIds(ids)}}, true,
+              abort, body, error))
         return false;
-    if (code != 200) {
-        error = MessageOf(body, code);
-        return false;
-    }
     return true;
 }
 
 bool Client::SetAlbumCollect(int64_t albumId, bool collect, abort_callback& abort, std::wstring& error) {
     core::json::Object body;
-    int code = 0;
-    if (!Request(L"/album/sub", {{L"id", std::to_wstring(albumId)}, {L"t", collect ? L"1" : L"0"}}, true, abort,
-                 body, code, error))
+    if (!CallSignedIn(L"/album/sub", {{L"id", std::to_wstring(albumId)}, {L"t", collect ? L"1" : L"0"}}, true,
+                      abort, body, error))
         return false;
-    if (code == 301) {
-        error = L"Please sign in to NetEase Cloud Music.";
-        return false;
-    }
-    if (code != 200) {
-        error = MessageOf(body, code);
-        return false;
-    }
     return true;
 }
 
 bool Client::SetPlaylistSubscribed(int64_t playlistId, bool subscribed, abort_callback& abort,
                                    std::wstring& error) {
     core::json::Object body;
-    int code = 0;
-    if (!Request(L"/playlist/subscribe",
-                 {{L"id", std::to_wstring(playlistId)}, {L"t", subscribed ? L"1" : L"0"}}, true, abort, body,
-                 code, error))
+    if (!CallSignedIn(L"/playlist/subscribe",
+                      {{L"id", std::to_wstring(playlistId)}, {L"t", subscribed ? L"1" : L"0"}}, true, abort,
+                      body, error))
         return false;
-    if (code == 301) {
-        error = L"Please sign in to NetEase Cloud Music.";
-        return false;
-    }
-    if (code != 200) {
-        error = MessageOf(body, code);
-        return false;
-    }
     return true;
 }
 
 bool Client::RenamePlaylist(int64_t playlistId, std::wstring_view name, abort_callback& abort,
                             std::wstring& error) {
     core::json::Object body;
-    int code = 0;
-    if (!Request(L"/playlist/name/update",
-                 {{L"id", std::to_wstring(playlistId)}, {L"name", std::wstring(name)}}, true, abort, body, code,
-                 error))
+    if (!CallSignedIn(L"/playlist/name/update",
+                      {{L"id", std::to_wstring(playlistId)}, {L"name", std::wstring(name)}}, true, abort,
+                      body, error))
         return false;
-    if (code == 301) {
-        error = L"Please sign in to NetEase Cloud Music.";
-        return false;
-    }
-    if (code != 200) {
-        error = MessageOf(body, code);
-        return false;
-    }
     return true;
 }
 
 bool Client::DeletePlaylist(int64_t playlistId, abort_callback& abort, std::wstring& error) {
     core::json::Object body;
-    int code = 0;
-    if (!Request(L"/playlist/delete", {{L"id", std::to_wstring(playlistId)}}, true, abort, body, code, error))
+    if (!CallSignedIn(L"/playlist/delete", {{L"id", std::to_wstring(playlistId)}}, true, abort, body, error))
         return false;
-    if (code == 301) {
-        error = L"Please sign in to NetEase Cloud Music.";
-        return false;
-    }
-    if (code != 200) {
-        error = MessageOf(body, code);
-        return false;
-    }
     return true;
 }
 
@@ -1728,31 +1538,16 @@ bool Client::ReorderPlaylists(const std::vector<int64_t>& ids, abort_callback& a
     }
     list += L']';
     core::json::Object body;
-    int code = 0;
-    if (!Request(L"/playlist/order/update", {{L"ids", list}}, true, abort, body, code, error)) return false;
-    if (code == 301) {
-        error = L"Please sign in to NetEase Cloud Music.";
-        return false;
-    }
-    if (code != 200) {
-        error = MessageOf(body, code);
-        return false;
-    }
+    if (!CallSignedIn(L"/playlist/order/update", {{L"ids", list}}, true, abort, body, error)) return false;
     return true;
 }
 
 bool Client::CreatePlaylist(std::wstring_view name, abort_callback& abort, int64_t& id, std::wstring& error) {
     id = 0;
     core::json::Object body;
-    int code = 0;
-    if (!Request(L"/playlist/create",
-                 {{L"name", std::wstring(name)}, {L"privacy", L"0"}, {L"type", L"NORMAL"}}, true, abort, body, code,
-                 error))
+    if (!Call(L"/playlist/create", {{L"name", std::wstring(name)}, {L"privacy", L"0"}, {L"type", L"NORMAL"}},
+              true, abort, body, error))
         return false;
-    if (code != 200) {
-        error = MessageOf(body, code);
-        return false;
-    }
     id = core::json::GetInt64(body, L"id");
     if (!id) {
         if (auto playlist = core::json::GetObject(body, L"playlist")) id = core::json::GetInt64(*playlist, L"id");
