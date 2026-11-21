@@ -35,23 +35,23 @@ public:
     core::TaskQueue& Tasks() { return m_tasks; }
     Client& Api() { return m_client; }
     ServiceManager& Service() { return m_service; }
-    Catalog& Songs() { return Catalog::Get(); }
-
     bool LoggedIn() const;
     Account CurrentAccount() const;
     int64_t LikedPlaylistId() const;
     bool IsLiked(int64_t songId) const;
-    std::vector<Playlist> CreatedPlaylists() const;
-    std::vector<Playlist> CollectedPlaylists() const;
-    std::vector<Playlist> RecommendedPlaylists() const;
-    std::vector<Artist> FollowedArtists() const;
-    std::vector<Album> CollectedAlbums() const;
+    // The account's lists, as stream:: records: a playlist's own / saved flags say which list it
+    // belongs to, a followed artist is followKnown and followed.
+    std::vector<stream::Playlist> CreatedPlaylists() const;
+    std::vector<stream::Playlist> CollectedPlaylists() const;
+    std::vector<stream::Playlist> RecommendedPlaylists() const;
+    std::vector<stream::Artist> FollowedArtists() const;
+    std::vector<stream::Album> CollectedAlbums() const;
     bool IsAlbumCollected(int64_t albumId) const; // no copy of the list
-    enum class PlaylistScope { Unknown, Created, Collected, Recommended };
+    using PlaylistScope = netease::PlaylistScope;
     PlaylistScope FindPlaylistScope(int64_t playlistId) const;
 
     using DoneCallback = std::function<void(bool ok, std::wstring error)>;
-    using ArtistDetailCallback = std::function<void(Artist artist, std::wstring error)>;
+    using ArtistDetailCallback = std::function<void(stream::Artist artist, std::wstring error)>;
     using ArtistDescriptionCallback =
         std::function<void(std::wstring brief, std::wstring full, std::wstring error)>;
     using CreatePlaylistCallback = std::function<void(bool ok, int64_t id, std::wstring error)>;
@@ -90,6 +90,8 @@ private:
     // The service can regenerate a playlist cover a moment after an edit; one delayed
     // summary read catches it without polling.
     void SchedulePlaylistSummaryRefresh(int64_t playlistId);
+    // Under m_mutex: the list a playlist is in.
+    PlaylistScope ScopeLocked(const stream::Id& playlistId) const;
     bool RequireLogin(std::wstring& error) const;
     bool EnsureAccount(abort_callback& abort, int64_t& userId, std::wstring& error);
     void SetAccountLocked(const Account& account);
@@ -115,11 +117,11 @@ private:
     std::function<void()> m_libraryCallback;
     std::function<void()> m_likesCallback;
     Account m_account;
-    std::vector<Playlist> m_createdPlaylists;
-    std::vector<Playlist> m_collectedPlaylists;
-    std::vector<Playlist> m_recommendedPlaylists;
-    std::vector<Artist> m_followedArtists;
-    std::vector<Album> m_collectedAlbums;
+    std::vector<stream::Playlist> m_createdPlaylists;
+    std::vector<stream::Playlist> m_collectedPlaylists;
+    std::vector<stream::Playlist> m_recommendedPlaylists;
+    std::vector<stream::Artist> m_followedArtists;
+    std::vector<stream::Album> m_collectedAlbums;
     int64_t m_likedPlaylist = 0;
     mutable std::mutex m_likedMutex;
     std::unordered_set<int64_t> m_liked;

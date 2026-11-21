@@ -1,7 +1,6 @@
 #include "pch.h"
 #include "netease/config.h"
 #include "netease/cookie.h"
-#include "netease/handle.h"
 #include "core/log.h"
 #include "netease/session.h"
 
@@ -24,13 +23,23 @@ std::wstring ErrorOf(const std::wstring& error) {
 // navigation and lists do not flip between the two.
 constexpr int64_t kPersonalRadarId = 3136952023;
 
-void PutRecommended(const std::vector<Playlist>& playlists) {
+// The playlists as the account's lists hold them; every one is also put in the catalog.
+std::vector<stream::Playlist> PutPlaylists(const std::vector<Playlist>& playlists, int64_t userId,
+                                           PlaylistScope scope) {
+    std::vector<stream::Playlist> converted;
+    converted.reserve(playlists.size());
     for (const auto& playlist : playlists) {
-        Catalog::Get().Put(playlist);
-        if (playlist.id == kPersonalRadarId) Catalog::Get().PreferCover(playlist.id, playlist.coverUrl);
+        converted.push_back(ToPlaylist(playlist, userId, scope));
+        Catalog::Get().Records().Put(converted.back());
+        if (scope == PlaylistScope::Recommended && playlist.id == kPersonalRadarId)
+            Catalog::Get().Records().PreferCover(stream::ArtKind::Playlist, converted.back().id, playlist.coverUrl);
     }
+    return converted;
 }
 
+std::vector<stream::Playlist>::iterator FindById(std::vector<stream::Playlist>& list, const stream::Id& id) {
+    return std::find_if(list.begin(), list.end(), [&id](const stream::Playlist& playlist) { return playlist.id == id; });
+}
 
 }  // namespace
 
@@ -102,45 +111,50 @@ bool Session::IsLiked(int64_t songId) const {
     return m_liked.count(songId) != 0;
 }
 
-std::vector<Playlist> Session::CreatedPlaylists() const {
+std::vector<stream::Playlist> Session::CreatedPlaylists() const {
     std::lock_guard lock(m_mutex);
     return m_createdPlaylists;
 }
 
-std::vector<Playlist> Session::CollectedPlaylists() const {
+std::vector<stream::Playlist> Session::CollectedPlaylists() const {
     std::lock_guard lock(m_mutex);
     return m_collectedPlaylists;
 }
 
-std::vector<Playlist> Session::RecommendedPlaylists() const {
+std::vector<stream::Playlist> Session::RecommendedPlaylists() const {
     std::lock_guard lock(m_mutex);
     return m_recommendedPlaylists;
 }
 
-std::vector<Artist> Session::FollowedArtists() const {
+std::vector<stream::Artist> Session::FollowedArtists() const {
     std::lock_guard lock(m_mutex);
     return m_followedArtists;
 }
 
 bool Session::IsAlbumCollected(int64_t albumId) const {
     std::lock_guard lock(m_mutex);
+    const stream::Id id = IdText(albumId);
     return std::any_of(m_collectedAlbums.begin(), m_collectedAlbums.end(),
-                       [albumId](const Album& album) { return album.id == albumId; });
+                       [&id](const stream::Album& album) { return album.id == id; });
 }
 
-std::vector<Album> Session::CollectedAlbums() const {
+std::vector<stream::Album> Session::CollectedAlbums() const {
     std::lock_guard lock(m_mutex);
     return m_collectedAlbums;
 }
 
 Session::PlaylistScope Session::FindPlaylistScope(int64_t playlistId) const {
     std::lock_guard lock(m_mutex);
-    for (const auto& playlist : m_createdPlaylists)
-        if (playlist.id == playlistId) return PlaylistScope::Created;
-    for (const auto& playlist : m_collectedPlaylists)
-        if (playlist.id == playlistId) return PlaylistScope::Collected;
-    for (const auto& playlist : m_recommendedPlaylists)
-        if (playlist.id == playlistId) return PlaylistScope::Recommended;
+    return ScopeLocked(IdText(playlistId));
+}
+
+Session::PlaylistScope Session::ScopeLocked(const stream::Id& id) const {
+    const auto in = [&id](const std::vector<stream::Playlist>& list) {
+        return std::any_of(list.begin(), list.end(), [&id](const stream::Playlist& playlist) { return playlist.id == id; });
+    };
+    if (in(m_createdPlaylists)) return PlaylistScope::Created;
+    if (in(m_collectedPlaylists)) return PlaylistScope::Collected;
+    if (in(m_recommendedPlaylists)) return PlaylistScope::Recommended;
     return PlaylistScope::Unknown;
 }
 
@@ -259,10 +273,11 @@ bool Session::ReloadUserPlaylists(abort_callback& abort, int64_t userId, std::ws
     std::vector<Playlist> playlists;
     int64_t likedPlaylist = 0;
     if (!m_client.UserPlaylists(userId, abort, playlists, likedPlaylist, error)) return false;
-    for (const auto& playlist : playlists) Catalog::Get().Put(playlist);
-    std::vector<Playlist> created, collected;
+    std::vector<Playlist> made, saved;
     for (auto& playlist : playlists)
-        (playlist.creatorId == userId ? created : collected).push_back(std::move(playlist));
+        (playlist.creatorId == userId ? made : saved).push_back(std::move(playlist));
+    auto created = PutPlaylists(made, userId, PlaylistScope::Created);
+    auto collected = PutPlaylists(saved, userId, PlaylistScope::Collected);
     std::lock_guard lock(m_mutex);
     m_createdPlaylists = std::move(created);
     m_collectedPlaylists = std::move(collected);
@@ -272,18 +287,19 @@ bool Session::ReloadUserPlaylists(abort_callback& abort, int64_t userId, std::ws
 
 void Session::ApplyPlaylistInfo(const Playlist& info) {
     if (!info.id) return;
-    Catalog::Get().Put(info);
     std::lock_guard lock(m_mutex);
-    auto update = [&info](std::vector<Playlist>& list) {
+    const stream::Playlist record = ToPlaylist(info, m_account.userId, ScopeLocked(IdText(info.id)));
+    Catalog::Get().Records().Put(record);
+    auto update = [&record](std::vector<stream::Playlist>& list) {
         for (auto& playlist : list) {
-            if (playlist.id != info.id) continue;
-            playlist.name = info.name;
-            playlist.coverUrl = info.coverUrl;
-            playlist.trackCount = info.trackCount;
-            playlist.creatorId = info.creatorId;
-            playlist.creatorName = info.creatorName;
-            playlist.description = info.description;
-            playlist.subscribed = info.subscribed;
+            if (playlist.id != record.id) continue;
+            playlist.name = record.name;
+            playlist.coverUrl = record.coverUrl;
+            playlist.trackCount = record.trackCount;
+            playlist.creator = record.creator;
+            playlist.description = record.description;
+            playlist.own = record.own;
+            playlist.saved = record.saved;
             return;
         }
     };
@@ -294,13 +310,13 @@ void Session::ApplyPlaylistInfo(const Playlist& info) {
 
 void Session::ApplyPlaylistOrder(const std::vector<int64_t>& ids) {
     std::lock_guard lock(m_mutex);
-    auto apply = [&ids](std::vector<Playlist>& list) {
-        std::map<int64_t, Playlist> byId;
+    auto apply = [&ids](std::vector<stream::Playlist>& list) {
+        std::map<stream::Id, stream::Playlist> byId;
         for (auto& playlist : list) byId.emplace(playlist.id, std::move(playlist));
-        std::vector<Playlist> ordered;
+        std::vector<stream::Playlist> ordered;
         ordered.reserve(list.size());
-        for (int64_t id : ids) {
-            auto it = byId.find(id);
+        for (int64_t number : ids) {
+            auto it = byId.find(IdText(number));
             if (it == byId.end()) continue;
             ordered.push_back(std::move(it->second));
             byId.erase(it);
@@ -399,10 +415,11 @@ void Session::RefreshAccount(DoneCallback done) {
         int64_t likedPlaylist = 0;
         std::wstring playlistError;
         if (m_client.UserPlaylists(account.userId, abort, playlists, likedPlaylist, playlistError)) {
-            for (const auto& playlist : playlists) Catalog::Get().Put(playlist);
-            std::vector<Playlist> created, collected;
+            std::vector<Playlist> made, saved;
             for (auto& playlist : playlists)
-                (playlist.creatorId == account.userId ? created : collected).push_back(std::move(playlist));
+                (playlist.creatorId == account.userId ? made : saved).push_back(std::move(playlist));
+            auto created = PutPlaylists(made, account.userId, PlaylistScope::Created);
+            auto collected = PutPlaylists(saved, account.userId, PlaylistScope::Collected);
             std::lock_guard lock(m_mutex);
             if (generation != m_accountGeneration) return superseded();
             m_createdPlaylists = std::move(created);
@@ -416,26 +433,33 @@ void Session::RefreshAccount(DoneCallback done) {
         std::vector<Artist> artists;
         if (m_client.GetFollowedArtists(abort, artists, listError)) {
             followedCount = artists.size();
-            for (const auto& artist : artists) Catalog::Get().Put(artist);
+            std::vector<stream::Artist> followed;
+            followed.reserve(artists.size());
+            for (const auto& artist : artists) {
+                followed.push_back(ToArtist(artist));
+                Catalog::Get().Records().Put(followed.back());
+                followed.back().followKnown = followed.back().followed = true;
+            }
             std::lock_guard lock(m_mutex);
             if (generation != m_accountGeneration) return superseded();
-            m_followedArtists = std::move(artists);
+            m_followedArtists = std::move(followed);
         }
         std::vector<Album> albums;
         if (m_client.GetCollectedAlbums(abort, albums, listError)) {
             albumCount = albums.size();
-            Catalog::Get().Put(albums);
+            auto collected = ToAlbums(albums);
+            Catalog::Get().Records().Put(collected);
             std::lock_guard lock(m_mutex);
             if (generation != m_accountGeneration) return superseded();
-            m_collectedAlbums = std::move(albums);
+            m_collectedAlbums = std::move(collected);
         }
         std::vector<Playlist> recommended;
         if (m_client.RecommendPlaylists(abort, recommended, listError)) {
             recommendedCount = recommended.size();
-            PutRecommended(recommended);
+            auto converted = PutPlaylists(recommended, account.userId, PlaylistScope::Recommended);
             std::lock_guard lock(m_mutex);
             if (generation != m_accountGeneration) return superseded();
-            m_recommendedPlaylists = std::move(recommended);
+            m_recommendedPlaylists = std::move(converted);
         }
         core::Log(L"account: saved lists: " + std::to_wstring(followedCount) + L" artists, " +
             std::to_wstring(albumCount) + L" albums, " + std::to_wstring(recommendedCount) + L" recommended");
@@ -508,9 +532,14 @@ void Session::FetchArtistDetail(int64_t artistId, ArtistDetailCallback done) {
             return;
         }
         m_client.GetArtistExtras(artistId, abort, artist);
-        Catalog::Get().Put(artist);
-        PostMain([done = std::move(done), artist] {
-            if (done) done(artist, {});
+        stream::Artist converted = ToArtist(artist);
+        Catalog::Get().Records().Put(converted);
+        {
+            std::lock_guard lock(m_mutex);
+            MarkFollowed(converted, m_followedArtists);
+        }
+        PostMain([done = std::move(done), converted = std::move(converted)] {
+            if (done) done(converted, {});
         });
     });
 }
@@ -587,13 +616,14 @@ void Session::SetArtistFollow(int64_t artistId, bool follow, DoneCallback done) 
             ok = m_client.SetArtistFollow(artistId, follow, abort, error);
         if (ok) {
             // Keep the followed-artists list (used by the navigation menus) in step.
-            if (auto artist = Catalog::Get().FindArtist(artistId)) {
+            const stream::Id id = IdText(artistId);
+            if (auto artist = Catalog::Get().Records().FindArtist(id)) {
                 artist->followed = follow;
                 artist->followKnown = true;
-                Catalog::Get().Put(*artist);  // FindArtist returns a copy
+                Catalog::Get().Records().Put(*artist);  // FindArtist returns a copy
                 std::lock_guard lock(m_mutex);
                 auto it = std::find_if(m_followedArtists.begin(), m_followedArtists.end(),
-                                       [artistId](const Artist& a) { return a.id == artistId; });
+                                       [&id](const stream::Artist& a) { return a.id == id; });
                 if (follow && it == m_followedArtists.end())
                     m_followedArtists.insert(m_followedArtists.begin(), *artist);
                 else if (!follow && it != m_followedArtists.end())
@@ -683,10 +713,11 @@ void Session::SetAlbumCollected(int64_t albumId, bool collected, DoneCallback do
         if (m_service.EnsureStarted(abort, &error))
             ok = m_client.SetAlbumCollect(albumId, collected, abort, error);
         if (ok) {
-            const auto album = Catalog::Get().FindAlbum(albumId);
+            const stream::Id id = IdText(albumId);
+            const auto album = Catalog::Get().Records().FindAlbum(id);
             std::lock_guard lock(m_mutex);
             auto it = std::find_if(m_collectedAlbums.begin(), m_collectedAlbums.end(),
-                                   [albumId](const Album& a) { return a.id == albumId; });
+                                   [&id](const stream::Album& a) { return a.id == id; });
             if (!collected && it != m_collectedAlbums.end())
                 m_collectedAlbums.erase(it);
             else if (collected && it == m_collectedAlbums.end() && album)
@@ -719,28 +750,23 @@ void Session::SetPlaylistSubscribed(int64_t playlistId, bool subscribed, DoneCal
                     info.subscribed = subscribed;
                     ApplyPlaylistInfo(info);
                 }
-                int64_t userId = 0;
-                {
-                    std::lock_guard lock(m_mutex);
-                    userId = m_account.userId;
-                }
-                Playlist known;
+                const stream::Id id = IdText(playlistId);
+                stream::Playlist known;
                 {
                     std::lock_guard lock(m_mutex);
                     for (const auto& playlist : m_collectedPlaylists)
-                        if (playlist.id == playlistId) known = playlist;
-                    if (!known.id)
+                        if (playlist.id == id) known = playlist;
+                    if (known.id.empty())
                         for (const auto& playlist : m_recommendedPlaylists)
-                            if (playlist.id == playlistId) known = playlist;
+                            if (playlist.id == id) known = playlist;
                 }
-                if (!known.id) known = Catalog::Get().FindPlaylist(playlistId).value_or(Playlist{});
-                known.id = known.id ? known.id : playlistId;
-                known.subscribed = subscribed;
-                Catalog::Get().Put(known);
+                if (known.id.empty()) known = Catalog::Get().Records().FindPlaylist(id).value_or(stream::Playlist{});
+                known.id = id;
+                known.saved = subscribed && !known.own;
+                Catalog::Get().Records().Put(known);
                 std::lock_guard lock(m_mutex);
-                auto it = std::find_if(m_collectedPlaylists.begin(), m_collectedPlaylists.end(),
-                                       [playlistId](const Playlist& playlist) { return playlist.id == playlistId; });
-                if (subscribed && it == m_collectedPlaylists.end() && known.creatorId != userId)
+                auto it = FindById(m_collectedPlaylists, id);
+                if (subscribed && it == m_collectedPlaylists.end() && !known.own)
                     m_collectedPlaylists.insert(m_collectedPlaylists.begin(), known);  // the service puts new ones first
                 else if (!subscribed && it != m_collectedPlaylists.end())
                     m_collectedPlaylists.erase(it);
@@ -820,15 +846,15 @@ void Session::RenamePlaylist(int64_t playlistId, std::wstring name, DoneCallback
                     info.name = name;
                     ApplyPlaylistInfo(info);
                 } else {
-                    if (auto existing = Catalog::Get().FindPlaylist(playlistId)) {
-                        Playlist updated = *existing;
-                        updated.name = name;
-                        Catalog::Get().Put(updated);
+                    const stream::Id id = IdText(playlistId);
+                    if (auto existing = Catalog::Get().Records().FindPlaylist(id)) {
+                        existing->name = name;
+                        Catalog::Get().Records().Put(*existing);
                     }
                     std::lock_guard lock(m_mutex);
-                    auto rename = [&](std::vector<Playlist>& list) {
+                    auto rename = [&](std::vector<stream::Playlist>& list) {
                         for (auto& playlist : list)
-                            if (playlist.id == playlistId) playlist.name = name;
+                            if (playlist.id == id) playlist.name = name;
                     };
                     rename(m_createdPlaylists);
                     rename(m_collectedPlaylists);
@@ -857,11 +883,10 @@ void Session::DeletePlaylist(int64_t playlistId, DoneCallback done) {
         if (m_service.EnsureStarted(abort, &error)) ok = m_client.DeletePlaylist(playlistId, abort, error);
         if (ok) {
             std::lock_guard lock(m_mutex);
-            auto remove = [playlistId](std::vector<Playlist>& list) {
+            const stream::Id id = IdText(playlistId);
+            auto remove = [&id](std::vector<stream::Playlist>& list) {
                 list.erase(std::remove_if(list.begin(), list.end(),
-                                          [playlistId](const Playlist& playlist) {
-                                              return playlist.id == playlistId;
-                                          }),
+                                          [&id](const stream::Playlist& playlist) { return playlist.id == id; }),
                            list.end());
             };
             remove(m_createdPlaylists);
@@ -922,7 +947,7 @@ void Session::Logout() {
     ++m_accountGeneration;
     ClearSessionCookie();
     ClearAccount();
-    Catalog::Get().ClearPreferredCovers();
+    Catalog::Get().Records().ClearPreferredCovers();
     {
         std::lock_guard lock(m_mutex);
         m_account = {};

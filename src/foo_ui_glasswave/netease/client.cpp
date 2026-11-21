@@ -143,7 +143,6 @@ Song ParseSong(const core::json::Object& object) {
     song.artistRefs = ArtistRefs(object);
     for (const auto& ref : song.artistRefs)
         if (!ref.name.empty()) song.artists.push_back(ref.name);
-    song.albumArtist = song.artists.empty() ? std::wstring() : song.artists.front();
     song.durationMs = core::json::GetInt(object, L"dt", core::json::GetInt(object, L"duration", 0));
     song.fee = core::json::GetInt(object, L"fee");
     song.popularity = core::json::GetInt(object, L"pop");

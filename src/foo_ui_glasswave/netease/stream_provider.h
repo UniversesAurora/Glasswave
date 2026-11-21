@@ -2,7 +2,7 @@
 
 #include "stream/account_gate.h"
 #include "stream/executor.h"
-#include "netease/types.h"
+#include "netease/convert.h"
 #include "stream/provider.h"
 #include "stream/snapshot_saver.h"
 
@@ -89,7 +89,7 @@ class StreamProvider final : public stream::Provider {
     bool SnapshotEligibleLocked() const;
     bool FillSnapshot(cache::provider_snapshot::Snapshot& payload) const;
     void OnSessionChanged();
-    void PostListPage(stream::ListPageDone done, stream::ListPage page, std::vector<Song> songs,
+    void PostListPage(stream::ListPageDone done, stream::ListPage page, std::vector<SongRecord> songs,
                       std::wstring error, std::shared_ptr<std::atomic_bool> cancelled);
     void FinishListWrite(bool ok, std::wstring error, Done done);
     void ClearIdSnapshots();

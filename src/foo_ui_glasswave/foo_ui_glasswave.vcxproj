@@ -252,7 +252,9 @@
     <ClCompile Include="netease\catalog.cpp" />
     <ClCompile Include="netease\client.cpp" />
     <ClCompile Include="netease\cookie.cpp" />
-    <ClCompile Include="netease\handle.cpp" />
+    <ClCompile Include="netease\convert.cpp">
+      <ObjectFileName>$(IntDir)netease_convert.obj</ObjectFileName>
+    </ClCompile>
     <ClCompile Include="net\http.cpp" />
     <ClCompile Include="netease\input_ncm.cpp" />
     <ClCompile Include="core\file.cpp" />
@@ -388,7 +390,7 @@
     <ClInclude Include="netease\catalog.h" />
     <ClInclude Include="netease\client.h" />
     <ClInclude Include="netease\cookie.h" />
-    <ClInclude Include="netease\handle.h" />
+    <ClInclude Include="netease\convert.h" />
     <ClInclude Include="net\http.h" />
     <ClInclude Include="net\http_request.h" />
     <ClInclude Include="core\file.h" />

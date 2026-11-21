@@ -85,6 +85,9 @@ class Catalog {
     void Put(const Artist& artist);
     void Put(const Playlist& playlist);
     void Put(const Station& station);
+    void Put(const std::vector<Album>& albums);
+    void Put(const std::vector<Artist>& artists);
+    void Put(const std::vector<Playlist>& playlists);
 
     // Restore merges a sparse record (from a list cache or a summary) into what is known, or
     // stores it when nothing is. RestoreAndHint (main thread) also feeds the songs to metadb now.

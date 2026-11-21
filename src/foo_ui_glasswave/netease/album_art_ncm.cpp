@@ -2,7 +2,6 @@
 #include "cache/images.h"
 #include "cache/art_absence.h"
 #include "netease/catalog.h"
-#include "netease/handle.h"
 #include "core/log.h"
 #include "core/text.h"
 #include "netease/session.h"
@@ -36,16 +35,18 @@ std::wstring CoverUrl(std::wstring url, const Rendition& rendition) {
     return url;
 }
 
-const char* ArtKindName(CoverKind kind) {
+const char* ArtKindName(stream::ArtKind kind) {
     switch (kind) {
-    case CoverKind::Song:
+    case stream::ArtKind::Track:
         return "song";
-    case CoverKind::Album:
+    case stream::ArtKind::Album:
         return "album";
-    case CoverKind::Artist:
+    case stream::ArtKind::Artist:
         return "artist";
-    case CoverKind::Playlist:
+    case stream::ArtKind::Playlist:
         return "playlist";
+    case stream::ArtKind::Station:
+        return "station";
     }
     return "";
 }
@@ -70,53 +71,43 @@ class NcmArtInstance : public album_art_extractor_instance_v2 {
 
     album_art_data_ptr query(const GUID& what, abort_callback& abort) override {
         if (what != album_art_ids::cover_front) throw exception_album_art_not_found();
-        CoverKind kind = CoverKind::Song;
-        int64_t id = 0;
-        if (!ParseCoverPath(m_path.c_str(), kind, id)) {
-            kind = CoverKind::Song;
-            if (!ParseSongPath(m_path.c_str(), id)) throw exception_album_art_not_found();
+        stream::ArtKind kind = stream::ArtKind::Track;
+        stream::Id objectId;
+        const stream::Catalog& records = Catalog::Get().Records();
+        if (!records.ParseCoverPath(m_path.c_str(), kind, objectId)) {
+            kind = stream::ArtKind::Track;
+            if (!records.ParseSongPath(m_path.c_str(), objectId)) throw exception_album_art_not_found();
         }
+        const int64_t id = Num(objectId);
 
         // A song shows its album's cover. Storing it under the album makes every song of the
         // album, the album page and the grids share one download (stream::Provider::ArtKeyOf
         // names the same identity for the UI).
         int64_t albumOfSong = 0;
-        if (kind == CoverKind::Song)
-            if (const auto song = Catalog::Get().FindSong(id)) albumOfSong = song->albumId;
+        if (kind == stream::ArtKind::Track)
+            if (const auto song = Catalog::Get().FindSong(objectId)) albumOfSong = Num(song->track.albumId);
 
         const Rendition rendition = RenditionFor(cache::SizeHint());
         cache::ImageRequest request;
         if (!rendition.param) request.limits.maxBodyBytes = 64u * 1024u * 1024u; // an uploaded original
-        request.identity = albumOfSong ? cache::ImageIdentity{"ncm", ArtKindName(CoverKind::Album),
+        request.identity = albumOfSong ? cache::ImageIdentity{"ncm", ArtKindName(stream::ArtKind::Album),
                                                               std::to_string(albumOfSong), rendition.version}
                                        : cache::ImageIdentity{"ncm", ArtKindName(kind), std::to_string(id),
                                                               rendition.version};
         if (albumOfSong)
             request.alternates.push_back({"ncm", ArtKindName(kind), std::to_string(id), rendition.version});
         auto noAddress = std::make_shared<std::atomic_bool>(false); // why a download failed, for the log
-        request.resolve = [kind, id, albumOfSong, rendition, noAddress, identity = request.identity,
+        request.resolve = [kind, id, objectId, albumOfSong, rendition, noAddress, identity = request.identity,
                            epoch = cache::art_absence::Epoch(),
                            account = cache::AccountRevision("ncm")](abort_callback& workerAbort,
                                                                     unsigned attempt) {
             if (cache::AccountRevision("ncm") != account) throw exception_aborted();
-            std::wstring url;
-            switch (kind) {
-            case CoverKind::Playlist:
-                url = Catalog::Get().PlaylistCover(id);
-                break;
-            case CoverKind::Artist:
-                url = Catalog::Get().ArtistCover(id);
-                break;
-            case CoverKind::Album:
-                url = Catalog::Get().AlbumCover(id);
-                break;
-            case CoverKind::Song:
-                url = Catalog::Get().SongCover(id);
-                if (url.empty() && albumOfSong) url = Catalog::Get().AlbumCover(albumOfSong);
-                break;
-            }
+            stream::Catalog& records = Catalog::Get().Records();
+            std::wstring url = records.CoverUrl(kind, objectId);
+            if (kind == stream::ArtKind::Track && url.empty() && albumOfSong)
+                url = records.CoverUrl(stream::ArtKind::Album, IdText(albumOfSong));
 
-            if (kind == CoverKind::Song && (url.empty() || attempt > 0)) {
+            if (kind == stream::ArtKind::Track && (url.empty() || attempt > 0)) {
                 if (attempt == 0 && url.empty() && cache::art_absence::KnownMissing(identity))
                     return std::optional<cache::HttpSource>();
                 auto& provider = Session::Get();
@@ -126,7 +117,7 @@ class NcmArtInstance : public album_art_extractor_instance_v2 {
                 std::vector<Song> songs;
                 if (!provider.Api().SongDetails({id}, workerAbort, songs, error))
                     return std::optional<cache::HttpSource>();
-                Catalog::Get().Put(songs);
+                Catalog::Get().Put(ToSongs(songs));
                 if (!songs.empty()) url = songs.front().coverUrl;
                 if (!songs.empty() && url.empty()) cache::art_absence::StoreMissing(identity, account, epoch);
             }
@@ -134,7 +125,7 @@ class NcmArtInstance : public album_art_extractor_instance_v2 {
             // An album known only from its songs' rows: its own record has the cover's address,
             // as a song's details do for a song (a never-opened album's cover stayed away until
             // a restart, owner 2026-11-14).
-            if (kind == CoverKind::Album && url.empty()) {
+            if (kind == stream::ArtKind::Album && url.empty()) {
                 if (attempt == 0 && cache::art_absence::KnownMissing(identity))
                     return std::optional<cache::HttpSource>();
                 auto& provider = Session::Get();
@@ -145,7 +136,7 @@ class NcmArtInstance : public album_art_extractor_instance_v2 {
                 std::vector<Song> songs;
                 if (!provider.Api().GetAlbum(id, workerAbort, info, songs, error))
                     return std::optional<cache::HttpSource>();
-                Catalog::Get().Put(info);
+                records.Put(ToAlbum(info));
                 url = info.coverUrl;
                 if (url.empty()) cache::art_absence::StoreMissing(identity, account, epoch);
             }
@@ -193,10 +184,11 @@ class NcmArtExtractor : public album_art_extractor_v2 {
   public:
     bool is_our_path(const char* path, const char* extension) override {
         (void)extension;
-        CoverKind kind = CoverKind::Song;
-        int64_t id = 0;
-        if (ParseCoverPath(path, kind, id)) return true;
-        return ParseSongPath(path, id);
+        stream::ArtKind kind = stream::ArtKind::Track;
+        stream::Id id;
+        const stream::Catalog& records = Catalog::Get().Records();
+        if (records.ParseCoverPath(path, kind, id)) return true;
+        return records.ParseSongPath(path, id);
     }
 
     album_art_extractor_instance_ptr open(file_ptr filehint, const char* path,
@@ -226,9 +218,10 @@ class NcmArtFallback : public album_art_fallback {
         (void)abort;
         for (t_size i = 0; i < items.get_count(); ++i) {
             const char* path = items[i].is_valid() ? items[i]->get_path() : nullptr;
-            CoverKind kind = CoverKind::Song;
-            int64_t id = 0;
-            if (ParseCoverPath(path, kind, id) || ParseSongPath(path, id)) {
+            stream::ArtKind kind = stream::ArtKind::Track;
+            stream::Id id;
+            const stream::Catalog& records = Catalog::Get().Records();
+            if (records.ParseCoverPath(path, kind, id) || records.ParseSongPath(path, id)) {
                 album_art_extractor_instance_v2::ptr instance;
                 instance ^= fb2k::service_new<NcmArtInstance>(std::string(path ? path : ""));
                 return instance;

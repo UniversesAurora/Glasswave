@@ -4,7 +4,6 @@
 #include "cache/audio.h"
 #include "download/downloads.h"
 #include "netease/config.h"
-#include "netease/handle.h"
 #include "core/log.h"
 #include "core/paths.h"
 #include "netease/session.h"
@@ -186,15 +185,15 @@ public:
         (void)p_filehint;
         (void)p_abort;
         if (p_reason == input_open_info_write) throw exception_tagging_unsupported();
-        int64_t id = 0;
-        if (!ParseSongPath(p_path, id)) throw exception_io_data("Invalid NetEase track");
-        m_id = id;
+        stream::Id id;
+        if (!Catalog::Get().Records().ParseSongPath(p_path, id)) throw exception_io_data("Invalid NetEase track");
+        m_id = Num(id);
         m_path = p_path;
         m_cacheKey = {};
     }
 
     void get_info(file_info& p_info, abort_callback& p_abort) {
-        const auto song = Catalog::Get().FindSong(m_id);
+        const auto song = Catalog::Get().FindSong(IdText(m_id));
         if (!song) {
             // A downloaded song the catalog has not seen this run: its file's tags.
             if (const auto local = download::LocalFile(L"ncm", std::to_wstring(m_id))) {
@@ -212,7 +211,7 @@ public:
             // Its last known tags (stream/track_snapshot.h); a stand-in only for a song never
             // seen. Either way the record is reported once the catalog has it.
             m_reportWhenKnown = true;
-            if (!stream::KnownTags(Catalog::Get().Handle(m_id), p_info)) {
+            if (!stream::KnownTags(Catalog::Get().Records().Handle(IdText(m_id)), p_info)) {
                 p_info.meta_set("title", ("NetEase song " + std::to_string(m_id)).c_str());
                 p_info.info_set(stream::kPlaceholderInfo, "1");
             }
@@ -220,25 +219,14 @@ public:
             return;
         }
         m_reportWhenKnown = false;
-        p_info.meta_set("title", Utf8(song->title).c_str());
-        const std::wstring artists = JoinArtists(song->artists);
-        if (!artists.empty()) p_info.meta_set("artist", Utf8(artists).c_str());
-        if (!song->albumArtist.empty()) p_info.meta_set("album artist", Utf8(song->albumArtist).c_str());
-        if (!song->album.empty()) p_info.meta_set("album", Utf8(song->album).c_str());
-        if (song->durationMs > 0) p_info.set_length(static_cast<double>(song->durationMs) / 1000.0);
-        if (!song->codec.empty()) p_info.info_set("codec", Utf8(song->codec).c_str());
-        if (song->bitrate > 0) p_info.info_set_int("bitrate", (song->bitrate + 500) / 1000);  // kbps
-        if (song->sampleRate > 0) p_info.info_set_int("samplerate", song->sampleRate);
-        if (song->bitsPerSample > 0) p_info.info_set_int("bitspersample", song->bitsPerSample);
-        p_info.info_set_int("channels", 2);
-        if (song->codec == L"FLAC") p_info.info_set("encoding", "lossless");
+        Catalog::Get().Records().WriteTags(song->track, p_info); // names, length, quality
         TechInfo(p_info, p_abort);
     }
 
     // What plays: the decoder's own technical info while decoding (kept for later runs, as the
     // catalog record has it only for songs whose stream was asked for), else the last one kept.
     void TechInfo(file_info& p_info, abort_callback& p_abort) {
-        const auto item = Catalog::Get().Handle(m_id);
+        const auto item = Catalog::Get().Records().Handle(IdText(m_id));
         if (m_decoder.is_valid()) {
             try {
                 file_info_impl actual;
@@ -381,8 +369,8 @@ public:
                 extension == "flac" ? "audio/flac" : extension == "m4a" ? "audio/mp4" : "audio/mpeg";
             m_flags = p_flags;
             m_durationSeconds = 0;
-            if (const auto song = Catalog::Get().FindSong(m_id); song && song->durationMs > 0)
-                m_durationSeconds = static_cast<double>(song->durationMs) / 1000.0;
+            if (const auto song = Catalog::Get().FindSong(IdText(m_id)); song && song->track.durationMs > 0)
+                m_durationSeconds = static_cast<double>(song->track.durationMs) / 1000.0;
 
             const std::string fakePath = "ncm://decode/" + std::to_string(m_id) + "." + extension;
             m_decodePath = fakePath;
@@ -463,7 +451,7 @@ public:
         try {
             // The song's record arrived after it opened, or decoding has just begun (its real
             // technical info): the playing info takes it now.
-            if ((m_reportWhenKnown && Catalog::Get().FindSong(m_id)) || (m_decoder.is_valid() && !m_techReported)) {
+            if ((m_reportWhenKnown && Catalog::Get().FindSong(IdText(m_id))) || (m_decoder.is_valid() && !m_techReported)) {
                 m_techReported = true;
                 abort_callback_dummy abort;
                 get_info(p_out, abort);
@@ -511,8 +499,8 @@ public:
 
     static bool g_is_our_path(const char* p_path, const char* p_extension) {
         (void)p_extension;
-        int64_t id = 0;
-        return ParseSongPath(p_path, id);
+        stream::Id id;
+        return Catalog::Get().Records().ParseSongPath(p_path, id);
     }
 
     static const char* g_get_name() { return "Glasswave NetEase input"; }

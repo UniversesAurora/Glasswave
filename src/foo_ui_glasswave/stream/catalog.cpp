@@ -298,6 +298,21 @@ void Catalog::Put(const Station& station) {
     m_stations[station.id] = station;
 }
 
+void Catalog::Put(const std::vector<Album>& albums) {
+    for (const auto& album : albums)
+        Put(album);
+}
+
+void Catalog::Put(const std::vector<Artist>& artists) {
+    for (const auto& artist : artists)
+        Put(artist);
+}
+
+void Catalog::Put(const std::vector<Playlist>& playlists) {
+    for (const auto& playlist : playlists)
+        Put(playlist);
+}
+
 void Catalog::Restore(const TrackRecord& song) {
     if (song.track.id.empty()) return;
     bool post = false;

@@ -6,7 +6,6 @@
 #include "stream/playback_source.h"
 #include "netease/catalog.h"
 #include "netease/config.h"
-#include "netease/handle.h"
 #include "netease/session.h"
 #include "ui/i18n.h"
 #include "ui/netease_login.h"
@@ -43,14 +42,6 @@ std::string SourceIdentity() {
     return external.empty() ? "managed:ncm" : "external:" + Utf8(external);
 }
 
-int64_t Num(const Id& id) {
-    return id.empty() ? 0 : static_cast<int64_t>(_wcstoi64(id.c_str(), nullptr, 10));
-}
-
-Id IdText(int64_t id) {
-    return id ? std::to_wstring(id) : Id();
-}
-
 std::vector<int64_t> Nums(const std::vector<Id>& ids) {
     std::vector<int64_t> out;
     out.reserve(ids.size());
@@ -59,262 +50,32 @@ std::vector<int64_t> Nums(const std::vector<Id>& ids) {
     return out;
 }
 
-// A publish time as the calendar day the service means. It stores release days as midnight in
-// China (UTC+8), so the day is read there, not in the local time zone.
-bool ReleaseDay(int64_t publishTimeMs, std::tm& day) {
-    if (publishTimeMs <= 0) return false;
-    const time_t seconds = static_cast<time_t>(publishTimeMs / 1000 + 8 * 3600);
-    return gmtime_s(&day, &seconds) == 0;
+// Records of a client's answer, in the signed-in account's context: whether a playlist is the
+// account's own or saved, and which artists it follows.
+stream::Playlist AccountPlaylist(const Playlist& playlist) {
+    return ToPlaylist(playlist, Ncm().CurrentAccount().userId, Ncm().FindPlaylistScope(playlist.id));
 }
 
-int Year(int64_t publishTimeMs) {
-    std::tm day{};
-    return ReleaseDay(publishTimeMs, day) ? day.tm_year + 1900 : 0;
-}
-
-// "YYYY-MM-DD" of a publish time.
-std::wstring Date(int64_t publishTimeMs) {
-    std::tm day{};
-    if (!ReleaseDay(publishTimeMs, day)) return {};
-    wchar_t text[16]{};
-    swprintf_s(text, L"%04d-%02d-%02d", day.tm_year + 1900, day.tm_mon + 1, day.tm_mday);
-    return text;
-}
-
-// The service's album type as a UI key ("专辑" -> Album); an unknown one is shown as written.
-std::wstring AlbumType(const Album& album) {
-    if (album.subType.find(L"现场") != std::wstring::npos) return L"Live album";
-    if (album.type == L"专辑") return L"Album";
-    if (album.type == L"EP/Single") return L"EP or single";
-    if (album.type == L"EP") return L"EP";
-    if (album.type == L"Single") return L"Single";
-    if (album.type == L"精选集" || album.type == L"合辑") return L"Compilation";
-    return album.type;
-}
-
-std::vector<stream::ArtistRef> Refs(const std::vector<ArtistRef>& refs) {
-    std::vector<stream::ArtistRef> out;
-    out.reserve(refs.size());
-    for (const auto& ref : refs)
-        out.push_back({IdText(ref.id), ref.name});
-    return out;
-}
-
-stream::Track ToTrack(const Song& song) {
-    stream::Track track;
-    track.id = IdText(song.id);
-    track.title = song.title;
-    track.note = song.note;
-    track.album = song.album;
-    track.albumId = IdText(song.albumId);
-    track.artists = Refs(song.artistRefs);
-    if (track.artists.empty()) // songs cached before ids were stored
-        for (const auto& name : song.artists)
-            track.artists.push_back({{}, name});
-    track.durationMs = song.durationMs;
-    track.popularity = song.popularity;
-    if (song.original) track.badges.push_back(L"Original");
-    return track;
-}
-
-Song FromTrack(const stream::Track& track) {
-    Song song;
-    song.id = Num(track.id);
-    song.title = track.title;
-    song.note = track.note;
-    song.album = track.album;
-    song.albumId = Num(track.albumId);
-    song.durationMs = track.durationMs;
-    song.popularity = track.popularity;
-    song.original = std::find(track.badges.begin(), track.badges.end(), L"Original") != track.badges.end();
-    for (const auto& ref : track.artists) {
-        if (ref.name.empty()) continue;
-        song.artists.push_back(ref.name);
-        song.artistRefs.push_back({Num(ref.id), ref.name});
-    }
-    if (!song.artists.empty()) song.albumArtist = song.artists.front();
-    return song;
-}
-
-std::vector<stream::Track> ToTracks(const std::vector<Song>& songs) {
-    std::vector<stream::Track> out;
-    out.reserve(songs.size());
-    for (const auto& song : songs)
-        out.push_back(ToTrack(song));
-    return out;
-}
-
-std::optional<std::vector<stream::Track>> ToTracks(const std::optional<std::vector<Song>>& songs) {
-    if (!songs) return std::nullopt;
-    return ToTracks(*songs);
-}
-
-bool IsOwn(const Playlist& playlist) {
-    const int64_t user = Ncm().CurrentAccount().userId;
-    return playlist.creatorId ? playlist.creatorId == user : !playlist.subscribed;
-}
-
-stream::Playlist ToPlaylist(const Playlist& playlist) {
-    stream::Playlist out;
-    out.id = IdText(playlist.id);
-    out.name = playlist.name;
-    out.coverUrl = playlist.coverUrl;
-    out.creator = playlist.creatorName;
-    out.description = playlist.description;
-    out.trackCount = playlist.trackCount;
-    out.created = Date(playlist.createTime);
-    out.updated = Date(playlist.updateTime);
-    out.updates = playlist.updateFrequency;
-    out.tags = playlist.tags;
-    if (!playlist.englishTitle.empty() && playlist.englishTitle != playlist.name)
-        out.aliases.push_back(playlist.englishTitle);
-    if (playlist.chart) out.type = L"Chart";
-    out.own = Ncm().FindPlaylistScope(playlist.id) == Session::PlaylistScope::Created || IsOwn(playlist);
-    out.saved = !out.own && (playlist.subscribed ||
-                             Ncm().FindPlaylistScope(playlist.id) == Session::PlaylistScope::Collected);
-    return out;
-}
-
-Playlist FromPlaylist(const stream::Playlist& playlist) {
-    Playlist out;
-    out.id = Num(playlist.id);
-    out.name = playlist.name;
-    out.coverUrl = playlist.coverUrl;
-    out.creatorName = playlist.creator;
-    out.description = playlist.description;
-    out.trackCount = playlist.trackCount == stream::kUnknownCount ? 0 : playlist.trackCount;
-    out.subscribed = playlist.saved;
-    // Catalog has no stream::Playlist boolean fields. A non-own sentinel keeps a cache
-    // restoration from turning recommended/other-user lists into owned lists.
-    out.creatorId = playlist.own ? Ncm().CurrentAccount().userId : -1;
-    return out;
-}
-
-std::vector<stream::Playlist> ToPlaylists(const std::vector<Playlist>& playlists) {
+std::vector<stream::Playlist> AccountPlaylists(const std::vector<Playlist>& playlists) {
     std::vector<stream::Playlist> out;
     out.reserve(playlists.size());
     for (const auto& playlist : playlists)
-        out.push_back(ToPlaylist(playlist));
+        out.push_back(AccountPlaylist(playlist));
     return out;
 }
 
-stream::Album ToAlbum(const Album& album) {
-    stream::Album out;
-    out.id = IdText(album.id);
-    out.name = album.name;
-    out.coverUrl = album.coverUrl;
-    out.artists = Refs(album.artistRefs);
-    out.description = album.description;
-    out.trackCount = album.trackCount;
-    out.year = Year(album.publishTime);
-    out.released = Date(album.publishTime);
-    out.label = album.company;
-    out.type = AlbumType(album);
-    out.edition = album.subType;
-    out.aliases = album.aliases;
-    // Tags are one string of genre words ("华语 流行"), separated by spaces or commas.
-    std::wstring tag;
-    for (const wchar_t c : album.tags + L" ") {
-        if (c == L' ' || c == L',' || c == L'，' || c == L'、' || c == L'/') {
-            if (!tag.empty()) out.genres.push_back(std::move(tag));
-            tag.clear();
-        } else {
-            tag += c;
-        }
-    }
+stream::Artist AccountArtist(const Artist& artist, const std::vector<stream::Artist>& followed) {
+    stream::Artist out = ToArtist(artist);
+    MarkFollowed(out, followed);
     return out;
 }
 
-int64_t YearTimestamp(int year) {
-    if (year <= 0) return 0;
-    std::tm value{};
-    value.tm_year = year - 1900;
-    value.tm_mon = 6;
-    value.tm_mday = 1;
-    value.tm_hour = 12;
-    return static_cast<int64_t>(mktime(&value)) * 1000;
-}
-
-Album FromAlbum(const stream::Album& album) {
-    Album out;
-    out.id = Num(album.id);
-    out.name = album.name;
-    out.coverUrl = album.coverUrl;
-    out.trackCount = album.trackCount == stream::kUnknownCount ? 0 : album.trackCount;
-    out.publishTime = YearTimestamp(album.year);
-    out.description = album.description;
-    for (const auto& ref : album.artists) {
-        if (!ref.id.empty() || !ref.name.empty()) out.artistRefs.push_back({Num(ref.id), ref.name});
-    }
-    return out;
-}
-
-std::vector<stream::Album> ToAlbums(const std::vector<Album>& albums) {
-    std::vector<stream::Album> out;
-    out.reserve(albums.size());
-    for (const auto& album : albums)
-        out.push_back(ToAlbum(album));
-    return out;
-}
-
-stream::Artist ToArtist(const Artist& artist, const std::vector<Artist>& followed) {
-    stream::Artist out;
-    out.id = IdText(artist.id);
-    out.name = artist.name;
-    out.avatarUrl = artist.avatarUrl;
-    out.bio = artist.brief;
-    out.albumCount = artist.albumCount;
-    out.trackCount = artist.songCount;
-    out.followKnown = artist.followKnown;
-    out.followed = artist.followed;
-    out.profile = artist.profile;
-    out.aliases = artist.aliases;
-    out.roles = artist.roles;
-    out.videoCount = artist.videoCount < 0 ? stream::kUnknownCount : artist.videoCount;
-    // The wiki's codes, as the service's artist lists name them. Untranslated UI keys.
-    switch (artist.area) {
-    case 7: out.area = L"Chinese"; break;
-    case 96: out.area = L"Western"; break;
-    case 8: out.area = L"Japanese"; break;
-    case 16: out.area = L"Korean"; break;
-    default: break;
-    }
-    out.kind = artist.type == 1   ? stream::ArtistKind::Male
-               : artist.type == 2 ? stream::ArtistKind::Female
-               : artist.type == 3 ? stream::ArtistKind::Group
-                                  : stream::ArtistKind::Unknown;
-    // The followed-artists list is authoritative even when a profile lags behind a follow.
-    for (const auto& saved : followed)
-        if (saved.id == artist.id) {
-            out.followKnown = out.followed = true;
-            break;
-        }
-    return out;
-}
-
-stream::Artist ToArtist(const Artist& artist) {
-    return ToArtist(artist, Ncm().FollowedArtists());
-}
-
-Artist FromArtist(const stream::Artist& artist) {
-    Artist out;
-    out.id = Num(artist.id);
-    out.name = artist.name;
-    out.avatarUrl = artist.avatarUrl;
-    out.brief = artist.bio;
-    out.albumCount = artist.albumCount == stream::kUnknownCount ? 0 : artist.albumCount;
-    out.songCount = artist.trackCount == stream::kUnknownCount ? 0 : artist.trackCount;
-    out.followKnown = artist.followKnown;
-    out.followed = artist.followed;
-    return out;
-}
-
-std::vector<stream::Artist> ToArtists(const std::vector<Artist>& artists) {
+std::vector<stream::Artist> AccountArtists(const std::vector<Artist>& artists) {
     std::vector<stream::Artist> out;
     out.reserve(artists.size());
-    const std::vector<Artist> followed = Ncm().FollowedArtists(); // one copy, not one per artist
+    const auto followed = Ncm().FollowedArtists(); // one copy, not one per artist
     for (const auto& artist : artists)
-        out.push_back(ToArtist(artist, followed));
+        out.push_back(AccountArtist(artist, followed));
     return out;
 }
 
@@ -563,7 +324,7 @@ struct StreamProvider::IdSnapshotStore {
     template <class FetchIds>
     bool PageFromIdSnapshot(Key key, const Wording& wording, const stream::ListCursor& cursor, size_t limit,
                             Client& client, abort_callback& abort, FetchIds&& fetchIds,
-                            stream::ListPage& page, std::vector<Song>& songs,
+                            stream::ListPage& page, std::vector<SongRecord>& songs,
                             std::shared_ptr<const Snapshot>& snapshot, std::wstring& error) {
         if (cursor.offset != 0 && cursor.value.empty()) {
             error = wording.noRevision;
@@ -596,8 +357,8 @@ struct StreamProvider::IdSnapshotStore {
         std::vector<int64_t> ids(begin, begin + static_cast<std::ptrdiff_t>(count));
         std::vector<Song> details;
         if (!SongDetailsInBatches(client, Unique(ids), abort, details, error)) return false;
-        songs = OrderDetails(ids, details);
-        page.rows = ToTracks(songs);
+        songs = ToSongs(OrderDetails(ids, details));
+        page.rows = TracksOf(songs);
         page.total = snapshot->ids.size();
         page.next = {snapshot->key.revision, cursor.offset + count};
         page.more = cursor.offset + count < snapshot->ids.size();
@@ -716,9 +477,9 @@ void StreamProvider::LoadBootstrapSnapshot() {
         m_cachedSaved = cached.saved;
     }
     for (const auto& playlist : cached.created)
-        Catalog::Get().Restore(FromPlaylist(playlist));
+        Catalog::Get().Records().Restore(playlist);
     for (const auto& playlist : cached.saved)
-        Catalog::Get().Restore(FromPlaylist(playlist));
+        Catalog::Get().Records().Restore(playlist);
     NotifyLibraryChanged();
 }
 
@@ -753,8 +514,8 @@ bool StreamProvider::FillSnapshot(cache::provider_snapshot::Snapshot& payload) c
     payload.accountId = Utf8(accountId);
     payload.accountName = Utf8(account.nickname);
     payload.sourceStorefront = "CN";
-    payload.created = ToPlaylists(Ncm().CreatedPlaylists());
-    payload.saved = ToPlaylists(Ncm().CollectedPlaylists());
+    payload.created = Ncm().CreatedPlaylists();
+    payload.saved = Ncm().CollectedPlaylists();
     return true;
 }
 
@@ -801,34 +562,35 @@ void StreamProvider::FetchCatalogSearchSuggestions(CatalogSearchSuggestionQuery 
         for (auto& term : found.terms)
             suggestions.ordered.emplace_back(CatalogSearchSuggestionTerm{term, term});
         // The suggested songs are summaries (no cover, no quality); they are shown, and opened
-        // through the song page, but never written over a known song's record.
+        // through the song page, but never written over a known song's record. Opening a
+        // suggested artist, album or playlist finds it in the catalog.
+        const auto followed = Ncm().FollowedArtists();
         for (auto& hit : found.items) {
             std::visit(
                 [&](auto& row) {
                     using Row = std::decay_t<decltype(row)>;
-                    if constexpr (std::is_same_v<Row, Song>)
+                    if constexpr (std::is_same_v<Row, Song>) {
                         suggestions.ordered.emplace_back(ToTrack(row));
-                    else if constexpr (std::is_same_v<Row, Artist>)
-                        suggestions.ordered.emplace_back(ToArtist(row));
-                    else if constexpr (std::is_same_v<Row, Album>)
-                        suggestions.ordered.emplace_back(ToAlbum(row));
-                    else
-                        suggestions.ordered.emplace_back(ToPlaylist(row));
+                    } else if constexpr (std::is_same_v<Row, Artist>) {
+                        Catalog::Get().Records().Put(ToArtist(row));
+                        suggestions.ordered.emplace_back(AccountArtist(row, followed));
+                    } else if constexpr (std::is_same_v<Row, Album>) {
+                        const stream::Album album = ToAlbum(row);
+                        Catalog::Get().Records().Put(album);
+                        suggestions.ordered.emplace_back(album);
+                    } else {
+                        const stream::Playlist playlist = AccountPlaylist(row);
+                        Catalog::Get().Records().Put(playlist);
+                        suggestions.ordered.emplace_back(playlist);
+                    }
                 },
                 hit);
         }
         if (!suggestions.ordered.empty()) error.clear();
-        m_exec.PostMain(m_exec.Generation(), [this, cancelled = query.cancelled, done = std::move(done), found = std::move(found),
+        m_exec.PostMain(m_exec.Generation(), [cancelled = query.cancelled, done = std::move(done),
                             suggestions = std::move(suggestions),
                             error = error.empty() ? std::wstring() : ErrorOf(std::move(error))]() mutable {
             if (ListCancelled(cancelled)) return;
-            // Opening a suggested artist, album or playlist finds it in the catalog.
-            for (const auto& hit : found.items)
-                std::visit(
-                    [](const auto& row) {
-                        if constexpr (!std::is_same_v<std::decay_t<decltype(row)>, Song>) Catalog::Get().Put(row);
-                    },
-                    hit);
             if (done) done(std::move(suggestions), std::move(error));
         });
     });
@@ -924,45 +686,41 @@ void StreamProvider::FetchHome(HomeDone done) {
         // replaces a richer record.
         for (const auto& card : cards)
             if (card.resourceType == L"playList" && !card.resourceId.empty()) {
-                Playlist playlist;
-                playlist.id = _wtoi64(card.resourceId.c_str());
+                stream::Playlist playlist;
+                playlist.id = IdText(_wtoi64(card.resourceId.c_str()));
                 playlist.name = card.label;
                 playlist.coverUrl = card.coverUrl;
-                playlist.creatorId = -1;
-                if (playlist.id) Catalog::Get().Restore(playlist);
-            }
-        for (auto& block : blocks)
-            for (auto& playlist : block.playlists) {
-                playlist.creatorId = -1;
-                Catalog::Get().Restore(playlist);
+                Catalog::Get().Records().Restore(playlist);
             }
         stream::Home home;
         for (const auto& card : cards)
             if (auto mapped = ToHomeCard(card)) home.cards.push_back(std::move(*mapped));
-        std::vector<Song> songs;
+        std::vector<SongRecord> songs;
         for (const auto& block : blocks) {
             stream::HomeShelf shelf;
             shelf.id = block.code;
             shelf.title = block.title;
             for (const auto& playlist : block.playlists) {
-                const auto known = Catalog::Get().FindPlaylist(playlist.id);
-                shelf.items.emplace_back(ToPlaylist(known ? *known : playlist));
+                stream::Playlist row = AccountPlaylist(playlist);
+                Catalog::Get().Records().Restore(row);
+                if (const auto known = Catalog::Get().Records().FindPlaylist(row.id)) row = *known;
+                shelf.items.emplace_back(std::move(row));
             }
             for (const auto& song : block.songs) {
-                shelf.items.emplace_back(ToTrack(song));
-                songs.push_back(song);
+                songs.push_back(ToSong(song));
+                shelf.items.emplace_back(songs.back().track);
                 // The rows show a song by its album's cover: the album must be known with it.
                 if (song.albumId && !song.coverUrl.empty()) {
-                    Album album;
-                    album.id = song.albumId;
+                    stream::Album album;
+                    album.id = IdText(song.albumId);
                     album.name = song.album;
                     album.coverUrl = song.coverUrl;
-                    Catalog::Get().Restore(album);
+                    Catalog::Get().Records().Restore(album);
                 }
             }
             if (!shelf.items.empty()) home.shelves.push_back(std::move(shelf));
         }
-        m_exec.PostMain(m_exec.Generation(), [this, done = std::move(done), home = std::move(home), songs = std::move(songs),
+        m_exec.PostMain(m_exec.Generation(), [done = std::move(done), home = std::move(home), songs = std::move(songs),
                             error = error.empty() ? std::wstring() : ErrorOf(std::move(error))]() mutable {
             if (!songs.empty()) Catalog::Get().PutAndHint(songs);
             if (done) done(std::move(home), std::move(error));
@@ -1004,10 +762,10 @@ void StreamProvider::FetchStationTracks(const stream::Id& station, TracksDone do
             }
         }
         if (m_exec.Abort().is_aborting()) return;
-        m_exec.PostMain(m_exec.Generation(), [this, done = std::move(done), songs = std::move(songs),
+        m_exec.PostMain(m_exec.Generation(), [done = std::move(done), songs = ToSongs(songs),
                             error = error.empty() ? std::wstring() : ErrorOf(std::move(error))]() mutable {
             if (!songs.empty()) Catalog::Get().PutAndHint(songs);
-            if (done) done(ToTracks(songs), songs.empty() ? std::move(error) : std::wstring());
+            if (done) done(TracksOf(songs), songs.empty() ? std::move(error) : std::wstring());
         });
     });
 }
@@ -1169,8 +927,8 @@ void StreamProvider::RefreshLibrary(Done done) {
 }
 
 stream::Id StreamProvider::TrackId(const metadb_handle_ptr& item) const {
-    int64_t id = 0;
-    return item.is_valid() && ParseSongPath(item->get_path(), id) ? IdText(id) : Id();
+    Id id;
+    return item.is_valid() && Catalog::Get().Records().ParseSongPath(item->get_path(), id) ? id : Id();
 }
 
 std::wstring StreamProvider::Lyrics(const Id& track, abort_callback& abort) {
@@ -1232,21 +990,22 @@ stream::DownloadSource StreamProvider::ResolveDownload(const Id& track, abort_ca
     // Tags: the song's detail (disc, number, date, style); the catalog's record if that fails.
     SongInfo info;
     std::wstring ignored;
-    Song song;
+    SongRecord song;
     if (session.Api().GetSongInfo(id, abort, info, ignored)) {
-        song = info.song;
+        song = ToSong(info.song);
         source.tags.disc = info.disc;
         source.tags.number = info.number;
         source.tags.date = Date(info.publishTime); // the same day the pages show
         source.tags.genres = info.styles;
-    } else if (auto known = Catalog::Get().FindSong(id)) {
-        song = *known;
+    } else if (auto known = Catalog::Get().FindSong(track)) {
+        song = std::move(*known);
     }
-    source.tags.title = song.title;
-    source.tags.album = song.album;
-    source.tags.albumArtist = song.albumArtist;
-    source.tags.artists = song.artists;
-    source.tags.coverUrl = song.coverUrl.substr(0, song.coverUrl.find(L'?')); // the full-size picture
+    source.tags.title = song.track.title;
+    source.tags.album = song.track.album;
+    if (!song.track.artists.empty()) source.tags.albumArtist = song.track.artists.front().name;
+    for (const auto& artist : song.track.artists)
+        if (!artist.name.empty()) source.tags.artists.push_back(artist.name);
+    source.tags.coverUrl = song.cover.substr(0, song.cover.find(L'?')); // the full-size picture
 
     // Links expire (about 20 minutes): a renewal asks for the same level again, and refuses a
     // different codec or bitrate, which would not continue the same file.
@@ -1279,31 +1038,17 @@ stream::DownloadSource StreamProvider::ResolveDownload(const Id& track, abort_ca
 }
 
 metadb_handle_ptr StreamProvider::TrackItem(const Id& track) const {
-    const int64_t id = Num(track);
-    return id ? Catalog::Get().Handle(id) : metadb_handle_ptr();
+    return Catalog::Get().Records().Handle(track);
 }
 
 std::optional<stream::Track> StreamProvider::FindTrack(const Id& track) const {
-    if (auto song = Catalog::Get().FindSong(Num(track))) return ToTrack(*song);
-    return std::nullopt;
+    return Catalog::Get().Records().FindTrack(track);
 }
 
 metadb_handle_ptr StreamProvider::ArtItem(stream::ArtKind kind, const Id& id) const {
-    const int64_t n = Num(id);
-    if (!n) return {};
-    switch (kind) {
-    case stream::ArtKind::Track:
-        return Catalog::Get().Handle(n);
-    case stream::ArtKind::Album:
-        return Catalog::Get().AlbumHandle(n);
-    case stream::ArtKind::Artist:
-        return Catalog::Get().ArtistHandle(n);
-    case stream::ArtKind::Playlist:
-        return Catalog::Get().PlaylistHandle(n);
-    case stream::ArtKind::Station: // its stations are cards (personal FM, heartbeat), never tiles
-        return {};
-    }
-    return {};
+    if (kind == stream::ArtKind::Station) return {}; // its stations are cards (personal FM, heartbeat), never tiles
+    if (kind == stream::ArtKind::Track) return Catalog::Get().Records().Handle(id); // the song itself
+    return Catalog::Get().Records().CoverHandle(kind, id);
 }
 
 bool StreamProvider::SameCover(std::wstring_view a, std::wstring_view b) const {
@@ -1319,7 +1064,7 @@ bool StreamProvider::ReadFavorite(const Id& track) const {
 std::vector<stream::Playlist> StreamProvider::Playlists(stream::Shelf shelf) const {
     switch (shelf) {
     case stream::Shelf::Created: {
-        auto rows = ToPlaylists(Ncm().CreatedPlaylists());
+        auto rows = Ncm().CreatedPlaylists();
         if (rows.empty()) {
             std::lock_guard lock(m_cacheMutex);
             if (m_gate.restoring) return m_cachedCreated;
@@ -1327,7 +1072,7 @@ std::vector<stream::Playlist> StreamProvider::Playlists(stream::Shelf shelf) con
         return rows;
     }
     case stream::Shelf::Saved: {
-        auto rows = ToPlaylists(Ncm().CollectedPlaylists());
+        auto rows = Ncm().CollectedPlaylists();
         if (rows.empty()) {
             std::lock_guard lock(m_cacheMutex);
             if (m_gate.restoring) return m_cachedSaved;
@@ -1335,7 +1080,7 @@ std::vector<stream::Playlist> StreamProvider::Playlists(stream::Shelf shelf) con
         return rows;
     }
     case stream::Shelf::Recommended:
-        return ToPlaylists(Ncm().RecommendedPlaylists());
+        return Ncm().RecommendedPlaylists();
     }
     return {};
 }
@@ -1355,11 +1100,11 @@ std::optional<stream::Shelf> StreamProvider::ShelfOf(const Id& playlist) const {
 }
 
 std::vector<stream::Artist> StreamProvider::FollowedArtists() const {
-    return ToArtists(Ncm().FollowedArtists());
+    return Ncm().FollowedArtists();
 }
 
 std::vector<stream::Album> StreamProvider::SavedAlbums() const {
-    return ToAlbums(Ncm().CollectedAlbums());
+    return Ncm().CollectedAlbums();
 }
 
 bool StreamProvider::ReadAlbumSaved(const Id& album) const {
@@ -1367,18 +1112,16 @@ bool StreamProvider::ReadAlbumSaved(const Id& album) const {
 }
 
 std::optional<stream::Playlist> StreamProvider::FindPlaylist(const Id& playlist) const {
-    if (auto found = Catalog::Get().FindPlaylist(Num(playlist))) return ToPlaylist(*found);
-    return std::nullopt;
+    return Catalog::Get().Records().FindPlaylist(playlist);
 }
 
 std::optional<stream::Album> StreamProvider::FindAlbum(const Id& album) const {
-    if (auto found = Catalog::Get().FindAlbum(Num(album))) return ToAlbum(*found);
-    return std::nullopt;
+    return Catalog::Get().Records().FindAlbum(album);
 }
 
 void StreamProvider::FetchArtist(const Id& artist, ArtistDone done) {
-    Ncm().FetchArtistDetail(Num(artist), [done = std::move(done)](Artist info, std::wstring error) {
-        done(info.id ? ToArtist(info) : stream::Artist{}, std::move(error));
+    Ncm().FetchArtistDetail(Num(artist), [done = std::move(done)](stream::Artist info, std::wstring error) {
+        done(std::move(info), std::move(error));
     });
 }
 
@@ -1429,7 +1172,7 @@ void StreamProvider::FetchSongDetails(const Id& track, SongDetailsDone done) {
             }
         }
         if (m_exec.Abort().is_aborting()) return;
-        m_exec.PostMain(m_exec.Generation(), [this, done = std::move(done), details = std::move(details), songs = std::move(songs),
+        m_exec.PostMain(m_exec.Generation(), [done = std::move(done), details = std::move(details), songs = ToSongs(songs),
                             error = ErrorOf(std::move(error))]() mutable {
             if (!songs.empty()) Catalog::Get().PutAndHint(songs);
             if (!details.track.id.empty()) error.clear();
@@ -1439,30 +1182,25 @@ void StreamProvider::FetchSongDetails(const Id& track, SongDetailsDone done) {
 }
 
 void StreamProvider::RestoreListRecords(const stream::ListPage& page) {
+    stream::Catalog& records = Catalog::Get().Records();
     if (const auto trackRows = std::get_if<std::vector<stream::Track>>(&page.rows)) {
-        std::vector<Song> songs;
-        songs.reserve(trackRows->size());
-        for (const auto& track : *trackRows) {
-            Song song = FromTrack(track);
-            if (song.id) songs.push_back(std::move(song));
-        }
-        Catalog::Get().RestoreAndHint(songs);
+        Catalog::Get().RestoreAndHint(*trackRows);
     } else if (const auto playlistRows = std::get_if<std::vector<stream::Playlist>>(&page.rows)) {
         for (const auto& playlist : *playlistRows)
-            Catalog::Get().Restore(FromPlaylist(playlist));
+            records.Restore(playlist);
     } else if (const auto albumRows = std::get_if<std::vector<stream::Album>>(&page.rows)) {
         for (const auto& album : *albumRows)
-            Catalog::Get().Restore(FromAlbum(album));
+            records.Restore(album);
     } else if (const auto artistRows = std::get_if<std::vector<stream::Artist>>(&page.rows)) {
         for (const auto& artist : *artistRows)
-            Catalog::Get().Restore(FromArtist(artist));
+            records.Restore(artist);
     }
-    if (page.playlist) Catalog::Get().Restore(FromPlaylist(*page.playlist));
-    if (page.album) Catalog::Get().Restore(FromAlbum(*page.album));
-    if (page.artist) Catalog::Get().Restore(FromArtist(*page.artist));
+    if (page.playlist) records.Restore(*page.playlist);
+    if (page.album) records.Restore(*page.album);
+    if (page.artist) records.Restore(*page.artist);
 }
 
-void StreamProvider::PostListPage(stream::ListPageDone done, stream::ListPage page, std::vector<Song> songs,
+void StreamProvider::PostListPage(stream::ListPageDone done, stream::ListPage page, std::vector<SongRecord> songs,
                                   std::wstring error, std::shared_ptr<std::atomic_bool> cancelled) {
     if (ListCancelled(cancelled)) return;
     m_exec.PostMain(m_exec.Generation(), [this, done = std::move(done), page = std::move(page), songs = std::move(songs),
@@ -1545,7 +1283,8 @@ void StreamProvider::FetchListPage(const stream::ListQuery& query, const stream:
         }
         const uint64_t accountRevision = cache::AccountRevision("ncm");
         stream::ListPage page;
-        std::vector<Song> hintSongs;
+        std::vector<SongRecord> hintSongs; // the page's songs, for the catalog
+        std::vector<Song> found; // what the client read, before it is converted
 
         switch (query.kind) {
         case stream::ListKind::PlaylistTracks: {
@@ -1574,8 +1313,8 @@ void StreamProvider::FetchListPage(const stream::ListQuery& query, const stream:
                     },
                     page, hintSongs, snapshot, error))
                 break;
-            page.playlist = ToPlaylist(snapshot->info);
-            Catalog::Get().Put(snapshot->info);
+            page.playlist = AccountPlaylist(snapshot->info);
+            Catalog::Get().Records().Put(*page.playlist);
             break;
         }
         case stream::ListKind::Favorites: {
@@ -1606,7 +1345,7 @@ void StreamProvider::FetchListPage(const stream::ListQuery& query, const stream:
             if (query.id == kDailyList) {
                 info.name = L"每日推荐";
                 info.tagline = L"根据你的音乐口味生成，每天6:00更新";
-                client.DailySongs(m_exec.Abort(), hintSongs, error);
+                client.DailySongs(m_exec.Abort(), found, error);
             } else if (query.id.starts_with(kStyleList)) {
                 std::vector<std::wstring> parts;
                 std::wstring_view rest = std::wstring_view(query.id).substr(kStyleList.size());
@@ -1616,12 +1355,13 @@ void StreamProvider::FetchListPage(const stream::ListQuery& query, const stream:
                     rest = colon == std::wstring_view::npos ? std::wstring_view() : rest.substr(colon + 1);
                 }
                 info.tagline = L"根据你的音乐口味生成，每天更新";
-                client.StyleDailySongs(parts[0], parts[1], rest, m_exec.Abort(), hintSongs, error);
+                client.StyleDailySongs(parts[0], parts[1], rest, m_exec.Abort(), found, error);
             } else {
                 error = L"This list is unavailable.";
                 break;
             }
-            page.rows = ToTracks(hintSongs);
+            hintSongs = ToSongs(found);
+            page.rows = TracksOf(hintSongs);
             page.playlist = std::move(info);
             page.total = hintSongs.size();
             break;
@@ -1633,11 +1373,12 @@ void StreamProvider::FetchListPage(const stream::ListQuery& query, const stream:
                 break;
             }
             Album info;
-            if (!client.GetAlbum(albumId, m_exec.Abort(), info, hintSongs, error)) break;
-            page.rows = ToTracks(hintSongs);
+            if (!client.GetAlbum(albumId, m_exec.Abort(), info, found, error)) break;
+            hintSongs = ToSongs(found);
+            page.rows = TracksOf(hintSongs);
             page.album = ToAlbum(info);
             page.total = hintSongs.size();
-            Catalog::Get().Put(info);
+            Catalog::Get().Records().Put(*page.album);
             break;
         }
         case stream::ListKind::ArtistTopTracks: {
@@ -1650,10 +1391,11 @@ void StreamProvider::FetchListPage(const stream::ListQuery& query, const stream:
             if (!OffsetWindowOf(cursor, limit, window, error)) break;
             bool more = false;
             size_t received = 0;
-            if (!client.GetArtistSongsPage(artistId, window.offset, window.count, L"hot", m_exec.Abort(), hintSongs,
+            if (!client.GetArtistSongsPage(artistId, window.offset, window.count, L"hot", m_exec.Abort(), found,
                                            &more, error, &received))
                 break;
-            page.rows = ToTracks(hintSongs);
+            hintSongs = ToSongs(found);
+            page.rows = TracksOf(hintSongs);
             stream::SetOffsetNext(page, cursor, received, more);
             break;
         }
@@ -1671,8 +1413,9 @@ void StreamProvider::FetchListPage(const stream::ListQuery& query, const stream:
             if (!client.GetArtistAlbumsPage(artistId, window.offset, window.count, m_exec.Abort(), albums, nullptr,
                                             &more, error, &received))
                 break;
-            Catalog::Get().Put(albums);
-            page.rows = ToAlbums(albums);
+            auto rows = ToAlbums(albums);
+            Catalog::Get().Records().Put(rows);
+            page.rows = std::move(rows);
             stream::SetOffsetNext(page, cursor, received, more);
             break;
         }
@@ -1685,8 +1428,9 @@ void StreamProvider::FetchListPage(const stream::ListQuery& query, const stream:
             if (!client.GetCollectedAlbumsPage(window.offset, window.count, m_exec.Abort(), albums, more, error,
                                                &received))
                 break;
-            Catalog::Get().Put(albums);
-            page.rows = ToAlbums(albums);
+            auto rows = ToAlbums(albums);
+            Catalog::Get().Records().Put(rows);
+            page.rows = std::move(rows);
             stream::SetOffsetNext(page, cursor, received, more);
             break;
         }
@@ -1698,10 +1442,10 @@ void StreamProvider::FetchListPage(const stream::ListQuery& query, const stream:
             }
             std::vector<Artist> artists;
             if (!client.GetSimilarArtists(artistId, m_exec.Abort(), artists, error)) break;
-            for (const auto& artist : artists)
-                Catalog::Get().Put(artist);
-            page.rows = ToArtists(artists);
-            page.total = artists.size();
+            auto rows = AccountArtists(artists);
+            Catalog::Get().Records().Put(rows);
+            page.total = rows.size();
+            page.rows = std::move(rows);
             break;
         }
         case stream::ListKind::FollowedArtists: {
@@ -1713,9 +1457,9 @@ void StreamProvider::FetchListPage(const stream::ListQuery& query, const stream:
             if (!client.GetFollowedArtistsPage(window.offset, window.count, m_exec.Abort(), artists, more, received,
                                                error))
                 break;
-            for (const auto& artist : artists)
-                Catalog::Get().Put(artist);
-            page.rows = ToArtists(artists);
+            auto rows = AccountArtists(artists);
+            Catalog::Get().Records().Put(rows);
+            page.rows = std::move(rows);
             stream::SetOffsetNext(page, cursor, received, more);
             break;
         }
@@ -1726,56 +1470,60 @@ void StreamProvider::FetchListPage(const stream::ListQuery& query, const stream:
         case stream::ListKind::CatalogSearchLyrics: {
             OffsetWindow window;
             if (!OffsetWindowOf(cursor, limit, window, error)) break;
-            SearchPage found;
+            SearchPage searched;
             bool ok = false;
             if (query.kind == stream::ListKind::CatalogSearch) {
-                ok = client.SearchSongsPage(query.search, window.count, window.offset, m_exec.Abort(), hintSongs,
-                                         found, error);
-                if (ok) page.rows = ToTracks(hintSongs);
+                ok = client.SearchSongsPage(query.search, window.count, window.offset, m_exec.Abort(), found,
+                                         searched, error);
+                if (ok) {
+                    hintSongs = ToSongs(found);
+                    page.rows = TracksOf(hintSongs);
+                }
             } else if (query.kind == stream::ListKind::CatalogSearchAlbums) {
                 std::vector<Album> albums;
                 ok = client.SearchAlbumsPage(query.search, window.count, window.offset, m_exec.Abort(), albums,
-                                         found, error);
+                                         searched, error);
                 if (ok) {
-                    Catalog::Get().Put(albums);
-                    page.rows = ToAlbums(albums);
+                    auto rows = ToAlbums(albums);
+                    Catalog::Get().Records().Put(rows);
+                    page.rows = std::move(rows);
                 }
             } else if (query.kind == stream::ListKind::CatalogSearchArtists) {
                 std::vector<Artist> artists;
                 ok = client.SearchArtistsPage(query.search, window.count, window.offset, m_exec.Abort(), artists,
-                                         found, error);
+                                         searched, error);
                 if (ok) {
-                    for (const auto& artist : artists)
-                        Catalog::Get().Put(artist);
-                    page.rows = ToArtists(artists);
+                    auto rows = AccountArtists(artists);
+                    Catalog::Get().Records().Put(rows);
+                    page.rows = std::move(rows);
                 }
             } else if (query.kind == stream::ListKind::CatalogSearchPlaylists) {
                 std::vector<Playlist> playlists;
                 ok = client.SearchPlaylistsPage(query.search, window.count, window.offset, m_exec.Abort(), playlists,
-                                         found, error);
+                                         searched, error);
                 if (ok) {
-                    for (const auto& playlist : playlists)
-                        Catalog::Get().Put(playlist);
-                    page.rows = ToPlaylists(playlists);
+                    auto rows = AccountPlaylists(playlists);
+                    Catalog::Get().Records().Put(rows);
+                    page.rows = std::move(rows);
                 }
             } else {
                 std::vector<LyricHit> hits;
                 ok = client.SearchLyricsPage(query.search, window.count, window.offset, m_exec.Abort(), hits,
-                                         found, error);
+                                         searched, error);
                 if (ok) {
                     std::vector<stream::Track> tracks;
                     for (auto& hit : hits) {
-                        tracks.push_back(ToTrack(hit.song));
+                        hintSongs.push_back(ToSong(hit.song));
+                        tracks.push_back(hintSongs.back().track);
                         tracks.back().lyricMatch = std::move(hit.excerpt);
                         tracks.back().lyricText = std::move(hit.text);
-                        hintSongs.push_back(std::move(hit.song));
                     }
                     page.rows = std::move(tracks);
                 }
             }
             if (!ok) break;
-            page.total = found.total;
-            stream::SetOffsetNext(page, cursor, found.received, found.more);
+            page.total = searched.total;
+            stream::SetOffsetNext(page, cursor, searched.received, searched.more);
             break;
         }
         case stream::ListKind::CatalogSearchTopResults: {
@@ -1788,17 +1536,20 @@ void StreamProvider::FetchListPage(const stream::ListQuery& query, const stream:
                     [&](auto& row) {
                         using Row = std::decay_t<decltype(row)>;
                         if constexpr (std::is_same_v<Row, Song>) {
-                            items.emplace_back(ToTrack(row));
-                            hintSongs.push_back(std::move(row));
+                            hintSongs.push_back(ToSong(row));
+                            items.emplace_back(hintSongs.back().track);
                         } else if constexpr (std::is_same_v<Row, Artist>) {
-                            Catalog::Get().Put(row);
-                            items.emplace_back(ToArtist(row));
+                            stream::Artist artist = AccountArtist(row, Ncm().FollowedArtists());
+                            Catalog::Get().Records().Put(artist);
+                            items.emplace_back(std::move(artist));
                         } else if constexpr (std::is_same_v<Row, Album>) {
-                            Catalog::Get().Put(row);
-                            items.emplace_back(ToAlbum(row));
+                            stream::Album album = ToAlbum(row);
+                            Catalog::Get().Records().Put(album);
+                            items.emplace_back(std::move(album));
                         } else {
-                            Catalog::Get().Put(row);
-                            items.emplace_back(ToPlaylist(row));
+                            stream::Playlist playlist = AccountPlaylist(row);
+                            Catalog::Get().Records().Put(playlist);
+                            items.emplace_back(std::move(playlist));
                         }
                     },
                     hit);
