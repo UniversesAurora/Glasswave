@@ -2809,8 +2809,9 @@ void ListView::OnLButtonDown(POINT pt, bool ctrl, bool shift) {
         const int kind = CellAt(pt, nullptr);
         if (kind == static_cast<int>(CellKind::Rating) && StarAt(pt) >= 0) {
             if (const auto item = m_source->Item(hit.row); item.is_valid() && !RateTrack(item, StarAt(pt) + 1))
-                popup_message::g_show("Ratings need foobar2000's Playback Statistics (Library > Playback Statistics).",
-                                      "Rating");
+                popup_message::g_show(
+                    core::Utf8(Tr(L"Ratings need foobar2000's Playback Statistics (Library > Playback Statistics).")).c_str(),
+                    core::Utf8(Tr(L"Rating")).c_str());
         } else if (kind == static_cast<int>(CellKind::Favorite)) {
             if (const auto item = m_source->Item(hit.row); item.is_valid()) media::ToggleFavorite(item);
         } else if (kind == static_cast<int>(CellKind::Download)) {
