@@ -122,6 +122,12 @@ std::vector<Artist> Session::FollowedArtists() const {
     return m_followedArtists;
 }
 
+bool Session::IsAlbumCollected(int64_t albumId) const {
+    std::lock_guard lock(m_mutex);
+    return std::any_of(m_collectedAlbums.begin(), m_collectedAlbums.end(),
+                       [albumId](const Album& album) { return album.id == albumId; });
+}
+
 std::vector<Album> Session::CollectedAlbums() const {
     std::lock_guard lock(m_mutex);
     return m_collectedAlbums;

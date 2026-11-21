@@ -175,7 +175,7 @@ class Provider {
     // anything from it and at foobar2000 start-up, whichever comes first.
     virtual void Start() = 0;
 
-    // Stable short key used in saved views, cache keys and play history ("ncm").
+    // Stable short key used in saved views, cache keys and play history.
     virtual std::wstring_view Key() const = 0;
     // Display name, untranslated (the UI passes it through Tr).
     virtual std::wstring Name() const = 0;
@@ -218,10 +218,14 @@ class Provider {
     }
     // "Please sign in to <Name()>." in the UI language.
     std::wstring SignInRequiredMessage() const;
+    // Whether the album is in the user's library. Asked per row, so the default (a scan of
+    // SavedAlbums()) is for sources with a small library; others override it with a lookup.
     virtual bool IsAlbumSaved(const Id& album) const;
     // Capability::SaveSongs: true when every one of `tracks` is in the library, false when one
     // is known not to be, nothing while that is not known yet.
     virtual std::optional<bool> SongsSavedState(const std::vector<Id>& tracks) const;
+    // The library state of a playlist / an artist while it differs from the last snapshot (a
+    // write in flight or just acknowledged); nullopt: the snapshot is right. Default: nullopt.
     virtual std::optional<bool> PlaylistSavedState(const Id& playlist) const;
     virtual std::optional<bool> ArtistPreferenceState(const Id& artist) const;
     // The provider's own rows on the preferences page (quality, caches, account, ...).
@@ -326,7 +330,7 @@ class Provider {
         (void)station;
         if (done) done({}, L"This source has no stations.");
     }
-    // Whether a station takes "recommend less" for its songs (NetEase's 不感兴趣).
+    // Whether a station takes "recommend less" for its songs (a "not interested" feedback).
     virtual bool CanDislike(const Id& station) const {
         (void)station;
         return false;

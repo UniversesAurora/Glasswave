@@ -46,6 +46,7 @@ public:
     std::vector<Playlist> RecommendedPlaylists() const;
     std::vector<Artist> FollowedArtists() const;
     std::vector<Album> CollectedAlbums() const;
+    bool IsAlbumCollected(int64_t albumId) const; // no copy of the list
     enum class PlaylistScope { Unknown, Created, Collected, Recommended };
     PlaylistScope FindPlaylistScope(int64_t playlistId) const;
 

@@ -46,6 +46,7 @@ class StreamProvider final : public stream::Provider {
     std::optional<stream::Shelf> ShelfOf(const stream::Id& playlist) const override;
     std::vector<stream::Artist> FollowedArtists() const override;
     std::vector<stream::Album> SavedAlbums() const override;
+    bool IsAlbumSaved(const stream::Id& album) const override;
     std::optional<stream::Playlist> FindPlaylist(const stream::Id& playlist) const override;
     std::optional<stream::Album> FindAlbum(const stream::Id& album) const override;
     void FetchArtist(const stream::Id& artist, ArtistDone done) override;

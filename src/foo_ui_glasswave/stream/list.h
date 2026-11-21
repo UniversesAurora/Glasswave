@@ -95,7 +95,7 @@ inline bool IsCatalogSearch(ListKind kind) {
 // The cursor bookkeeping of a service that pages by offset: `received` source rows were read
 // starting at `cursor`, and the service says whether more follow. An empty answer ends the list
 // whatever `more` says, so a service that keeps claiming more cannot loop. Sources whose cursors
-// are opaque server links (Apple Music) do not use it.
+// are opaque server links do not use it.
 inline void SetOffsetNext(ListPage& page, const ListCursor& cursor, size_t received, bool more) {
     page.next = {{}, cursor.offset + received};
     page.more = more && received != 0;

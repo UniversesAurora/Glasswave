@@ -1461,6 +1461,10 @@ std::vector<stream::Album> StreamProvider::SavedAlbums() const {
     return ToAlbums(Ncm().CollectedAlbums());
 }
 
+bool StreamProvider::IsAlbumSaved(const Id& album) const {
+    return Ncm().IsAlbumCollected(Num(album));
+}
+
 std::optional<stream::Playlist> StreamProvider::FindPlaylist(const Id& playlist) const {
     if (auto found = Catalog::Get().FindPlaylist(Num(playlist))) return ToPlaylist(*found);
     return std::nullopt;
