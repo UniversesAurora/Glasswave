@@ -117,6 +117,8 @@ class PlayerWindow {
         POINT cluster{};
         int infoStyle = 0; // 0 centred under the cover, 1 beside the cover (WMC), 2 strip
         float textScale = 1; // style 0: the lines' size, with the window's width and height
+        bool compact = false; // mini, narrow: the square cover with title and transport over it
+        float coverEdge = 1;  // the cover's glass edge and shadow, 0..1 (compact: with the margin)
     };
 
     static LRESULT CALLBACK WndProcThunk(HWND, UINT, WPARAM, LPARAM);
@@ -130,6 +132,7 @@ class PlayerWindow {
     void PaintShade();
     void PaintBars();
     void PaintInfo();
+    void PaintCompactTitle();
     std::wstring TimeText() const; // "1:23 / 4:56", or counting down "-3:33 / 4:56"
     void PaintCover();
     void PaintSeek();
@@ -184,7 +187,8 @@ class PlayerWindow {
     Mode m_mode = Mode::Mini;
     bool m_paneShown = false;
     bool m_backIn = true, m_backWmc = false; // SlideBack: the orb in place; under WMC's controls
-    RECT m_miniRect{}; // screen px, remembered between visits
+    void RememberMiniRect();
+    RECT m_miniRect{}; // screen px, remembered between visits and starts (settings::MiniPlayerRect)
     bool m_haveMiniRect = false;
     SIZE m_client{};
     Layout m_layout;
@@ -233,11 +237,14 @@ class PlayerWindow {
     };
     FadingThumb m_seekThumb, m_flyoutBall, m_sliderThumb;
     LONG m_seekPointerX = -1;   // px, the pointer over the seek bar
+    RECT m_songHit{};           // px, title, artist and album (a right click opens the song's menu)
     RECT m_timeHit{};           // px, the time line among the song's lines (a click counts down / up)
     int m_menuInking = -1; // the menu item whose press draws its type
     uint64_t m_menuInkGeneration = 0;
     std::shared_ptr<int> m_alive = std::make_shared<int>(0); // for compositor callbacks
     std::array<winrt::Windows::UI::Composition::SpriteVisual, 2> m_sideHighlight{nullptr, nullptr};
+    std::array<winrt::Windows::UI::Composition::SpriteVisual, 2> m_coverFrame{nullptr, nullptr}; // on cover, old
+
     SIZE m_sideHighlightSize{};
     winrt::Windows::UI::Composition::CompositionLinearGradientBrush m_menuInkMask{nullptr},
         m_menuInkMaskWhite{nullptr};

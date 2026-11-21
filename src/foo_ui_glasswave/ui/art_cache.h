@@ -130,6 +130,9 @@ class ArtCache {
     void DropQueued(std::wstring_view prefix);
     void Evict();
     void Notify();
+    void RemindAt(Clock::time_point when); // Notify when a failed picture's pause ends
+    bool m_reminderArmed = false;
+    Clock::time_point m_reminderAt{};
 
     std::unordered_map<std::wstring, Source> m_sources; // main thread
     size_t m_entryCount = 0;

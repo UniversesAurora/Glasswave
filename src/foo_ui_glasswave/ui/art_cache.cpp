@@ -448,6 +448,18 @@ void ArtCache::Delivered() {
             entry.failures = 0;
             source.replaceCallerCopies = false;
             ++entry.content;
+            // The same picture's other sizes that have none (failed, or still waiting for a
+            // retry) take it at once: the mini player's cover arrived while the library
+            // window's smaller one stayed empty (owner, 2026-11-14). A larger size shows it
+            // scaled up and still loads its own.
+            for (auto& [otherSize, other] : source.sizes) {
+                if (&other == &entry || other.bitmap || other.reloading) continue;
+                other.bitmap = entry.bitmap;
+                other.state = State::Ready;
+                other.failures = 0;
+                other.stale = otherSize > item.sizePx;
+                ++other.content;
+            }
             continue;
         }
         const bool absent = !item.provider.empty() && cache::art_absence::Fresh(Utf8(item.sourceKey));
@@ -465,9 +477,26 @@ void ArtCache::Delivered() {
             entry.failures = std::min(entry.failures + 1, 8u);
             const auto pause = absent ? kRetryMax : std::min(kRetryMax, kRetryBase * (1u << (entry.failures - 1)));
             entry.retryAt = Clock::now() + pause;
+            if (!absent) RemindAt(entry.retryAt);
         }
     }
     if (changed) Notify();
+}
+
+// A failed picture is tried again only when a view asks for it after its pause; a view that
+// asked once (the now-playing cover) does not ask again by itself, and the cover stayed away
+// until a restart (owner, 2026-11-14). So the views are told when the pause ends.
+void ArtCache::RemindAt(Clock::time_point when) {
+    if (m_reminderArmed && when >= m_reminderAt) return;
+    m_reminderArmed = true;
+    m_reminderAt = when;
+    const auto delay = std::chrono::duration<double>(when - Clock::now()).count() + 0.05;
+    fb2k::callLater(std::max(0.05, delay), [] {
+        auto* cache = ArtCache::Existing();
+        if (!cache) return;
+        cache->m_reminderArmed = false;
+        cache->Notify();
+    });
 }
 
 } // namespace glasswave::ui

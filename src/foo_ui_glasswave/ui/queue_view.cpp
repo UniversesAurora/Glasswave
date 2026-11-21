@@ -1,6 +1,8 @@
 #include "pch.h"
 
 #include "ui/queue_view.h"
+#include "app/settings.h"
+#include "ui/text.h"
 
 #include "gfx/composition_host.h"
 #include "gfx/effects.h"
@@ -92,6 +94,8 @@ QueueView::QueueView(const wuc::ContainerVisual& parent) {
     m_viewport.Children().InsertAtTop(m_root);
     m_layer = comp.CreateLayerVisual();
     m_root.Children().InsertAtTop(m_layer);
+    m_viewport.Comment(L"queue viewport");
+    m_layer.Comment(L"queue rows");
     try {
         auto mask = gfx::MakeAlphaMaskEffect(wuc::CompositionEffectSourceParameter(L"source"),
                                              wuc::CompositionEffectSourceParameter(L"mask"));

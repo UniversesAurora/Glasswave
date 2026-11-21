@@ -125,7 +125,7 @@ void HeaderSeparator(ID2D1DeviceContext* dc, float x, float height) {
 }
 
 void ScrollBar(ID2D1DeviceContext* dc, D2D1_SIZE_F size, float thumbTop, float thumbHeight,
-               const float* partBlends) {
+               const float* partBlends, bool thumbOnly) {
     const float L = Hairline(dc);
     const float W = size.width, H = size.height;
     const float arrow = std::min(17.0f, H / 2);
@@ -156,8 +156,8 @@ void ScrollBar(ID2D1DeviceContext* dc, D2D1_SIZE_F size, float thumbTop, float t
                                   .get());
         }
     };
-    drawTrack(0, 1.0f);
-    const float trackBlend = blendOf(ScrollBarPart::Track);
+    if (!thumbOnly) drawTrack(0, 1.0f);
+    const float trackBlend = thumbOnly ? 0.0f : blendOf(ScrollBarPart::Track);
     if (trackBlend > 0.0f) drawTrack(1, std::min(trackBlend, 1.0f));
     if (trackBlend > 1.0f) drawTrack(2, trackBlend - 1.0f);
 
@@ -204,6 +204,7 @@ void ScrollBar(ID2D1DeviceContext* dc, D2D1_SIZE_F size, float thumbTop, float t
         }
     };
     for (bool down : {false, true}) {
+        if (thumbOnly) break;
         drawPlate(down, 0, 1.0f);
         const float b = blendOf(down ? ScrollBarPart::ArrowDown : ScrollBarPart::ArrowUp);
         if (b > 0.0f) drawPlate(down, 1, std::min(b, 1.0f));

@@ -25,8 +25,9 @@ void HeaderSeparator(ID2D1DeviceContext* dc, float x, float height);
 // 0 height hides the thumb. partBlends[part] (ScrollBarPart 1..4) is 0 normal, 1 hot,
 // 2 pressed; intermediate values cross-fade, as Win7 does.
 enum class ScrollBarPart { None, ArrowUp, ArrowDown, Track, Thumb };
+// thumbOnly: the thumb alone, filling `size` (a visual of its own that glides with the content).
 void ScrollBar(ID2D1DeviceContext* dc, D2D1_SIZE_F size, float thumbTop, float thumbHeight,
-               const float* partBlends);
+               const float* partBlends, bool thumbOnly = false);
 
 // Toolbar text button ("Organize", "Create playlist") with optional drop-down arrow.
 void CommandButton(ID2D1DeviceContext* dc, D2D1_SIZE_F size, Layer layer, std::wstring_view text, bool dropDown);

@@ -228,6 +228,29 @@ void Orb(ID2D1DeviceContext* dc, Layer layer, bool pause) {
     Bitmap(dc, pause ? kPauseGlyph : kPlayGlyph, 87 - kOrbRect.left, 4 - kOrbRect.top);
 }
 
+void PlayOrb(ID2D1DeviceContext* dc, D2D1_RECT_F box, float hover, float opacity, float pressed) {
+    if (!Available() || opacity <= 0) return;
+    const float size = box.right - box.left, k = size / (kOrbRect.right - kOrbRect.left);
+    D2D1_MATRIX_3X2_F current;
+    dc->GetTransform(&current);
+    dc->SetTransform(D2D1::Matrix3x2F::Scale(k, k) * D2D1::Matrix3x2F::Translation(box.left, box.top) * current);
+    winrt::com_ptr<ID2D1Factory> factory;
+    dc->GetFactory(factory.put());
+    winrt::com_ptr<ID2D1EllipseGeometry> orb;
+    const float r = (kOrbRect.right - kOrbRect.left) / 2;
+    factory->CreateEllipseGeometry(D2D1::Ellipse(D2D1::Point2F(r, r), r, r), orb.put());
+    // The orb alone (the cluster's segments clipped off), its hover look faded over the normal one.
+    dc->PushLayer(D2D1::LayerParameters1(D2D1::InfiniteRect(), orb.get(), D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
+                                         D2D1::IdentityMatrix(), opacity),
+                  nullptr);
+    Bitmap(dc, kCluster, -kOrbRect.left, -kOrbRect.top);
+    if (hover > 0) Bitmap(dc, kClusterHover, -kOrbRect.left, -kOrbRect.top, hover);
+    if (pressed > 0) Bitmap(dc, kClusterPressed, -kOrbRect.left, -kOrbRect.top, pressed);
+    Bitmap(dc, kPlayGlyph, 87 - kOrbRect.left, 4 - kOrbRect.top);
+    dc->PopLayer();
+    dc->SetTransform(current);
+}
+
 void GlowRing(ID2D1DeviceContext* dc, float size) {
     const float k = size / 52.0f;
     D2D1_MATRIX_3X2_F current;
@@ -241,6 +264,84 @@ void Toggle(ID2D1DeviceContext* dc, Layer layer, bool shuffle, bool on) {
     const bool lit = on || layer == Layer::Hover || layer == Layer::Pressed;
     const int id = shuffle ? (lit ? kShuffleOn : kShuffleOff) : (lit ? kRepeatOn : kRepeatOff);
     Bitmap(dc, id, 0, 0, layer == Layer::Pressed ? 0.8f : 1.0f);
+}
+
+void Dislike(ID2D1DeviceContext* dc, Layer layer) {
+    const bool lit = layer == Layer::Hover || layer == Layer::Pressed;
+    const D2D1_POINT_2F c{12.5f, 12.5f};
+    if (lit) { // the toggle's cyan glow (4174: #63CFFC, about 90 % at the middle, gone at the edge)
+        const D2D1_GRADIENT_STOP stops[] = {{0.0f, D2D1::ColorF(0x63CFFC, 0.92f)},
+                                            {0.55f, D2D1::ColorF(0x63CFFC, 0.55f)},
+                                            {1.0f, D2D1::ColorF(0x63CFFC, 0.0f)}};
+        winrt::com_ptr<ID2D1GradientStopCollection> list;
+        winrt::com_ptr<ID2D1RadialGradientBrush> glow;
+        dc->CreateGradientStopCollection(stops, 3, list.put());
+        if (list &&
+            SUCCEEDED(dc->CreateRadialGradientBrush(D2D1::RadialGradientBrushProperties(c, {0, 0}, 12.5f, 11.5f),
+                                                    list.get(), glow.put())))
+            dc->FillEllipse(D2D1::Ellipse(c, 12.5f, 11.5f), glow.get());
+    }
+    // NetEase's 不感兴趣 heart (traced in the owner's capture of its client, 2026-11-20: round,
+    // lobes high and wide, the tip low) drawn the way WMP draws its neighbours, shuffle and repeat
+    // (wmploc 4175 / 4177): 2 px of #0066CC with a 1 px white edge at 57 %, the ink filling about
+    // 13 x 13 px about (12.0, 12.2) of the 25 px box. NetEase's own hairline at 16 DIP looked thin
+    // and large beside them (owner, 2026-11-20). The slash crosses at 45 degrees with a white gap
+    // cut through the heart, as shuffle's arrows cross; it passes the right lobe a little and the
+    // heart's lower left a little more.
+    const D2D1_POINT_2F g{12.0f, 12.2f};
+    const auto P = [g](float x, float y) {
+        constexpr float k = 11.2f / 34.0f; // the traced outline is 34 units wide
+        return D2D1::Point2F(g.x + (x - 49.5f) * k, g.y + (y - 56.5f) * k);
+    };
+    winrt::com_ptr<ID2D1Factory> factory;
+    dc->GetFactory(factory.put());
+    winrt::com_ptr<ID2D1PathGeometry> heart;
+    winrt::com_ptr<ID2D1GeometrySink> sink;
+    if (FAILED(factory->CreatePathGeometry(heart.put())) || FAILED(heart->Open(sink.put()))) return;
+    sink->BeginFigure(P(49.5f, 73.0f), D2D1_FIGURE_BEGIN_HOLLOW); // the tip
+    sink->AddBezier({P(41.0f, 70.5f), P(32.5f, 62.0f), P(32.5f, 50.0f)});
+    sink->AddBezier({P(32.5f, 44.0f), P(35.8f, 40.0f), P(40.5f, 40.0f)});
+    sink->AddBezier({P(45.0f, 40.0f), P(48.0f, 41.6f), P(49.5f, 44.0f)}); // into the dip
+    sink->AddBezier({P(51.0f, 41.6f), P(54.0f, 40.0f), P(58.5f, 40.0f)});
+    sink->AddBezier({P(63.2f, 40.0f), P(66.5f, 44.0f), P(66.5f, 50.0f)});
+    sink->AddBezier({P(66.5f, 62.0f), P(58.0f, 70.5f), P(49.5f, 73.0f)});
+    sink->EndFigure(D2D1_FIGURE_END_CLOSED);
+    sink->Close();
+    winrt::com_ptr<ID2D1StrokeStyle> round;
+    factory->CreateStrokeStyle(D2D1::StrokeStyleProperties(D2D1_CAP_STYLE_ROUND, D2D1_CAP_STYLE_ROUND,
+                                                           D2D1_CAP_STYLE_ROUND, D2D1_LINE_JOIN_ROUND),
+                               nullptr, 0, round.put());
+    winrt::com_ptr<ID2D1SolidColorBrush> halo, ink;
+    dc->CreateSolidColorBrush(D2D1::ColorF(0xFFFFFF, 0.57f), halo.put());
+    dc->CreateSolidColorBrush(D2D1::ColorF(0x0066CC, layer == Layer::Pressed ? 0.8f : 1.0f), ink.put());
+    constexpr float kStroke = 2.0f, kEdge = 1.0f, kGap = 0.8f; // DIP
+    constexpr float kTop = 6.2f, kBottom = 5.4f;              // the slash's ends from the middle
+    const D2D1_POINT_2F slashFrom{g.x + kTop, g.y - kTop}, slashTo{g.x - kBottom, g.y + kBottom};
+    // The heart is drawn through a mask without the slash's gap.
+    winrt::com_ptr<ID2D1PathGeometry> slash, gap, mask;
+    winrt::com_ptr<ID2D1RectangleGeometry> box;
+    winrt::com_ptr<ID2D1GeometrySink> gapSink, maskSink;
+    sink = nullptr;
+    if (FAILED(factory->CreatePathGeometry(slash.put())) || FAILED(slash->Open(sink.put()))) return;
+    sink->BeginFigure(slashFrom, D2D1_FIGURE_BEGIN_HOLLOW);
+    sink->AddLine(slashTo);
+    sink->EndFigure(D2D1_FIGURE_END_OPEN);
+    sink->Close();
+    constexpr float kTolerance = 0.02f; // DIP: the glyph is drawn up to several times enlarged
+    if (FAILED(factory->CreatePathGeometry(gap.put())) || FAILED(gap->Open(gapSink.put())) ||
+        FAILED(slash->Widen(kStroke + 2 * kGap, round.get(), nullptr, kTolerance, gapSink.get())) ||
+        FAILED(gapSink->Close()) || FAILED(factory->CreateRectangleGeometry({-4, -4, 29, 29}, box.put())) ||
+        FAILED(factory->CreatePathGeometry(mask.put())) || FAILED(mask->Open(maskSink.put())) ||
+        FAILED(box->CombineWithGeometry(gap.get(), D2D1_COMBINE_MODE_EXCLUDE, nullptr, kTolerance,
+                                        maskSink.get())) ||
+        FAILED(maskSink->Close()))
+        return;
+    dc->PushLayer(D2D1::LayerParameters(D2D1::InfiniteRect(), mask.get()), nullptr);
+    dc->DrawGeometry(heart.get(), halo.get(), kStroke + 2 * kEdge, round.get());
+    dc->DrawGeometry(heart.get(), ink.get(), kStroke, round.get());
+    dc->PopLayer();
+    dc->DrawLine(slashFrom, slashTo, halo.get(), kStroke + 2 * kEdge, round.get());
+    dc->DrawLine(slashFrom, slashTo, ink.get(), kStroke, round.get());
 }
 
 void Mute(ID2D1DeviceContext* dc, Layer layer, bool muted, float volume) {

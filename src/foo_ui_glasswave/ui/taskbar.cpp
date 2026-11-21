@@ -2,6 +2,8 @@
 #include "ui/taskbar.h"
 #include "win7/win7_resources.h"
 #include "gfx/composition_host.h"
+#include "media/special_playlists.h"
+#include "ui/art_cache.h"
 #include "ui/i18n.h"
 
 #include <commctrl.h>
@@ -172,6 +174,14 @@ bool Taskbar::OnMessage(UINT msg, WPARAM wp, LPARAM lp) {
         AddButtons();
         return true;
     }
+    if (msg == WM_DWMSENDICONICTHUMBNAIL && m_coverOn) {
+        SendCoverThumbnail(HIWORD(lp), LOWORD(lp));
+        return true;
+    }
+    if (msg == WM_DWMSENDICONICLIVEPREVIEWBITMAP && m_coverOn) {
+        SendLivePreview();
+        return true;
+    }
     if (msg == WM_COMMAND && HIWORD(wp) == THBN_CLICKED) {
         auto pc = playback_control::get();
         switch (LOWORD(wp)) {
@@ -181,6 +191,7 @@ bool Taskbar::OnMessage(UINT msg, WPARAM wp, LPARAM lp) {
             if (onFavorite) onFavorite();
             break;
         case kPlayPause:
+            if (media::PendingPlay()) break; // a list asked to play is still read
             if (pc->is_playing()) pc->play_or_pause();
             else pc->start();
             break;

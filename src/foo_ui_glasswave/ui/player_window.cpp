@@ -50,6 +50,13 @@ constexpr float kWmcBar = 53, kWmcTop = 64; // TWOFOOT.FULLSCREEN.BOTTOMBAR / TO
 // lyrics / queue (the heart, shuffle and repeat leave first), and a client a little higher
 // than the control bar, which lies over the picture.
 constexpr float kMiniMinW = 344, kMiniMinClientH = 96;
+// Narrower than that the mini window is compact (owner, 2026-11-14, after WMP 12's own small
+// Now Playing window): a square client filled by the cover, the title over its top and only the
+// transport and the volume over its foot, both coming and going with the pointer. Growing from
+// the smallest square the wall's margin round the cover opens first, the cover's glass edge and
+// shadow fading in with it, then the cover grows.
+constexpr float kCompactSide = 250, kCompactMargin = 16, kCompactTitle = 14;
+constexpr float kCoverShadow = 0.6f; // the cover's drop shadow on the wall
 constexpr float kMiniW = 396, kMiniH = 540, kMiniPaneH = 720;
 // The strip form (cover at the left, the lines beside it) for a stage lower than this, or one
 // this much wider than high.
@@ -576,7 +583,23 @@ void PlayModeGlyph(ID2D1DeviceContext* dc, bool shuffle, int repeat, bool dislik
         return com_ptr<ID2D1Geometry>(path);
     };
     std::vector<com_ptr<ID2D1Geometry>> parts;
-    if (shuffle) {
+    if (dislike) {
+        parts.push_back(stroke([&](ID2D1GeometrySink* s) {
+            s->BeginFigure(P(8.0f, 13.2f), D2D1_FIGURE_BEGIN_HOLLOW);
+            s->AddBezier({P(5.6f, 11.4f), P(2.0f, 8.9f), P(2.0f, 5.6f)});
+            s->AddBezier({P(2.0f, 3.4f), P(3.7f, 1.8f), P(5.6f, 1.8f)});
+            s->AddBezier({P(6.8f, 1.8f), P(7.6f, 2.5f), P(8.0f, 3.4f)});
+            s->AddBezier({P(8.4f, 2.5f), P(9.2f, 1.8f), P(10.4f, 1.8f)});
+            s->AddBezier({P(12.3f, 1.8f), P(14.0f, 3.4f), P(14.0f, 5.6f)});
+            s->AddBezier({P(14.0f, 8.9f), P(10.4f, 11.4f), P(8.0f, 13.2f)});
+            s->EndFigure(D2D1_FIGURE_END_CLOSED);
+        }, 2.0f));
+        parts.push_back(stroke([&](ID2D1GeometrySink* s) {
+            s->BeginFigure(P(14.6f, 0.2f), D2D1_FIGURE_BEGIN_HOLLOW);
+            s->AddLine(P(1.4f, 13.8f));
+            s->EndFigure(D2D1_FIGURE_END_OPEN);
+        }, 2.0f));
+    } else if (shuffle) {
         for (const float m : {1.0f, -1.0f}) { // the arrow to the top left, then its mirror
             const auto X = [&](float x) { return m > 0 ? x : 16 - x; };
             parts.push_back(stroke([&](ID2D1GeometrySink* s) {
@@ -614,10 +637,11 @@ void PlayModeGlyph(ID2D1DeviceContext* dc, bool shuffle, int repeat, bool dislik
     if (!glyph) return;
     // As the heart: rim #063E67, face #E6EFF3 to #AFC8D7, a shadow below.
     com_ptr<ID2D1SolidColorBrush> rim, shadow;
-    dc->CreateSolidColorBrush(D2D1::ColorF(0x063E67), rim.put());
-    dc->CreateSolidColorBrush(D2D1::ColorF(0, 0, 0, 0.30f), shadow.put());
-    const D2D1_GRADIENT_STOP stops[] = {{0, D2D1::ColorF(0xE6EFF3)}, {0.55f, D2D1::ColorF(0xD3E2E9)},
-                                        {1, D2D1::ColorF(0xAFC8D7)}};
+    dc->CreateSolidColorBrush(D2D1::ColorF(grey ? 0x5E666C : 0x063E67), rim.put());
+    dc->CreateSolidColorBrush(D2D1::ColorF(0, 0, 0, grey ? 0.15f : 0.30f), shadow.put());
+    const D2D1_GRADIENT_STOP stops[] = {{0, D2D1::ColorF(grey ? 0xB9BEC2 : 0xE6EFF3)},
+                                        {0.55f, D2D1::ColorF(grey ? 0xA9AFB4 : 0xD3E2E9)},
+                                        {1, D2D1::ColorF(grey ? 0x92999F : 0xAFC8D7)}};
     com_ptr<ID2D1GradientStopCollection> collection;
     dc->CreateGradientStopCollection(stops, 3, collection.put());
     com_ptr<ID2D1LinearGradientBrush> face;
@@ -952,8 +976,14 @@ void PlayerWindow::InitVisuals() {
     for (const auto& v : {m_cover, m_coverOld}) {
         auto shadow = comp.CreateDropShadow();
         shadow.Color(Rgba(0x000000, 1.0f));
-        shadow.Opacity(0.6f);
+        shadow.Opacity(kCoverShadow);
         v.Shadow(shadow);
+    }
+    // The cover's glass edge over each picture, apart from it so the compact window can fade it.
+    for (size_t i = 0; i < m_coverFrame.size(); ++i) {
+        m_coverFrame[i] = comp.CreateSpriteVisual();
+        m_coverFrame[i].RelativeSizeAdjustment(float2{1, 1});
+        (i == 0 ? m_cover : m_coverOld).Children().InsertAtTop(m_coverFrame[i]);
     }
 
     m_paneHost = comp.CreateContainerVisual();
@@ -1087,6 +1117,7 @@ void PlayerWindow::CreateWidgets() {
         },
         orb)
         ->onClick = [] {
+        if (media::PendingPlay()) return; // a list asked to play is still read: not the old queue
         auto pc = playback_control::get();
         if (pc->is_playing())
             pc->play_or_pause();
@@ -1665,7 +1696,11 @@ void PlayerWindow::MenuPressed(int index) {
         mask.StartPoint(float2{-w, 0});
         mask.EndPoint(float2{2 * w, 0});
     }
-    m_menuInking = index;
+    // The item pressed before, if its press still runs, draws its own type again: the ink moves
+    // here, and its own end (a later generation) will not come.
+    const int before = std::exchange(m_menuInking, index);
+    if (before >= 0 && before != index)
+        if (auto* item = WidgetById(kMenuLyrics + before)) item->Invalidate();
     if (auto* item = WidgetById(kMenuLyrics + index)) item->Invalidate();
     const uint64_t generation = ++m_menuInkGeneration;
     auto batch = comp.CreateScopedBatch(wuc::CompositionBatchTypes::Animation);
@@ -1772,7 +1807,7 @@ void PlayerWindow::Show(Mode mode) {
     const bool repane = !first && m_pane && m_paneShown;
     if (repane) m_pane->SetVisible(false);
     ApplyMode(first);
-    if (repane) {
+    if (repane && m_paneShown) { // ApplyMode may have closed it (a mini window too small)
         m_pane->SetVisible(true);
         StartFrames();
     }
@@ -1809,10 +1844,10 @@ void PlayerWindow::ApplyMode(bool first) {
     MONITORINFO mi{sizeof(mi)};
     GetMonitorInfoW(monitor, &mi);
     if (!first && m_mode == Mode::Full && !IsIconic(m_hwnd)) {
-        GetWindowRect(m_hwnd, &m_miniRect); // leaving the mini form: remember where it was
-        m_haveMiniRect = true;
+        RememberMiniRect(); // leaving the mini form: remember where it was
     }
     const bool mini = m_mode == Mode::Mini;
+    m_shadow.SetSuppressed(!mini); // its corners showed as rounded lines round the screen
     m_glass->Root().IsVisible(mini);
     m_frameOutline.IsVisible(mini);
     m_clientEdge.IsVisible(mini);
@@ -1825,6 +1860,13 @@ void PlayerWindow::ApplyMode(bool first) {
     } else {
         SetWindowLongPtrW(m_hwnd, GWL_STYLE,
                           WS_POPUP | WS_THICKFRAME | WS_MINIMIZEBOX | WS_SYSMENU | WS_CLIPCHILDREN);
+        if (!m_haveMiniRect) {
+            // Where it was left last time, if that is still on a screen.
+            if (const auto saved = settings::MiniPlayerRect(); saved && MonitorFromRect(&*saved, MONITOR_DEFAULTTONULL)) {
+                m_miniRect = *saved;
+                m_haveMiniRect = true;
+            }
+        }
         if (!m_haveMiniRect) {
             const float scale = GetDpiForWindow(m_hwnd) / 96.0f;
             const int w = static_cast<int>(kMiniW * scale);
@@ -1863,6 +1905,13 @@ void PlayerWindow::ApplyMode(bool first) {
     ArmHideTimer();
 }
 
+// The mini window's place, for its next showing and the next start.
+void PlayerWindow::RememberMiniRect() {
+    if (!GetWindowRect(m_hwnd, &m_miniRect)) return;
+    m_haveMiniRect = true;
+    settings::SetMiniPlayerRect(m_miniRect);
+}
+
 void PlayerWindow::Close() {
     if (!m_shown) return;
     m_shown = false;
@@ -1873,7 +1922,7 @@ void PlayerWindow::Close() {
         m_cursorHidden = false;
         SetCursor(LoadCursorW(nullptr, IDC_ARROW));
     }
-    if (m_mode == Mode::Mini && !IsIconic(m_hwnd)) GetWindowRect(m_hwnd, &m_miniRect);
+    if (m_mode == Mode::Mini && !IsIconic(m_hwnd)) RememberMiniRect();
     if (m_frameClock) m_frameClock->Stop();
     if (m_pane) m_pane->SetVisible(false);
     m_pane = nullptr;
@@ -2092,17 +2141,22 @@ void PlayerWindow::ShowChrome(bool show) {
         }
         return;
     }
+    // Each layer - its controls and the shade or bar behind them together - drifts toward its
+    // edge of the screen while it fades, and comes back from there fading in: the fade runs
+    // ahead of the move, so a layer is mostly gone before it reaches the edge (owner,
+    // 2026-11-14: the shades slid away whole instead of fading on the way).
     const auto slide = [&](const wuc::Visual& v, float dx, float dy, int delayMs) {
-        const auto ease = show ? comp.CreateCubicBezierEasingFunction({0.16f, 1.0f}, {0.3f, 1.0f})
-                               : comp.CreateCubicBezierEasingFunction({0.5f, 0.0f}, {0.85f, 0.35f});
+        const auto moveEase = show ? comp.CreateCubicBezierEasingFunction({0.16f, 1.0f}, {0.3f, 1.0f})
+                                    : comp.CreateCubicBezierEasingFunction({0.4f, 0.0f}, {0.6f, 1.0f});
+        const auto fadeEase = comp.CreateCubicBezierEasingFunction({0.25f, 0.1f}, {0.25f, 1.0f});
         auto move = comp.CreateVector3KeyFrameAnimation();
-        move.InsertKeyFrame(1.0f, show ? float3{0, 0, 0} : float3{dx, dy, 0}, ease);
-        move.Duration(Ms(show ? 520 : 640));
+        move.InsertKeyFrame(1.0f, show ? float3{0, 0, 0} : float3{dx * 0.6f, dy * 0.6f, 0}, moveEase);
+        move.Duration(Ms(show ? 480 : 600));
         move.DelayTime(Ms(delayMs));
         v.StartAnimation(L"Offset", move);
         auto fade = comp.CreateScalarKeyFrameAnimation();
-        fade.InsertKeyFrame(1.0f, show ? 1.0f : 0.0f, ease);
-        fade.Duration(Ms(show ? 320 : 640));
+        fade.InsertKeyFrame(1.0f, show ? 1.0f : 0.0f, fadeEase);
+        fade.Duration(Ms(show ? 360 : 420));
         fade.DelayTime(Ms(delayMs));
         v.StartAnimation(L"Opacity", fade);
     };
@@ -2316,6 +2370,8 @@ void PlayerWindow::UpdateLayout(bool animate) {
     }
     const RECT C = L.client;
     const int CW = C.right - C.left;
+    const bool compact = !full && !m_paneShown && W < PxI(kMiniMinW);
+    L.compact = compact;
 
     if (wmc) {
         // Media Center: the bottom bar across the screen, its controls at the right in WMC's
@@ -2378,6 +2434,12 @@ void PlayerWindow::UpdateLayout(bool animate) {
             L.next = {cx, cy - segH / 2, cx + PxI(m::kSegmentReach), cy - segH / 2 + segH};
             L.stop = CenteredRect(cx + PxI(m::kStopX), cy, PxI(m::kIconButtonW), PxI(m::kIconButtonH));
         }
+        if (compact) { // WMP's small window: the transport at the left, the volume at the right
+            const int dx = L.bar.left + PxI(8) - std::min({L.stop.left, L.prev.left, L.play.left});
+            for (RECT* r : {&L.stop, &L.prev, &L.play, &L.next}) OffsetRect(r, dx, 0);
+            L.cluster.x += dx;
+            m_layout.cluster = L.cluster;
+        }
         // The speaker; beside it the volume slider where there is room before the transport,
         // else an arrow on the speaker's button that opens the volume flyout. With WMP's art
         // both are WMP 12's (its speaker 25x25, its slider 80x23 five DIP on); else Media
@@ -2401,6 +2463,11 @@ void PlayerWindow::UpdateLayout(bool animate) {
             L.slider = {sliderL, cy - PxI(9), sliderR, cy + PxI(9)};
         else if (!m_ehres && !m_splitVolume)
             L.volArrow = {L.mute.right + PxI(1), cy - PxI(8), L.mute.right + PxI(17), cy + PxI(8)};
+        if (compact) {
+            const int dv = L.bar.right - PxI(8) - std::max(L.mute.right, L.volArrow.right);
+            OffsetRect(&L.mute, dv, 0);
+            if (!Empty(L.volArrow)) OffsetRect(&L.volArrow, dv, 0);
+        }
         // Shuffle and repeat before stop (WMP 12's 25x25 buttons, 6 apart, 8 before stop),
         // where they leave room after the volume.
         {
@@ -2422,6 +2489,7 @@ void PlayerWindow::UpdateLayout(bool animate) {
         }
         // A narrow window has no room for the heart beside the transport: it leaves first.
         if (L.favorite.left < std::max({L.next.right, L.play.right, L.stop.right}) + PxI(6)) L.favorite = {};
+        if (compact) L.favorite = L.lyrics = L.list = L.shuffle = L.repeat = {};
         if (full)
             L.popup = {W - PxI(57 + WmcVolume::kPanelW), PxI(58), W - PxI(57), PxI(58 + WmcVolume::kPanelH)};
         else { // WMP's flyout over the button, its right edge on the arrow's
@@ -2430,6 +2498,19 @@ void PlayerWindow::UpdateLayout(bool animate) {
             const int left = std::max<int>(right - fw, L.client.left + PxI(2));
             L.popup = {left, mid - fh / 2, left + fw, mid - fh / 2 + fh};
         }
+    }
+
+    // The compact window's cover: the square client (WM_SIZING keeps it square), less a margin
+    // that opens first as the window grows from its smallest.
+    if (compact) {
+        const int S = std::min<int>(CW, C.bottom - C.top);
+        const int fullMargin = PxI(kCompactMargin);
+        const int margin = std::clamp((S - PxI(kCompactSide)) / 2, 0, fullMargin);
+        const int side = S - 2 * margin;
+        const int left = C.left + (CW - side) / 2, top = C.top + (C.bottom - C.top - side) / 2;
+        L.cover = {left, top, left + side, top + side};
+        L.coverEdge = static_cast<float>(margin) / std::max(1, fullMargin);
+        L.top = {C.left, C.top, C.right, C.top + PxI(kCompactTitle * 2.6f)};
     }
 
     // The stage (cover and text) and the lyrics / queue pane.
@@ -2454,7 +2535,9 @@ void PlayerWindow::UpdateLayout(bool animate) {
         L.menuShade = {0, top - PxI(190 * f), PxI(470 * f), top + block + PxI(190 * f)};
         if (L.lyrics.right > L.lyrics.left) L.lyrics = L.list = {}; // the bar's own pair gives way
     }
-    if (full) {
+    if (compact) {
+        // Placed above; the title is over the cover (PaintCompactTitle).
+    } else if (full) {
         if (m_paneShown) {
             const int colL = menuRight, colR = static_cast<int>(W * 0.50f), colW = colR - colL;
             const int side = static_cast<int>(std::min(H * 0.44f, colW * 0.74f));
@@ -2656,11 +2739,15 @@ void PlayerWindow::UpdateLayout(bool animate) {
             if (auto shadow = v.Shadow().try_as<wuc::DropShadow>()) {
                 shadow.BlurRadius(want.cx * 0.07f + Px(8));
                 shadow.Offset(float3{0, want.cx * 0.02f + Px(2), 0});
+                shadow.Opacity(kCoverShadow * L.coverEdge);
             }
         }
+        for (const auto& f : m_coverFrame) f.Opacity(L.coverEdge);
     }
     const float morphFrom =
         morph ? static_cast<float>(oldCover.right - oldCover.left) / std::max<LONG>(1, L.cover.right - L.cover.left) : 1.0f;
+    m_info.IsVisible(!Empty(L.info)); // the compact window has none: its title is over the cover
+    if (L.compact) PaintInfo();
     if (!Empty(L.info)) {
         Place(m_info, L.info);
         if (morph) {
@@ -2970,7 +3057,7 @@ void PlayerWindow::PaintBars() {
             dc->FillRectangle({0, 0, W, H}, fill.get());
         });
     }
-    m_topBack.IsVisible(wmc);
+    m_topBack.IsVisible(wmc || L.compact); // compact: the title's band (PaintCompactTitle)
     if (wmc) {
         const int w = L.top.right - L.top.left, h = L.top.bottom - L.top.top;
         const float W = w / s;
@@ -2983,7 +3070,11 @@ void PlayerWindow::PaintBars() {
 
 void PlayerWindow::PaintInfo() {
     const RECT& r = m_layout.info;
-    m_timeHit = {};
+    m_timeHit = m_songHit = {};
+    if (m_layout.compact) {
+        PaintCompactTitle();
+        return;
+    }
     if (Empty(r)) return;
     const int w = r.right - r.left, h = r.bottom - r.top;
     const float W = w / m_scale, H = h / m_scale;
@@ -3011,12 +3102,17 @@ void PlayerWindow::PaintInfo() {
             m_timeHit = {r.left + PxI(x0 - 4), r.top + PxI(y - 2), r.left + PxI(x0 + tw + 4),
                          r.top + PxI(y + size * kLineHeight + 2)};
         };
+        // The rows of title, artist and album, for their right click (the song's menu).
+        const auto songRows = [&](float y0, float y1) {
+            m_songHit = {r.left, r.top + PxI(y0), r.right, r.top + PxI(y1)};
+        };
         if (style == 1) {
             // WMC: title, artist, album and the time in light blue, one under the other.
             const float side = H, titleSize = side * 0.096f, lineSize = side * 0.072f, pitch = side * 0.172f;
             const int lines = 1 + (m_artist.empty() ? 0 : 1) + (m_album.empty() ? 0 : 1) + (m_track.is_valid() ? 1 : 0) +
                               (Empty(m_layout.lyric) ? 0 : 1); // the sung line closes the block
             float y = (H - pitch * lines) / 2 + (pitch - titleSize * 1.35f) / 2;
+            const float firstRow = y;
             pane::DrawTextLine(dc, title, titleSize, DWRITE_FONT_WEIGHT_NORMAL, {0, y}, W, white(0.97f).get());
             y += pitch;
             for (const std::wstring* line : {&m_artist, &m_album}) {
@@ -3025,11 +3121,13 @@ void PlayerWindow::PaintInfo() {
                                    white(0.90f).get());
                 y += pitch;
             }
+            songRows(firstRow, y);
             if (m_track.is_valid()) time(titleSize * 0.9f, y, false);
         } else if (style == 0) {
             // The same lines centred under the cover (WMC's type, smaller), the time in WMC's blue.
             const float k = m_layout.textScale;
             const LineStack s = UnderStack(k, false);
+            songRows(s.top[0], s.top[3]);
             pane::DrawTextLine(dc, title, kStackTitle * k, DWRITE_FONT_WEIGHT_NORMAL, {0, s.top[0]}, W,
                                white(0.97f).get(), DWRITE_TEXT_ALIGNMENT_CENTER);
             pane::DrawTextLine(dc, m_artist, kStackLine * k, DWRITE_FONT_WEIGHT_NORMAL, {0, s.top[1]}, W,
@@ -3044,6 +3142,7 @@ void PlayerWindow::PaintInfo() {
             const float top = H / 2 - s.block / 2;
             std::wstring second = m_artist;
             if (!m_album.empty()) second += (second.empty() ? L"" : L" \x2014 ") + m_album;
+            songRows(top + s.top[0], top + s.top[2]);
             pane::DrawTextLine(dc, title, kStripTitle * t, DWRITE_FONT_WEIGHT_NORMAL, {0, top + s.top[0]}, W,
                                white(0.97f).get());
             pane::DrawTextLine(dc, second, kStripSecond * t, DWRITE_FONT_WEIGHT_NORMAL, {0, top + s.top[1]}, W,
@@ -3051,6 +3150,31 @@ void PlayerWindow::PaintInfo() {
             if (m_track.is_valid()) time(kStripSecond * t, top + s.top[2], false);
         }
     });
+}
+
+// The compact window's title, as WMP 12's small window shows it: white at the top left of the
+// picture, on a shade that darkens its top edge; it comes and goes with the controls.
+void PlayerWindow::PaintCompactTitle() {
+    const RECT& r = m_layout.top;
+    const int w = r.right - r.left, h = r.bottom - r.top;
+    if (w <= 0 || h <= 0) return;
+    const float W = w / m_scale, H = h / m_scale;
+    const std::wstring title = m_title.empty() ? Tr(L"Nothing playing") : m_title;
+    constexpr float kInset = 10, kTop = 7;
+    gfx::CompositionHost::Get().Repaint(m_topBack, m_topBacking, w, h, m_scale, [&](ID2D1DeviceContext* dc) {
+        const D2D1_GRADIENT_STOP stops[] = {{0, D2D1::ColorF(0x000000, 0.62f)},
+                                            {0.55f, D2D1::ColorF(0x000000, 0.30f)},
+                                            {1, D2D1::ColorF(0x000000, 0.0f)}};
+        com_ptr<ID2D1GradientStopCollection> collection;
+        dc->CreateGradientStopCollection(stops, 3, collection.put());
+        com_ptr<ID2D1LinearGradientBrush> fill;
+        dc->CreateLinearGradientBrush(D2D1::LinearGradientBrushProperties({0, 0}, {0, H}), collection.get(),
+                                      fill.put());
+        dc->FillRectangle({0, 0, W, H}, fill.get());
+        pane::DrawTextLine(dc, title, kCompactTitle, DWRITE_FONT_WEIGHT_NORMAL, {kInset, kTop}, W - 2 * kInset,
+                           pane::White(dc, 0.97f).get());
+    });
+    m_songHit = {r.left, r.top, r.right, r.top + PxI(kTop + kCompactTitle * kLineHeight)};
 }
 
 std::wstring PlayerWindow::TimeText() const {
@@ -3087,6 +3211,14 @@ void PlayerWindow::PaintCover() {
             dc->FillRectangle(box, fill.get());
             pane::DrawIcon(dc, L'\xEC4F', side * 0.36f, {side / 2, side / 2}, pane::White(dc, 0.85f).get());
         }
+    });
+    auto brush = host.Compositor().CreateSurfaceBrush(surface);
+    brush.Stretch(wuc::CompositionStretch::Fill);
+    m_cover.Brush(brush);
+
+    const auto frame = host.CreateSurface(px, px);
+    host.Draw(frame, m_scale, [&](ID2D1DeviceContext* dc) {
+        dc->Clear(D2D1::ColorF(0, 0, 0, 0));
         // The cover as a pane of glass, like the tiles around it: no white line, but a bevel
         // that takes its colour from the picture (light along the top and left, shade along
         // the bottom and right), a dark hairline to part it from the wall, and a faint
@@ -3134,9 +3266,9 @@ void PlayerWindow::PaintCover() {
         dc->FillRectangle({line, line, side - line, line * 2}, glint.get());
         dc->FillRectangle({line, line, line * 2, side - line}, glint.get());
     });
-    auto brush = host.Compositor().CreateSurfaceBrush(surface);
-    brush.Stretch(wuc::CompositionStretch::Fill);
-    m_cover.Brush(brush);
+    auto frameBrush = host.Compositor().CreateSurfaceBrush(frame);
+    frameBrush.Stretch(wuc::CompositionStretch::Fill);
+    for (const auto& f : m_coverFrame) f.Brush(frameBrush);
 }
 
 // The seek bar is WMP 12's, drawn in vectors to its bitmaps' colours.
@@ -3686,28 +3818,55 @@ LRESULT PlayerWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
         // With the lyrics or the queue open the mini window keeps room for them (the lyrics:
         // their tallest line whole); dragged on past that, the pane closes and the window
         // follows the pointer again.
-        if (m_mode != Mode::Mini || !m_paneShown || !m_pane) break;
+        if (m_mode != Mode::Mini) break;
         auto* r = reinterpret_cast<RECT*>(lp);
-        const int panelH = m_layout.panel.bottom - m_layout.panel.top;
-        const int minH = (m_client.cy - panelH) + PxI(std::max(kPaneMinH, m_pane->MinHeight()));
-        const int h = r->bottom - r->top;
-        if (h >= minH) break;
-        if (h < minH - PxI(kPaneCloseDrag)) {
-            m_miniCoverHeight = 0; // stay where the pointer took it
-            SetPaneShown(false, m_pane->CurrentMode());
-            break;
-        }
         const bool topEdge = wp == WMSZ_TOP || wp == WMSZ_TOPLEFT || wp == WMSZ_TOPRIGHT;
-        if (topEdge)
-            r->top = r->bottom - minH;
+        if (m_paneShown && m_pane) {
+            const int panelH = m_layout.panel.bottom - m_layout.panel.top;
+            const int minH = (m_client.cy - panelH) + PxI(std::max(kPaneMinH, m_pane->MinHeight()));
+            const int h = r->bottom - r->top;
+            if (h >= minH) break;
+            if (h < minH - PxI(kPaneCloseDrag)) {
+                m_miniCoverHeight = 0; // stay where the pointer took it
+                SetPaneShown(false, m_pane->CurrentMode());
+                break;
+            }
+            if (topEdge)
+                r->top = r->bottom - minH;
+            else
+                r->bottom = r->top + minH;
+            return TRUE;
+        }
+        // Narrower than the full transport needs the window is compact and square, the cover
+        // filling it: the edge being dragged sets the side, the opposite edges stay. Leaving
+        // the compact size takes a wider window, so a narrow one never grows tall.
+        const int border = PxI(m::kResizeBorder), capH = PxI(m::kCaptionHeight);
+        const int w = r->right - r->left, h = r->bottom - r->top;
+        if (w >= PxI(kMiniMinW)) break;
+        const bool byHeight = wp == WMSZ_TOP || wp == WMSZ_BOTTOM;
+        const bool corner = wp == WMSZ_TOPLEFT || wp == WMSZ_TOPRIGHT || wp == WMSZ_BOTTOMLEFT ||
+                            wp == WMSZ_BOTTOMRIGHT;
+        int side = byHeight ? h - capH - border : w - 2 * border;
+        if (corner) side = std::max(side, h - capH - border);
+        side = std::clamp(side, PxI(kCompactSide), PxI(kMiniMinW) - 2 * border - 1);
+        const int nw = side + 2 * border, nh = side + capH + border;
+        const bool leftEdge = wp == WMSZ_LEFT || wp == WMSZ_TOPLEFT || wp == WMSZ_BOTTOMLEFT;
+        if (leftEdge)
+            r->left = r->right - nw;
         else
-            r->bottom = r->top + minH;
+            r->right = r->left + nw;
+        if (topEdge)
+            r->top = r->bottom - nh;
+        else
+            r->bottom = r->top + nh;
         return TRUE;
     }
 
     case WM_GETMINMAXINFO: {
+        // The compact square at its smallest; a wider window may be as low as the strip allows.
         auto* info = reinterpret_cast<MINMAXINFO*>(lp);
-        info->ptMinTrackSize = {PxI(kMiniMinW), PxI(kMiniMinClientH + m::kCaptionHeight + m::kResizeBorder)};
+        info->ptMinTrackSize = {PxI(kCompactSide + 2 * m::kResizeBorder),
+                                PxI(kMiniMinClientH + m::kCaptionHeight + m::kResizeBorder)};
         return 0;
     }
 
@@ -3749,7 +3908,7 @@ LRESULT PlayerWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
     }
 
     case WM_EXITSIZEMOVE:
-        if (m_mode == Mode::Mini && !IsIconic(hwnd)) GetWindowRect(hwnd, &m_miniRect);
+        if (m_mode == Mode::Mini && !IsIconic(hwnd)) RememberMiniRect();
         return 0;
 
     case WM_ERASEBKGND:
@@ -3786,7 +3945,12 @@ LRESULT PlayerWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
             // flyout is open; full screen also over the pane (it scrolls under the pointer).
             const bool onControls =
                 PtInRect(&m_layout.bar, pt) || PtInRect(&m_layout.top, pt) || WidgetAt(pt) != nullptr;
-            const bool busy = m_capture != Capture::None || m_popupOpen || onControls ||
+            // Nor while a menu is open: hidden then, the pointer stayed hidden after the menu,
+            // whatever the mouse did (owner, 2026-11-14).
+            GUITHREADINFO gui{sizeof(gui)};
+            const bool menu = GetGUIThreadInfo(GetCurrentThreadId(), &gui) &&
+                              (gui.flags & (GUI_INMENUMODE | GUI_POPUPMENUMODE)) != 0;
+            const bool busy = m_capture != Capture::None || m_popupOpen || onControls || menu ||
                               (m_mode == Mode::Full && m_pane && m_paneShown && m_pane->HitTest(pt));
             if (!busy)
                 ShowChrome(false);
@@ -3818,7 +3982,7 @@ LRESULT PlayerWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
             const int left = mix(m_sizeFrom.left, m_sizeTo.left), top = mix(m_sizeFrom.top, m_sizeTo.top);
             SetWindowPos(hwnd, nullptr, left, top, mix(m_sizeFrom.right, m_sizeTo.right) - left,
                          mix(m_sizeFrom.bottom, m_sizeTo.bottom) - top, SWP_NOZORDER | SWP_NOACTIVATE);
-            if (t >= 1.0f && m_mode == Mode::Mini) GetWindowRect(hwnd, &m_miniRect);
+            if (t >= 1.0f && m_mode == Mode::Mini) RememberMiniRect();
         }
         return 0;
 
@@ -4095,7 +4259,7 @@ LRESULT PlayerWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
             Show(m_mode == Mode::Full ? Mode::Mini : Mode::Full);
             return 0;
         case VK_SPACE:
-            playback_control::get()->play_or_pause();
+            if (!media::PendingPlay()) playback_control::get()->play_or_pause();
             return 0;
         case VK_LEFT:
         case VK_RIGHT:

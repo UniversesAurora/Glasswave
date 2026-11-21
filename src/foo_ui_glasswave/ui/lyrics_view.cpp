@@ -304,7 +304,9 @@ LyricsView::LyricsView(const wuc::ContainerVisual& parent) {
     m_root = comp.CreateContainerVisual();
     m_root.IsVisible(false);
     m_viewport.Children().InsertAtTop(m_root);
+    m_viewport.Comment(L"lyrics viewport");
     m_message = comp.CreateSpriteVisual();
+    m_message.Comment(L"lyrics message");
     m_root.Children().InsertAtTop(m_message);
 
     // The lines live in a layer whose alpha is multiplied by a vertical gradient: they fade

@@ -112,6 +112,7 @@ void AlbumWall::SetAlbums(std::vector<metadb_handle_ptr> albums) {
     }
     constexpr int kColorCount = static_cast<int>(std::size(kColors));
     m_slots.clear();
+    m_newcomers.clear();
     m_slots.reserve(albums.size() + kColorCount);
     for (auto& track : albums) {
         Slot slot;
@@ -436,10 +437,15 @@ size_t AlbumWall::PickSlot(int col, int row) {
     // Cards found to have no cover since they were shuffled leave the hand here.
     std::erase_if(m_hand, [this](size_t slot) { return m_slots[slot].missing; });
     if (m_hand.empty()) ShuffleIn();
+    // A coloured tile has nothing to load: it is as ready as a loaded cover. Counted as loading,
+    // it was passed over for any loaded cover, and once a few albums had covers the coloured
+    // tiles left the wall and those few covers filled it (owner, 2026-11-21); dealt at their
+    // share of the deck, they give way one by one as albums arrive.
     const auto take = [this, &clashes](bool readyOnly) {
         for (size_t i = m_hand.size(); i-- > 0;) {
             const Slot& slot = m_slots[m_hand[i]];
-            if (clashes(m_hand[i]) || (readyOnly && !slot.ready)) continue;
+            const bool ready = slot.ready || !slot.track.is_valid();
+            if (clashes(m_hand[i]) || (readyOnly && !ready)) continue;
             std::swap(m_hand[i], m_hand.back());
             return true;
         }
@@ -607,6 +613,7 @@ void AlbumWall::LoadCovers() {
         if (slot.missing) gone.push_back(i);
     }
     for (const size_t slot : gone) Retire(slot);
+    PlaceNewcomers();
 }
 
 // Covers no tile shows any more give their surfaces back; a later deal paints them again.

@@ -84,6 +84,8 @@ class AlbumWall {
     void BuildDeck();
     void ShuffleIn();
     void Retire(size_t slot);
+    void PlaceNewcomers();
+    void ShowOnTile(Tile& tile, size_t slot);
     size_t PickSlot(int col, int row);
     void Assign(Tile& tile, size_t slot);
     void CrossFade(size_t slot, const winrt::Windows::UI::Composition::CompositionDrawingSurface& before,
@@ -99,7 +101,8 @@ class AlbumWall {
 
     winrt::Windows::UI::Composition::ContainerVisual m_root{nullptr}, m_grid{nullptr}, m_drift{nullptr};
     winrt::Windows::UI::Composition::CompositionSurfaceBrush m_shadeBrush{nullptr}, m_dropBrush{nullptr};
-    std::vector<Slot> m_slots; // the albums, then the six coloured tiles
+    std::vector<Slot> m_slots; // the albums and the six coloured tiles (later albums after them)
+    std::vector<size_t> m_newcomers; // albums added to a playing wall, still to replace a coloured tile
     std::vector<size_t> m_deck; // one round of cards: slots (coloured ones may repeat)
     std::vector<size_t> m_hand; // what is left of the shuffled rounds, dealt from the back
     size_t m_lastDealt = SIZE_MAX;
