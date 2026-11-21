@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "core/hex.h"
+#include "core/signal.h"
 
 #include "media/playback_scheduler.h"
 #include "media/special_playlists.h"
@@ -319,7 +320,7 @@ struct PlaybackScheduler::Impl {
     std::unordered_map<PlaybackOccurrenceId, std::size_t> physicalIndex;
     std::map<PlaybackOccurrenceId, metadb_handle_ptr> handles;
     mutable std::vector<t_playback_queue_item> ownedCoreQueue;
-    std::unordered_map<std::uint64_t, std::function<void()>> listeners;
+    core::Signal<> listeners;
     PlaybackScheduleState savedState;
     std::string savedFingerprint;
     std::string savedCheckpoint;
@@ -329,7 +330,6 @@ struct PlaybackScheduler::Impl {
     std::uint64_t syncGeneration = 0;
     std::uint64_t expectedOrderEchoes = 0;
     std::string expectedOrderName; // the core order we set, whose own callback is its echo
-    std::uint64_t nextListener = 1;
     bool started = false;
     bool modelInitialized = false;
     bool mapGuard = false;
@@ -442,7 +442,7 @@ void PlaybackScheduler::Impl::Shutdown() {
     physicalIndex.clear();
     handles.clear();
     ownedCoreQueue.clear();
-    listeners.clear();
+    listeners.Clear();
     listenerNotifyQueued = false;
 }
 
@@ -952,16 +952,18 @@ std::optional<std::size_t> PlaybackScheduler::Impl::ScheduledNextIndex() {
 std::uint64_t PlaybackScheduler::Impl::AddListener(std::function<void()> listener) {
     PFC_ASSERT(core_api::is_main_thread());
     if (!started || !listener) return 0;
-    while (nextListener == 0 || listeners.contains(nextListener))
-        ++nextListener;
-    const auto id = nextListener++;
-    listeners.emplace(id, std::move(listener));
-    return id;
+    // A listener that throws must not stop the others.
+    return listeners.Add([listener = std::move(listener)] {
+        try {
+            listener();
+        } catch (...) {
+        }
+    });
 }
 
 void PlaybackScheduler::Impl::RemoveListener(std::uint64_t listener) {
     PFC_ASSERT(core_api::is_main_thread());
-    listeners.erase(listener);
+    listeners.Remove(listener);
 }
 
 PlaybackOccurrenceId PlaybackScheduler::Impl::AllocateOccurrence() {
@@ -1699,22 +1701,11 @@ void PlaybackScheduler::Impl::Post(std::function<void()> task) {
 
 void PlaybackScheduler::Impl::RequestListenerNotification() {
     PFC_ASSERT(core_api::is_main_thread());
-    if (!started || listeners.empty() || listenerNotifyQueued) return;
+    if (!started || listeners.Empty() || listenerNotifyQueued) return;
     listenerNotifyQueued = true;
     Post([this] {
         listenerNotifyQueued = false;
-        std::vector<std::function<void()>> snapshot;
-        snapshot.reserve(listeners.size());
-        for (const auto& [id, listener] : listeners) {
-            (void)id;
-            snapshot.push_back(listener);
-        }
-        for (auto& listener : snapshot) {
-            try {
-                listener();
-            } catch (...) {
-            }
-        }
+        listeners.Emit();
     });
 }
 

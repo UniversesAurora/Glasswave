@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "media/radio.h"
+#include "core/signal.h"
 #include "core/text.h"
 
 #include "media/special_playlists.h"
@@ -39,17 +40,12 @@ cfg_var_modern::cfg_string cfg_station({0x3f6a2c18, 0x5b7d, 0x4e21, {0x9a, 0x44,
 constexpr char kField = '\x1f', kItem = '\x1e';
 uint64_t g_serial = 0;
 uint64_t g_scheduleListener = 0; // the queue's schedule moved (a song started, the queue changed) // a station started later makes the answers for an earlier one stale
-std::map<int, std::function<void()>> g_listeners;
-int g_nextToken = 1;
+core::Signal<> g_listeners;
 
 using core::Utf8;
 using core::Wide;
 
-void Notify() {
-    auto listeners = g_listeners; // a listener may unsubscribe
-    for (auto& [token, callback] : listeners)
-        if (callback) callback();
-}
+void Notify() { g_listeners.Emit(); }
 
 void Save() {
     if (!g_state.active || !g_state.provider) {
@@ -332,11 +328,9 @@ void DislikeCurrent() {
 }
 
 int Subscribe(std::function<void()> callback) {
-    const int token = g_nextToken++;
-    g_listeners[token] = std::move(callback);
-    return token;
+    return static_cast<int>(g_listeners.Add(std::move(callback)));
 }
 
-void Unsubscribe(int token) { g_listeners.erase(token); }
+void Unsubscribe(int token) { g_listeners.Remove(static_cast<core::Signal<>::Token>(token)); }
 
 } // namespace glasswave::media::radio

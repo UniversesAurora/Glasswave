@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "cd/discs.h"
+#include "core/signal.h"
 #include "core/text.h"
 
 #include "app/settings.h"
@@ -21,8 +22,7 @@ namespace {
 std::vector<CdDrive> g_drives;         // main thread, by letter
 std::map<wchar_t, uint64_t> g_reading; // drive -> generation of its pending read
 uint64_t g_generation = 0;
-std::map<int, std::function<void()>> g_listeners;
-int g_nextListener = 1;
+core::Signal<> g_listeners;
 
 // Created on first use: foobar2000's core is not up while the DLL loads.
 abort_callback_impl& Abort() {
@@ -123,7 +123,7 @@ class Lifecycle : public initquit {
     }
     void on_quit() override {
         Abort().abort();
-        g_listeners.clear();
+        g_listeners.Clear();
         g_drives.clear();
         g_reading.clear();
     }
@@ -209,20 +209,12 @@ void OnMediaChanged(unsigned long units, bool arrived) {
 }
 
 int AddDiscsListener(std::function<void()> listener) {
-    const int token = g_nextListener++;
-    g_listeners[token] = std::move(listener);
-    return token;
+    return static_cast<int>(g_listeners.Add(std::move(listener)));
 }
 
-void RemoveDiscsListener(int token) {
-    g_listeners.erase(token);
-}
+void RemoveDiscsListener(int token) { g_listeners.Remove(static_cast<core::Signal<>::Token>(token)); }
 
-void NotifyDiscsChanged() {
-    const auto listeners = g_listeners; // a listener may remove itself
-    for (const auto& [token, listener] : listeners)
-        if (listener) listener();
-}
+void NotifyDiscsChanged() { g_listeners.Emit(); }
 
 void Eject(wchar_t drive) {
     fb2k::splitTask([drive] {

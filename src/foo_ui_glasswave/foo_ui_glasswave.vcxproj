@@ -386,6 +386,7 @@
     <ClInclude Include="net\http_request.h" />
     <ClInclude Include="core\file.h" />
     <ClInclude Include="core\json.h" />
+    <ClInclude Include="core\signal.h" />
     <ClInclude Include="core\log.h" />
     <ClInclude Include="core\paths.h" />
     <ClInclude Include="netease\session.h" />

@@ -396,18 +396,12 @@ void Service::Research(const metadb_handle_ptr& track, std::function<void(const 
 }
 
 uint64_t Service::SubscribeChanges(std::function<void(const metadb_handle_ptr&)> listener) {
-    const uint64_t token = m_nextChangeListener++;
-    m_changeListeners[token] = std::move(listener);
-    return token;
+    return m_changeListeners.Add(std::move(listener));
 }
 
-void Service::UnsubscribeChanges(uint64_t token) { m_changeListeners.erase(token); }
+void Service::UnsubscribeChanges(uint64_t token) { m_changeListeners.Remove(token); }
 
-void Service::NotifyChanged(const metadb_handle_ptr& track) {
-    const auto listeners = m_changeListeners; // a listener may unsubscribe
-    for (const auto& [token, listener] : listeners)
-        if (m_changeListeners.count(token)) listener(track);
-}
+void Service::NotifyChanged(const metadb_handle_ptr& track) { m_changeListeners.Emit(track); }
 
 void Service::CancelSearch() {
     ++m_searchGeneration;

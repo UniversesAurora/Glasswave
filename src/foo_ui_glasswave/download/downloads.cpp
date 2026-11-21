@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "download/downloads.h"
+#include "core/signal.h"
 #include "core/log.h"
 #include "core/file.h"
 #include "core/text.h"
@@ -73,12 +74,11 @@ std::vector<std::thread> g_workers;
 uint64_t g_nextId = 1;
 bool g_loaded = false, g_quit = false;
 bool g_posted = false, g_dirty = false; // a notification is on its way; the list needs saving
-std::map<uint64_t, std::function<void()>> g_listeners;
+core::Signal<> g_listeners;
 // Main thread: provider \x1f track -> the song's latest item, rebuilt with every notice (file
 // existence only when the list itself changed).
 std::unordered_map<std::wstring, SongState> g_index;
 std::unordered_map<uint64_t, bool> g_fileThere;
-uint64_t g_nextListener = 1;
 
 int64_t Now() { return static_cast<int64_t>(std::time(nullptr)); }
 
@@ -258,9 +258,7 @@ void Changed(bool save) {
         }
         if (save) Save();
         RebuildIndex(save);
-        const auto listeners = g_listeners; // a listener may unsubscribe
-        for (const auto& [token, listener] : listeners)
-            if (g_listeners.count(token)) listener();
+        g_listeners.Emit();
     });
 }
 
@@ -988,12 +986,8 @@ std::optional<std::wstring> LocalFile(std::wstring_view provider, std::wstring_v
     return path;
 }
 
-uint64_t Subscribe(std::function<void()> listener) {
-    const uint64_t token = g_nextListener++;
-    g_listeners[token] = std::move(listener);
-    return token;
-}
+uint64_t Subscribe(std::function<void()> listener) { return g_listeners.Add(std::move(listener)); }
 
-void Unsubscribe(uint64_t token) { g_listeners.erase(token); }
+void Unsubscribe(uint64_t token) { g_listeners.Remove(token); }
 
 } // namespace glasswave::download

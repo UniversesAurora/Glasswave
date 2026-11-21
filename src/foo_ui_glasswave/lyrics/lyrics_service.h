@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/signal.h"
 #include "lyrics/lyrics.h"
 #include <atomic>
 #include <functional>
@@ -185,8 +186,7 @@ class Service {
   private:
     Service() = default;
     void NotifyChanged(const metadb_handle_ptr& track);
-    std::map<uint64_t, std::function<void(const metadb_handle_ptr&)>> m_changeListeners;
-    uint64_t m_nextChangeListener = 1;
+    core::Signal<const metadb_handle_ptr&> m_changeListeners;
     void Start(const metadb_handle_ptr& track, bool useCache, std::function<void(const Result&)> done);
     void Remember(const Query& query, const std::vector<Candidate>& candidates);
     std::wstring m_candidatesFor; // the track the candidates are for (path and subsong)
