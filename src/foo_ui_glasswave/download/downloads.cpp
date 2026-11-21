@@ -240,6 +240,23 @@ void RebuildIndex(bool checkFiles) {
     }
 }
 
+// The list file is written a second after the first change of a burst (a batch of songs starting
+// and finishing one after another) and at quit, not at every change: the write flushes the file to
+// the disk, on the main thread. Main thread.
+bool g_savePending = false;
+void QueueSave() {
+    if (g_savePending) return;
+    g_savePending = true;
+    fb2k::callLater(1.0, [] {
+        g_savePending = false;
+        {
+            std::lock_guard lock(g_mutex);
+            if (g_quit) return; // Shutdown has written the list
+        }
+        Save();
+    });
+}
+
 // Tells the listeners on the main thread, once for any number of changes in between; `save`:
 // the list itself changed and is written out.
 void Changed(bool save) {
@@ -256,7 +273,7 @@ void Changed(bool save) {
             g_posted = false;
             save = std::exchange(g_dirty, false);
         }
-        if (save) Save();
+        if (save) QueueSave();
         RebuildIndex(save);
         g_listeners.Emit();
     });
