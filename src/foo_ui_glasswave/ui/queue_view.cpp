@@ -263,7 +263,7 @@ void QueueView::SetRows(std::vector<Row> rows, bool history, bool playbackChange
     }
     for (auto& o : old) {
         if (!o) continue;
-        if (m_visible && !history && o->root && o->root.IsVisible()) {
+        if (m_visible && !history && o->view && o->view.root.IsVisible()) {
             o->y.Snap(o->y.Position()); // fades where it is (iOS), it does not slide away
             m_retiringRows.push_back(std::move(o));
         } else {
@@ -665,7 +665,7 @@ void QueueView::Render() {
         const RowView* best = nullptr;
         float shownPlate = 0;
         for (const auto& r : m_rows) {
-            if (!r->root) continue;
+            if (!r->view) continue;
             const bool lifted = m_reorder >= 0 && m_rows[static_cast<size_t>(m_reorder)].get() == r.get();
             const float a = (lifted ? 1.0f : r->hover) * r->opacity;
             if (a > shownPlate) {

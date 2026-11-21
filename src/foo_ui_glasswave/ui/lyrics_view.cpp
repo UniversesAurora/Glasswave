@@ -1200,7 +1200,7 @@ void LyricsView::Render() {
     // plate's left middle), in the root's space: the layer sits ContentTop() down.
     const LineView* best = nullptr;
     for (const auto& l : m_lines)
-        if (l->root && l->root.IsVisible() && l->hover > (best ? best->hover : 0.01f)) best = l.get();
+        if (l->view && l->view.root.IsVisible() && l->hover > (best ? best->hover : 0.01f)) best = l.get();
     if (!best) {
         m_plateGlass.Hide();
         return;

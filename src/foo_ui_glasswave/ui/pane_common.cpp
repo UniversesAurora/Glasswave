@@ -6,6 +6,8 @@
 #include "gfx/composition_host.h"
 #include "gfx/effects.h"
 
+#include <winrt/Windows.Foundation.Collections.h>
+
 namespace glasswave::ui::pane {
 
 using winrt::com_ptr;
