@@ -1871,10 +1871,13 @@ void PlayerWindow::ApplyMode(bool first) {
             }
         }
         if (!m_haveMiniRect) {
-            const float scale = GetDpiForWindow(m_hwnd) / 96.0f;
-            const int w = static_cast<int>(kMiniW * scale);
-            const int h = static_cast<int>((m_paneShown ? kMiniPaneH : kMiniH) * scale);
-            const int margin = static_cast<int>(32 * scale);
+            // The window itself still sits on the primary monitor: size it for the one it goes to.
+            UINT dpiX = 96, dpiY = 96;
+            if (FAILED(GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &dpiX, &dpiY)) || !dpiX) dpiX = 96;
+            const float scale = dpiX / 96.0f;
+            const int w = static_cast<int>(std::lround(kMiniW * scale));
+            const int h = static_cast<int>(std::lround((m_paneShown ? kMiniPaneH : kMiniH) * scale));
+            const int margin = static_cast<int>(std::lround(32 * scale));
             m_miniRect = {mi.rcWork.right - margin - w, mi.rcWork.bottom - margin - h, mi.rcWork.right - margin,
                           mi.rcWork.bottom - margin};
             m_haveMiniRect = true;
@@ -1919,7 +1922,7 @@ void PlayerWindow::Close() {
     if (!m_shown) return;
     m_shown = false;
     SetPopup(false);
-    for (UINT_PTR timer : {kHideTimer, kOverlayTimer, kRepeatTimer, kSizeTimer})
+    for (UINT_PTR timer : {kHideTimer, kOverlayTimer, kRepeatTimer, kSizeTimer, kBubbleTimer})
         KillTimer(m_hwnd, timer);
     if (m_cursorHidden) {
         m_cursorHidden = false;
@@ -3969,7 +3972,7 @@ LRESULT PlayerWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
                 ShowBubble(false);
         } else if (wp == kBubbleTimer) {
             KillTimer(hwnd, kBubbleTimer); // the pointer has rested on a volume slider
-            if (m_bubbleHover) ShowBubble(true);
+            if (m_shown && m_bubbleHover) ShowBubble(true);
         } else if (wp == kRepeatTimer) {
             // A volume key held down keeps stepping, faster after the first pause.
             const int id = m_capture == Capture::Widget && m_pressed ? m_pressed->Id() : 0;

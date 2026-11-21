@@ -82,7 +82,10 @@ void SaveAlbumArt(HWND owner, const metadb_handle_ptr& track) {
         } catch (...) {
             // No cover: said so below.
         }
-        fb2k::inMainThread([owner, data, name = std::move(name)]() mutable { SaveArtData(owner, data, std::move(name)); });
+        fb2k::inMainThread([owner, data, name = std::move(name)]() mutable {
+            // The window may be gone by now (a detached thread outlives it).
+            SaveArtData(IsWindow(owner) ? owner : core_api::get_main_window(), data, std::move(name));
+        });
     }).detach();
 }
 

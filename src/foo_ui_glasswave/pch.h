@@ -7,6 +7,7 @@
 #include <dwmapi.h>
 #include <uxtheme.h>
 #include <shellapi.h>
+#include <shellscalingapi.h>
 #include <ole2.h>
 #include <imm.h>
 #include <icu.h>
