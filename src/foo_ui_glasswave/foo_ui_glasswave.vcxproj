@@ -286,6 +286,13 @@
     <ClCompile Include="gfx\motion.cpp" />
     <ClCompile Include="ui\scroll_bar.cpp" />
     <ClCompile Include="ui\win32.cpp" />
+    <ClCompile Include="ui\main_window_commands.cpp" />
+    <ClCompile Include="ui\main_window_detail.cpp" />
+    <ClCompile Include="ui\main_window_nav.cpp" />
+    <ClCompile Include="ui\main_window_nowplaying.cpp" />
+    <ClCompile Include="ui\main_window_pane.cpp" />
+    <ClCompile Include="ui\main_window_player.cpp" />
+    <ClCompile Include="ui\main_window_provider.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="cd\disc.h" />
@@ -436,6 +443,7 @@
     <ClInclude Include="ui\scroll_bar.h" />
     <ClInclude Include="ui\fling.h" />
     <ClInclude Include="ui\win32.h" />
+    <ClInclude Include="ui\main_window_parts.h" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="$(SdkRoot)pfc\pfc.vcxproj">
