@@ -102,35 +102,120 @@ struct SessionCleanup {
     std::wstring session;
 };
 
+// The status code of a bridge reply ("206 Partial Content"), 0 when there is none.
+int ReplyStatus(const file::ptr& reply) {
+    http_reply::ptr http;
+    if (!reply->service_query_t(http)) return 0;
+    pfc::string8 status;
+    http->get_status(status);
+    const char* text = status.get_ptr();
+    while (*text && (*text < '0' || *text > '9'))
+        ++text;
+    return std::atoi(text);
+}
+
 struct AppleEncodedFetch {
+    // A transfer cut short continues from where it stopped (owner, 2026-11-21: a station song
+    // failed 12 s in). The bridge keeps downloading the song into its disk cache when the
+    // connection drops, and serves a byte range of it once committed; until then it answers a
+    // range with 503 and Retry-After. A reply that ignores the range (200) is read past what
+    // arrived, as long as its length is the same.
+    static constexpr int kMaxCachingWaits = 90; // 1 s each: a lossless song caches in 5-15 s
+    static constexpr int kMaxStalledResumes = 3; // resumes in a row that bring nothing
+
     void operator()(cache::audio::Sink& sink, abort_callback& abort) const {
-        auto request = http_client::get()->create_request("GET");
-        request->add_header("X-Api-Token", token.c_str());
-        if (cleanup && !cleanup->transactionTag.empty())
-            request->add_header("X-Glasswave-Probe-Transaction", cleanup->transactionTag.c_str());
-        const auto source = request->run(url.c_str(), abort);
         // The bridge states the length (Content-Length). A connection that closes before it is
         // a failed transfer, not a whole song: kept as one, the decoder met the cut 12 s in and
-        // called the file corrupt (owner, 2026-11-21).
+        // called the file corrupt.
         t_filesize expected = filesize_invalid;
-        try {
-            expected = source->get_size(abort);
-        } catch (const exception_aborted&) {
-            throw;
-        } catch (...) {
-        }
         uint64_t received = 0;
+        int waits = 0, stalled = 0;
         std::array<uint8_t, 64 * 1024> buffer{};
         for (;;) {
-            const auto count = source->read(buffer.data(), buffer.size(), abort);
-            if (!count) break;
-            sink.Write(buffer.data(), count, abort);
-            received += count;
+            const bool resuming = received > 0;
+            uint64_t skip = 0;
+            file::ptr source;
+            try {
+                auto request = http_client::get()->create_request("GET");
+                request->add_header("X-Api-Token", token.c_str());
+                if (cleanup && !cleanup->transactionTag.empty())
+                    request->add_header("X-Glasswave-Probe-Transaction", cleanup->transactionTag.c_str());
+                if (resuming) request->add_header("Range", ("bytes=" + std::to_string(received) + "-").c_str());
+                source = resuming ? request->run_ex(url.c_str(), abort) : request->run(url.c_str(), abort);
+            } catch (const exception_aborted&) {
+                throw;
+            } catch (...) {
+                if (!resuming || ++stalled > kMaxStalledResumes) throw;
+                abort.sleep(1.0);
+                continue;
+            }
+            if (!resuming) {
+                try {
+                    expected = source->get_size(abort);
+                } catch (const exception_aborted&) {
+                    throw;
+                } catch (...) {
+                }
+            } else {
+                const int status = ReplyStatus(source);
+                if (status == 503 && ++waits <= kMaxCachingWaits) { // the bridge is still caching it
+                    abort.sleep(1.0);
+                    continue;
+                }
+                pfc::string8 range;
+                http_reply::ptr http;
+                if (status == 206 && source->service_query_t(http) && http->get_http_header("content-range", range)) {
+                    // "bytes <first>-<last>/<total>": it must start where this one stopped.
+                    unsigned long long first = 0, last = 0, total = 0;
+                    if (sscanf_s(range.get_ptr(), "bytes %llu-%llu/%llu", &first, &last, &total) != 3 ||
+                        first != received || total != expected)
+                        throw exception_io_data(("The Apple Music audio transfer could not continue (range " +
+                                                 std::string(range.get_ptr()) + ")")
+                                                    .c_str());
+                } else if (status == 200) {
+                    t_filesize size = filesize_invalid;
+                    try {
+                        size = source->get_size(abort);
+                    } catch (const exception_aborted&) {
+                        throw;
+                    } catch (...) {
+                    }
+                    if (size != expected)
+                        throw exception_io_data("The Apple Music audio transfer could not continue (another length)");
+                    skip = received;
+                } else {
+                    throw exception_io_data(("The Apple Music audio transfer could not continue (HTTP " +
+                                             std::to_string(status) + ")")
+                                                .c_str());
+                }
+            }
+            const uint64_t before = received;
+            try {
+                for (;;) {
+                    const auto count = source->read(buffer.data(), buffer.size(), abort);
+                    if (!count) break;
+                    const auto drop = static_cast<size_t>(std::min<uint64_t>(skip, count));
+                    skip -= drop;
+                    if (count > drop) sink.Write(buffer.data() + drop, count - drop, abort);
+                    received += count - drop;
+                }
+            } catch (const exception_aborted&) {
+                throw;
+            } catch (...) {
+                // A connection that breaks mid-read is a cut like one that closes early; without
+                // a stated length there is nothing to continue towards.
+                if (expected == filesize_invalid) throw;
+            }
+            if (expected == filesize_invalid || received >= expected) return;
+            stalled = received > before ? 0 : stalled + 1;
+            if (stalled > kMaxStalledResumes)
+                throw exception_io_data(("The Apple Music audio transfer ended early (" + std::to_string(received) +
+                                         " of " + std::to_string(expected) + " bytes)")
+                                            .c_str());
+            console::print("Glasswave Apple Music: audio transfer cut at ", received, " of ", expected,
+                           " bytes; continuing");
+            waits = 0;
         }
-        if (expected != filesize_invalid && received < expected)
-            throw exception_io_data(("The Apple Music audio transfer ended early (" + std::to_string(received) +
-                                     " of " + std::to_string(expected) + " bytes)")
-                                        .c_str());
     }
 
     std::string url;
