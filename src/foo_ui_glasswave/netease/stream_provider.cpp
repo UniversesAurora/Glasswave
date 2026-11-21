@@ -1037,12 +1037,8 @@ stream::DownloadSource StreamProvider::ResolveDownload(const Id& track, abort_ca
     return source;
 }
 
-metadb_handle_ptr StreamProvider::TrackItem(const Id& track) const {
-    return Catalog::Get().Records().Handle(track);
-}
-
-std::optional<stream::Track> StreamProvider::FindTrack(const Id& track) const {
-    return Catalog::Get().Records().FindTrack(track);
+stream::Catalog* StreamProvider::Records() const {
+    return &Catalog::Get().Records();
 }
 
 metadb_handle_ptr StreamProvider::ArtItem(stream::ArtKind kind, const Id& id) const {
@@ -1109,14 +1105,6 @@ std::vector<stream::Album> StreamProvider::SavedAlbums() const {
 
 bool StreamProvider::ReadAlbumSaved(const Id& album) const {
     return Ncm().IsAlbumCollected(Num(album));
-}
-
-std::optional<stream::Playlist> StreamProvider::FindPlaylist(const Id& playlist) const {
-    return Catalog::Get().Records().FindPlaylist(playlist);
-}
-
-std::optional<stream::Album> StreamProvider::FindAlbum(const Id& album) const {
-    return Catalog::Get().Records().FindAlbum(album);
 }
 
 void StreamProvider::FetchArtist(const Id& artist, ArtistDone done) {

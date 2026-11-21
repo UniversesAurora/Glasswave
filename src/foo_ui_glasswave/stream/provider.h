@@ -1,6 +1,7 @@
 #pragma once
 
 #include "app/setting_fields.h"
+#include "stream/catalog.h"
 #include "stream/model.h"
 #include "stream/list.h"
 
@@ -264,10 +265,24 @@ class Provider {
     // Empty when the item does not belong to this provider.
     virtual Id TrackId(const metadb_handle_ptr& item) const = 0;
     bool Owns(const metadb_handle_ptr& item) const { return !TrackId(item).empty(); }
-    virtual metadb_handle_ptr TrackItem(const Id& track) const = 0;
-    virtual std::optional<Track> FindTrack(const Id& track) const = 0;
+    // The provider's records (stream/catalog.h): the metadb paths of its songs and covers, and
+    // everything it has seen; null when it keeps none. The defaults of TrackItem, FindTrack,
+    // ArtItem, FindPlaylist and FindAlbum answer from it; a provider overrides those whose
+    // records it shows differently (Apple's display overlay) or names another way.
+    virtual Catalog* Records() const { return nullptr; }
+    virtual metadb_handle_ptr TrackItem(const Id& track) const {
+        const Catalog* records = Records();
+        return records ? records->Handle(track) : metadb_handle_ptr();
+    }
+    virtual std::optional<Track> FindTrack(const Id& track) const {
+        const Catalog* records = Records();
+        return records ? records->FindTrack(track) : std::nullopt;
+    }
     // An item whose album art is the cover of the given object (fed to ArtCache).
-    virtual metadb_handle_ptr ArtItem(ArtKind kind, const Id& id) const = 0;
+    virtual metadb_handle_ptr ArtItem(ArtKind kind, const Id& id) const {
+        const Catalog* records = Records();
+        return records ? records->CoverHandle(kind, id) : metadb_handle_ptr();
+    }
     // Cache key shared by every view of the same cover: "<key>:<kind>:<id>".
     std::wstring ArtKey(ArtKind kind, const Id& id) const;
     // The cover one of this provider's tracks shows: its album's when the album is known, so
@@ -304,8 +319,14 @@ class Provider {
     virtual std::optional<Shelf> ShelfOf(const Id& playlist) const = 0;
     virtual std::vector<Artist> FollowedArtists() const = 0;
     virtual std::vector<Album> SavedAlbums() const = 0;
-    virtual std::optional<Playlist> FindPlaylist(const Id& playlist) const = 0;
-    virtual std::optional<Album> FindAlbum(const Id& album) const = 0;
+    virtual std::optional<Playlist> FindPlaylist(const Id& playlist) const {
+        const Catalog* records = Records();
+        return records ? records->FindPlaylist(playlist) : std::nullopt;
+    }
+    virtual std::optional<Album> FindAlbum(const Id& album) const {
+        const Catalog* records = Records();
+        return records ? records->FindAlbum(album) : std::nullopt;
+    }
 
     // ---- reads ----------------------------------------------------------------------------
     // Every list (tracks, playlists, albums, artists, groups, search results) is read through

@@ -402,15 +402,11 @@ class FakeProvider final : public Provider {
         const std::string path = "list-session://" + Utf8(id);
         return metadb::get()->handle_create(path.c_str(), 0);
     }
-    std::optional<Track> FindTrack(const Id&) const override { return std::nullopt; }
-    metadb_handle_ptr ArtItem(ArtKind, const Id&) const override { return {}; }
     bool ReadFavorite(const Id&) const override { return false; }
     std::vector<Playlist> Playlists(Shelf) const override { return {}; }
     std::optional<Shelf> ShelfOf(const Id&) const override { return std::nullopt; }
     std::vector<Artist> FollowedArtists() const override { return {}; }
     std::vector<Album> SavedAlbums() const override { return {}; }
-    std::optional<Playlist> FindPlaylist(const Id&) const override { return std::nullopt; }
-    std::optional<Album> FindAlbum(const Id&) const override { return std::nullopt; }
 
     void FetchArtist(const Id&, ArtistDone done) override {
         if (done) done({}, L"Unavailable.");

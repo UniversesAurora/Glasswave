@@ -54,7 +54,7 @@ class StreamProvider final : public stream::Provider {
 
     stream::Id TrackId(const metadb_handle_ptr& item) const override;
     std::wstring Lyrics(const stream::Id& track, abort_callback& abort) override;
-    metadb_handle_ptr TrackItem(const stream::Id& track) const override;
+    stream::Catalog* Records() const override;
     std::optional<stream::Track> FindTrack(const stream::Id& track) const override;
     stream::Id AlbumOfTrack(const stream::Id& track) const override;
     // A song the catalog does not know (a queue from an earlier run, a list not opened in this
@@ -62,7 +62,6 @@ class StreamProvider final : public stream::Provider {
     // metadata, so every view gets its name and album. A failed read is asked again later.
     // Any thread.
     void RequestUnknownSong(const stream::Id& track) const;
-    metadb_handle_ptr ArtItem(stream::ArtKind kind, const stream::Id& id) const override;
     bool SameCover(std::wstring_view a, std::wstring_view b) const override;
 
     bool ReadFavorite(const stream::Id& track) const override;
@@ -71,7 +70,7 @@ class StreamProvider final : public stream::Provider {
     std::vector<stream::Artist> FollowedArtists() const override;
     std::vector<stream::Album> SavedAlbums() const override;
     std::optional<stream::Playlist> FindPlaylist(const stream::Id& playlist) const override;
-    std::optional<stream::Album> FindAlbum(const stream::Id& album) const override;
+    std::optional<stream::Album> FindAlbum(const stream::Id& album) const override; // display overlay
 
     void FetchArtist(const stream::Id& artist, ArtistDone done) override;
     void FetchArtistBio(const stream::Id& artist, TextDone done) override;

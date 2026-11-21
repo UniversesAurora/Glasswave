@@ -3878,8 +3878,8 @@ std::wstring StreamProvider::Lyrics(const stream::Id& track, abort_callback& abo
     return results.empty() ? std::wstring() : results.front().enhancedLrc;
 }
 
-metadb_handle_ptr StreamProvider::TrackItem(const stream::Id& track) const {
-    return Catalog::Get().Handle(track);
+stream::Catalog* StreamProvider::Records() const {
+    return &Catalog::Get().Records();
 }
 
 std::optional<stream::Track> StreamProvider::FindTrack(const stream::Id& track) const {
@@ -3975,10 +3975,6 @@ void StreamProvider::ReadUnknownSongs() const {
         // Persisted with the restart catalog: a queue restored next time has its names at once.
         Catalog::Get().PutAndHint(songs, true);
     });
-}
-
-metadb_handle_ptr StreamProvider::ArtItem(stream::ArtKind kind, const stream::Id& id) const {
-    return Catalog::Get().CoverHandle(kind, id);
 }
 
 bool StreamProvider::SameCover(std::wstring_view a, std::wstring_view b) const {
