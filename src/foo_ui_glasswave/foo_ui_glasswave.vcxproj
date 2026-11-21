@@ -258,6 +258,7 @@
       <ObjectFileName>$(IntDir)netease_convert.obj</ObjectFileName>
     </ClCompile>
     <ClCompile Include="net\http.cpp" />
+    <ClCompile Include="net\json_client.cpp" />
     <ClCompile Include="net\resumable_fetch.cpp" />
     <ClCompile Include="netease\input_ncm.cpp" />
     <ClCompile Include="core\file.cpp" />
@@ -398,6 +399,7 @@
     <ClInclude Include="netease\convert.h" />
     <ClInclude Include="net\http.h" />
     <ClInclude Include="net\http_request.h" />
+    <ClInclude Include="net\json_client.h" />
     <ClInclude Include="net\resumable_fetch.h" />
     <ClInclude Include="core\file.h" />
     <ClInclude Include="core\json.h" />
