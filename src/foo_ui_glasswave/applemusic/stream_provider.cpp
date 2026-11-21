@@ -83,7 +83,7 @@ constexpr size_t kDisplayMetadataBatch = 25;
 constexpr size_t kCatalogSearchApiLimit = 25;
 
 bool IsArtistAlbumView(std::wstring_view id) {
-    return id == L"featured-albums" || id == L"full-albums" || id == L"singles" || id == L"live-albums" ||
+    return id == L"latest-release" || id == L"featured-albums" || id == L"full-albums" || id == L"singles" || id == L"live-albums" ||
            id == L"appears-on-albums" || id == L"compilation-albums";
 }
 
@@ -122,6 +122,7 @@ bool EnrichableList(stream::ListKind kind) {
     case stream::ListKind::CatalogSearchAlbums:
     case stream::ListKind::CatalogSearchPlaylists:
     case stream::ListKind::CatalogSearchTopResults:
+    case stream::ListKind::ArtistSimilarArtists:
         return true;
     default:
         return false;
@@ -802,6 +803,7 @@ std::optional<Song> ParseSong(const Object& item) {
     if (IsLibraryId(sourceAlbumId) && sourceAlbumId[0] == L'l') song.libraryAlbumId = sourceAlbumId;
     song.track.artists = ArtistRefs(item, json::GetString(*attributes, L"artistName"));
     song.track.durationMs = json::GetInt(*attributes, L"durationInMillis");
+    if (const int measured = Catalog::Get().MeasuredLength(song.track.id)) song.track.durationMs = measured;
     song.isrc = json::GetString(*attributes, L"isrc");
     song.contentRating = json::GetString(*attributes, L"contentRating");
     song.genreNames = StringArray(*attributes, L"genreNames");
@@ -1625,6 +1627,7 @@ std::vector<stream::Track> DisplayTracks(std::vector<stream::Track> tracks) {
         } else {
             DisplayMetadata::Get().Apply(track, storefront);
         }
+        if (const int measured = Catalog::Get().MeasuredLength(track.id)) track.durationMs = measured;
     }
     return tracks;
 }
@@ -2872,15 +2875,19 @@ std::wstring StreamProvider::ArtistTracksLabel(const stream::Id& artist) const {
 std::vector<stream::ArtistSection> StreamProvider::ArtistSections(const stream::Id& artist) const {
     if (artist.empty()) return {};
     using Kind = stream::ArtistSectionRowKind;
+    // Apple Music's own artist page, in its order (featured albums repeat the full albums).
     return {
-        {L"top-songs", L"Hot songs", Kind::Tracks},
-        {L"featured-albums", L"Featured albums", Kind::Albums},
+        {L"latest-release", L"Latest release", Kind::Albums},
+        // An artist only in the library (uploaded songs) has no ranking: its songs are just
+        // "Songs" (owner, 2026-11-20: they stood under 热门歌曲).
+        {L"top-songs", ArtistTracksLabel(artist), Kind::Tracks},
         {L"full-albums", L"Full albums", Kind::Albums},
-        {L"singles", L"Singles", Kind::Albums},
+        {L"singles", L"Singles and EPs", Kind::Albums},
         {L"live-albums", L"Live albums", Kind::Albums},
-        {L"appears-on-albums", L"Appears on", Kind::Albums},
         {L"compilation-albums", L"Compilation albums", Kind::Albums},
-        {L"featured-playlists", L"Featured playlists", Kind::Playlists},
+        {L"appears-on-albums", L"Appears on", Kind::Albums},
+        {L"featured-playlists", L"Artist playlists", Kind::Playlists},
+        {L"similar-artists", L"Similar artists", Kind::Artists},
     };
 }
 
@@ -2985,6 +2992,16 @@ std::vector<settings::Field> StreamProvider::SettingFields() {
     };
     fields.push_back(std::move(signOut));
 
+    Field quality;
+    quality.kind = Field::Kind::Choice;
+    quality.label = L"Audio quality";
+    quality.choices = {L"High Quality (AAC 256 kbps)", L"Lossless (up to 24-bit/48 kHz)",
+                       L"Hi-Res Lossless (up to 24-bit/192 kHz)"};
+    quality.defaultValue = static_cast<int>(AudioQuality::HiResLossless);
+    quality.get = [] { return static_cast<int>(GetAudioQuality()); };
+    quality.set = [](int value) { SetAudioQuality(static_cast<AudioQuality>(value)); };
+    fields.push_back(std::move(quality));
+
     Field renderer;
     renderer.kind = Field::Kind::Note;
     renderer.label = L"Dolby Atmos renderer";
@@ -3014,7 +3031,7 @@ std::vector<settings::Field> StreamProvider::SettingFields() {
     Field atmosMix;
     atmosMix.kind = Field::Kind::Note;
     atmosMix.label = L"Dolby Atmos mix";
-    atmosMix.note = [] { return ui::Tr(L"Off: highest lossless; on: Atmos if available."); };
+    atmosMix.note = [] { return ui::Tr(L"Off: the audio quality above; on: Atmos if available."); };
     fields.push_back(std::move(atmosMix));
 
     Field speakerLimit;
@@ -3102,19 +3119,26 @@ std::wstring StreamProvider::Storefront() const {
 
 stream::Id StreamProvider::CatalogIdForAlbum(const stream::Id& id) const {
     if (!IsLibraryId(id) || id.empty() || id[0] != L'l') return id;
+    // A library id is never a catalog album's id (see ResolveAlbumRequest).
+    const auto catalog = [](const stream::Id& found) { return IsLibraryId(found) ? stream::Id() : found; };
     {
         std::lock_guard lock(m_mutex);
         const auto found = std::find_if(m_albumLibraryIds.begin(), m_albumLibraryIds.end(),
-                                        [&id](const auto& item) { return item.second == id; });
+                                        [&id](const auto& item) { return item.second == id && !IsLibraryId(item.first); });
         if (found != m_albumLibraryIds.end()) return found->first;
     }
-    return Catalog::Get().FindAlbumCatalogId(id);
+    return catalog(Catalog::Get().FindAlbumCatalogId(id));
 }
 
 StreamProvider::AlbumRequest StreamProvider::ResolveAlbumRequest(const stream::Id& id) const {
     if (!IsLibraryId(id) || id.empty() || id[0] != L'l') return {id, false};
+    // Only a catalog id (all digits) is asked of the catalog. A library album Apple has no
+    // catalog album for has been seen mapped to itself (l.gypM54e, owner 2026-11-15: the catalog
+    // answered 404); it is read from the library.
     const stream::Id catalogId = CatalogIdForAlbum(id);
-    return catalogId.empty() ? AlbumRequest{id, true} : AlbumRequest{catalogId, false};
+    const bool catalog = !catalogId.empty() && std::all_of(catalogId.begin(), catalogId.end(),
+                                                           [](wchar_t c) { return c >= L'0' && c <= L'9'; });
+    return catalog ? AlbumRequest{catalogId, false} : AlbumRequest{id, true};
 }
 
 stream::Id StreamProvider::CatalogIdForArtist(const stream::Id& id) const {
@@ -4349,6 +4373,27 @@ std::vector<stream::Artist> StreamProvider::FollowedArtists() const {
     std::erase_if(artists,
                   [](const stream::Artist& artist) { return !artist.followKnown || !artist.followed; });
     return DisplayArtists(std::move(artists));
+}
+
+// Library changes made here and not yet seen in what Apple Music lists (it lists an album for
+// a while after it was removed, an uploaded one then with no songs; owner, 2026-11-20): removed
+// albums are left out of every page, and added ones join the first page of the saved albums.
+void StreamProvider::ApplyAlbumMutations(std::vector<stream::Album>& albums, bool addSaved) const {
+    std::lock_guard lock(m_mutex);
+    std::erase_if(albums, [&](const stream::Album& album) {
+        return std::any_of(m_albumMutations.begin(), m_albumMutations.end(), [&](const auto& entry) {
+            return !entry.second.saved && (entry.first == album.id || entry.second.libraryId == album.id ||
+                                           entry.second.catalogId == album.id);
+        });
+    });
+    if (!addSaved) return;
+    for (const auto& [key, mutation] : m_albumMutations) {
+        if (!mutation.saved || mutation.album.id.empty()) continue;
+        const bool present = std::any_of(albums.begin(), albums.end(), [&](const stream::Album& album) {
+            return album.id == key || album.id == mutation.catalogId || album.id == mutation.libraryId;
+        });
+        if (!present) albums.push_back(mutation.album);
+    }
 }
 
 std::vector<stream::Album> StreamProvider::SavedAlbums() const {
@@ -5621,12 +5666,14 @@ stream::ListCachePolicy StreamProvider::ListPolicy(const stream::ListQuery& quer
     if (query.cache) return *query.cache;
     if (stream::IsCatalogSearch(query.kind)) return stream::ListCachePolicy::None;
     switch (query.kind) {
+    // Genres and composers are derived from the whole library (every song page); kept on disk
+    // they show at once after a restart while the derivation runs again behind them.
+    // An artist's lists too: kept in memory only, every visit read them again (owner,
+    // 2026-11-14); on disk they show at once and are re-read only when stale.
     case stream::ListKind::ArtistTopTracks:
     case stream::ListKind::ArtistAlbums:
     case stream::ListKind::ArtistPlaylists:
-        return stream::ListCachePolicy::Memory;
-    // Genres and composers are derived from the whole library (every song page); kept on disk
-    // they show at once after a restart while the derivation runs again behind them.
+    case stream::ListKind::ArtistSimilarArtists:
     case stream::ListKind::Groups:
     case stream::ListKind::PlaylistTracks:
     case stream::ListKind::Favorites:
@@ -6041,7 +6088,15 @@ void StreamProvider::FetchListPage(const stream::ListQuery& sourceQuery, const s
             case stream::ListKind::AlbumTracks: {
                 if (query.id.empty()) throw std::runtime_error("The album list has no id.");
                 const AlbumRequest request = ResolveAlbumRequest(query.id);
-                loadAlbumTracks(request.id, request.library);
+                try {
+                    loadAlbumTracks(request.id, request.library);
+                } catch (const std::exception& exception) {
+                    // A library album that is not found was removed from the library (an
+                    // uploaded one has nothing else to show): say that, not "HTTP 404".
+                    if (request.library && DefiniteNotFound(exception))
+                        throw std::runtime_error("This album is no longer in your library.");
+                    throw;
+                }
                 break;
             }
             case stream::ListKind::SectionTracks: {
@@ -6158,7 +6213,11 @@ void StreamProvider::FetchListPage(const stream::ListQuery& sourceQuery, const s
                     if (library) Catalog::Get().PutArtistCatalogId(query.id, catalogId);
                     const std::wstring expected = L"/v1/catalog/" + storefront + L"/artists/" +
                                                   Encode(catalogId) + L"/view/" + query.section;
-                    const auto bindView = [pageLimit](std::wstring path) {
+                    // The latest release is one album and its view answers any `limit` with
+                    // HTTP 400 (seen 2026-11-14); the other views page.
+                    const bool single = query.section == L"latest-release";
+                    const auto bindView = [pageLimit, single](std::wstring path) {
+                        if (single) return path;
                         return WithQueryValue(std::move(path), L"limit", std::to_wstring(pageLimit));
                     };
                     const std::wstring request =
@@ -6200,27 +6259,7 @@ void StreamProvider::FetchListPage(const stream::ListQuery& sourceQuery, const s
                 std::vector<Object> objects;
                 if (const auto data = json::GetArray(response, L"data")) objects = json::Objects(*data);
                 page.rows = ParseAlbums(objects);
-                if (cursorState.path.empty()) {
-                    auto& albums = std::get<std::vector<stream::Album>>(page.rows);
-                    std::lock_guard lock(m_mutex);
-                    std::erase_if(albums, [&](const stream::Album& album) {
-                        return std::any_of(
-                            m_albumMutations.begin(), m_albumMutations.end(), [&](const auto& entry) {
-                                return !entry.second.saved &&
-                                       (entry.first == album.id || entry.second.libraryId == album.id ||
-                                        entry.second.catalogId == album.id);
-                            });
-                    });
-                    for (const auto& [key, mutation] : m_albumMutations) {
-                        if (!mutation.saved || mutation.album.id.empty()) continue;
-                        const bool present =
-                            std::any_of(albums.begin(), albums.end(), [&](const stream::Album& album) {
-                                return album.id == key || album.id == mutation.catalogId ||
-                                       album.id == mutation.libraryId;
-                            });
-                        if (!present) albums.push_back(mutation.album);
-                    }
-                }
+                ApplyAlbumMutations(std::get<std::vector<stream::Album>>(page.rows), false);
                 page.total = CollectionTotal(response);
                 setNext(
                     response, expected,
@@ -6271,6 +6310,42 @@ void StreamProvider::FetchListPage(const stream::ListQuery& sourceQuery, const s
                 if (const auto artist = Catalog::Get().FindArtist(query.id)) page.artist = artist;
                 break;
             }
+            case stream::ListKind::ArtistSimilarArtists: {
+                if (query.id.empty()) throw std::runtime_error("The artist list has no id.");
+                const bool library = IsLibraryId(query.id) && query.id[0] == L'r';
+                stream::Id catalogId = ArtistCatalogId(query.id);
+                if (library && catalogId.empty()) catalogId = ResolveLibraryArtistCatalogId(query.id, abort);
+                if (catalogId.empty())
+                    throw std::runtime_error("No Apple Music catalog artist is available.");
+                if (library) Catalog::Get().PutArtistCatalogId(query.id, catalogId);
+                const std::wstring expected =
+                    L"/v1/catalog/" + storefront + L"/artists/" + Encode(catalogId) + L"/view/similar-artists";
+                const auto bindView = [pageLimit](std::wstring path) {
+                    return WithQueryValue(std::move(path), L"limit", std::to_wstring(pageLimit));
+                };
+                const std::wstring request =
+                    cursorState.path.empty() ? bindView(expected) : currentRequest(expected, bindView);
+                Object response;
+                try {
+                    response = Apple(request, abort);
+                } catch (const BridgeHttpError& exception) {
+                    if (exception.status() != 404 || !cursorState.path.empty() ||
+                        !VerifyCatalogArtist(generation, storefront, catalogId, abort))
+                        throw;
+                    page.rows = std::vector<stream::Artist>{};
+                    page.total = 0;
+                    break;
+                }
+                std::vector<Object> objects;
+                if (const auto data = json::GetArray(response, L"data")) objects = json::Objects(*data);
+                std::vector<stream::Artist> artists;
+                for (const auto& object : objects)
+                    if (auto artist = ParseArtist(object)) artists.push_back(std::move(*artist));
+                page.rows = std::move(artists);
+                page.total = CollectionTotal(response);
+                setNext(response, expected, bindView, objects.size());
+                break;
+            }
             case stream::ListKind::SavedAlbums: {
                 const std::wstring expected = L"/v1/me/library/albums";
                 const std::wstring parameters =
@@ -6289,6 +6364,7 @@ void StreamProvider::FetchListPage(const stream::ListQuery& sourceQuery, const s
                 std::vector<Object> objects;
                 if (const auto data = json::GetArray(response, L"data")) objects = json::Objects(*data);
                 page.rows = ParseAlbums(objects);
+                ApplyAlbumMutations(std::get<std::vector<stream::Album>>(page.rows), cursorState.path.empty());
                 page.total = CollectionTotal(response);
                 setNext(
                     response, expected,

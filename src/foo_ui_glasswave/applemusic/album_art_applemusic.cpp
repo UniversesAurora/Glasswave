@@ -17,11 +17,26 @@ namespace {
 
 namespace json = netease::json;
 
-constexpr wchar_t kArtworkSize[] = L"1200";
 constexpr unsigned kMaxRelationshipDepth = 4;
 constexpr size_t kMaxRelationshipItems = 32;
 constexpr size_t kMaxTraversalObjects = 96;
-constexpr size_t kMaxArtworkBytes = 20u * 1024u * 1024u;
+constexpr size_t kMaxArtworkBytes = 20u * 1024u * 1024u, kMaxOriginalBytes = 64u * 1024u * 1024u;
+
+// Apple's artwork template takes any size and caps it at the uploaded original (9999 gave
+// 1800 and 2400 px on 2026-11-14; 100000 is refused). 1200 px JPEG covers every view up to
+// that size; a larger cover gets the original's size, and a saved one the original's pixels
+// as lossless PNG (the JPEG rendition is re-compressed even at full size).
+struct Artwork {
+    const wchar_t* size;
+    const wchar_t* format;
+    const char* version;
+    bool original;
+};
+Artwork ArtworkFor(int sizePx) {
+    if (sizePx == cache::kOriginalSize) return {L"9999", L"png", "original-png-v1", true};
+    if (sizePx > 1200) return {L"9999", L"jpg", "original-jpg-bb-v1", true};
+    return {L"1200", L"jpg", "1200-jpg-bb-v1", false};
+}
 
 std::wstring Wide(const char* text) {
     return text ? pfc::stringcvt::string_wide_from_utf8(text).get_ptr() : std::wstring();
@@ -157,15 +172,15 @@ std::wstring FetchCoverUrl(stream::ArtKind kind, const std::wstring& id, abort_c
     return item ? ArtworkSearch(response).Find(*item) : std::wstring();
 }
 
-std::wstring ResizeArtwork(std::wstring url) {
+std::wstring ResizeArtwork(std::wstring url, const Artwork& artwork) {
     if (url.empty()) return {};
     const auto replace = [&url](std::wstring_view token, std::wstring_view value) {
         for (size_t at = 0; (at = url.find(token, at)) != std::wstring::npos; at += value.size())
             url.replace(at, token.size(), value);
     };
-    replace(L"{w}", kArtworkSize);
-    replace(L"{h}", kArtworkSize);
-    replace(L"{f}", L"jpg");
+    replace(L"{w}", artwork.size);
+    replace(L"{h}", artwork.size);
+    replace(L"{f}", artwork.format);
     replace(L"{c}", L"bb");
     return url;
 }
@@ -208,17 +223,18 @@ class AppleArtInstance : public album_art_extractor_instance_v2 {
         if (catalogUrl.empty() && !albumOfSong.empty())
             catalogUrl = Catalog::Get().CoverUrl(stream::ArtKind::Album, albumOfSong);
 
+        const Artwork artwork = ArtworkFor(cache::SizeHint());
         cache::ImageRequest request;
         request.identity = albumOfSong.empty()
-                               ? cache::ImageIdentity{"apple", ArtKindName(artKind), Utf8(id), "1200-jpg-bb-v1"}
+                               ? cache::ImageIdentity{"apple", ArtKindName(artKind), Utf8(id), artwork.version}
                                : cache::ImageIdentity{"apple", ArtKindName(stream::ArtKind::Album),
-                                                      Utf8(albumOfSong), "1200-jpg-bb-v1"};
+                                                      Utf8(albumOfSong), artwork.version};
         if (!albumOfSong.empty())
-            request.alternates.push_back({"apple", ArtKindName(artKind), Utf8(id), "1200-jpg-bb-v1"});
-        request.limits.maxBodyBytes = kMaxArtworkBytes;
-        request.resolve = [artKind, id, identity = request.identity, epoch = cache::art_absence::Epoch(),
+            request.alternates.push_back({"apple", ArtKindName(artKind), Utf8(id), artwork.version});
+        request.limits.maxBodyBytes = artwork.original ? kMaxOriginalBytes : kMaxArtworkBytes;
+        request.resolve = [artKind, id, artwork, identity = request.identity, epoch = cache::art_absence::Epoch(),
                            account = cache::AccountRevision("apple"),
-                           catalogUrl = ResizeArtwork(std::move(catalogUrl))](
+                           catalogUrl = ResizeArtwork(std::move(catalogUrl), artwork)](
                               abort_callback& workerAbort, unsigned attempt) mutable {
             std::wstring url = attempt == 0 ? catalogUrl : std::wstring();
             if (cache::AccountRevision("apple") != account) throw exception_aborted();
@@ -226,7 +242,7 @@ class AppleArtInstance : public album_art_extractor_instance_v2 {
                 return std::optional<cache::HttpSource>();
             if (attempt != 0 || !IsAllowedAppleArtworkUrl(url)) {
                 try {
-                    url = ResizeArtwork(FetchCoverUrl(artKind, id, workerAbort));
+                    url = ResizeArtwork(FetchCoverUrl(artKind, id, workerAbort), artwork);
                     if (url.empty()) cache::art_absence::StoreMissing(identity, account, epoch);
                 } catch (const exception_aborted&) {
                     throw;

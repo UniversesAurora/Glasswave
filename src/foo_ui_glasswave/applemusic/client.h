@@ -39,12 +39,16 @@ struct LibraryPlaybackMapping {
 // remains a successful Request result.
 class BridgeHttpError : public std::runtime_error {
   public:
-    explicit BridgeHttpError(int status);
+    explicit BridgeHttpError(int status, bool refused = false);
 
     int status() const noexcept;
+    // Apple's web player refused a library item (it cannot be played in this region). The
+    // bridge answers 500 for it, so this is read from its message, never kept as text.
+    bool refused() const noexcept;
 
   private:
     int m_status;
+    bool m_refused;
 };
 
 // Diagnostic isolation for the reserved input fixture. Construction requires a mock

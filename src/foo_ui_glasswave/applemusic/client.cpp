@@ -320,12 +320,17 @@ Object EmptyObject() {
 
 } // namespace
 
-BridgeHttpError::BridgeHttpError(int status)
-    : std::runtime_error("Apple Music bridge request failed (HTTP " + std::to_string(status) + ")."),
-      m_status(status) {}
+BridgeHttpError::BridgeHttpError(int status, bool refused)
+    : std::runtime_error(refused ? "Apple Music refused this library item (HTTP " + std::to_string(status) + ")."
+                                 : "Apple Music bridge request failed (HTTP " + std::to_string(status) + ")."),
+      m_status(status), m_refused(refused) {}
 
 int BridgeHttpError::status() const noexcept {
     return m_status;
+}
+
+bool BridgeHttpError::refused() const noexcept {
+    return m_refused;
 }
 
 ScopedFixtureProbeTransaction::ScopedFixtureProbeTransaction() {
@@ -409,7 +414,9 @@ Object Request(std::wstring_view path, abort_callback& abort, std::wstring_view 
 
     const net::HttpResponse response = net::SendHttp(config.url + std::wstring(path), options, abort);
     if (response.status == 0 || !response.error.empty()) Fail("Cannot reach the Apple Music bridge.");
-    if (response.status < 200 || response.status >= 300) throw BridgeHttpError(response.status);
+    if (response.status < 200 || response.status >= 300)
+        throw BridgeHttpError(response.status,
+                              response.body.find("webPlayback refused the library item") != std::string::npos);
     if (response.body.empty()) return EmptyObject();
 
     std::wstring parseError;

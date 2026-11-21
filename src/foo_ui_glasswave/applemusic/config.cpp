@@ -21,6 +21,10 @@ cfg_var_modern::cfg_int cfg_atmosOutput(
     {0xa2c7e6d2, 0x3b4f, 0x49a0, {0x8e, 0x2d, 0x6c, 0x5b, 0x7a, 0x1f, 0x90, 0x43}},
     static_cast<int64_t>(AtmosOutput::StereoSpeakers));
 std::atomic_bool atmosRendererReady = false;
+cfg_var_modern::cfg_int cfg_audioQuality(
+    {0xa2c7e6d4, 0x3b4f, 0x49a0, {0x8e, 0x2d, 0x6c, 0x5b, 0x7a, 0x1f, 0x90, 0x43}},
+    static_cast<int64_t>(AudioQuality::HiResLossless));
+
 thread_local std::optional<bool> playbackAtmosEnabledOverride;
 thread_local std::optional<AtmosOutput> playbackAtmosOutputOverride;
 
@@ -48,6 +52,24 @@ void SetAppleMusicDisplayRegion(AppleMusicDisplayRegion region) {
         break;
     }
     cfg_displayRegion.set(static_cast<int64_t>(region));
+}
+
+AudioQuality GetAudioQuality() {
+    switch (const auto value = static_cast<AudioQuality>(cfg_audioQuality.get())) {
+    case AudioQuality::High:
+    case AudioQuality::Lossless:
+    case AudioQuality::HiResLossless:
+        return value;
+    }
+    return AudioQuality::HiResLossless;
+}
+
+void SetAudioQuality(AudioQuality quality) {
+    const bool changed = GetAudioQuality() != quality;
+    cfg_audioQuality.set(static_cast<int64_t>(quality));
+    if (changed) fb2k::inMainThread([] {
+        if (auto* host = cache::PrefetchHost::Existing()) host->NotifyContextChanged();
+    });
 }
 
 bool GetAtmosEnabled() {

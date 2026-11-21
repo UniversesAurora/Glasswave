@@ -27,6 +27,7 @@ class StreamProvider final : public stream::Provider {
 
     std::wstring_view Key() const override { return L"apple"; }
     std::wstring Name() const override { return L"Apple Music"; }
+    std::vector<std::wstring> AppNames() const override { return {L"Apple Music"}; }
     std::wstring Wording(std::wstring_view english) const override;
     std::wstring_view TextContext() const override { return L"Apple Music"; }
     std::wstring ArtistTracksLabel(const stream::Id& artist) const override;
@@ -125,6 +126,8 @@ class StreamProvider final : public stream::Provider {
     ~StreamProvider() override;
     StreamProvider(const StreamProvider&) = delete;
     StreamProvider& operator=(const StreamProvider&) = delete;
+    // Albums removed here leave a listed page; with `addSaved`, albums added here join it.
+    void ApplyAlbumMutations(std::vector<stream::Album>& albums, bool addSaved) const;
 
     struct Snapshot {
         bool accountVerified = false;

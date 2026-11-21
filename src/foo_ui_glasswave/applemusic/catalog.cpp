@@ -9,6 +9,7 @@
 #include <filesystem>
 #include <fstream>
 #include <sstream>
+#include <unordered_set>
 
 namespace glasswave::applemusic {
 
@@ -68,6 +69,14 @@ std::filesystem::path CacheFile() {
     return profile.empty() ? std::filesystem::path()
                            : profile.parent_path() / L"applemusic" / L"cache" / L"songs.tsv";
 }
+
+std::filesystem::path MeasuredFile() {
+    const auto songs = CacheFile();
+    return songs.empty() ? std::filesystem::path() : songs.parent_path() / L"lengths.tsv";
+}
+
+constexpr std::string_view kMeasuredHeader = "# glasswave apple music delivered lengths v1";
+constexpr size_t kMeasuredLimit = 100'000;
 
 } // namespace
 
@@ -407,6 +416,10 @@ void Catalog::Hint(const std::vector<Song>& songs) const {
     for (const auto& song : songs) {
         if (song.track.id.empty()) continue;
         Song display = song;
+        {
+            std::lock_guard lock(m_mutex);
+            ApplyMeasuredLocked(display);
+        }
         DisplayMetadata::Get().Apply(display, DisplayMetadata::Get().SourceStorefront());
         file_info_impl info;
         info.meta_set("title", Utf8(display.track.title).c_str());
@@ -537,6 +550,7 @@ void Catalog::InstallCached(std::vector<Song> songs) {
             }
             if (!song.track.albumId.empty()) m_songAlbums.try_emplace(song.track.id, song.track.albumId);
             if (m_songs.contains(song.track.id)) continue;
+            ApplyMeasuredLocked(song);
             const stream::Id id = song.track.id;
             installed.push_back(song);
             m_songs.emplace(id, std::move(song));
@@ -619,9 +633,11 @@ void Catalog::Clear() {
         std::lock_guard lock(m_mutex);
         m_albumLibraryIds.clear();
         m_artistCatalogIds.clear();
+        m_measured.clear();
+        m_measuredLoaded = true;
     }
-    const auto path = CacheFile();
-    if (!path.empty()) {
+    for (const auto& path : {CacheFile(), MeasuredFile()}) {
+        if (path.empty()) continue;
         std::error_code ec;
         std::filesystem::remove(path, ec);
     }

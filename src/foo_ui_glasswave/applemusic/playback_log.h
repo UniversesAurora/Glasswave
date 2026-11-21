@@ -179,6 +179,10 @@ inline void Ready(std::wstring_view song_id, double decoded_seconds) noexcept {
     Write(song_id, "session_ready", "initialize", decoded_seconds);
 }
 
+inline void Skipped(std::wstring_view song_id, std::string_view reason) noexcept {
+    Write(song_id, "playback_skipped", "decode_initialize", 0, "unavailable", reason);
+}
+
 inline void Complete(std::wstring_view song_id, double decoded_seconds) noexcept {
     Write(song_id, "playback_complete", "decode_run", decoded_seconds);
 }

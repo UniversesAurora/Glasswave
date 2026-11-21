@@ -13,6 +13,16 @@ enum class AppleMusicDisplayRegion : int {
 AppleMusicDisplayRegion GetAppleMusicDisplayRegion();
 void SetAppleMusicDisplayRegion(AppleMusicDisplayRegion region);
 
+// Apple Music's "Audio Quality" choices: AAC 256 kbps, ALAC up to 24-bit/48 kHz, or ALAC up to
+// 24-bit/192 kHz. Sampled when a track starts, like the Atmos settings below.
+enum class AudioQuality : int {
+    High = 0,
+    Lossless = 1,
+    HiResLossless = 2,
+};
+AudioQuality GetAudioQuality();
+void SetAudioQuality(AudioQuality quality);
+
 // Render layouts describe decoded output, not HDMI bitstream pass-through modes.
 enum class AtmosOutput : int {
     StereoSpeakers = 0,
@@ -21,7 +31,7 @@ enum class AtmosOutput : int {
     Speakers71 = 3,
 };
 
-// Off uses the existing highest-lossless selection path. Consumers sample these settings
+// Off uses the audio quality above. Consumers sample these settings
 // when a track starts; changing them does not reset the current playlist.
 bool GetAtmosEnabled();
 void SetAtmosEnabled(bool enabled);

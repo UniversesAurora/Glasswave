@@ -25,6 +25,25 @@ namespace json = netease::json;
 
 constexpr double kFullSongDurationToleranceSeconds = 2.0;
 
+// Songs skipped as unavailable since a song last played. A run that meets one of them again,
+// or grows long, fails as before, so repeat modes and lists of nothing else cannot spin.
+std::mutex g_skipMutex;
+std::vector<stream::Id> g_skipRun;
+constexpr size_t kSkipRunLimit = 20;
+
+bool AdmitSkip(const stream::Id& id) {
+    std::lock_guard lock(g_skipMutex);
+    if (g_skipRun.size() >= kSkipRunLimit || std::find(g_skipRun.begin(), g_skipRun.end(), id) != g_skipRun.end())
+        return false;
+    g_skipRun.push_back(id);
+    return true;
+}
+
+void EndSkipRun() {
+    std::lock_guard lock(g_skipMutex);
+    g_skipRun.clear();
+}
+
 std::string Utf8(std::wstring_view text) {
     return pfc::stringcvt::string_utf8_from_wide(text.data(), text.size()).get_ptr();
 }
@@ -236,6 +255,12 @@ class AppleInput : public input_stubs {
                                                                          : "stereo speakers");
             } else if (m_decoder.is_valid()) {
                 m_decoder->get_info(0, out, abort);
+                // The session's length is the delivered audio's. A decoder can estimate an MP3
+                // from a misleading first frame (Build 2021 BGM1: 7:51 for 3:55 of audio), and
+                // the player's seek bar and seeking follow the length reported here.
+                if (m_durationMs > 0 && std::abs(out.get_length() - static_cast<double>(m_durationMs) / 1000.0) >
+                                            kFullSongDurationToleranceSeconds)
+                    out.set_length(static_cast<double>(m_durationMs) / 1000.0);
             }
         } catch (const exception_aborted&) {
             throw;
@@ -271,7 +296,7 @@ class AppleInput : public input_stubs {
         if (m_atmos) {
             try {
                 SeekAtmos(0, abort);
-                playback_log::Ready(m_id, m_positionSeconds);
+                MarkReady();
             } catch (const exception_aborted&) {
                 throw;
             } catch (...) {
@@ -284,7 +309,7 @@ class AppleInput : public input_stubs {
             try {
                 m_decoder->initialize(0, flags, abort);
                 m_positionSeconds = 0;
-                playback_log::Ready(m_id, m_positionSeconds);
+                MarkReady();
             } catch (const exception_aborted&) {
                 throw;
             } catch (const exception_io_data& error) {
@@ -304,8 +329,12 @@ class AppleInput : public input_stubs {
         }
         try {
             Object capabilities;
-            capabilities.Insert(L"lossless", winrt::Windows::Data::Json::JsonValue::CreateBooleanValue(true));
-            capabilities.Insert(L"hiRes", winrt::Windows::Data::Json::JsonValue::CreateBooleanValue(true));
+            // The owner's quality: AAC, ALAC up to 48 kHz, or the best ALAC the song has.
+            const AudioQuality quality = GetAudioQuality();
+            capabilities.Insert(L"lossless", winrt::Windows::Data::Json::JsonValue::CreateBooleanValue(
+                                                 quality != AudioQuality::High));
+            capabilities.Insert(L"hiRes", winrt::Windows::Data::Json::JsonValue::CreateBooleanValue(
+                                              quality == AudioQuality::HiResLossless));
             Object request;
             stream::Id asset = m_id;
             const auto song = Catalog::Get().FindSongRaw(m_id);
@@ -325,7 +354,11 @@ class AppleInput : public input_stubs {
 
             std::string transactionTag = ProbeTransactionTag();
             const std::string memoIdentity = Utf8(m_id);
-            m_sourceRequest = preferAtmos ? "atmos" : "stereo";
+            // The remembered source of a song is per request kind: a tier never replays another's.
+            m_sourceRequest = preferAtmos                            ? "atmos"
+                              : quality == AudioQuality::High        ? "aac"
+                              : quality == AudioQuality::Lossless    ? "lossless"
+                                                                     : "stereo";
             bool persistent = true;
 
             // Names the cache entry of one delivered source and opens it: from the cache, by
@@ -425,7 +458,10 @@ class AppleInput : public input_stubs {
                 const std::wstring expected = L"/api/v1/playback/" + Encode(sessionId) + L"/audio";
                 if (sessionId.empty() || delivered.durationMs <= 0 || audio != expected || !delivered.ValidCodec())
                     throw exception_io_data("Apple Music returned an invalid full-song session");
-                if (song && song->track.durationMs > 0 &&
+                // A short session is a preview of a catalog song. An uploaded library song has no
+                // preview, and its library length is computed from the upload and can be wrong
+                // (an MP3 measured at twice its length), so its session length stands.
+                if (song && song->track.durationMs > 0 && !IsLibraryId(asset) &&
                     static_cast<double>(delivered.durationMs) / 1000.0 + kFullSongDurationToleranceSeconds <
                         static_cast<double>(song->track.durationMs) / 1000.0)
                     throw exception_io_data("Apple Music returned an incomplete full-song session");
@@ -443,6 +479,14 @@ class AppleInput : public input_stubs {
                     cache::audio::RememberSource("apple", memoIdentity, m_sourceRequest, delivered.Memo());
             }
             m_durationMs = delivered.durationMs;
+            // An uploaded song's library length is Apple's reading of the upload; the delivered
+            // length replaces it in the catalog, the lists and the playlist.
+            if (IsLibraryId(m_id) && song &&
+                std::abs(song->track.durationMs - delivered.durationMs) >
+                    static_cast<int>(kFullSongDurationToleranceSeconds * 1000))
+                fb2k::inMainThread([id = m_id, length = delivered.durationMs] {
+                    Catalog::Get().PutMeasuredLength(id, length);
+                });
             const std::wstring& codec = delivered.codec;
             const int declaredSampleRate = delivered.sampleRate;
             const int declaredBitDepth = delivered.bitDepth;
@@ -461,7 +505,7 @@ class AppleInput : public input_stubs {
                     throw exception_io_data("The Atmos source returned the wrong sample rate");
                 m_positionSeconds = 0;
                 m_report = true;
-                playback_log::Ready(m_id, m_positionSeconds);
+                MarkReady();
                 return;
             }
             input_entry::g_open_for_decoding(m_decoder, m_source, m_decodePath.c_str(), abort, true);
@@ -483,12 +527,24 @@ class AppleInput : public input_stubs {
                 throw exception_io_data("Apple Music decoder did not receive the complete song");
             m_positionSeconds = 0;
             m_report = true;
-            playback_log::Ready(m_id, m_positionSeconds);
+            MarkReady();
         } catch (const exception_aborted&) {
             cleanup_failed_initialize();
             throw;
         } catch (const exception_io_data& error) {
             log_failure("decode_initialize", "io_data", error.what());
+            InvalidateCache();
+            cleanup_failed_initialize();
+            throw;
+        } catch (const BridgeHttpError& error) {
+            // Apple will not play this song here: it opens as an empty track, so the list plays
+            // on to the next one without an error every time it comes round.
+            if (error.refused() && AdmitSkip(m_id)) {
+                cleanup_failed_initialize();
+                playback_log::Skipped(m_id, error.what());
+                return;
+            }
+            log_failure("decode_initialize", "std_exception", error.what());
             InvalidateCache();
             cleanup_failed_initialize();
             throw;
@@ -549,6 +605,8 @@ class AppleInput : public input_stubs {
         }
     }
     void decode_seek(double seconds, abort_callback& abort) {
+        // A skipped song has nothing to seek in.
+        if (!m_decoder.is_valid() && !m_atmos) throw exception_io_seek_out_of_range();
         if (!std::isfinite(seconds) || seconds < 0 ||
             (m_durationMs > 0 && seconds > static_cast<double>(m_durationMs) / 1000.0))
             throw exception_io_seek_out_of_range();
@@ -597,6 +655,11 @@ class AppleInput : public input_stubs {
     bool decode_get_dynamic_info(file_info& out, double& delta) {
         if (!m_decoder.is_valid() && !m_atmos) return false;
         try {
+            // The song's record arrived after it opened: the playing info takes it now.
+            if (m_reportWhenKnown && Catalog::Get().FindSong(m_id)) {
+                m_reportWhenKnown = false;
+                m_report = true;
+            }
             if (m_report) {
                 m_report = false;
                 abort_callback_dummy abort;
@@ -651,6 +714,11 @@ class AppleInput : public input_stubs {
     }
 
   private:
+    void MarkReady() noexcept {
+        EndSkipRun();
+        playback_log::Ready(m_id, m_positionSeconds);
+    }
+
     void SeekAtmos(double seconds, abort_callback& abort) {
         if (!std::isfinite(seconds) || seconds < 0 ||
             seconds > static_cast<double>(m_durationMs) / 1000.0 + kFullSongDurationToleranceSeconds)
@@ -740,6 +808,7 @@ class AppleInput : public input_stubs {
     std::vector<audio_sample> m_atmosBuffer;
     unsigned m_flags = 0;
     bool m_report = false;
+    mutable bool m_reportWhenKnown = false; // reported without the song's record
 };
 
 #pragma warning(push)
