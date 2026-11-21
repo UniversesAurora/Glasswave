@@ -379,6 +379,16 @@ void Provider::NotifyAccountObserved() {
 }
 
 void Provider::NotifyAccountChanged() {
+    // The changes the previous account's user made are not this account's state: a write still in
+    // flight completes as dropped and finds nothing to settle.
+    {
+        std::lock_guard lock(m_favoritesMutex);
+        m_pendingFavorites.clear();
+    }
+    {
+        std::lock_guard lock(m_editsMutex);
+        m_pendingEdits.clear();
+    }
     ResetSourceAvailability();
     InvalidateListCache(Key(), false, ListCacheInvalidation::PurgePersistent);
     for (Listener* listener : std::vector<Listener*>(m_listeners))
