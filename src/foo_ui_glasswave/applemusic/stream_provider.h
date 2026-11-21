@@ -80,6 +80,8 @@ class StreamProvider final : public stream::Provider {
     void FetchArtist(const stream::Id& artist, ArtistDone done) override;
     void FetchArtistBio(const stream::Id& artist, TextDone done) override;
     void FetchSongDetails(const stream::Id& track, SongDetailsDone done) override;
+    void FetchHome(HomeDone done) override;
+    void FetchStationTracks(const stream::Id& station, TracksDone done) override;
     void FetchArtistAlbums(const stream::Id& artist, size_t offset, size_t limit,
                            AlbumPageDone done) override;
     void FetchArtistTopTracks(const stream::Id& artist, size_t offset, size_t limit,
@@ -93,6 +95,7 @@ class StreamProvider final : public stream::Provider {
     stream::ListCachePolicy ListPolicy(const stream::ListQuery& query) const override;
     std::string ListCacheContext(const stream::ListQuery& query) const override;
     void RestoreListRecords(const stream::ListPage& page) override;
+    void PutStations(const std::vector<stream::Station>& stations) override;
 
     // These write routes mirror the private Apple Music current-web contract. They are not
     // a documented stable API and have not been exercised against a real account here.

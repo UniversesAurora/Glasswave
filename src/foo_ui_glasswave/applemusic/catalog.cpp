@@ -75,20 +75,148 @@ Catalog& Catalog::Get() {
     return catalog;
 }
 
+void Catalog::LoadMeasuredLocked() const {
+    if (m_measuredLoaded) return;
+    m_measuredLoaded = true;
+    const auto path = MeasuredFile();
+    if (path.empty()) return;
+    std::ifstream input(path, std::ios::binary);
+    std::string line;
+    if (!input || !std::getline(input, line) || line != kMeasuredHeader) return;
+    while (m_measured.size() < kMeasuredLimit && std::getline(input, line)) {
+        const size_t tab = line.find('\t');
+        if (tab == std::string::npos || tab == 0) continue;
+        const int length = static_cast<int>(_strtoi64(line.c_str() + tab + 1, nullptr, 10));
+        if (length > 0) m_measured[Wide(std::string_view(line).substr(0, tab))] = length;
+    }
+}
+
+void Catalog::ApplyMeasuredLocked(Song& song) const {
+    LoadMeasuredLocked();
+    if (const auto found = m_measured.find(song.track.id); found != m_measured.end())
+        song.track.durationMs = found->second;
+}
+
+void Catalog::SaveMeasuredLocked() const {
+    const auto path = MeasuredFile();
+    if (path.empty() || !netease::EnsureDir(path.parent_path())) return;
+    auto temp = path;
+    temp += L".tmp";
+    {
+        std::ofstream output(temp, std::ios::binary | std::ios::trunc);
+        if (!output) return;
+        output << kMeasuredHeader << '\n';
+        for (const auto& [id, length] : m_measured)
+            output << Clean(id) << '\t' << length << '\n';
+        output.close();
+        if (!output) {
+            std::error_code removeError;
+            std::filesystem::remove(temp, removeError);
+            return;
+        }
+    }
+    MoveFileExW(temp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
+}
+
+int Catalog::MeasuredLength(const stream::Id& songId) const {
+    std::lock_guard lock(m_mutex);
+    LoadMeasuredLocked();
+    const auto found = m_measured.find(songId);
+    return found == m_measured.end() ? 0 : found->second;
+}
+
+void Catalog::PutMeasuredLength(const stream::Id& songId, int durationMs) {
+    if (songId.empty() || durationMs <= 0) return;
+    std::optional<Song> song;
+    {
+        std::lock_guard lock(m_mutex);
+        LoadMeasuredLocked();
+        if (const auto found = m_measured.find(songId); found != m_measured.end() && found->second == durationMs)
+            return;
+        m_measured[songId] = durationMs;
+        SaveMeasuredLocked();
+        if (const auto found = m_songs.find(songId); found != m_songs.end()) {
+            found->second.track.durationMs = durationMs;
+            song = found->second;
+        }
+    }
+    if (song) {
+        Hint({*song});
+        Save();
+    }
+}
+
+namespace {
+// What Hint writes to metadb: a record that differs here is shown differently.
+bool SameTags(const Song& a, const Song& b) {
+    if (a.track.title != b.track.title || a.track.album != b.track.album ||
+        a.track.durationMs != b.track.durationMs || a.composerName != b.composerName ||
+        a.composerNames != b.composerNames || a.genreNames != b.genreNames ||
+        a.track.artists.size() != b.track.artists.size())
+        return false;
+    for (size_t i = 0; i < a.track.artists.size(); ++i)
+        if (a.track.artists[i].name != b.track.artists[i].name) return false;
+    return true;
+}
+} // namespace
+
+// Every record that is new or shown differently goes to metadb as well, whoever put it: a
+// song known only here kept, in every list and across restarts, the stand-in title an input
+// gave it before (owner, 2026-11-21: "Apple Music 1888098957", the catalog's restart cache
+// skipping songs already put, unknown-song reads skipping songs already known).
+bool Catalog::StoreLocked(const Song& song) {
+    const auto found = m_songs.find(song.track.id);
+    const bool shown = found != m_songs.end() && SameTags(found->second, song);
+    Song& stored = m_songs[song.track.id] = song;
+    ApplyMeasuredLocked(stored);
+    if (!song.track.albumId.empty()) m_songAlbums[song.track.id] = song.track.albumId;
+    if (shown) return false;
+    m_hintQueue.push_back(song.track.id);
+    return !std::exchange(m_hintPosted, true);
+}
+
+void Catalog::PostHints() {
+    fb2k::inMainThread([] { Catalog::Get().FlushHints(); });
+}
+
+void Catalog::FlushHints() {
+    std::vector<Song> songs;
+    {
+        std::lock_guard lock(m_mutex);
+        m_hintPosted = false;
+        std::unordered_set<stream::Id> seen;
+        for (const auto& id : m_hintQueue)
+            if (seen.insert(id).second)
+                if (const auto found = m_songs.find(id); found != m_songs.end()) songs.push_back(found->second);
+        m_hintQueue.clear();
+    }
+    Hint(songs);
+}
+
 void Catalog::Put(const Song& song) {
     if (song.track.id.empty()) return;
-    std::lock_guard lock(m_mutex);
-    m_songs[song.track.id] = song;
-    if (!song.track.albumId.empty()) m_songAlbums[song.track.id] = song.track.albumId;
+    bool post = false;
+    {
+        std::lock_guard lock(m_mutex);
+        post = StoreLocked(song);
+    }
+    if (post) PostHints();
 }
 
 void Catalog::Put(const std::vector<Song>& songs) {
-    std::lock_guard lock(m_mutex);
-    for (const auto& song : songs) {
-        if (song.track.id.empty()) continue;
-        m_songs[song.track.id] = song;
-        if (!song.track.albumId.empty()) m_songAlbums[song.track.id] = song.track.albumId;
+    bool post = false;
+    {
+        std::lock_guard lock(m_mutex);
+        for (const auto& song : songs)
+            if (!song.track.id.empty()) post = StoreLocked(song) || post;
     }
+    if (post) PostHints();
+}
+
+void Catalog::Put(const stream::Station& station) {
+    if (station.id.empty()) return;
+    std::lock_guard lock(m_mutex);
+    m_stations[station.id] = station;
 }
 
 void Catalog::Put(const stream::Playlist& playlist) {
@@ -236,6 +364,7 @@ metadb_handle_ptr Catalog::CoverHandle(stream::ArtKind kind, const stream::Id& i
     const CoverKind coverKind = kind == stream::ArtKind::Album      ? CoverKind::Album
                                 : kind == stream::ArtKind::Artist   ? CoverKind::Artist
                                 : kind == stream::ArtKind::Playlist ? CoverKind::Playlist
+                                : kind == stream::ArtKind::Station  ? CoverKind::Station
                                                                     : CoverKind::Track;
     const std::string path = CoverPath(coverKind, id);
     return path.empty() ? metadb_handle_ptr() : metadb::get()->handle_create(path.c_str(), 0);
@@ -255,6 +384,11 @@ std::wstring Catalog::CoverUrl(stream::ArtKind kind, const stream::Id& id) const
     case stream::ArtKind::Playlist:
         if (const auto playlist = FindPlaylist(id)) return playlist->coverUrl;
         break;
+    case stream::ArtKind::Station: {
+        std::lock_guard lock(m_mutex);
+        if (const auto found = m_stations.find(id); found != m_stations.end()) return found->second.coverUrl;
+        break;
+    }
     }
     return {};
 }

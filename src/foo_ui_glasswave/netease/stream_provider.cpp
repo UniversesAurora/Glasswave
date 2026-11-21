@@ -1328,6 +1328,8 @@ metadb_handle_ptr StreamProvider::ArtItem(stream::ArtKind kind, const Id& id) co
         return Catalog::Get().ArtistHandle(n);
     case stream::ArtKind::Playlist:
         return Catalog::Get().PlaylistHandle(n);
+    case stream::ArtKind::Station: // its stations are cards (personal FM, heartbeat), never tiles
+        return {};
     }
     return {};
 }

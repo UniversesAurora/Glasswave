@@ -987,6 +987,7 @@ void MainWindow::InitComposition() {
         if (m_detail.visible) PaintDetailHeader();
         RefreshNowPlayingArt();
     });
+    m_radioToken = media::radio::Subscribe([this] { OnRadioChanged(); });
     m_nav = std::make_unique<NavPane>(m_contentLayer);
     m_nav->SetCategories(LoadNavCategories());
     m_nav->SetSmartPosition(static_cast<int>(cfg_navSmartAt.get()));
@@ -1289,15 +1290,39 @@ void MainWindow::CreateWidgets() {
         {});
 
     // Transport controls
-    add(kShuffle,
+    // A station playing (radio mode) has no shuffle: its "recommend less" takes the place where
+    // it has one (NetEase's 不感兴趣), else the button is greyed.
+    auto* shuffle = add(
+        kShuffle,
         [this](auto* dc, D2D1_SIZE_F s, Layer l) {
+            if (media::radio::Active()) {
+                if (media::radio::CanDislike()) {
+                    wt::Dislike(dc, l);
+                    return;
+                }
+                dc->PushLayer(D2D1::LayerParameters1(D2D1::InfiniteRect(), nullptr, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
+                                                     D2D1::IdentityMatrix(), 0.35f),
+                              nullptr);
+                if (m_win7Art)
+                    wt::Toggle(dc, Layer::Normal, true, false);
+                else
+                    paint::IconButton(dc, s, Layer::Normal, TransportGlyph::Shuffle, false, false);
+                dc->PopLayer();
+                return;
+            }
             if (m_win7Art)
                 wt::Toggle(dc, l, true, m_shuffle);
             else
                 paint::IconButton(dc, s, l, TransportGlyph::Shuffle, true, m_shuffle);
         },
-        {})
-        ->onClick = [this] { SetShuffleRepeat(!m_shuffle, m_repeat); };
+        {});
+    shuffle->onClick = [this] {
+        if (media::radio::Active())
+            media::radio::DislikeCurrent();
+        else
+            SetShuffleRepeat(!m_shuffle, m_repeat);
+    };
+    shuffle->enabled = [] { return !media::radio::Active() || media::radio::CanDislike(); };
     // Repeat cycles off -> all -> one; "one" is the original icon with a small "1".
     add(kRepeat,
         [this](auto* dc, D2D1_SIZE_F s, Layer l) {
@@ -1306,7 +1331,8 @@ void MainWindow::CreateWidgets() {
                 wt::Toggle(dc, l, false, on);
             else
                 paint::IconButton(dc, s, l, TransportGlyph::Repeat, true, on);
-            if (m_repeat == Repeat::One) {
+            // A station repeats one song or none: its button is repeat-one's, lit or not.
+            if (m_repeat == Repeat::One || media::radio::Active()) {
                 auto t = MakeText(L"1", 8.0f, DWRITE_FONT_WEIGHT_BOLD, 8, 10);
                 com_ptr<ID2D1SolidColorBrush> halo, ink;
                 dc->CreateSolidColorBrush(D2D1::ColorF(1, 1, 1, 0.9f), halo.put());
@@ -1332,14 +1358,18 @@ void MainWindow::CreateWidgets() {
                 paint::IconButton(dc, s, l, TransportGlyph::Stop, m_playing, false);
         },
         {})
-        ->onClick = [] { playback_control::get()->stop(); };
+        ->onClick = [] {
+        media::CancelPendingPlay(); // Stop also gives up a list still being read to play
+        playback_control::get()->stop();
+    };
     // Like WMP 12, stop / previous / next are disabled while nothing plays: no hover, no click.
     add(kPrev,
         [this](auto* dc, D2D1_SIZE_F s, Layer l) {
+            const bool enabled = m_playing && media::radio::CanGoBack();
             if (m_win7Art)
-                wt::ClusterButton(dc, ClusterRegion(m_layout.prev), wt::Button::Prev, l, m_playing);
+                wt::ClusterButton(dc, ClusterRegion(m_layout.prev), wt::Button::Prev, l, enabled);
             else
-                paint::Segment(dc, s, true, l, TransportGlyph::Previous, true);
+                paint::Segment(dc, s, true, l, TransportGlyph::Previous, enabled);
         },
         {})
         ->onClick = [] { playback_control::get()->previous(); };
@@ -1352,8 +1382,9 @@ void MainWindow::CreateWidgets() {
         },
         {})
         ->onClick = [] { playback_control::get()->next(); };
-    for (int id : {kStop, kPrev, kNext})
+    for (int id : {kStop, kNext})
         WidgetById(id)->enabled = [this] { return m_playing; };
+    WidgetById(kPrev)->enabled = [this] { return m_playing && media::radio::CanGoBack(); };
 
     Widget::Options orb;
     orb.circular = true;
@@ -3029,7 +3060,7 @@ void MainWindow::RefreshPaneQueue(bool playbackChanged) {
     if (loaded && !history.empty() && history.back().handle == now) history.pop_back();
     m_pane->Queue().SetHistory(std::move(history));
     m_pane->Queue().SetUpNext(std::move(upNext), playbackChanged);
-    m_pane->Queue().SetShuffleRepeat(m_shuffle, static_cast<int>(m_repeat));
+    m_pane->Queue().SetShuffleRepeat(m_shuffle, static_cast<int>(m_repeat), media::radio::Active());
     m_pane->Queue().SetRepeatCycle(media::PlaybackScheduler::Get().RepeatCycleSize());
 }
 
@@ -3076,12 +3107,10 @@ void MainWindow::ConnectPaneQueue() {
         ClearPlayStats(true);
         RefreshPaneQueue();
     };
-    queue.onShuffle = [this] { SetShuffleRepeat(!m_shuffle, m_repeat); };
-    queue.onRepeat = [this] {
-        SetShuffleRepeat(m_shuffle, m_repeat == Repeat::Off   ? Repeat::All
-                                    : m_repeat == Repeat::All ? Repeat::One
-                                                              : Repeat::Off);
+    queue.onShuffle = [this] {
+        if (!media::radio::Active()) SetShuffleRepeat(!m_shuffle, m_repeat); // no shuffle on a station
     };
+    queue.onRepeat = [this] { CycleRepeat(); };
     queue.onReorder = [this](const std::vector<size_t>& slots, const std::vector<size_t>& items) {
         std::vector<media::ScheduledUpcomingEntry> order;
         std::unordered_set<size_t> seen;
@@ -6087,8 +6116,42 @@ void MainWindow::UpdateShuffleRepeat(bool shuffle, Repeat repeat) {
 }
 
 void MainWindow::SetShuffleRepeat(bool shuffle, Repeat repeat) {
+    if (media::radio::Active()) { // no shuffle and no list repeat on a station
+        shuffle = false;
+        if (repeat == Repeat::All) repeat = Repeat::Off;
+    }
     UpdateShuffleRepeat(shuffle, repeat);
     ApplyPlaybackOrder();
+}
+
+// A station started: shuffle and list repeat go (kept for after it); it ended: they come back.
+// Its songs moving on can change whether Previous does anything, so the buttons follow each call.
+void MainWindow::OnRadioChanged() {
+    const bool active = media::radio::Active();
+    if (active != m_radioActive) {
+        m_radioActive = active;
+        if (active) {
+            if (!m_beforeRadio) m_beforeRadio = std::make_pair(m_shuffle, static_cast<int>(m_repeat));
+            SetShuffleRepeat(false, m_repeat == Repeat::One ? Repeat::One : Repeat::Off);
+        } else if (m_beforeRadio) {
+            const auto [shuffle, repeat] = *std::exchange(m_beforeRadio, std::nullopt);
+            SetShuffleRepeat(shuffle, static_cast<Repeat>(repeat));
+        }
+        SchedulePaneQueueRefresh();
+    }
+    for (int id : {kShuffle, kRepeat, kPrev})
+        if (auto* w = WidgetById(id)) w->Invalidate();
+    if (m_player) m_player->RadioChanged();
+}
+
+void MainWindow::CycleRepeat() {
+    if (media::radio::Active()) { // a station repeats one song or none
+        SetShuffleRepeat(false, m_repeat == Repeat::Off ? Repeat::One : Repeat::Off);
+        return;
+    }
+    SetShuffleRepeat(m_shuffle, m_repeat == Repeat::Off   ? Repeat::All
+                                : m_repeat == Repeat::All ? Repeat::One
+                                                          : Repeat::Off);
 }
 
 void MainWindow::SelectPlaybackMode(bool shuffle, int repeat) {

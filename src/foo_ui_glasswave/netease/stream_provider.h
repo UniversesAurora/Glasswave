@@ -117,6 +117,7 @@ class StreamProvider final : public stream::Provider {
     std::unique_ptr<netease::TaskQueue> m_listTasks;
     std::unique_ptr<abort_callback_impl> m_abort;
     std::shared_ptr<IdSnapshotStore> m_idSnapshots;
+    std::atomic<int64_t> m_heartbeatSeed{0}; // heartbeat mode's next seed: the last song it sent
 };
 
 } // namespace glasswave::netease

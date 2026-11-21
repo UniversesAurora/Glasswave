@@ -522,8 +522,30 @@ class MainWindow : public PageHost, public PlayerHost {
     ULONGLONG m_scrollRepeatSince = 0;
     bool m_forcePageRefresh = false; // the next Navigate re-reads the page from its service
     int m_detailArtToken = 0;
+    // Radio mode (media/radio.h): the user's own shuffle and repeat, kept while a station plays.
+    int m_radioToken = 0;
+    std::optional<std::pair<bool, int>> m_beforeRadio;
+    bool m_radioActive = false;
+    void OnRadioChanged();
+    void CycleRepeat(); // the repeat buttons' step (off, all, one; off and one on a station)
     winrt::com_ptr<IWICBitmapSource> m_icon, m_art;
     std::wstring m_artTrackIdentity;
+    // A song's title, artist and cover show together (owner, 2026-11-20): a new song whose cover
+    // is still loading waits (kArtHoldMs at most) with the last song shown whole meanwhile; a song
+    // playback is only starting towards (Next, a list started) shows as soon as it is known.
+    struct HeldTrack {
+        metadb_handle_ptr track;
+        std::wstring identity, title, artist;
+    } m_held;
+    // The song being left while playback starts towards the next (shown already): the core may
+    // still report it until the next one has opened, which must not bring it back.
+    std::wstring m_startingFrom;
+    void ShowTrack(const metadb_handle_ptr& track, std::wstring title, std::wstring artist, bool starting);
+    void ApplyShownTrack(const HeldTrack& track, winrt::com_ptr<IWICBitmapSource> art);
+    void ReleaseHeldTrack(bool timedOut);
+    void PreviewStartingTrack(play_control::t_track_command command);
+    void TrackText(const metadb_handle_ptr& track, std::wstring& title, std::wstring& artist) const;
+    void ClearShownTrack();
     std::uint64_t m_artGeneration = 0;
     gfx::RetainedSurface m_nowPlayingBacking;
     gfx::RetainedSurface m_timeBacking;

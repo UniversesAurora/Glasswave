@@ -88,6 +88,7 @@ std::string CoverPath(CoverKind kind, std::wstring_view id) {
     const char* name = kind == CoverKind::Album      ? "album"
                        : kind == CoverKind::Artist   ? "artist"
                        : kind == CoverKind::Playlist ? "playlist"
+                       : kind == CoverKind::Station  ? "station"
                                                      : "song";
     const std::string suffix = PathSuffix(id);
     return suffix.empty() ? std::string() : std::string("apple://cover/") + name + "/" + suffix;
@@ -103,6 +104,7 @@ bool ParseCoverPath(const char* path, CoverKind& kind, stream::Id& id) {
         {"apple://cover/album/", CoverKind::Album},
         {"apple://cover/artist/", CoverKind::Artist},
         {"apple://cover/playlist/", CoverKind::Playlist},
+        {"apple://cover/station/", CoverKind::Station},
     };
     if (!path) return false;
     const std::string_view text(path);

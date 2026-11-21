@@ -42,6 +42,8 @@ const char* ArtKindName(stream::ArtKind kind) {
         return "artist";
     case stream::ArtKind::Playlist:
         return "playlist";
+    case stream::ArtKind::Station:
+        return "station";
     }
     return "";
 }
@@ -146,6 +148,9 @@ std::wstring FetchCoverUrl(stream::ArtKind kind, const std::wstring& id, abort_c
                    ? L"/v1/me/library/playlists/" + Encode(id)
                    : L"/v1/catalog/" + Storefront(abort) + L"/playlists/" + Encode(id);
         break;
+    case stream::ArtKind::Station:
+        path = L"/v1/catalog/" + Storefront(abort) + L"/stations/" + Encode(id);
+        break;
     }
     const Object response = Apple(path, abort);
     const auto item = FirstObject(response, L"data");
@@ -192,6 +197,7 @@ class AppleArtInstance : public album_art_extractor_instance_v2 {
         const stream::ArtKind artKind = kind == CoverKind::Album      ? stream::ArtKind::Album
                                         : kind == CoverKind::Artist   ? stream::ArtKind::Artist
                                         : kind == CoverKind::Playlist ? stream::ArtKind::Playlist
+                                        : kind == CoverKind::Station  ? stream::ArtKind::Station
                                                                       : stream::ArtKind::Track;
         // A song shows its album's cover. Storing it under the album makes every song of the
         // album, the album page and the grids share one download (stream::Provider::ArtKeyOf

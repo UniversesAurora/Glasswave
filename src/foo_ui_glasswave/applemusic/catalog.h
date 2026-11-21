@@ -37,6 +37,7 @@ class Catalog {
     void Put(const Song& song);
     void Put(const std::vector<Song>& songs);
     void Put(const stream::Playlist& playlist);
+    void Put(const stream::Station& station); // for its cover
     void Put(const std::vector<stream::Playlist>& playlists);
     void Put(const stream::Album& album);
     void Put(const std::vector<stream::Album>& albums);
@@ -87,10 +88,23 @@ class Catalog {
   private:
     Catalog() = default;
     void Hint(const std::vector<Song>& songs) const;
+    // Under m_mutex: stores a record; true when a flush of queued metadb hints must be posted.
+    bool StoreLocked(const Song& song);
+    static void PostHints();
+    void FlushHints(); // main thread
+    // Under m_mutex: reads the measured lengths file once, then corrects a song's length.
+    void LoadMeasuredLocked() const;
+    void ApplyMeasuredLocked(Song& song) const;
+    void SaveMeasuredLocked() const;
 
     mutable std::mutex m_mutex;
+    std::vector<stream::Id> m_hintQueue; // records new or shown differently, for metadb
+    bool m_hintPosted = false;
+    mutable bool m_measuredLoaded = false;
+    mutable std::unordered_map<stream::Id, int> m_measured;
     std::unordered_map<stream::Id, Song> m_songs;
     std::unordered_map<stream::Id, stream::Playlist> m_playlists;
+    std::unordered_map<stream::Id, stream::Station> m_stations;
     std::unordered_map<stream::Id, stream::Album> m_albums;
     std::unordered_map<stream::Id, stream::Artist> m_artists;
     std::unordered_map<stream::Id, stream::Id> m_albumLibraryIds;

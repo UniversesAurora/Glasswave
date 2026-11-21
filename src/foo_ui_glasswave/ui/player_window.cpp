@@ -1,6 +1,8 @@
 #include "pch.h"
 
 #include "ui/player_window.h"
+#include "media/radio.h"
+#include "media/special_playlists.h"
 
 #include "aero/aero_atlas.h"
 #include "aero/aero_metrics.h"
@@ -539,8 +541,10 @@ com_ptr<ID2D1Geometry> UnionOf(ID2D1Factory* factory, ID2D1Geometry* a, ID2D1Geo
 // Shuffle and repeat in Media Center's glyph style, as the heart (navy rim, a face lit from
 // above, a soft shadow), in WMP 12's shapes (wmploc 4175 two arrows crossing upwards, 4177 a
 // circle turning back on itself; repeating one song: a 1 inside it). A 16x14 glyph centred in
-// a 38x31 box at (0, 0), one unit a DIP.
-void PlayModeGlyph(ID2D1DeviceContext* dc, bool shuffle, int repeat) {
+// a 38x31 box at (0, 0), one unit a DIP. dislike: a station's "recommend less" in shuffle's
+// place (a heart's outline struck through); grey: the button does nothing (a station's shuffle):
+// a grey rim and face, a fainter shadow.
+void PlayModeGlyph(ID2D1DeviceContext* dc, bool shuffle, int repeat, bool dislike = false, bool grey = false) {
     com_ptr<ID2D1Factory> factory;
     dc->GetFactory(factory.put());
     const float x0 = 19 - 8, y0 = 15.5f - 7;
@@ -1035,12 +1039,13 @@ void PlayerWindow::CreateWidgets() {
         ->onClick = [] { playback_control::get()->stop(); };
     add(kPrev, m_barLayer,
         [this](auto* dc, D2D1_SIZE_F s, Layer l) {
+            const bool enabled = m_playing && media::radio::CanGoBack();
             if (Wmc())
-                DrawControl(dc, s, L"PREVIOUS", l, m_playing);
+                DrawControl(dc, s, L"PREVIOUS", l, enabled);
             else if (m_wmp)
-                wt::ClusterButton(dc, ClusterRegion(m_layout.prev), wt::Button::Prev, l, m_playing);
+                wt::ClusterButton(dc, ClusterRegion(m_layout.prev), wt::Button::Prev, l, enabled);
             else
-                paint::Segment(dc, s, true, l, TransportGlyph::Previous, true);
+                paint::Segment(dc, s, true, l, TransportGlyph::Previous, enabled);
         },
         {})
         ->onClick = [] { playback_control::get()->previous(); };
@@ -1055,7 +1060,8 @@ void PlayerWindow::CreateWidgets() {
         },
         {})
         ->onClick = [] { playback_control::get()->next(); };
-    for (int id : {kStop, kPrev, kNext}) WidgetById(id)->enabled = [this] { return m_playing; };
+    for (int id : {kStop, kNext}) WidgetById(id)->enabled = [this] { return m_playing; };
+    WidgetById(kPrev)->enabled = [this] { return m_playing && media::radio::CanGoBack(); };
 
     Widget::Options orb;
     orb.circular = true;
@@ -1259,12 +1265,15 @@ void PlayerWindow::CreateWidgets() {
                 DarkPlate(dc, s, l, false);
             const bool lyrics = m_paneShown && m_pane && m_pane->CurrentMode() == NowPlayingPane::Mode::Lyrics;
             const bool queue = m_paneShown && m_pane && m_pane->CurrentMode() == NowPlayingPane::Mode::Queue;
-            const bool on = index == 0 ? lyrics : index == 1 ? queue : index == 2 ? m_shuffle : m_repeat != 0;
+            const bool radio = index == 2 && media::radio::Active();
+            const bool on = index == 0 ? lyrics : index == 1 ? queue : index == 2 ? m_shuffle && !radio : m_repeat != 0;
             // Media Center's menu type (misc.mp4): #9CDDFC at rest, #F2F2F2 under the pointer, no
             // shadow. While a press runs, its layers draw the type instead (MenuPressed).
             if (index != m_menuInking) {
                 com_ptr<ID2D1SolidColorBrush> ink;
-                dc->CreateSolidColorBrush(D2D1::ColorF(lit ? 0xF2F2F2 : 0x9CDDFC), ink.put());
+                // A station's shuffle does nothing: grey type, and no light (the widget is off).
+                const bool off = radio && !media::radio::CanDislike();
+                dc->CreateSolidColorBrush(D2D1::ColorF(off ? 0x6C7C88 : lit ? 0xF2F2F2 : 0x9CDDFC), ink.put());
                 MenuLabel(dc, s, MenuText(index), ink.get(), nullptr);
             }
             if (!on) return;
@@ -1287,13 +1296,18 @@ void PlayerWindow::CreateWidgets() {
     // Shuffle and repeat take their new state at once, so the item, its label (repeat has
     // three: off, all, one) and the press's ink all show the state the press set.
     add(kMenuShuffle, m_menuLayer, menuItem(2), {})->onClick = [this] {
+        MenuPressed(2);
+        if (media::radio::Active()) {
+            media::radio::DislikeCurrent();
+            return;
+        }
         m_shuffle = !m_shuffle;
         m_host.SetPlayerMode(m_shuffle, m_repeat);
         if (auto* w = WidgetById(kMenuShuffle)) w->Invalidate();
-        MenuPressed(2);
     };
+    WidgetById(kMenuShuffle)->enabled = [] { return !media::radio::Active() || media::radio::CanDislike(); };
     add(kMenuRepeat, m_menuLayer, menuItem(3), {})->onClick = [this] {
-        m_repeat = (m_repeat + 1) % 3; // off -> all -> one
+        m_repeat = NextRepeat(m_repeat);
         m_host.SetPlayerMode(m_shuffle, m_repeat);
         if (auto* w = WidgetById(kMenuRepeat)) w->Invalidate();
         MenuPressed(3);
@@ -1367,24 +1381,40 @@ void PlayerWindow::CreateWidgets() {
         ->onClick = [this] { m_host.TogglePlayerFavorite(); };
 
     // Shuffle and repeat before stop, as in WMP 12's transport: on, their plate stays pressed.
+    // A station has no shuffle: its "recommend less" takes the place where it has one, else the
+    // glyph is grey and the button does nothing (owner, 2026-11-20).
     add(kShuffle, m_barLayer,
         [this](auto* dc, D2D1_SIZE_F s, Layer l) {
+            if (media::radio::Active()) {
+                const bool dislike = media::radio::CanDislike();
+                PlateButton(dc, s, dislike ? l : Layer::Normal, false,
+                            [&] { InBox(dc, s, 38, 31, [&] { PlayModeGlyph(dc, true, 0, dislike, !dislike); }); });
+                return;
+            }
             PlateButton(dc, s, l, m_shuffle, [&] { InBox(dc, s, 38, 31, [&] { PlayModeGlyph(dc, true, 0); }); });
         },
         {})
         ->onClick = [this] {
+        if (media::radio::Active()) {
+            media::radio::DislikeCurrent();
+            return;
+        }
         m_shuffle = !m_shuffle;
         m_host.SetPlayerMode(m_shuffle, m_repeat);
         for (int id : {kShuffle, kMenuShuffle})
             if (auto* w = WidgetById(id)) w->Invalidate();
     };
+    WidgetById(kShuffle)->enabled = [] { return !media::radio::Active() || media::radio::CanDislike(); };
     add(kRepeat, m_barLayer,
         [this](auto* dc, D2D1_SIZE_F s, Layer l) {
-            PlateButton(dc, s, l, m_repeat != 0, [&] { InBox(dc, s, 38, 31, [&] { PlayModeGlyph(dc, false, m_repeat); }); });
+            PlateButton(dc, s, l, m_repeat != 0, [&] {
+                // A station repeats one song or none: repeat-one's glyph either way.
+                InBox(dc, s, 38, 31, [&] { PlayModeGlyph(dc, false, media::radio::Active() ? 2 : m_repeat); });
+            });
         },
         {})
         ->onClick = [this] {
-        m_repeat = (m_repeat + 1) % 3; // off -> all -> one
+        m_repeat = NextRepeat(m_repeat);
         m_host.SetPlayerMode(m_shuffle, m_repeat);
         for (int id : {kRepeat, kMenuRepeat})
             if (auto* w = WidgetById(id)) w->Invalidate();
@@ -1452,7 +1482,9 @@ void PlayerWindow::SetHover(Widget* w) {
         const int index = widget->Id() - kMenuLyrics;
         if (index < 0 || index > 3 || !m_menuGlow[static_cast<size_t>(index)]) return;
         const auto& visual = m_menuGlow[static_cast<size_t>(index)];
-        if (on)
+        // An item that is off (a station's shuffle) lights nothing: its plate stays dark, and so
+        // does the breathing glow over it (owner, 2026-11-21: the glow was left on it).
+        if (on && widget->IsEnabled())
             host.StartPulse(visual, 0.25f, 1.0f, 2200);
         else
             host.StopPulse(visual, 0.0f, 320);
@@ -1675,11 +1707,32 @@ void PlayerWindow::MenuPressed(int index) {
     m_menuAfter.StartAnimation(L"Opacity", after);
 }
 
+// Off -> all -> one; a station repeats one song or none.
+int PlayerWindow::NextRepeat(int repeat) {
+    if (media::radio::Active()) return repeat == 0 ? 2 : 0;
+    return (repeat + 1) % 3;
+}
+
+void PlayerWindow::WallAlbumsChanged() {
+    if (m_shown && m_wall) m_wall->UpdateAlbums(m_host.WallAlbums());
+}
+
+void PlayerWindow::RadioChanged() {
+    bool shuffle = false;
+    int repeat = 0;
+    m_host.PlayerMode(shuffle, repeat);
+    m_shuffle = shuffle;
+    m_repeat = repeat;
+    for (int id : {kPrev, kShuffle, kRepeat, kMenuShuffle, kMenuRepeat})
+        if (auto* w = WidgetById(id)) w->Invalidate();
+}
+
 std::wstring PlayerWindow::MenuText(int index) const {
+    if (index == 2 && media::radio::CanDislike()) return Tr(L"Not interested");
     return index == 0   ? Tr(L"Lyrics")
            : index == 1 ? Tr(L"Up Next")
            : index == 2 ? Tr(L"Shuffle")
-                        : Tr(m_repeat == 2 ? L"Repeat one" : L"Repeat");
+                        : Tr(m_repeat == 2 || media::radio::Active() ? L"Repeat one" : L"Repeat");
 }
 
 RECT PlayerWindow::ClusterRect(const D2D1_RECT_F& r) const {

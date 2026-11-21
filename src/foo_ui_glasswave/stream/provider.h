@@ -365,6 +365,8 @@ class Provider {
     virtual ListCachePolicy ListPolicy(const ListQuery& query) const;
     // Rehydrate metadata required by TrackItem/FindTrack and artwork on a disk cache hit.
     virtual void RestoreListRecords(const ListPage& page) { (void)page; }
+    // Stations a page shows (a home row), so their covers resolve (ArtKind::Station).
+    virtual void PutStations(const std::vector<Station>& stations) { (void)stations; }
 
     // ---- writes (the snapshot is updated before `done` runs) ------------------------
     // Shows the new state at once (listeners hear OnFavoritesChanged) and completes in the

@@ -35,7 +35,8 @@ class QueueView {
 
     void SetUpNext(std::vector<Row> rows, bool playbackChanged = false);
     void SetHistory(std::vector<Row> rows);
-    void SetShuffleRepeat(bool shuffle, int repeat); // repeat: 0 off, 1 all, 2 one
+    // repeat: 0 off, 1 all, 2 one. radio: a station plays; shuffle is dimmed and does nothing.
+    void SetShuffleRepeat(bool shuffle, int repeat, bool radio);
     // Repeat-all: how many songs the next round replays, shown under the last row (0: none).
     void SetRepeatCycle(size_t songs);
     // Bare: no place for the song card and no shuffle / repeat capsules (the host shows both).
@@ -118,6 +119,7 @@ class QueueView {
     size_t m_historyCount = 0;
     bool m_shuffleOn = false;
     int m_repeatMode = 0;
+    bool m_radio = false; // a station plays (SetShuffleRepeat)
     int m_artToken = 0;
     bool m_coversDirty = false;
 

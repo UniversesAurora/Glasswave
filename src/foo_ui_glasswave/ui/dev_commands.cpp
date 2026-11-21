@@ -1,15 +1,26 @@
 #include "pch.h"
+#include "media/radio.h"
+#include "media/special_playlists.h"
 #include "netease/log.h"
 #include "stream/provider.h"
 #include "ui/main_window.h"
 #include "ui/remote_pages.h"
 #include "ui/text.h"
 
+#include <winrt/Windows.Foundation.Collections.h>
+
 // Developer switch for checking pages with a service's real data without driving the UI:
 //
 //   foobar2000.exe /glasswave:open:<source>:<artist|album|playlist|song>:<id>
+//   foobar2000.exe /glasswave:home
+//   foobar2000.exe /glasswave:repeat:<off|all|one>
+//   foobar2000.exe /glasswave:queue   (logs what Up Next shows and what the queue holds)
+//   foobar2000.exe /glasswave:open:<source>:<list|station>:<id>   (a home card's list; a station plays)
+//   foobar2000.exe /glasswave:visuals (logs every visible visual of the main window: where it is,
+//                                      what it draws; for ghosts that come at random)
 //
-// opens that page of a source ("apple", "ncm") in the running window. The details band of the
+// opens that page of a source ("apple", "ncm"), or Home, in the running window (Home logs what
+// each source sent). The details band of the
 // page on screen is written to the log as it changes (MainWindow::LogDetail), so what the page
 // shows can be read back. From Git Bash, run it with MSYS_NO_PATHCONV=1.
 
@@ -47,6 +58,10 @@ class OpenPageCommand : public commandline_handler {
             window->Open(PlaylistView(*provider, id, {}, std::nullopt));
         else if (kind == L"song")
             window->Open(SongView(*provider, id, {}));
+        else if (kind == L"list")
+            window->Open(HomeListView(*provider, id, id));
+        else if (kind == L"station")
+            media::radio::Play(*provider, id, id);
         else
             netease::Log(L"dev: unknown page kind " + kind);
         return RESULT_PROCESSED;

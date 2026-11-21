@@ -1312,7 +1312,13 @@ void PlaybackScheduler::Impl::HandleNavigationStart(play_control::t_track_comman
     const auto current = schedule.Current();
     const auto target =
         command == play_control::track_command_prev ? schedule.Previous() : schedule.ManualNext();
-    if (!current || !target) return;
+    if (!current) return;
+    // Previous with nothing before: the song starts over instead of the core stopping (owner,
+    // 2026-11-20: quick presses past a station's first song left nothing playing).
+    if (!target) {
+        if (command == play_control::track_command_prev) navigationTarget = current;
+        return;
+    }
     if (command == play_control::track_command_rand) {
         navigationTarget = target;
         return;

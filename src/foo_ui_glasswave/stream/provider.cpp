@@ -23,6 +23,8 @@ const wchar_t* KindName(ArtKind kind) {
         return L"artist";
     case ArtKind::Playlist:
         return L"playlist";
+    case ArtKind::Station:
+        return L"station";
     }
     return L"";
 }

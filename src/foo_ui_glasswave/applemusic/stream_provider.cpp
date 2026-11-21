@@ -2849,7 +2849,7 @@ stream::Capabilities StreamProvider::Offers() const {
             FavoriteArtists,   LibraryAlbums,   SaveAlbums,           LibraryPlaylists,
             SavePlaylists,     CreatePlaylists, AppendPlaylistTracks, RemovePlaylistTracks,
             RenamePlaylists,   DeletePlaylists, CatalogSearch,        SearchSuggestions,
-            NativeLyrics,      SongDetails};
+            NativeLyrics,      SongDetails,     Home,                 Stations};
 }
 
 // Apple Music keeps things in a "library" and marks artists as favorites; its playlists are

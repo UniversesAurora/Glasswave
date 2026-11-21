@@ -16,6 +16,7 @@ enum class CoverKind {
     Track,
     Album,
     Artist,
+    Station,
     Playlist
 };
 

@@ -35,6 +35,12 @@ class AlbumWall {
     const winrt::Windows::UI::Composition::ContainerVisual& Root() const { return m_root; }
     // One track per album whose cover may appear on the wall, each album once.
     void SetAlbums(std::vector<metadb_handle_ptr> albums);
+    // The playing list changed. A list that keeps the albums already dealt and has more (a
+    // station's queue growing, songs added): the new ones join the deck at random among the next
+    // cards and, once their covers have loaded, take the places coloured tiles hold on the wall
+    // (fading in as covers do); the albums already shown stay. Any other list starts the deck
+    // again (SetAlbums).
+    void UpdateAlbums(std::vector<metadb_handle_ptr> albums);
     // `px`: the window's size; the monitor's (px) sets the tile size and the entrance's pace.
     // Places uncovered by a larger window fill with falling tiles.
     void SetGeometry(SIZE px, SIZE monitor, float scale);

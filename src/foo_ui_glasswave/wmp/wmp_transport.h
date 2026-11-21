@@ -58,7 +58,15 @@ enum class Button { Stop, Prev, Next };
 void ClusterButton(ID2D1DeviceContext* dc, D2D1_RECT_F region, Button button, Layer layer, bool enabled);
 void Orb(ID2D1DeviceContext* dc, Layer layer, bool pause);
 void GlowRing(ID2D1DeviceContext* dc, float size);
+// The cluster's play orb on its own, scaled into `box` (DIP): a cover's "play all" button.
+// hover 0..1 fades in the hover look; opacity fades the whole button.
+// pressed 0..1: the cluster's pressed look (wmploc 4154) over it, while held.
+void PlayOrb(ID2D1DeviceContext* dc, D2D1_RECT_F box, float hover, float opacity, float pressed = 0);
 void Toggle(ID2D1DeviceContext* dc, Layer layer, bool shuffle, bool on);
+// "Recommend less" (NetEase's 不感兴趣) in the shuffle toggle's place while a station plays: a
+// heart struck through, drawn as WMP 12's toggle glyphs are (wmploc 4174 / 4175: #0066CC with a
+// white halo, a #63CFFC glow behind it when lit). 25 x 25 DIP.
+void Dislike(ID2D1DeviceContext* dc, Layer layer);
 void Mute(ID2D1DeviceContext* dc, Layer layer, bool muted, float volume);
 void Volume(ID2D1DeviceContext* dc, Layer layer, float value);
 void ClusterBackground(ID2D1DeviceContext* dc);

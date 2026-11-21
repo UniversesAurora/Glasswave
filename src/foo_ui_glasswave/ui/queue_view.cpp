@@ -336,10 +336,11 @@ void QueueView::SetHistory(std::vector<Row> rows) {
     if (m_visible) StartFrames();
 }
 
-void QueueView::SetShuffleRepeat(bool shuffle, int repeat) {
-    if (shuffle == m_shuffleOn && repeat == m_repeatMode) return;
+void QueueView::SetShuffleRepeat(bool shuffle, int repeat, bool radio) {
+    if (shuffle == m_shuffleOn && repeat == m_repeatMode && radio == m_radio) return;
     m_shuffleOn = shuffle;
     m_repeatMode = repeat;
+    m_radio = radio;
     DrawChrome();
 }
 
@@ -607,11 +608,13 @@ void QueueView::DrawChrome() {
         });
     };
     capsule(m_shuffle, m_shuffleOn, [&](ID2D1DeviceContext* dc, ID2D1Brush* ink) {
+        // A station has no shuffle: the glyph faint (owner, 2026-11-20).
+        if (m_radio) ink->SetOpacity(0.32f);
         pane::DrawIcon(dc, pane::icon::kShuffle, 16, {capW / 2, kCapsuleH / 2}, ink, DWRITE_FONT_WEIGHT_BOLD);
     });
     capsule(m_repeat, m_repeatMode != 0, [&](ID2D1DeviceContext* dc, ID2D1Brush* ink) {
-        pane::DrawIcon(dc, m_repeatMode == 2 ? pane::icon::kRepeatOne : pane::icon::kRepeatAll, 16,
-                       {capW / 2, kCapsuleH / 2}, ink, DWRITE_FONT_WEIGHT_BOLD);
+        // A station repeats one song or none: repeat-one's glyph either way.
+        pane::DrawRepeat(dc, 17, {capW / 2, kCapsuleH / 2}, ink, m_repeatMode == 2 || m_radio);
     });
 }
 

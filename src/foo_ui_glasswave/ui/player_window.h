@@ -74,10 +74,18 @@ class PlayerWindow {
 
     // Forwarded by the library window.
     void OnPlayback(); // state or track
+    // A station started or ended, or its songs moved on (media/radio.h): shuffle, repeat and
+    // Previous follow.
+    void RadioChanged();
+    // The playing list changed (a station's songs arriving): the album wall takes the new albums.
+    void WallAlbumsChanged();
     void OnTime();
     void OnVolume();
     void OnLyricLineSetting(); // the lyric line was hidden or shown
     void StartFrames(); // the lent pane or the sung line wants frames
+    void SetColorization(const aero::Colorization& c, int fadeMs) {
+        if (m_glass) m_glass->SetColorization(c, fadeMs);
+    }
 
   private:
     void UpdateMotion(); // wall and light run only while there is something to see
