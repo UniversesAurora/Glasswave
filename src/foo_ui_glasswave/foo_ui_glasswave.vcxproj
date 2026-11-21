@@ -200,7 +200,7 @@
     <ClCompile Include="ui\text.cpp" />
     <ClCompile Include="ui\list_view.cpp" />
     <ClCompile Include="ui\nav_pane.cpp" />
-    <ClCompile Include="ui\netease_login.cpp" />
+    <ClCompile Include="netease\login.cpp" />
     <ClCompile Include="ui\text_prompt.cpp" />
     <ClCompile Include="ui\song_table.cpp" />
     <ClCompile Include="ui\remote_grids.cpp" />
@@ -317,7 +317,7 @@
     <ClInclude Include="ui\text.h" />
     <ClInclude Include="ui\list_view.h" />
     <ClInclude Include="ui\nav_pane.h" />
-    <ClInclude Include="ui\netease_login.h" />
+    <ClInclude Include="netease\login.h" />
     <ClInclude Include="ui\text_prompt.h" />
     <ClInclude Include="ui\song_table.h" />
     <ClInclude Include="ui\remote_grids.h" />

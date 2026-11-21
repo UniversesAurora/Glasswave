@@ -36,7 +36,7 @@ foobar2000.exe (core: decoding, playlists, library, DSP, output, components)
 ## Streaming providers (ADR 0009)
 
 - `stream/` is the provider-neutral model and interface; nothing in `ui/` or `media/`
-  includes a provider's own headers (only its sign-in dialog lives under `ui/`).
+  includes a provider's own headers; a provider's sign-in dialog lives with the provider.
 - A provider registers itself while the component loads and is started by the window (or
   by its `initquit` service under another UI). Its tracks are metadb items handled by its
   own input, so playlists, the queue and play history mix them with local files.

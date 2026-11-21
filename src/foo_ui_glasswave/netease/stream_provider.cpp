@@ -8,7 +8,7 @@
 #include "netease/config.h"
 #include "netease/session.h"
 #include "ui/i18n.h"
-#include "ui/netease_login.h"
+#include "netease/login.h"
 
 #include <ctime>
 #include <array>
@@ -880,7 +880,7 @@ std::wstring StreamProvider::AccountName() const {
 }
 
 void StreamProvider::SignIn(HWND owner) {
-    ui::ShowNeteaseLogin(owner, [this] {
+    ShowLogin(owner, [this] {
         ClearIdSnapshots();
         cache::RotateAccountScope("ncm");
         {

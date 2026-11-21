@@ -1,5 +1,5 @@
 #include "pch.h"
-#include "ui/netease_login.h"
+#include "netease/login.h"
 #include "netease/session.h"
 #include "ui/i18n.h"
 
@@ -14,9 +14,11 @@
 
 #pragma comment(lib, "gdiplus.lib")
 
-namespace glasswave::ui {
+namespace glasswave::netease {
 
 namespace {
+
+using ui::Tr;
 
 constexpr wchar_t kClassName[] = L"Glasswave.NeteaseLogin";
 constexpr UINT_PTR kPollTimer = 1;
@@ -448,7 +450,7 @@ void RegisterWindowClass() {
 
 }  // namespace
 
-void ShowNeteaseLogin(HWND owner, std::function<void()> onSuccess) {
+void ShowLogin(HWND owner, std::function<void()> onSuccess) {
     if (g_login) {
         SetForegroundWindow(g_login);
         return;
@@ -498,4 +500,4 @@ void ShowNeteaseLogin(HWND owner, std::function<void()> onSuccess) {
     StartServiceOrInstall(state);
 }
 
-}  // namespace glasswave::ui
+}  // namespace glasswave::netease
