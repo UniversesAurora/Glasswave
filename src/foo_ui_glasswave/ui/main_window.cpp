@@ -5375,7 +5375,8 @@ void MainWindow::OnProviderAccountObserved(stream::Provider& provider) {
     RefreshProviderSections();
     UpdateFavoriteState();
     const bool currentProvider = m_view.IsRemote() && m_view.provider == provider.Key();
-    if (currentProvider && m_page) m_page->OnLibraryChanged();
+    // The combined favorites list the providers that are signed in now.
+    if ((currentProvider || m_view.kind == View::Kind::AllFavorites) && m_page) m_page->OnLibraryChanged();
     if ((currentProvider || m_view.kind == View::Kind::AllFavorites) && m_list) m_list->Refresh();
     RepaintBreadcrumb();
     RepaintDetailHeader();

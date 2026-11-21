@@ -1289,20 +1289,11 @@ class AlbumPage final : public TrackPagedPage {
     }
 
   protected:
-    void AddTrackPageActions(std::vector<MenuAction>& actions) override {
-        if (m_provider.AccountVerified() && m_provider.Can(stream::Capability::SaveAlbums)) {
-            actions.push_back({});
-            actions.push_back(SaveAlbumAction(m_provider, m_view.remoteId,
-                                              Guard([this](bool) { m_host.ChromeChanged(); })));
-        }
-    }
+    void AddTrackPageActions(std::vector<MenuAction>& actions) override { AddCollectAction(actions); }
 
   public:
     void AddSongActions(std::vector<MenuAction>& actions, const metadb_handle_list&) override {
-        if (!IsSavedAlbum(m_provider, m_view.remoteId)) return;
-        actions.push_back({});
-        actions.push_back(
-            SaveAlbumAction(m_provider, m_view.remoteId, Guard([this](bool) { m_host.ChromeChanged(); })));
+        AddCollectAction(actions);
     }
 
     void OnLibraryChanged() override {
@@ -1312,6 +1303,14 @@ class AlbumPage final : public TrackPagedPage {
     }
 
   private:
+    // Collect or Uncollect, for a signed-in account of a source that can save albums.
+    void AddCollectAction(std::vector<MenuAction>& actions) {
+        if (!m_provider.AccountVerified() || !m_provider.Can(stream::Capability::SaveAlbums)) return;
+        actions.push_back({});
+        actions.push_back(
+            SaveAlbumAction(m_provider, m_view.remoteId, Guard([this](bool) { m_host.ChromeChanged(); })));
+    }
+
     std::optional<stream::Album> m_info;
     bool m_busy = false;
 };
@@ -1954,17 +1953,18 @@ class ArtistPage final : public AlbumBrowsePage {
         d.artKey = m_provider.ArtKey(stream::ArtKind::Artist, m_artist->id);
         d.artItem = m_provider.ArtItem(stream::ArtKind::Artist, m_artist->id);
         if (m_artist->followKnown && SupportsArtistPreference(m_provider)) {
+            const bool followed = Followed();
             d.action = DetailInfo::Action::Follow;
-            d.actionOn = m_artist->followed;
+            d.actionOn = followed;
             d.actionBusy = m_busy;
-            d.actionLabel = m_provider.Text(m_artist->followed ? L"Unfollow artist" : L"Follow artist");
+            d.actionLabel = m_provider.Text(followed ? L"Unfollow artist" : L"Follow artist");
         }
         return d;
     }
 
     void DetailAction() override {
         if (!m_artist || !m_artist->followKnown || m_busy || !VerifiedOrPrompt()) return;
-        const bool next = !m_artist->followed;
+        const bool next = !Followed();
         m_artist->followed = next;
         m_busy = true;
         m_host.ChromeChanged();
@@ -1979,6 +1979,17 @@ class ArtistPage final : public AlbumBrowsePage {
     }
 
   protected:
+    // The provider's view of the follow state (a write in flight, a change made on another
+    // page) over the copy the header was read with, as the follow menu items use it.
+    bool Followed() const {
+        return m_provider.ArtistPreferenceState(m_artist->id).value_or(m_artist->followed);
+    }
+
+    void OnLibraryChanged() override {
+        if (m_artist && m_artist->followKnown) m_artist->followed = Followed(); // followed elsewhere
+        AlbumBrowsePage::OnLibraryChanged();
+    }
+
     void ApplyPageState() override {
         AlbumBrowsePage::ApplyPageState();
         if (m_artist && !m_artist->name.empty()) m_host.SetPageName(m_artist->name);
@@ -1994,7 +2005,7 @@ class ArtistPage final : public AlbumBrowsePage {
 
     void AddAlbumPageActions(std::vector<MenuAction>& actions) override {
         if (m_artist && m_artist->followKnown && SupportsArtistPreference(m_provider)) {
-            actions.push_back({m_provider.Text(m_artist->followed ? L"Unfollow artist" : L"Follow artist"),
+            actions.push_back({m_provider.Text(Followed() ? L"Unfollow artist" : L"Follow artist"),
                                [this] { DetailAction(); }});
         }
     }
@@ -2160,12 +2171,8 @@ class AllFavoritesPage final : public Page {
         auto source = std::make_unique<AllFavoritesSource>(m_local, AllFavoritesSource::RemoteFavorites{});
         m_source = source.get();
         ConfigureSource();
-        for (auto* provider : stream::Providers()) {
-            if (!FindSection(*provider, stream::SectionKind::Favorites) ||
-                (!provider->SignedIn() && !provider->SessionRestoring()))
-                continue;
-            OpenFeed(*provider);
-        }
+        for (auto* provider : stream::Providers())
+            if (HasFavorites(*provider)) OpenFeed(*provider);
         Publish();
         return source;
     }
@@ -2196,6 +2203,16 @@ class AllFavoritesPage final : public Page {
     }
 
     void OnLibraryChanged() override {
+        // An account that signed in (or out) since the feeds were opened has none (or a stale
+        // one): the page is built again with the providers there are now.
+        std::vector<const stream::Provider*> now;
+        for (auto* provider : stream::Providers())
+            if (HasFavorites(*provider)) now.push_back(provider);
+        if (!std::equal(now.begin(), now.end(), m_feeds.begin(), m_feeds.end(),
+                        [](const stream::Provider* provider, const Feed& feed) { return provider == feed.provider; })) {
+            m_host.Reload(); // destroys this page
+            return;
+        }
         UpdateStatus();
         m_host.ChromeChanged();
     }
@@ -2226,6 +2243,12 @@ class AllFavoritesPage final : public Page {
     };
 
     SongTableSource* SongSource() const { return dynamic_cast<SongTableSource*>(m_host.Source()); }
+
+    // A signed-in (or restoring) account of a source with a Favorites section.
+    static bool HasFavorites(stream::Provider& provider) {
+        return FindSection(provider, stream::SectionKind::Favorites) &&
+               (provider.SignedIn() || provider.SessionRestoring());
+    }
 
     void BuildLocalFavorites() {
         if (const t_size playlist = media::FavoritesPlaylist(false); playlist != SIZE_MAX) {
