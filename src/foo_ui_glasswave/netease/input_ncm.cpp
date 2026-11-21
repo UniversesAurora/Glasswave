@@ -6,6 +6,7 @@
 #include "netease/config.h"
 #include "core/log.h"
 #include "core/paths.h"
+#include "net/resumable_fetch.h"
 #include "netease/session.h"
 #include "stream/track_snapshot.h"
 
@@ -29,16 +30,6 @@ std::string ExtensionFor(const SongUrl& url) {
     if (type == L"m4a" || type == L"mp4") return "m4a";
     if (url.level == L"lossless" || url.level == L"hires") return "flac";
     return "mp3";
-}
-
-// Opens the song's CDN stream with the headers the CDN expects.
-file::ptr OpenStream(const std::wstring& url, abort_callback& abort) {
-    auto request = http_client::get()->create_request("GET");
-    request->add_header("User-Agent",
-                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
-                        "Glasswave/0.1");
-    request->add_header("Referer", "https://music.163.com/");
-    return request->run(Utf8(url).c_str(), abort);
 }
 
 bool SameSourceVariant(const SongUrl& expected, const SongUrl& actual) {
@@ -82,99 +73,37 @@ bool ParseSourceMemo(const std::string& memo, SongUrl& url) {
     return !url.level.empty() && url.bitrate > 0;
 }
 
-struct NcmEncodedFetch {
-    void operator()(cache::audio::Sink& sink, abort_callback& abort) const {
-        uint64_t position = sink.Size();
-        uint64_t openedAt = GetTickCount64();
-        const uint64_t lifetimeMs = static_cast<uint64_t>(std::max(expiredAfterSeconds, 120)) * 1000;
-        bool renewedAtPosition = false;
+// A signed URL lives expireSeconds (1200 for the CDN); one is renewed this long before it
+// expires, and never lives for less than the minimum, whatever the service says.
+constexpr int kMinUrlLifetimeSeconds = 120;
+constexpr uint64_t kUrlRenewMarginMs = 60'000;
 
-        file::ptr source;
-        auto open = [&](const std::wstring& url) {
-            source = OpenStream(url, abort);
-            if (position) source->seek(position, abort);
-            openedAt = GetTickCount64();
-            renewedAtPosition = false;
-        };
-        auto renew = [&] {
-            SongUrl fresh;
-            std::wstring error;
-            if (Session::Get().Api().GetSongUrl(songId, resolved.level, abort, fresh, error) !=
-                stream::SourceStatus::Playable) {
-                throw exception_io_data(
-                    Utf8(error.empty() ? L"Cannot renew the stream URL." : error).c_str());
-            }
-            if (!SameSourceVariant(resolved, fresh)) {
-                throw exception_io_data("NetEase renewed a different audio source quality or codec");
-            }
-            source = OpenStream(fresh.url, abort);
-            if (position) source->seek(position, abort);
-            openedAt = GetTickCount64();
-            renewedAtPosition = true;
-            core::Log(L"input: renewed the stream URL at byte " + std::to_wstring(position));
-        };
-
-        try {
-            open(initialUrl);
-        } catch (const exception_aborted&) {
-            throw;
-        } catch (const std::exception&) {
-            renew();
-        }
-
-        // The source's whole length (Content-Length of the first answer): a connection that
-        // closes before it continues from where it stopped, once, then counts as a failed
-        // transfer rather than a whole song (a cut song was kept as one and failed mid-play).
-        t_filesize total = filesize_invalid;
-        try {
-            total = source->get_size(abort);
-        } catch (const exception_aborted&) {
-            throw;
-        } catch (...) {
-        }
-        std::array<uint8_t, 64 * 1024> buffer{};
-        for (;;) {
-            abort.check();
-            if (GetTickCount64() - openedAt + 60'000 > lifetimeMs) renew();
-            t_size read = 0;
-            try {
-                read = source->read(buffer.data(), buffer.size(), abort);
-            } catch (const exception_aborted&) {
-                throw;
-            } catch (const std::exception&) {
-                if (renewedAtPosition) throw;
-                renew();
-                continue;
-            }
-            if (!read) {
-                if (!position && !renewedAtPosition) {
-                    renew();
-                    continue;
-                }
-                if (total != filesize_invalid && position < total) {
-                    if (!renewedAtPosition) {
-                        core::Log(L"input: song " + std::to_wstring(songId) + L" transfer ended at byte " +
-                            std::to_wstring(position) + L" of " + std::to_wstring(total) + L"; continuing");
-                        renew();
-                        continue;
-                    }
-                    throw exception_io_data(("The NetEase audio transfer ended early (" + std::to_string(position) +
-                                             " of " + std::to_string(total) + " bytes)")
-                                                .c_str());
-                }
-                return;
-            }
-            sink.Write(buffer.data(), read, abort);
-            position += read;
-            renewedAtPosition = false;
-        }
-    }
-
-    std::wstring initialUrl;
-    int64_t songId = 0;
-    SongUrl resolved;
-    int expiredAfterSeconds = 1200;
-};
+// The CDN answers Range requests (downloads rely on it too), so a transfer cut short or a URL
+// renewed mid-song continues from the bytes already received.
+cache::audio::Fetcher NcmEncodedFetch(int64_t songId, const SongUrl& resolved) {
+    net::ResumableSource source;
+    source.label = "NetEase";
+    const std::vector<std::pair<std::string, std::string>> headers = {
+        {"User-Agent",
+         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Glasswave/0.1"},
+        {"Referer", "https://music.163.com/"}};
+    source.target = {Utf8(resolved.url), headers};
+    const uint64_t lifetimeMs = static_cast<uint64_t>(std::max(resolved.expireSeconds, kMinUrlLifetimeSeconds)) * 1000;
+    source.renewAfterMs = lifetimeMs > kUrlRenewMarginMs ? lifetimeMs - kUrlRenewMarginMs : 0;
+    source.renew = [songId, resolved, headers](abort_callback& abort) {
+        SongUrl fresh;
+        std::wstring error;
+        if (Session::Get().Api().GetSongUrl(songId, resolved.level, abort, fresh, error) !=
+            stream::SourceStatus::Playable)
+            throw exception_io_data(Utf8(error.empty() ? L"Cannot renew the stream URL." : error).c_str());
+        if (!SameSourceVariant(resolved, fresh))
+            throw exception_io_data("NetEase renewed a different audio source quality or codec");
+        return net::FetchTarget{Utf8(fresh.url), headers};
+    };
+    return [source = std::move(source)](cache::audio::Sink& sink, abort_callback& abort) {
+        net::FetchResumable(source, net::WriteTo(sink), abort);
+    };
+}
 
 }  // namespace
 
@@ -306,7 +235,7 @@ public:
                 cache::audio::Request transfer;
                 transfer.key = key;
                 transfer.metadata = std::move(metadata);
-                if (!cachedOnly) transfer.fetch = NcmEncodedFetch{url.url, m_id, url, url.expireSeconds};
+                if (!cachedOnly) transfer.fetch = NcmEncodedFetch(m_id, url);
                 transfer.persistent = persistent;
                 transfer.cachedOnly = cachedOnly;
                 auto opened = cache::audio::OpenOrStart(std::move(transfer), p_abort);

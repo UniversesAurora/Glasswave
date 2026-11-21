@@ -8,6 +8,7 @@
 #include "applemusic/stream_provider.h"
 #include "cache/audio.h"
 #include "net/http.h"
+#include "net/resumable_fetch.h"
 #include "core/json.h"
 #include "stream/playback_source.h"
 #include "stream/track_snapshot.h"
@@ -95,130 +96,22 @@ struct SessionCleanup {
     std::wstring session;
 };
 
-// The status code of a bridge reply ("206 Partial Content"), 0 when there is none.
-int ReplyStatus(const file::ptr& reply) {
-    http_reply::ptr http;
-    if (!reply->service_query_t(http)) return 0;
-    pfc::string8 status;
-    http->get_status(status);
-    const char* text = status.get_ptr();
-    while (*text && (*text < '0' || *text > '9'))
-        ++text;
-    return std::atoi(text);
+// The bridge keeps downloading the song into its disk cache when a connection drops, and serves a
+// byte range of it once committed; until then it answers a range with 503 and Retry-After.
+cache::audio::Fetcher AppleEncodedFetch(std::string url, std::string token,
+                                        std::shared_ptr<SessionCleanup> cleanup) {
+    net::ResumableSource source;
+    source.label = "Apple Music";
+    source.target.url = std::move(url);
+    source.target.headers.emplace_back("X-Api-Token", std::move(token));
+    if (cleanup && !cleanup->transactionTag.empty())
+        source.target.headers.emplace_back("X-Glasswave-Probe-Transaction", cleanup->transactionTag);
+    // The cleanup rides with the fetcher: the session ends when the transfer is dropped.
+    return [source = std::move(source), cleanup = std::move(cleanup)](cache::audio::Sink& sink,
+                                                                     abort_callback& abort) {
+        net::FetchResumable(source, net::WriteTo(sink), abort);
+    };
 }
-
-struct AppleEncodedFetch {
-    // A transfer cut short continues from where it stopped (owner, 2026-11-21: a station song
-    // failed 12 s in). The bridge keeps downloading the song into its disk cache when the
-    // connection drops, and serves a byte range of it once committed; until then it answers a
-    // range with 503 and Retry-After. A reply that ignores the range (200) is read past what
-    // arrived, as long as its length is the same.
-    static constexpr int kMaxCachingWaits = 90; // 1 s each: a lossless song caches in 5-15 s
-    static constexpr int kMaxStalledResumes = 3; // resumes in a row that bring nothing
-    static constexpr int kMaxResumes = 20;       // in all: a link that delivers a little each time ends
-
-    void operator()(cache::audio::Sink& sink, abort_callback& abort) const {
-        // The bridge states the length (Content-Length). A connection that closes before it is
-        // a failed transfer, not a whole song: kept as one, the decoder met the cut 12 s in and
-        // called the file corrupt.
-        t_filesize expected = filesize_invalid;
-        uint64_t received = 0;
-        int waits = 0, stalled = 0, resumes = 0;
-        std::array<uint8_t, 64 * 1024> buffer{};
-        for (;;) {
-            const bool resuming = received > 0;
-            uint64_t skip = 0;
-            file::ptr source;
-            try {
-                auto request = http_client::get()->create_request("GET");
-                request->add_header("X-Api-Token", token.c_str());
-                if (cleanup && !cleanup->transactionTag.empty())
-                    request->add_header("X-Glasswave-Probe-Transaction", cleanup->transactionTag.c_str());
-                if (resuming) request->add_header("Range", ("bytes=" + std::to_string(received) + "-").c_str());
-                source = resuming ? request->run_ex(url.c_str(), abort) : request->run(url.c_str(), abort);
-            } catch (const exception_aborted&) {
-                throw;
-            } catch (...) {
-                if (!resuming || ++stalled > kMaxStalledResumes) throw;
-                abort.sleep(1.0);
-                continue;
-            }
-            if (!resuming) {
-                try {
-                    expected = source->get_size(abort);
-                } catch (const exception_aborted&) {
-                    throw;
-                } catch (...) {
-                }
-            } else {
-                const int status = ReplyStatus(source);
-                if (status == 503 && ++waits <= kMaxCachingWaits) { // the bridge is still caching it
-                    abort.sleep(1.0);
-                    continue;
-                }
-                pfc::string8 range;
-                http_reply::ptr http;
-                if (status == 206 && source->service_query_t(http) && http->get_http_header("content-range", range)) {
-                    // "bytes <first>-<last>/<total>": it must start where this one stopped.
-                    unsigned long long first = 0, last = 0, total = 0;
-                    if (sscanf_s(range.get_ptr(), "bytes %llu-%llu/%llu", &first, &last, &total) != 3 ||
-                        first != received || total != expected)
-                        throw exception_io_data(("The Apple Music audio transfer could not continue (range " +
-                                                 std::string(range.get_ptr()) + ")")
-                                                    .c_str());
-                } else if (status == 200) {
-                    t_filesize size = filesize_invalid;
-                    try {
-                        size = source->get_size(abort);
-                    } catch (const exception_aborted&) {
-                        throw;
-                    } catch (...) {
-                    }
-                    if (size != expected)
-                        throw exception_io_data("The Apple Music audio transfer could not continue (another length)");
-                    skip = received;
-                } else {
-                    throw exception_io_data(("The Apple Music audio transfer could not continue (HTTP " +
-                                             std::to_string(status) + ")")
-                                                .c_str());
-                }
-            }
-            const uint64_t before = received;
-            for (;;) {
-                size_t count = 0;
-                try {
-                    count = source->read(buffer.data(), buffer.size(), abort);
-                } catch (const exception_aborted&) {
-                    throw;
-                } catch (...) {
-                    // A connection that breaks mid-read is a cut like one that closes early;
-                    // without a stated length there is nothing to continue towards. Only the
-                    // read is a cut: a failing sink (disk full, cache limit) is not retried.
-                    if (expected == filesize_invalid) throw;
-                    break;
-                }
-                if (!count) break;
-                const auto drop = static_cast<size_t>(std::min<uint64_t>(skip, count));
-                skip -= drop;
-                if (count > drop) sink.Write(buffer.data() + drop, count - drop, abort);
-                received += count - drop;
-            }
-            if (expected == filesize_invalid || received >= expected) return;
-            stalled = received > before ? 0 : stalled + 1;
-            if (stalled > kMaxStalledResumes || ++resumes > kMaxResumes)
-                throw exception_io_data(("The Apple Music audio transfer ended early (" + std::to_string(received) +
-                                         " of " + std::to_string(expected) + " bytes)")
-                                            .c_str());
-            console::print("Glasswave Apple Music: audio transfer cut at ", received, " of ", expected,
-                           " bytes; continuing");
-            waits = 0;
-        }
-    }
-
-    std::string url;
-    std::string token;
-    std::shared_ptr<SessionCleanup> cleanup;
-};
 
 std::string AppleExtension(std::wstring_view codec, std::wstring_view declared) {
     std::string extension = Lower(declared);
@@ -553,9 +446,9 @@ class AppleInput : public input_stubs {
                     AppleSourceVersion(session, json::GetString(session, L"container"), delivered.extension,
                                        delivered.mime, delivered.spatial, delivered.durationMs);
                 if (!openSource(delivered,
-                                AppleEncodedFetch{Utf8(bridge + audio +
+                                AppleEncodedFetch(Utf8(bridge + audio +
                                                        (delivered.codec == L"atmos" ? L"?container=ec3" : L"")),
-                                                  token, std::move(cleanup)}))
+                                                  token, std::move(cleanup))))
                     throw exception_io_data("Audio prefetch capacity is full");
                 if (persistent && ProbeTransactionTag().empty())
                     cache::audio::RememberSource("apple", memoIdentity, m_sourceRequest, delivered.Memo());
