@@ -9,13 +9,14 @@ Widget::Painter CaptionPainter(CaptionButton button, bool atlasArt, std::functio
     return [button, atlasArt, maximized = std::move(maximized)](ID2D1DeviceContext* dc, D2D1_SIZE_F s,
                                                                 paint::Layer l) {
         const paint::CaptionGlyph glyph = button == CaptionButton::Minimize ? paint::CaptionGlyph::Minimize
-                                          : button == CaptionButton::Close ? paint::CaptionGlyph::Close
+                                          : button == CaptionButton::Close  ? paint::CaptionGlyph::Close
                                           : maximized && maximized()        ? paint::CaptionGlyph::Restore
                                                                             : paint::CaptionGlyph::Maximize;
         if (atlasArt)
             aero::atlas::CaptionButton(dc, s, button, glyph, l);
         else // the cluster's ends have the rounded corners
-            paint::CaptionButton(dc, s, glyph, l, button == CaptionButton::Minimize, button == CaptionButton::Close);
+            paint::CaptionButton(dc, s, glyph, l, button == CaptionButton::Minimize,
+                                 button == CaptionButton::Close);
     };
 }
 

@@ -19,7 +19,9 @@ float Ease(const Curve& c, float t) {
     return bez(c.y1, c.y2, u);
 }
 
-wuc::CubicBezierEasingFunction Easing(const Curve& c) { return CompositionHost::Get().Easing(c); }
+wuc::CubicBezierEasingFunction Easing(const Curve& c) {
+    return CompositionHost::Get().Easing(c);
+}
 
 void FadeTo(const wuc::Visual& v, float to, int ms, const Curve& c) {
     auto fade = v.Compositor().CreateScalarKeyFrameAnimation();

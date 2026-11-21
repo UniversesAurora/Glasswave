@@ -11,7 +11,9 @@ void Page::OnFavoritesChanged() {
     }
 }
 
-SongTableSource* Page::SongTable() const { return dynamic_cast<SongTableSource*>(m_host.Source()); }
+SongTableSource* Page::SongTable() const {
+    return dynamic_cast<SongTableSource*>(m_host.Source());
+}
 
 SongsFetch Page::AllSongs(ReadAllSongs read) {
     return Guard([this, read = std::move(read)](std::function<void(metadb_handle_list)> ready) {

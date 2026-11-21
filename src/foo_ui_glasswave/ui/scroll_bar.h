@@ -11,7 +11,13 @@ namespace glasswave::ui {
 
 class ScrollBarModel {
   public:
-    enum Part { kNone = 0, kUp = 1, kDown = 2, kTrack = 3, kThumb = 4 };
+    enum Part {
+        kNone = 0,
+        kUp = 1,
+        kDown = 2,
+        kTrack = 3,
+        kThumb = 4
+    };
 
     // The bar in its own unit (pixels or DIP): its length, each arrow's and the smallest thumb;
     // the content it scrolls in the content's unit: its length, the view's and the scroll.

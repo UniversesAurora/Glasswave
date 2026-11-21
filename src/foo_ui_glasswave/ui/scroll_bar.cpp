@@ -36,23 +36,28 @@ float ScrollBarModel::Press(Part part, float y, const Geometry& g, float line, f
     m_pressY = y;
     m_trackDir = 0;
     switch (part) {
-    case kUp: return -line;
-    case kDown: return line;
+    case kUp:
+        return -line;
+    case kDown:
+        return line;
     case kTrack: {
         float top = 0, height = 0;
         if (!Thumb(g, &top, &height)) return 0;
         m_trackDir = y < top ? -1 : 1;
         return m_trackDir * page;
     }
-    default: return 0;
+    default:
+        return 0;
     }
 }
 
 float ScrollBarModel::Repeat(const Geometry& g, float line, float page) const {
     const float max = g.MaxScroll();
     switch (m_pressed) {
-    case kUp: return g.scroll > 0 ? -line : 0.0f;
-    case kDown: return g.scroll < max ? line : 0.0f;
+    case kUp:
+        return g.scroll > 0 ? -line : 0.0f;
+    case kDown:
+        return g.scroll < max ? line : 0.0f;
     case kTrack: {
         float top = 0, height = 0;
         if (!Thumb(g, &top, &height)) return 0;
@@ -60,7 +65,8 @@ float ScrollBarModel::Repeat(const Geometry& g, float line, float page) const {
         if (m_trackDir > 0) return m_pressY >= top + height && g.scroll < max ? page : 0.0f;
         return 0;
     }
-    default: return 0;
+    default:
+        return 0;
     }
 }
 

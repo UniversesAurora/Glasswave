@@ -19,7 +19,9 @@ inline D2D1_COLOR_F Rgba(int r, int g, int b, float a = 1.0f) {
 inline D2D1_COLOR_F Hex(uint32_t rgb, float a = 1.0f) {
     return Rgba((rgb >> 16) & 0xFF, (rgb >> 8) & 0xFF, rgb & 0xFF, a);
 }
-inline D2D1_COLOR_F WithAlpha(D2D1_COLOR_F c, float a) { return D2D1::ColorF(c.r, c.g, c.b, a); }
+inline D2D1_COLOR_F WithAlpha(D2D1_COLOR_F c, float a) {
+    return D2D1::ColorF(c.r, c.g, c.b, a);
+}
 
 // ---- Brushes ---------------------------------------------------------------------------------
 
@@ -37,24 +39,27 @@ inline winrt::com_ptr<ID2D1SolidColorBrush> Solid(ID2D1DeviceContext* dc, D2D1_C
 inline winrt::com_ptr<ID2D1GradientStopCollection> Stops(ID2D1DeviceContext* dc,
                                                          std::span<const D2D1_GRADIENT_STOP> stops) {
     winrt::com_ptr<ID2D1GradientStopCollection> c;
-    winrt::check_hresult(dc->CreateGradientStopCollection(stops.data(), static_cast<UINT32>(stops.size()), c.put()));
+    winrt::check_hresult(
+        dc->CreateGradientStopCollection(stops.data(), static_cast<UINT32>(stops.size()), c.put()));
     return c;
 }
-inline winrt::com_ptr<ID2D1GradientStopCollection> Stops(ID2D1DeviceContext* dc, std::initializer_list<Stop> stops) {
+inline winrt::com_ptr<ID2D1GradientStopCollection> Stops(ID2D1DeviceContext* dc,
+                                                         std::initializer_list<Stop> stops) {
     std::vector<D2D1_GRADIENT_STOP> v;
     v.reserve(stops.size());
-    for (const auto& s : stops) v.push_back({s.pos, s.color});
+    for (const auto& s : stops)
+        v.push_back({s.pos, s.color});
     return Stops(dc, std::span<const D2D1_GRADIENT_STOP>(v));
 }
 
-inline winrt::com_ptr<ID2D1LinearGradientBrush> Linear(ID2D1DeviceContext* dc, D2D1_POINT_2F a, D2D1_POINT_2F b,
-                                                       ID2D1GradientStopCollection* stops) {
+inline winrt::com_ptr<ID2D1LinearGradientBrush> Linear(ID2D1DeviceContext* dc, D2D1_POINT_2F a,
+                                                       D2D1_POINT_2F b, ID2D1GradientStopCollection* stops) {
     winrt::com_ptr<ID2D1LinearGradientBrush> br;
     winrt::check_hresult(dc->CreateLinearGradientBrush({a, b}, stops, br.put()));
     return br;
 }
-inline winrt::com_ptr<ID2D1LinearGradientBrush> Linear(ID2D1DeviceContext* dc, D2D1_POINT_2F a, D2D1_POINT_2F b,
-                                                       std::initializer_list<Stop> stops) {
+inline winrt::com_ptr<ID2D1LinearGradientBrush> Linear(ID2D1DeviceContext* dc, D2D1_POINT_2F a,
+                                                       D2D1_POINT_2F b, std::initializer_list<Stop> stops) {
     return Linear(dc, a, b, Stops(dc, stops).get());
 }
 inline winrt::com_ptr<ID2D1LinearGradientBrush> Vertical(ID2D1DeviceContext* dc, float y0, float y1,
@@ -68,7 +73,8 @@ inline winrt::com_ptr<ID2D1LinearGradientBrush> Horizontal(ID2D1DeviceContext* d
 inline winrt::com_ptr<ID2D1RadialGradientBrush> Radial(ID2D1DeviceContext* dc, D2D1_POINT_2F center, float rx,
                                                        float ry, std::initializer_list<Stop> stops) {
     winrt::com_ptr<ID2D1RadialGradientBrush> br;
-    winrt::check_hresult(dc->CreateRadialGradientBrush({center, {0, 0}, rx, ry}, Stops(dc, stops).get(), br.put()));
+    winrt::check_hresult(
+        dc->CreateRadialGradientBrush({center, {0, 0}, rx, ry}, Stops(dc, stops).get(), br.put()));
     return br;
 }
 
@@ -83,13 +89,23 @@ inline float ScaleOf(ID2D1DeviceContext* dc) {
     return dx / 96.0f;
 }
 // A hairline's width in DIP: floor(scale) device pixels, at least one.
-inline float Hairline(float scale) { return std::max(1.0f, std::floor(scale)) / scale; }
-inline float Hairline(ID2D1DeviceContext* dc) { return Hairline(ScaleOf(dc)); }
+inline float Hairline(float scale) {
+    return std::max(1.0f, std::floor(scale)) / scale;
+}
+inline float Hairline(ID2D1DeviceContext* dc) {
+    return Hairline(ScaleOf(dc));
+}
 // `v` (DIP) on the nearest device pixel.
-inline float Snap(float v, float scale) { return std::round(v * scale) / scale; }
-inline float Snap(ID2D1DeviceContext* dc, float v) { return Snap(v, ScaleOf(dc)); }
+inline float Snap(float v, float scale) {
+    return std::round(v * scale) / scale;
+}
+inline float Snap(ID2D1DeviceContext* dc, float v) {
+    return Snap(v, ScaleOf(dc));
+}
 
-inline D2D1_RECT_F Inset(D2D1_RECT_F r, float d) { return {r.left + d, r.top + d, r.right - d, r.bottom - d}; }
+inline D2D1_RECT_F Inset(D2D1_RECT_F r, float d) {
+    return {r.left + d, r.top + d, r.right - d, r.bottom - d};
+}
 
 // ---- Geometry --------------------------------------------------------------------------------
 
@@ -107,17 +123,20 @@ inline winrt::com_ptr<ID2D1PathGeometry> Polygon(ID2D1Factory* f, std::initializ
     winrt::check_hresult(g->Open(s.put()));
     auto it = pts.begin();
     s->BeginFigure(*it, D2D1_FIGURE_BEGIN_FILLED);
-    for (++it; it != pts.end(); ++it) s->AddLine(*it);
+    for (++it; it != pts.end(); ++it)
+        s->AddLine(*it);
     s->EndFigure(D2D1_FIGURE_END_CLOSED);
     winrt::check_hresult(s->Close());
     return g;
 }
-inline winrt::com_ptr<ID2D1PathGeometry> Polygon(ID2D1DeviceContext* dc, std::initializer_list<D2D1_POINT_2F> pts) {
+inline winrt::com_ptr<ID2D1PathGeometry> Polygon(ID2D1DeviceContext* dc,
+                                                 std::initializer_list<D2D1_POINT_2F> pts) {
     return Polygon(FactoryOf(dc).get(), pts);
 }
 
 // Strokes with round joins (and `cap` ends): glyphs drawn as lines.
-inline winrt::com_ptr<ID2D1StrokeStyle> RoundJoin(ID2D1DeviceContext* dc, D2D1_CAP_STYLE cap = D2D1_CAP_STYLE_FLAT) {
+inline winrt::com_ptr<ID2D1StrokeStyle> RoundJoin(ID2D1DeviceContext* dc,
+                                                  D2D1_CAP_STYLE cap = D2D1_CAP_STYLE_FLAT) {
     const D2D1_STROKE_STYLE_PROPERTIES p = D2D1::StrokeStyleProperties(cap, cap, cap, D2D1_LINE_JOIN_ROUND);
     winrt::com_ptr<ID2D1StrokeStyle> s;
     FactoryOf(dc)->CreateStrokeStyle(p, nullptr, 0, s.put());

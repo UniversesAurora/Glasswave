@@ -8,11 +8,21 @@ std::string Escape(std::string_view utf8) {
     out.reserve(utf8.size());
     for (const char c : utf8) {
         switch (c) {
-        case '%': out += "%25"; break;
-        case '\t': out += "%09"; break;
-        case '\n': out += "%0A"; break;
-        case '\r': out += "%0D"; break;
-        default: out += c; break;
+        case '%':
+            out += "%25";
+            break;
+        case '\t':
+            out += "%09";
+            break;
+        case '\n':
+            out += "%0A";
+            break;
+        case '\r':
+            out += "%0D";
+            break;
+        default:
+            out += c;
+            break;
         }
     }
     return out;
@@ -46,7 +56,8 @@ std::vector<std::string_view> Split(std::string_view text, char separator) {
     size_t start = 0;
     while (true) {
         const size_t end = text.find(separator, start);
-        parts.push_back(text.substr(start, end == std::string_view::npos ? std::string_view::npos : end - start));
+        parts.push_back(
+            text.substr(start, end == std::string_view::npos ? std::string_view::npos : end - start));
         if (end == std::string_view::npos) break;
         start = end + 1;
     }

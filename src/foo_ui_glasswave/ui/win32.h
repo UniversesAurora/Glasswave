@@ -24,7 +24,8 @@ bool Confirm(HWND owner, const std::wstring& title, const std::wstring& text, bo
 
 // Runs a window object's message handler: an exception is reported on the console and the
 // message goes to DefWindowProc instead of unwinding into user32.
-template <class Handler> LRESULT GuardedWindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp, Handler&& handler) {
+template <class Handler>
+LRESULT GuardedWindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp, Handler&& handler) {
     try {
         return handler();
     } catch (const std::exception& e) {

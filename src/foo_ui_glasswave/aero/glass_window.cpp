@@ -40,7 +40,8 @@ GlassWindow::GlassWindow(HWND hwnd, const Colorization& colorization, bool atlas
     auto interop = comp.as<ABI::Windows::UI::Composition::Desktop::ICompositorDesktopInterop>();
     winrt::check_hresult(interop->CreateDesktopWindowTarget(
         hwnd, FALSE,
-        reinterpret_cast<ABI::Windows::UI::Composition::Desktop::IDesktopWindowTarget**>(winrt::put_abi(m_target))));
+        reinterpret_cast<ABI::Windows::UI::Composition::Desktop::IDesktopWindowTarget**>(
+            winrt::put_abi(m_target))));
 
     m_windowRoot = comp.CreateContainerVisual();
     m_windowRoot.RelativeSizeAdjustment(float2{1, 1});
@@ -74,7 +75,8 @@ void GlassWindow::Layout(SIZE window, LONG sidePx, bool framed) {
     // a 1050 px window at 144 DPI).
     const bool show = m_atlasArt && framed && sidePx > 0;
     const SIZE size{sidePx, window.cy / 4 + static_cast<LONG>(std::lround(20 * m_scale))};
-    for (auto& v : m_highlights) v.IsVisible(show);
+    for (auto& v : m_highlights)
+        v.IsVisible(show);
     if (!show) return;
     Place(m_highlights[0], {0, 0, size.cx, size.cy});
     Place(m_highlights[1], {window.cx - size.cx, 0, window.cx, size.cy});

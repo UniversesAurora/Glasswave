@@ -41,6 +41,8 @@ class FlingTracker {
 };
 
 // How many notches a wheel message turned (WHEEL_DELTA each; fractions on fine wheels).
-inline float WheelNotches(int delta) { return delta / 120.0f; }
+inline float WheelNotches(int delta) {
+    return delta / 120.0f;
+}
 
 } // namespace glasswave::ui

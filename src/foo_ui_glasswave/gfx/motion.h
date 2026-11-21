@@ -30,7 +30,8 @@ float Ease(const Curve& c, float t);
 winrt::Windows::UI::Composition::CubicBezierEasingFunction Easing(const Curve& c);
 
 // A visual's opacity, from where it is to `to`.
-void FadeTo(const winrt::Windows::UI::Composition::Visual& v, float to, int ms, const Curve& c = curve::kEase);
+void FadeTo(const winrt::Windows::UI::Composition::Visual& v, float to, int ms,
+            const Curve& c = curve::kEase);
 // A visual appearing: transparent until `delayMs` have passed, then opaque over `ms`, along `c`
 // or, without one, at an even pace.
 void FadeIn(const winrt::Windows::UI::Composition::Visual& v, int ms, int delayMs, const Curve* c = nullptr);

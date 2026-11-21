@@ -8,7 +8,9 @@ UINT DpiOf(HWND hwnd) {
     return dpi ? dpi : 96;
 }
 
-int Dip(HWND hwnd, int dip) { return MulDiv(dip, static_cast<int>(DpiOf(hwnd)), 96); }
+int Dip(HWND hwnd, int dip) {
+    return MulDiv(dip, static_cast<int>(DpiOf(hwnd)), 96);
+}
 
 std::wstring WindowText(HWND window) {
     std::wstring text(static_cast<size_t>(std::max(GetWindowTextLengthW(window), 0)) + 1, L'\0');
@@ -17,7 +19,9 @@ std::wstring WindowText(HWND window) {
     return text;
 }
 
-std::wstring ItemText(HWND dialog, int id) { return WindowText(GetDlgItem(dialog, id)); }
+std::wstring ItemText(HWND dialog, int id) {
+    return WindowText(GetDlgItem(dialog, id));
+}
 
 void Notice(HWND owner, const std::wstring& title, const std::wstring& text, bool warning) {
     MessageBoxW(owner, text.c_str(), title.c_str(), MB_OK | (warning ? MB_ICONWARNING : MB_ICONINFORMATION));
