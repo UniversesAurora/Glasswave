@@ -3,7 +3,6 @@
 #include "core/text.h"
 #include "applemusic/catalog.h"
 #include "applemusic/client.h"
-#include "applemusic/handle.h"
 #include "cache/images.h"
 #include "cache/art_absence.h"
 
@@ -198,17 +197,13 @@ class AppleArtInstance : public album_art_extractor_instance_v2 {
 
     album_art_data_ptr query(const GUID& what, abort_callback& abort) override {
         if (what != album_art_ids::cover_front) throw exception_album_art_not_found();
-        CoverKind kind = CoverKind::Track;
+        stream::ArtKind artKind = stream::ArtKind::Track;
         std::wstring id;
-        if (!ParseCoverPath(m_path.c_str(), kind, id) && !ParseSongPath(m_path.c_str(), id)) {
+        const stream::Catalog& records = Catalog::Get().Records();
+        if (!records.ParseCoverPath(m_path.c_str(), artKind, id) && !records.ParseSongPath(m_path.c_str(), id)) {
             throw exception_album_art_not_found();
         }
 
-        const stream::ArtKind artKind = kind == CoverKind::Album      ? stream::ArtKind::Album
-                                        : kind == CoverKind::Artist   ? stream::ArtKind::Artist
-                                        : kind == CoverKind::Playlist ? stream::ArtKind::Playlist
-                                        : kind == CoverKind::Station  ? stream::ArtKind::Station
-                                                                      : stream::ArtKind::Track;
         // A song shows its album's cover. Storing it under the album makes every song of the
         // album, the album page and the grids share one download (stream::Provider::ArtKeyOf
         // names the same identity for the UI). The URL is still resolved through the song.
@@ -271,10 +266,11 @@ class AppleArtExtractor : public album_art_extractor_v2 {
   public:
     bool is_our_path(const char* path, const char* extension) override {
         (void)extension;
-        CoverKind kind = CoverKind::Track;
+        stream::ArtKind kind = stream::ArtKind::Track;
         stream::Id id;
-        if (ParseCoverPath(path, kind, id)) return true;
-        return ParseSongPath(path, id);
+        const stream::Catalog& records = Catalog::Get().Records();
+        if (records.ParseCoverPath(path, kind, id)) return true;
+        return records.ParseSongPath(path, id);
     }
 
     album_art_extractor_instance_ptr open(file_ptr filehint, const char* path,
@@ -302,9 +298,10 @@ class AppleArtFallback : public album_art_fallback {
         (void)abort;
         for (t_size i = 0; i < items.get_count(); ++i) {
             const char* path = items[i].is_valid() ? items[i]->get_path() : nullptr;
-            CoverKind kind = CoverKind::Track;
+            stream::ArtKind kind = stream::ArtKind::Track;
             stream::Id id;
-            if (ParseCoverPath(path, kind, id) || ParseSongPath(path, id)) {
+            const stream::Catalog& records = Catalog::Get().Records();
+            if (records.ParseCoverPath(path, kind, id) || records.ParseSongPath(path, id)) {
                 album_art_extractor_instance_v2::ptr instance;
                 instance ^= fb2k::service_new<AppleArtInstance>(std::string(path ? path : ""));
                 return instance;

@@ -140,9 +140,6 @@
     <ClCompile Include="applemusic\lyrics_source.cpp">
       <ObjectFileName>$(IntDir)applemusic_lyrics_source.obj</ObjectFileName>
     </ClCompile>
-    <ClCompile Include="applemusic\handle.cpp">
-      <ObjectFileName>$(IntDir)applemusic_handle.obj</ObjectFileName>
-    </ClCompile>
     <ClCompile Include="applemusic\stream_provider.cpp">
       <ObjectFileName>$(IntDir)applemusic_stream_provider.obj</ObjectFileName>
     </ClCompile>
@@ -212,6 +209,9 @@
     <ClCompile Include="app\settings.cpp" />
     <ClCompile Include="ui\settings_page.cpp" />
     <ClCompile Include="stream\provider.cpp" />
+    <ClCompile Include="stream\catalog.cpp">
+      <ObjectFileName>$(IntDir)stream_catalog.obj</ObjectFileName>
+    </ClCompile>
     <ClCompile Include="stream\executor.cpp" />
     <ClCompile Include="stream\snapshot_saver.cpp" />
     <ClCompile Include="stream\playback_source.cpp" />
@@ -337,15 +337,16 @@
     <ClInclude Include="media\playback_schedule.h" />
     <ClInclude Include="media\playback_scheduler.h" />
     <ClInclude Include="applemusic\catalog.h" />
+    <ClInclude Include="applemusic\ids.h" />
     <ClInclude Include="applemusic\config.h" />
     <ClInclude Include="applemusic\display_metadata.h" />
     <ClInclude Include="applemusic\artist_preference.h" />
     <ClInclude Include="applemusic\lyrics_protocol.h" />
     <ClInclude Include="applemusic\lyrics_source.h" />
-    <ClInclude Include="applemusic\handle.h" />
     <ClInclude Include="applemusic\stream_provider.h" />
     <ClInclude Include="applemusic\login.h" />
     <ClInclude Include="stream\provider.h" />
+    <ClInclude Include="stream\catalog.h" />
     <ClInclude Include="stream\executor.h" />
     <ClInclude Include="stream\snapshot_saver.h" />
     <ClInclude Include="stream\account_gate.h" />

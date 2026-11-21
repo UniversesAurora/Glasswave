@@ -5,7 +5,6 @@
 #include "applemusic/atmos_renderer.h"
 #include "applemusic/config.h"
 #include "applemusic/display_metadata.h"
-#include "applemusic/handle.h"
 #include "applemusic/lyrics_protocol.h"
 #include "applemusic/login.h"
 #include "cache/provider_snapshot.h"
@@ -1400,33 +1399,6 @@ bool PageNeedsDisplayNames(const stream::ListPage& page) {
         page.rows);
 }
 
-std::wstring PreferText(const std::wstring& primary, const std::wstring& fallback) {
-    return primary.empty() ? fallback : primary;
-}
-
-int PreferCount(int primary, int fallback) {
-    return primary == stream::kUnknownCount ? fallback : primary;
-}
-
-std::vector<stream::ArtistRef> MergeArtistRefs(std::vector<stream::ArtistRef> primary,
-                                               const std::vector<stream::ArtistRef>& fallback) {
-    for (const auto& candidate : fallback) {
-        auto found =
-            std::find_if(primary.begin(), primary.end(), [&candidate](const stream::ArtistRef& item) {
-                if (!candidate.id.empty() && item.id == candidate.id) return true;
-                return !candidate.name.empty() && !item.name.empty() &&
-                       (candidate.name == item.name || EqualAscii(candidate.name, item.name));
-            });
-        if (found == primary.end()) {
-            if (!candidate.id.empty() || !candidate.name.empty()) primary.push_back(candidate);
-            continue;
-        }
-        if (found->id.empty()) found->id = candidate.id;
-        if (found->name.empty()) found->name = candidate.name;
-    }
-    return primary;
-}
-
 Song MergeSongRecord(const Song& primary, const Song& fallback) {
     Song merged = primary;
     MergeHydratedSong(merged, fallback);
@@ -1434,7 +1406,7 @@ Song MergeSongRecord(const Song& primary, const Song& fallback) {
     if (merged.track.title.empty() || merged.track.title == L"Unknown")
         if (!fallback.track.title.empty() && fallback.track.title != L"Unknown")
             merged.track.title = fallback.track.title;
-    merged.track.artists = MergeArtistRefs(std::move(merged.track.artists), fallback.track.artists);
+    merged.track.artists = stream::MergeArtistRefs(std::move(merged.track.artists), fallback.track.artists);
     if (merged.track.popularity == 0) merged.track.popularity = fallback.track.popularity;
     if (merged.genreNames.empty()) {
         merged.genreNames = fallback.genreNames;
@@ -1451,69 +1423,6 @@ Song MergeSongRecord(const Song& primary, const Song& fallback) {
             if (std::find(merged.composerNames.begin(), merged.composerNames.end(), value) ==
                 merged.composerNames.end())
                 merged.composerNames.push_back(value);
-    }
-    return merged;
-}
-
-stream::Playlist MergePlaylistRecord(const stream::Playlist& primary, const stream::Playlist& fallback,
-                                     bool mergeFlags) {
-    stream::Playlist merged = primary;
-    if (merged.id.empty()) merged.id = fallback.id;
-    merged.name = PreferText(merged.name, fallback.name);
-    merged.coverUrl = PreferText(merged.coverUrl, fallback.coverUrl);
-    merged.creator = PreferText(merged.creator, fallback.creator);
-    merged.description = PreferText(merged.description, fallback.description);
-    merged.trackCount = PreferCount(merged.trackCount, fallback.trackCount);
-    merged.tagline = PreferText(merged.tagline, fallback.tagline);
-    merged.type = PreferText(merged.type, fallback.type);
-    merged.created = PreferText(merged.created, fallback.created);
-    merged.updated = PreferText(merged.updated, fallback.updated);
-    if (merged.traits.empty()) merged.traits = fallback.traits;
-    if (mergeFlags) {
-        merged.own = merged.own || fallback.own;
-        merged.saved = merged.saved || fallback.saved;
-    }
-    return merged;
-}
-
-stream::Album MergeAlbumRecord(const stream::Album& primary, const stream::Album& fallback) {
-    stream::Album merged = primary;
-    if (merged.id.empty()) merged.id = fallback.id;
-    merged.name = PreferText(merged.name, fallback.name);
-    merged.coverUrl = PreferText(merged.coverUrl, fallback.coverUrl);
-    merged.description = PreferText(merged.description, fallback.description);
-    merged.artists = MergeArtistRefs(std::move(merged.artists), fallback.artists);
-    merged.trackCount = PreferCount(merged.trackCount, fallback.trackCount);
-    if (merged.year == 0) merged.year = fallback.year;
-    merged.released = PreferText(merged.released, fallback.released);
-    merged.label = PreferText(merged.label, fallback.label);
-    merged.copyright = PreferText(merged.copyright, fallback.copyright);
-    merged.type = PreferText(merged.type, fallback.type);
-    merged.upc = PreferText(merged.upc, fallback.upc);
-    if (merged.genres.empty()) merged.genres = fallback.genres;
-    if (merged.aliases.empty()) merged.aliases = fallback.aliases;
-    if (merged.traits.empty()) merged.traits = fallback.traits;
-    return merged;
-}
-
-stream::Artist MergeArtistRecord(const stream::Artist& primary, const stream::Artist& fallback,
-                                 bool mergeFollowState) {
-    stream::Artist merged = primary;
-    if (merged.id.empty()) merged.id = fallback.id;
-    merged.name = PreferText(merged.name, fallback.name);
-    merged.avatarUrl = PreferText(merged.avatarUrl, fallback.avatarUrl);
-    merged.albumCount = PreferCount(merged.albumCount, fallback.albumCount);
-    merged.trackCount = PreferCount(merged.trackCount, fallback.trackCount);
-    if (fallback.profile && !primary.profile) {
-        stream::CopyArtistProfile(fallback, merged); // a list row over the artist's own record
-    } else {
-        merged.bio = PreferText(merged.bio, fallback.bio);
-    }
-    if (mergeFollowState || !merged.followKnown) {
-        if (fallback.followKnown) {
-            merged.followKnown = true;
-            merged.followed = fallback.followed;
-        }
     }
     return merged;
 }
@@ -2400,6 +2309,7 @@ void StreamProvider::Shutdown() {
     }
     m_artistVerificationCondition.notify_all();
     m_exec.Join();
+    Catalog::Get().FlushPendingSave(); // a write still waiting for its burst to end
     {
         std::lock_guard lock(m_mutex);
         m_artistExistence.clear();
@@ -3944,7 +3854,7 @@ void StreamProvider::RefreshLibrary(Done done) {
 
 stream::Id StreamProvider::TrackId(const metadb_handle_ptr& item) const {
     stream::Id id;
-    return item.is_valid() && ParseSongPath(item->get_path(), id) ? id : stream::Id();
+    return item.is_valid() && Catalog::Get().Records().ParseSongPath(item->get_path(), id) ? id : stream::Id();
 }
 
 std::wstring StreamProvider::Lyrics(const stream::Id& track, abort_callback& abort) {
@@ -5096,21 +5006,21 @@ void StreamProvider::RestoreListRecords(const stream::ListPage& page) {
                 for (const auto& row : rows) {
                     auto merged = row;
                     if (const auto existing = Catalog::Get().FindPlaylistRaw(row.id))
-                        merged = MergePlaylistRecord(*existing, row, true);
+                        merged = stream::MergePlaylist(*existing, row, true);
                     Catalog::Get().Put(merged);
                 }
             } else if constexpr (std::is_same_v<Rows, std::vector<stream::Album>>) {
                 for (const auto& row : rows) {
                     auto merged = row;
                     if (const auto existing = Catalog::Get().FindAlbumRaw(row.id))
-                        merged = MergeAlbumRecord(*existing, row);
+                        merged = stream::MergeAlbum(*existing, row);
                     Catalog::Get().Put(merged);
                 }
             } else if constexpr (std::is_same_v<Rows, std::vector<stream::Artist>>) {
                 for (const auto& row : rows) {
                     auto merged = row;
                     if (const auto existing = Catalog::Get().FindArtistRaw(row.id))
-                        merged = MergeArtistRecord(*existing, row, true);
+                        merged = stream::MergeArtist(*existing, row, true);
                     Catalog::Get().Put(merged);
                 }
             } else if constexpr (std::is_same_v<Rows, std::vector<stream::CatalogSearchItem>>) {
@@ -5139,19 +5049,19 @@ void StreamProvider::RestoreListRecords(const stream::ListPage& page) {
     if (page.playlist) {
         auto merged = *page.playlist;
         if (const auto existing = Catalog::Get().FindPlaylistRaw(page.playlist->id))
-            merged = MergePlaylistRecord(*existing, *page.playlist, true);
+            merged = stream::MergePlaylist(*existing, *page.playlist, true);
         Catalog::Get().Put(merged);
     }
     if (page.album) {
         auto merged = *page.album;
         if (const auto existing = Catalog::Get().FindAlbumRaw(page.album->id))
-            merged = MergeAlbumRecord(*existing, *page.album);
+            merged = stream::MergeAlbum(*existing, *page.album);
         Catalog::Get().Put(merged);
     }
     if (page.artist) {
         auto merged = *page.artist;
         if (const auto existing = Catalog::Get().FindArtistRaw(page.artist->id))
-            merged = MergeArtistRecord(*existing, *page.artist, true);
+            merged = stream::MergeArtist(*existing, *page.artist, true);
         Catalog::Get().Put(merged);
     }
 }
@@ -6060,7 +5970,7 @@ void StreamProvider::FinishListPage(uint64_t generation, uint64_t preferenceEpoc
         if (page.playlist) {
             auto merged = *page.playlist;
             if (const auto existing = Catalog::Get().FindPlaylistRaw(page.playlist->id))
-                merged = MergePlaylistRecord(merged, *existing, false);
+                merged = stream::MergePlaylist(merged, *existing, false);
             if (const auto saved = PlaylistSavedState(merged.id)) merged.saved = *saved;
             Catalog::Get().Put(merged);
             page.playlist = std::move(merged);
@@ -6068,14 +5978,14 @@ void StreamProvider::FinishListPage(uint64_t generation, uint64_t preferenceEpoc
         if (page.album) {
             auto merged = *page.album;
             if (const auto existing = Catalog::Get().FindAlbumRaw(page.album->id))
-                merged = MergeAlbumRecord(merged, *existing);
+                merged = stream::MergeAlbum(merged, *existing);
             Catalog::Get().Put(merged);
             page.album = std::move(merged);
         }
         if (page.artist) {
             auto merged = *page.artist;
             if (const auto existing = Catalog::Get().FindArtistRaw(page.artist->id))
-                merged = MergeArtistRecord(merged, *existing, false);
+                merged = stream::MergeArtist(merged, *existing, false);
             ApplyArtistPreferenceOverlay(merged, preferenceEpoch);
             Catalog::Get().Put(merged);
             page.artist = std::move(merged);
@@ -6087,20 +5997,20 @@ void StreamProvider::FinishListPage(uint64_t generation, uint64_t preferenceEpoc
         if (auto* playlistRows = std::get_if<std::vector<stream::Playlist>>(&page.rows)) {
             for (auto& row : *playlistRows) {
                 if (const auto existing = Catalog::Get().FindPlaylistRaw(row.id))
-                    row = MergePlaylistRecord(row, *existing, false);
+                    row = stream::MergePlaylist(row, *existing, false);
                 if (const auto saved = PlaylistSavedState(row.id)) row.saved = *saved;
                 Catalog::Get().Put(row);
             }
         } else if (auto* albumRows = std::get_if<std::vector<stream::Album>>(&page.rows)) {
             for (auto& row : *albumRows) {
                 if (const auto existing = Catalog::Get().FindAlbumRaw(row.id))
-                    row = MergeAlbumRecord(row, *existing);
+                    row = stream::MergeAlbum(row, *existing);
                 Catalog::Get().Put(row);
             }
         } else if (auto* artistRows = std::get_if<std::vector<stream::Artist>>(&page.rows)) {
             for (auto& row : *artistRows) {
                 if (const auto existing = Catalog::Get().FindArtistRaw(row.id))
-                    row = MergeArtistRecord(row, *existing, false);
+                    row = stream::MergeArtist(row, *existing, false);
                 ApplyArtistPreferenceOverlay(row, preferenceEpoch);
                 Catalog::Get().Put(row);
             }

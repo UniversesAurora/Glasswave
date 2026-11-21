@@ -1,6 +1,7 @@
 #pragma once
 
-#include "applemusic/handle.h"
+#include "applemusic/ids.h"
+#include "stream/catalog.h"
 #include "stream/model.h"
 
 #include <mutex>
@@ -11,9 +12,9 @@
 
 namespace glasswave::applemusic {
 
-struct Song {
-    stream::Track track;
-    std::wstring coverUrl;
+// What Apple keeps of a song beyond its stream::Track and cover: the ids of its library and
+// catalog entries, the library's flags and the names the track has no field for.
+struct SongExtra {
     std::wstring catalogId;
     std::wstring libraryId;
     std::wstring libraryAlbumId;
@@ -27,12 +28,23 @@ struct Song {
     std::wstring composerName;
 };
 
-// Apple metadata is shared by the provider, decoder threads and album-art workers.
-// All reads are synchronized; only PutAndHint touches foobar2000's main-thread metadata
-// service. The disk cache contains library metadata and cover URLs, never credentials.
+struct Song : SongExtra {
+    stream::Track track;
+    std::wstring coverUrl;
+};
+
+// Apple metadata is shared by the provider, decoder threads and album-art workers. The records
+// are stream:: records in a stream::Catalog (Records()); this class keeps what they do not carry
+// (a Song's library ids, composers and genres, the delivered lengths, the library/catalog id
+// maps) and joins it with them. All reads are synchronized; only PutAndHint touches foobar2000's
+// main-thread metadata service. The disk cache contains library metadata and cover URLs, never
+// credentials.
 class Catalog {
   public:
     static Catalog& Get();
+
+    // The shared records: handles, paths, restore, cache.
+    stream::Catalog& Records() { return m_records; }
 
     void Put(const Song& song);
     void Put(const std::vector<Song>& songs);
@@ -65,8 +77,10 @@ class Catalog {
     void RemovePlaylist(const stream::Id& id);
     void RemoveAlbum(const stream::Id& id);
 
-    metadb_handle_ptr Handle(const stream::Id& songId) const;
-    metadb_handle_ptr CoverHandle(stream::ArtKind kind, const stream::Id& id) const;
+    metadb_handle_ptr Handle(const stream::Id& songId) const { return m_records.Handle(songId); }
+    metadb_handle_ptr CoverHandle(stream::ArtKind kind, const stream::Id& id) const {
+        return m_records.CoverHandle(kind, id);
+    }
     std::wstring CoverUrl(stream::ArtKind kind, const stream::Id& id) const;
 
     // Main thread: update metadb with tags and durations in one batch. Streamed list pages
@@ -86,36 +100,30 @@ class Catalog {
     // merges only records not already present, then publishes their metadb hints.
     std::vector<Song> ReadCacheFile() const;
     void InstallCached(std::vector<Song> songs);
-    void Save() const;
     // Reapply the current display overlay to cached metadb hints without changing raw records.
-    void RefreshHints() const;
+    void RefreshHints() const { m_records.HintAll(); }
+    // Main thread, at quit: writes the restart cache now when a deferred write is still pending.
+    void FlushPendingSave() { m_records.FlushPendingSave(); }
     // A UI-language change invalidates localized names without deleting the restart cache.
     void ClearMemory();
     // Sign-out/account switch: remove private library metadata from memory and disk.
     void Clear();
 
   private:
-    Catalog() = default;
-    void Hint(const std::vector<Song>& songs) const;
-    // Under m_mutex: stores a record; true when a flush of queued metadb hints must be posted.
-    bool StoreLocked(const Song& song);
-    static void PostHints();
-    void FlushHints(); // main thread
+    Catalog();
+    static stream::CatalogTraits Traits(Catalog& self);
+        std::wstring EncodeExtra(const stream::Id& id) const;
+    void WriteTags(const stream::Track& stored, file_info& info) const;
     // Under m_mutex: reads the measured lengths file once, then corrects a song's length.
     void LoadMeasuredLocked() const;
     void ApplyMeasuredLocked(Song& song) const;
     void SaveMeasuredLocked() const;
 
+    stream::Catalog m_records;
     mutable std::mutex m_mutex;
-    std::vector<stream::Id> m_hintQueue; // records new or shown differently, for metadb
-    bool m_hintPosted = false;
     mutable bool m_measuredLoaded = false;
     mutable std::unordered_map<stream::Id, int> m_measured;
-    std::unordered_map<stream::Id, Song> m_songs;
-    std::unordered_map<stream::Id, stream::Playlist> m_playlists;
-    std::unordered_map<stream::Id, stream::Station> m_stations;
-    std::unordered_map<stream::Id, stream::Album> m_albums;
-    std::unordered_map<stream::Id, stream::Artist> m_artists;
+    std::unordered_map<stream::Id, SongExtra> m_extras;
     std::unordered_map<stream::Id, stream::Id> m_albumLibraryIds;
     std::unordered_map<stream::Id, stream::Id> m_artistCatalogIds;
     std::unordered_map<stream::Id, stream::Id> m_songAlbums;

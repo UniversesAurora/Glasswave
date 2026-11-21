@@ -4,7 +4,6 @@
 #include "applemusic/atmos_renderer.h"
 #include "applemusic/client.h"
 #include "applemusic/config.h"
-#include "applemusic/handle.h"
 #include "applemusic/playback_log.h"
 #include "applemusic/stream_provider.h"
 #include "cache/audio.h"
@@ -315,7 +314,7 @@ class AppleInput : public input_stubs {
 
     void open(file::ptr, const char* path, t_input_open_reason reason, abort_callback&) {
         if (reason == input_open_info_write) throw exception_tagging_unsupported();
-        if (!ParseSongPath(path, m_id)) throw exception_io_data("Invalid Apple Music track");
+        if (!Catalog::Get().Records().ParseSongPath(path, m_id)) throw exception_io_data("Invalid Apple Music track");
         m_path = path;
         m_cacheKey = {};
     }
@@ -791,7 +790,7 @@ class AppleInput : public input_stubs {
     static bool g_is_our_content_type(const char*) { return false; }
     static bool g_is_our_path(const char* path, const char*) {
         stream::Id id;
-        return ParseSongPath(path, id);
+        return Catalog::Get().Records().ParseSongPath(path, id);
     }
     static const char* g_get_name() { return "Glasswave Apple Music input"; }
     static GUID g_get_guid() {

@@ -4,7 +4,6 @@
 #include "applemusic/catalog.h"
 #include "applemusic/client.h"
 #include "applemusic/config.h"
-#include "applemusic/handle.h"
 
 #include <SDK/audio_chunk_impl.h>
 #include <SDK/file_info_impl.h>
@@ -286,7 +285,7 @@ std::optional<ProbeRequest> ParseRequest(std::string_view bytes, const fs::path&
                 error = L"invalid_song_id";
                 return std::nullopt;
             }
-            const std::string path = SongPath(id);
+            const std::string path = Catalog::Get().Records().SongPath(id);
             if (path.empty()) {
                 error = L"invalid_song_id";
                 return std::nullopt;
@@ -478,7 +477,7 @@ ProbeResult DecodeRequest(const ProbeRequest& request, abort_callback_impl& abor
     if (request.verify_metadata) {
         result.metadata_input_path = request.input_path;
         stream::Id id;
-        if (!ParseSongPath(request.input_path.c_str(), id)) {
+        if (!Catalog::Get().Records().ParseSongPath(request.input_path.c_str(), id)) {
             SetFailure(result, L"metadata_song_path_required");
             return result;
         }
@@ -934,7 +933,7 @@ void RunProbe(const ProbePaths paths, std::shared_ptr<abort_callback_impl> abort
         try {
             abort->check();
             std::optional<ScopedFixtureProbeTransaction> transaction;
-            if (request->verify_metadata && request->input_path == SongPath(kMetadataFixtureId))
+            if (request->verify_metadata && request->input_path == Catalog::Get().Records().SongPath(stream::Id(kMetadataFixtureId)))
                 transaction.emplace();
             if (request->atmos) {
                 const ScopedAtmosPlaybackOverride preference(true, request->atmos_output);
@@ -947,7 +946,7 @@ void RunProbe(const ProbePaths paths, std::shared_ptr<abort_callback_impl> abort
         } catch (...) {
             SetFailure(result, L"unexpected_failure");
         }
-        if (request->verify_metadata && request->input_path == SongPath(kMetadataFixtureId))
+        if (request->verify_metadata && request->input_path == Catalog::Get().Records().SongPath(stream::Id(kMetadataFixtureId)))
             result.fixture_transaction_restored = ProbeTransactionTag() == previousTransaction;
     }
     WriteResult(paths.result, result);
