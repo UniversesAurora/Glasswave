@@ -70,6 +70,20 @@ foobar2000.exe (core: decoding, playlists, library, DSP, output, components)
   `SnapshotSaver` (the bootstrap snapshot: load, a write that re-runs once when changes arrive
   during it, the final write at shutdown). A source supplies only what it knows: its service
   calls, whether a snapshot may be written now and how to fill it.
+- `stream::Catalog` (`stream/catalog.h`) is what a provider has seen of its service: `stream::`
+  tracks, albums, artists, playlists and stations keyed by id, put by reads and merged on
+  restore (`MergeTrack`/`MergeAlbum`/`MergePlaylist`/`MergeArtist`: a sparse record from a list
+  cache or a search summary never overwrites a richer one). It also owns the metadb side: the
+  `<scheme>://song/<id>` and `<scheme>://cover/<kind>/<id>` handles (a provider's
+  `CatalogTraits` supplies its scheme and id spelling, so the paths in playlists and play
+  history stay fixed), the batched hint queue that feeds new or changed tags to metadb, and the
+  songs-only restart cache (`<profile>/glasswave/<provider>/cache/songs.tsv`, written once per
+  burst on a worker via `core::WriteFileAtomic`, flushed at quit). What a `stream::` record has
+  no field for stays in a provider-owned side table (Apple's library ids, composers, genres and
+  delivered lengths; NetEase's codec and bit rate) that rides in the cache's last column.
+  `Provider::Records()` exposes it, and `TrackItem`, `FindTrack`, `ArtItem`, `FindPlaylist` and
+  `FindAlbum` default to it. The HTTP client's own types (`netease::Song`...) end at
+  `netease/convert.h`, which turns them into `stream::` records once.
 - Downloads (`download/downloads.h`, `ui/downloads_page.h`): sources with
   `Capability::Download` describe a song's file (`Provider::ResolveDownload`: an HTTP link and
   its tags); the service queues, names, tags and remembers files and fetches them with aria2 (a

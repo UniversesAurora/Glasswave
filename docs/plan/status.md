@@ -2,7 +2,25 @@
 
 Updated: 2026-11-21
 
-## Shared core module (2026-11-21, latest)
+## One catalog for every provider (2026-11-21, latest)
+
+- `stream::Catalog` (`stream/catalog.{h,cpp}`) replaces the two private catalogs: records as
+  `stream::` types, merge-on-restore, the batched metadb hint queue, `<scheme>://` handles from
+  the provider's `CatalogTraits`, and the songs-only restart cache (deferred, written on a
+  worker, flushed at quit; Apple no longer writes on the main thread). Apple and NetEase keep a
+  side table for what `stream::` lacks (library ids, composers, genres, delivered lengths /
+  codec, bit rate); both `handle.cpp` files are gone, NetEase's lossy `From*` round trip too.
+- NetEase's HTTP types end at `netease/convert.h`; the session's lists and the catalog hold
+  `stream::` records. `Provider::Records()` backs the default `TrackItem`, `FindTrack`,
+  `ArtItem`, `FindPlaylist` and `FindAlbum`.
+- Cache files changed format (new headers): in the dev profile delete
+  `.local/fb2k-dev/profile/glasswave/applemusic/cache/songs.tsv` and
+  `.local/fb2k-dev/profile/glasswave/netease/cache/songs.tsv`; they are rebuilt as songs load.
+  Paths of songs and covers did not change.
+- Not run in the dev instance; owner check pending (queue restore after a restart, album art
+  of songs and playlists, Apple's uploaded-song lengths, NetEase playlist own / saved marks).
+
+## Shared core module (2026-11-21)
 
 - New `src/foo_ui_glasswave/core/` (namespace `glasswave::core`) holds the plumbing no source
   owns: `json`, `log` (now `<profile>\glasswave\glasswave.log`, was
