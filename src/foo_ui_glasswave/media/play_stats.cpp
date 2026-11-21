@@ -6,7 +6,7 @@
 #include "core/paths.h"
 #include "stream/provider.h"
 #include "app/settings.h"
-#include "cd/disc.h"
+#include "media/path_behaviour.h"
 
 #include <cstdlib>
 #include <ctime>
@@ -352,9 +352,9 @@ void PlayStats::Refresh(metadb_handle_list_cref items) {
 }
 
 namespace {
-// A CD's tracks play only while it is in a drive.
+// A CD's tracks play only while it is in a drive (media/path_behaviour.h).
 bool Playable(const PlayRecord& record) {
-    return !cd::IsCdPath(record.path.c_str()) || cd::DiscPresent(cd::DiscKey(record.path.c_str()));
+    return ItemAvailable(record.path.c_str());
 }
 } // namespace
 

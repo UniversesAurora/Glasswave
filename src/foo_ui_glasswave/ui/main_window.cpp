@@ -28,7 +28,7 @@
 #include "ui/win7_menu.h"
 #include "ui/i18n.h"
 #include "media/favorites.h"
-#include "media/outside_play.h"
+#include "cd/playback.h"
 #include "cd/discs.h"
 #include "media/play_stats.h"
 #include "media/special_playlists.h"
@@ -7262,14 +7262,14 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
 
     case WM_DEVICECHANGE:
         // A disc came or went: the navigation pane shows the drives' CDs (cd/discs.h), and a
-        // disc taken out leaves the queue (media/outside_play.h).
+        // disc taken out leaves the queue (cd/playback.h).
         if ((wp == DBT_DEVICEARRIVAL || wp == DBT_DEVICEREMOVECOMPLETE) && lp &&
             reinterpret_cast<const DEV_BROADCAST_HDR*>(lp)->dbch_devicetype == DBT_DEVTYP_VOLUME &&
             (reinterpret_cast<const DEV_BROADCAST_VOLUME*>(lp)->dbcv_flags & DBTF_MEDIA)) {
             cd::OnMediaChanged(reinterpret_cast<const DEV_BROADCAST_VOLUME*>(lp)->dbcv_unitmask,
                                wp == DBT_DEVICEARRIVAL);
             if (wp == DBT_DEVICEREMOVECOMPLETE)
-                media::DropEjectedDiscs([] {
+                cd::DropEjectedDiscs([] {
                     auto* window = Instance();
                     if (!window) return;
                     window->OnCoreQueueChanged(); // history rows
