@@ -1386,11 +1386,10 @@ void PlaybackScheduler::Impl::HandleStop(play_control::t_stop_reason reason) {
         return;
     }
 
-    // Unverified (review 2026-11-21): every reason but the two above counts as a failed start
-    // here, including stop_reason_user. If foobar2000 reports a user Stop pressed while the
-    // explicit start is still opening (a slow stream) with that reason, the next song plays. It
-    // needs a run with a slow source to tell; what a failed open reports is not documented, so
-    // the branch is left as it is.
+    // Every reason but the two above counts as a failed start here: what foobar2000 reports for
+    // a track that fails to open is not documented. A Stop through Glasswave's controls clears
+    // the start first (StopRequested); foobar2000's own Stop pressed while a song is still
+    // opening still reads as a failed start.
     if (exactStart) {
         exactStart.reset();
         ++failureBurst;
@@ -2245,6 +2244,12 @@ void PlaybackScheduler::OnPlaybackStopped(play_control::t_stop_reason reason) {
 
 void PlaybackScheduler::OnPlaybackTime() {
     m_impl->OnPlaybackTime();
+}
+
+void PlaybackScheduler::StopRequested() {
+    PFC_ASSERT(core_api::is_main_thread());
+    m_impl->exactStart.reset();
+    m_impl->navigationTarget.reset();
 }
 
 void PlaybackScheduler::QueuePlaylistAdded(std::size_t base, const metadb_handle_list& items) {

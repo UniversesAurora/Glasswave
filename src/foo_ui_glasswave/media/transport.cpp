@@ -1,6 +1,7 @@
 #include "pch.h"
 #include "media/transport.h"
 
+#include "media/playback_scheduler.h"
 #include "media/special_playlists.h"
 
 namespace glasswave::media::transport {
@@ -18,6 +19,7 @@ void PlayPause(const std::function<bool()>& startHere) {
 
 void Stop() {
     CancelPendingPlay();
+    if (auto* scheduler = PlaybackScheduler::Existing()) scheduler->StopRequested();
     playback_control::get()->stop();
 }
 

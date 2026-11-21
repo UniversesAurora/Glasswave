@@ -110,6 +110,10 @@ class PlaybackScheduler final {
     void OnTrackStarted(const metadb_handle_ptr& track);
     void OnPlaybackStopped(play_control::t_stop_reason reason);
     void OnPlaybackTime();
+    // The user is about to stop playback through Glasswave (media::transport::Stop). A song that
+    // is still opening is given up: its stop is not a failed start, which would play the next one.
+    // Main thread, before playback_control::stop.
+    void StopRequested();
 
     void QueuePlaylistAdded(std::size_t base, const metadb_handle_list& items);
     void QueuePlaylistReordered(const t_size* order, std::size_t count);
