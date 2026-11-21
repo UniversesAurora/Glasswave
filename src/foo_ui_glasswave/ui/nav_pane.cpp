@@ -691,7 +691,9 @@ void NavPane::OnMouseLeave() {
 }
 
 void NavPane::OnWheel(int delta) {
-    const size_t visible = static_cast<size_t>((m_bounds.bottom - m_bounds.top) / std::max(RowHeightPx(), 1));
+    // Rows start 6 DIP down; keep as much room under the last one.
+    const long room = m_bounds.bottom - m_bounds.top - 2 * std::lround(6 * m_scale);
+    const size_t visible = static_cast<size_t>(std::max(room, 0l) / std::max(RowHeightPx(), 1));
     const size_t maxTop = m_items.size() > visible ? m_items.size() - visible : 0;
     const int lines = 3 * (-delta / WHEEL_DELTA);
     m_top = lines < 0 ? (m_top > static_cast<size_t>(-lines) ? m_top + lines : 0) : std::min(m_top + lines, maxTop);

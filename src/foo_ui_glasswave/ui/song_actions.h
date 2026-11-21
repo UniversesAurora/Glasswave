@@ -25,9 +25,11 @@ using SongsFetch = std::function<void(std::function<void(metadb_handle_list)> re
 SongsFetch Ready(metadb_handle_list items);
 
 // Play / Play next / Add to queue / Add to playlist, plus Add to <provider> playlist when
-// `remote` is given (its own playlists, without `excludeRemote`).
+// `remote` is given (its own playlists, without `excludeRemote`). `play`, when given, is what
+// Play does (a service's list plays through PlayRemoteList: what plays stops at once).
 void AddBulkActions(std::vector<MenuAction>& actions, SongsFetch songs, stream::Provider* remote = nullptr,
-                    const stream::Id& excludeRemote = {}, size_t excludeLocal = SIZE_MAX);
+                    const stream::Id& excludeRemote = {}, size_t excludeLocal = SIZE_MAX,
+                    std::function<void()> play = {});
 
 // "Add to <provider> playlist" for songs of that provider; nothing when it has no
 // editable playlists.

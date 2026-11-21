@@ -3,6 +3,7 @@
 #include "media/library_model.h"
 #include "stream/model.h"
 
+#include <memory>
 #include <string>
 
 namespace glasswave::ui {

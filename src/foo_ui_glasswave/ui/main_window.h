@@ -40,6 +40,8 @@ class MainWindow : public PageHost, public PlayerHost {
     HWND Create(user_interface::HookProc_t hook);
     void Destroy();
     HWND Hwnd() const { return m_hwnd; }
+    // The composition tree's root, for the dev switch that logs what is on screen.
+    const winrt::Windows::UI::Composition::ContainerVisual& VisualRoot() const { return m_windowRoot; }
     static MainWindow* Instance(); // the window while it exists (main menu commands)
     void ReapplyLyrics() { OnLyrics(m_lyricsResult); } // after Swap original and translation changed
     void OnCoreQueueChanged() { SchedulePaneQueueRefresh(); }
@@ -127,6 +129,7 @@ class MainWindow : public PageHost, public PlayerHost {
     std::wstring m_pageAnchor;
     size_t m_pageAnchorOrdinal = 0;
     size_t m_pageAnchorRow = SIZE_MAX;
+    float m_pageAnchorOffset = 0; // DIP from the view's top to the anchor row (ListView::RowOffset)
     struct Layout {
         int border = 0;
         RECT caption{}, client{}, clientEdge{}, navBar{}, cmdBar{}, content{}, transport{};
@@ -230,9 +233,13 @@ class MainWindow : public PageHost, public PlayerHost {
     stream::Provider* ViewProvider() const; // the provider of the current Remote view
     void RefreshProviderSections();         // the navigation pane's provider sections
     void ShowRemoteNavMenu(const NavPane::Item& item, POINT screen);
+    // The audio CDs in the drives changed (came, went, tagged).
+    void OnDiscsChanged();
+    void ShowDiscMenu(wchar_t drive, POINT screen);
     void PaintDetailHeader();
     void RepaintDetailHeader();
     float DetailHeaderTextWidth() const; // DIP available for the name, stats and description
+    float DetailTextTop() const;          // DIP: the facts' top, under the stats line when there is one
     size_t DetailFactColumns(float textW) const;
     float DetailFactsHeight(float textW) const;   // DIP, 0 without facts
     float DetailTaglineHeight(float textW) const; // DIP, 0 without a tagline
@@ -426,7 +433,11 @@ class MainWindow : public PageHost, public PlayerHost {
         std::wstring text;
     };
     std::vector<CutText> m_detailCut; // detail values drawn with an ellipsis (DrawDetailFacts)
-    size_t m_detailTipItem = SIZE_MAX;
+    // The control bar's texts cut short: title and artist, the lyric line, format and device.
+    std::vector<CutText> m_npCut, m_lyricCut, m_streamCut;
+    bool m_tipAbove = false; // the tip under the pointer is in the control bar: shown above it
+    std::wstring m_tipText; // the cut-short text under the pointer (header details or the list)
+    RECT m_tipRect{};
     POINT m_detailTipAt{};
     winrt::Windows::UI::Composition::SpriteVisual m_volumeTip{nullptr};
     bool m_volumeTipShown = false;
@@ -509,6 +520,7 @@ class MainWindow : public PageHost, public PlayerHost {
     std::wstring m_loggedDetail; // LogDetail: the band's text last written to the log
     bool m_detailBriefExpanded = false;
     bool m_detailBriefOverflow = false;
+    std::wstring m_detailBriefCollapsed; // the description shortened to three lines, Show more after it
     float m_detailBriefScroll = 0; // DIP into the description
     float m_detailBriefViewH = 0;  // DIP visible description height
     float m_detailBriefContentH = 0;
@@ -611,6 +623,7 @@ class MainWindow : public PageHost, public PlayerHost {
     std::unique_ptr<LibraryCallback> m_libraryCallback;
     struct ProviderListener;
     std::unique_ptr<ProviderListener> m_providerListener;
+    int m_discsToken = 0;
     std::shared_ptr<int> m_alive = std::make_shared<int>(0);
     now_playing_album_art_notify* m_artNotify = nullptr;
     winrt::com_ptr<IDropTarget> m_dropTarget;

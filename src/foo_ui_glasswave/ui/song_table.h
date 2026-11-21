@@ -2,6 +2,7 @@
 
 #include "media/list_sources.h"
 #include "media/play_stats.h"
+#include "stream/list.h"
 #include "stream/provider.h"
 
 #include <functional>
@@ -110,6 +111,7 @@ public:
     void SetEmptyText(std::wstring text) { m_emptyText = std::move(text); }
 
 protected:
+    const std::vector<SongTableRow>& AllRows() const { return m_all; }
     // emptyText is shown while there are no rows; columnKey names the saved column layout.
     SongTableSource(std::vector<SongTableRow> rows, bool showSource, std::wstring emptyText, std::wstring columnKey);
     // Appends rows (the next page) without moving existing rows or clearing the selection.
@@ -176,7 +178,9 @@ private:
 // Tracks of one streaming provider (favorites, a playlist, an album, top tracks).
 class RemoteSongSource : public SongTableSource {
 public:
-    RemoteSongSource(stream::Provider& provider, const std::vector<stream::Track>& tracks,
+    // The columns' layout is kept per provider and kind of list (an album, a playlist, an
+    // artist's albums...): the same kind of page looks the same whichever list it shows.
+    RemoteSongSource(stream::Provider& provider, stream::ListKind kind, const std::vector<stream::Track>& tracks,
                      std::wstring emptyText, size_t count = SIZE_MAX);
     // Converts and merges only [begin, end). The ids and order must match the published prefix.
     void AppendTracks(const std::vector<stream::Track>& tracks, size_t begin = 0, size_t end = SIZE_MAX);

@@ -884,18 +884,20 @@ float ListView::ArtSize() const { return kGroupMinLines * (RowHeightPx() / m_sca
 float ListView::AlbumTextLeft(float albumLeft) const { return albumLeft + 3 + ArtSize() + 8; }
 
 float ListView::LineHeightDip(const Line& line) const {
+    if (m_tileGroups)
+        return line.kind == Line::GroupHeader ? kTileGroupHeader : TileSizeOf(GroupTiles(line.group)).height;
     if (m_mode == Mode::Grouped && !m_groupArt && line.kind == Line::GroupHeader)
         return static_cast<float>(std::lround(kRowHeight * m_scale)) / m_scale;
     return RowHeightPx() / m_scale;
 }
 
 float ListView::LineTopDip(size_t line) const {
-    if (m_mode == Mode::Grouped) return m_lineTop.empty() ? 0 : m_lineTop[std::min(line, m_lineTop.size() - 1)];
+    if (Lined()) return m_lineTop.empty() ? 0 : m_lineTop[std::min(line, m_lineTop.size() - 1)];
     return static_cast<float>(line) * (LineHeightPx() / m_scale);
 }
 
 size_t ListView::LineAtDip(float y) const {
-    if (m_mode == Mode::Grouped) {
+    if (Lined()) {
         if (m_lineTop.size() < 2) return 0;
         auto it = std::upper_bound(m_lineTop.begin(), m_lineTop.end(), y);
         const size_t line = it == m_lineTop.begin() ? 0 : static_cast<size_t>(it - m_lineTop.begin() - 1);
@@ -905,6 +907,7 @@ size_t ListView::LineAtDip(float y) const {
 }
 
 float ListView::RowsHeightDip() const {
+    if (m_paintViewH >= 0) return m_paintViewH;
     const RECT r = RowsRect();
     return std::max<LONG>(r.bottom - r.top, 0) / m_scale;
 }
@@ -914,6 +917,7 @@ size_t ListView::LineCount() const {
     switch (m_mode) {
     case Mode::Grouped: return m_lines.size();
     case Mode::Tiles: {
+        if (m_tileGroups) return m_lines.size();
         const size_t cols = TileColumns();
         return (n + cols - 1) / cols;
     }
@@ -924,14 +928,16 @@ size_t ListView::LineCount() const {
 size_t ListView::LineOfRow(size_t row) const {
     switch (m_mode) {
     case Mode::Grouped: return row < m_rowLine.size() ? m_rowLine[row] : 0;
-    case Mode::Tiles: return row / TileColumns();
+    case Mode::Tiles:
+        if (m_tileGroups) return row < m_rowLine.size() ? m_rowLine[row] : 0;
+        return row / TileColumns();
     default: return row;
     }
 }
 
 size_t ListView::VisibleLines() const {
     const float viewH = RowsHeightDip();
-    if (m_mode == Mode::Grouped && !m_lineTop.empty()) {
+    if (Lined() && !m_lineTop.empty()) {
         size_t n = 0;
         float y = -m_topOffsetDip;
         for (size_t i = m_top; i < m_lines.size() && y < viewH; ++i) {
@@ -946,7 +952,7 @@ size_t ListView::VisibleLines() const {
 
 size_t ListView::MaxTop() const {
     const size_t n = LineCount();
-    if (m_mode == Mode::Grouped && !m_lineTop.empty()) {
+    if (Lined() && !m_lineTop.empty()) {
         const float viewH = RowsHeightDip();
         const float total = m_lineTop.back();
         if (total <= viewH) return 0;
@@ -1039,7 +1045,7 @@ void ListView::ScrollTopTo(float top) {
         m_topOffsetDip = 0;
         return;
     }
-    if (m_mode == Mode::Grouped && !m_lineTop.empty()) {
+    if (Lined() && !m_lineTop.empty()) {
         const auto it = std::upper_bound(m_lineTop.begin(), m_lineTop.end(), top);
         const size_t line = it == m_lineTop.begin() ? 0 : static_cast<size_t>(it - m_lineTop.begin() - 1);
         m_top = std::min(line, n - 1);
@@ -1237,7 +1243,7 @@ void ListView::BuildLines() {
     }
     if (AlbumColumn() && !m_hidden.empty()) m_hidden[0] = 0;
     m_lineTop.clear();
-    if (m_mode == Mode::Grouped) {
+    if (Lined()) {
         m_lineTop.reserve(m_lines.size() + 1);
         float y = 0;
         for (const Line& line : m_lines) {
@@ -1362,7 +1368,7 @@ void ListView::EnsureVisible(size_t row) {
     if (m_mode == Mode::Grouped && rowLine > 0 && rowLine < m_lines.size() &&
         m_lines[rowLine - 1].kind == Line::GroupHeader)
         line = rowLine - 1;
-    if (m_mode == Mode::Grouped && !m_lineTop.empty()) {
+    if (Lined() && !m_lineTop.empty()) {
         const float viewH = RowsHeightDip();
         const float top = ContentTopDip();
         // Visibility is decided by the row itself, not by the group header: a header at the
@@ -1391,7 +1397,9 @@ void ListView::EnsureVisible(size_t row) {
 size_t ListView::TopRow() const {
     if (!m_source || m_source->Count() == 0) return SIZE_MAX;
     switch (m_mode) {
-    case Mode::Tiles: return std::min(m_top * TileColumns(), m_source->Count() - 1);
+    case Mode::Tiles:
+        if (!m_tileGroups) return std::min(m_top * TileColumns(), m_source->Count() - 1);
+        [[fallthrough]];
     case Mode::Grouped:
         for (size_t line = m_top; line < m_lines.size(); ++line)
             if (m_lines[line].kind == Line::Item && m_lines[line].row < m_source->Count())
@@ -3156,8 +3164,13 @@ void ListView::UpdateMarquee() {
         const float tw = TileSize().width;
         for (size_t line = first; line <= last; ++line)
             for (size_t c = 0; c < cols; ++c) {
-                const float tx0 = kTilePad + c * tw, tx1 = tx0 + tw;
-                const size_t idx = line * cols + c;
+                const float tx0 = TileLeft(c), tx1 = tx0 + tw;
+                size_t idx = line * cols + c;
+                if (m_tileGroups) {
+                    if (line >= m_lines.size() || m_lines[line].kind != Line::Item) break;
+                    idx = m_lines[line].row + c;
+                    if (idx >= TileGroupEnd(m_lines[line].group)) break;
+                }
                 if (idx < m_source->Count() && x1 >= tx0 && x0 < tx1) rows.push_back(idx);
             }
         break;

@@ -142,6 +142,7 @@ constexpr float kDetailHeaderHeight = 104, kDetailArt = 80, kDetailActionWidth =
 // band's 12 DIP type, in up to three columns of at least this width, filled downwards.
 constexpr float kDetailFactRowH = 18, kDetailFactColumnMinW = 220, kDetailFactGap = 6, kDetailFactColumnGap = 18;
 constexpr float kDetailTextTop = 62; // below the name and the stats line
+constexpr float kDetailStatsLine = 20; // the stats line's share of it (none: the facts move up)
 constexpr float kDetailBriefMaxHeight = 260.0f, kDetailScrollWidth = 17.0f;
 
 // {0C9E7B42-1F3A-4D5E-8B6C-7A2F9E1D4C83}
@@ -365,17 +366,9 @@ std::optional<stream::NavigationSection> SectionForView(const stream::Provider& 
     case View::Kind::RemoteFavorites:
         return FindProviderSection(provider, stream::SectionKind::Favorites);
     case View::Kind::RemoteArtists:
-    case View::Kind::RemoteArtist:
-    case View::Kind::RemoteTopTracks:
         return FindProviderSection(provider, stream::SectionKind::Artists);
     case View::Kind::RemoteAlbums:
         return FindProviderSection(provider, stream::SectionKind::Albums);
-    case View::Kind::RemoteAlbum:
-        return !view.parentId.empty() ? FindProviderSection(provider, stream::SectionKind::Artists)
-                                      : FindProviderSection(provider, stream::SectionKind::Albums);
-    case View::Kind::RemotePlaylist:
-        if (const auto section = provider.SectionOfPlaylist(view.remoteId)) return section;
-        [[fallthrough]];
     case View::Kind::RemoteShelf:
         return FindProviderSection(provider, stream::SectionKind::PlaylistShelf, view.shelf);
     case View::Kind::RemoteSectionTracks:
@@ -648,8 +641,9 @@ struct MainWindow::PlayCallback : play_callback_impl_base {
                                   flag_on_volume_change),
           window(w) {}
 
-    void on_playback_starting(play_control::t_track_command, bool) override {
+    void on_playback_starting(play_control::t_track_command command, bool) override {
         window.OnSwitching(true);
+        window.PreviewStartingTrack(command);
         window.OnPlaybackStateChanged();
     }
     void on_playback_new_track(metadb_handle_ptr track) override {
@@ -667,6 +661,7 @@ struct MainWindow::PlayCallback : play_callback_impl_base {
         }
         window.OnSwitching(false);
         window.OnPlaybackStateChanged();
+        window.ClearShownTrack(); // stopped: nothing plays, nothing is shown as playing
         window.OnTrackChanged();
     }
     void on_playback_pause(bool) override { window.OnPlaybackStateChanged(); }
@@ -1216,10 +1211,12 @@ void MainWindow::CreateWidgets() {
         ActivateAddTarget();
         standard_commands::main_add_directory();
     };
+    // The page's command at the command bar's right (an album's or playlist's Collect); Refresh
+    // left the bar (F5 and the page's menu still refresh).
     add(kRefresh,
-        [](auto* dc, D2D1_SIZE_F s, Layer l) {
+        [this](auto* dc, D2D1_SIZE_F s, Layer l) {
             wp::CommandButton(dc, s, l, L"", false); // plate only
-            const std::wstring label = Tr(L"Refresh");
+            const std::wstring label = m_detail.saveLabel;
             auto layout = MakeText(label, 12.0f, DWRITE_FONT_WEIGHT_NORMAL, s.width, s.height,
                                    DWRITE_TEXT_ALIGNMENT_CENTER);
             com_ptr<ID2D1SolidColorBrush> ink;
@@ -1307,16 +1304,22 @@ void MainWindow::CreateWidgets() {
             CreatePlaylist(false);
     };
 
-    // Detail band: Follow / Following or Collect / Collected, centered in the button.
+    // Detail band: Follow / Following, or Play with a green triangle, centred in the button.
     add(kDetailAction,
         [this](auto* dc, D2D1_SIZE_F s, Layer l) {
             const std::wstring label = m_detail.actionLabel.empty() ? Tr(L"Collect") : m_detail.actionLabel;
             wp::CommandButton(dc, s, l, L"", false); // plate only
-            auto layout = MakeText(label, 12.0f, DWRITE_FONT_WEIGHT_NORMAL, s.width, s.height,
-                                   DWRITE_TEXT_ALIGNMENT_CENTER);
+            auto layout = MakeText(label, 12.0f, DWRITE_FONT_WEIGHT_NORMAL, s.width, s.height);
+            DWRITE_TEXT_METRICS tm{};
+            layout->GetMetrics(&tm);
+            const bool play = m_detail.action == DetailInfo::Action::Play;
+            const float icon = play ? 14.0f : 0.0f, gap = play ? 5.0f : 0.0f;
+            const float x = std::round((s.width - tm.width - icon - gap) / 2);
+            const float iconTop = std::round((s.height - icon) / 2);
+            if (play) wp::GreenPlay(dc, {x, iconTop, x + icon, iconTop + icon});
             com_ptr<ID2D1SolidColorBrush> ink;
             dc->CreateSolidColorBrush(Hex(0x1E395B), ink.put());
-            dc->DrawTextLayout({0, 0}, layout.get(), ink.get());
+            dc->DrawTextLayout({x + icon + gap, 0}, layout.get(), ink.get()); // the layout centres it vertically
         },
         {})
         ->onClick = [this] { OnDetailAction(); };
@@ -1468,6 +1471,7 @@ void MainWindow::CreateWidgets() {
         },
         orb)
         ->onClick = [this] {
+        if (media::PendingPlay()) return; // a list asked to play is still read: not the old queue
         auto pc = playback_control::get();
         if (pc->is_playing()) {
             pc->play_or_pause();
@@ -1805,7 +1809,7 @@ void MainWindow::UpdateLayout() {
         // The facts and the tagline come under the stats line, the description under them.
         {
             const float textW = DetailHeaderTextWidth();
-            m_detailBriefTop = kDetailTextTop + DetailFactsHeight(textW) + DetailTaglineHeight(textW);
+            m_detailBriefTop = DetailTextTop() + DetailFactsHeight(textW) + DetailTaglineHeight(textW);
             L.detailHeader.bottom =
                 std::min<LONG>(L.content.top + std::max<int>(PxI(kDetailHeaderHeight), PxI(m_detailBriefTop + 12)),
                                L.content.bottom);
@@ -1843,8 +1847,73 @@ void MainWindow::UpdateLayout() {
                     used = fullBase;
                 }
             }
+            // Collapsed, Show more follows the last line's text instead of standing on a line of
+            // its own under a blank one (owner, 2026-11-14): blank lines close up and the last
+            // line is cut with an ellipsis where the link needs the room.
+            m_detailBriefCollapsed.clear();
+            D2D1_POINT_2F inlineLink{-1, -1};
+            if (m_detailBriefOverflow && !m_detailBriefExpanded) {
+                auto link = MakeText(Tr(L"Show more"), 12.0f, DWRITE_FONT_WEIGHT_NORMAL, 200.0f, 18.0f);
+                DWRITE_TEXT_METRICS lm{};
+                link->GetMetrics(&lm);
+                const float linkW = std::ceil(lm.widthIncludingTrailingWhitespace) + 4.0f;
+                std::wstring text;
+                for (size_t i = 0; i < m_detail.brief.size(); ++i) { // blank lines closed up
+                    const wchar_t c = m_detail.brief[i];
+                    if (c == L'\r') continue;
+                    if (c == L'\n' && (text.empty() || text.back() == L'\n')) continue;
+                    text += c;
+                }
+                while (!text.empty() && iswspace(text.back())) text.pop_back();
+                const auto fits = [&](const std::wstring& t, D2D1_POINT_2F* end) {
+                    auto layout = MakeWrappedText(t, 12.0f, DWRITE_FONT_WEIGHT_NORMAL, textW, 4000.0f);
+                    DWRITE_TEXT_METRICS tm{};
+                    layout->GetMetrics(&tm);
+                    if (tm.lineCount > 3) return false;
+                    DWRITE_HIT_TEST_METRICS hm{};
+                    float x = 0, y = 0;
+                    layout->HitTestTextPosition(static_cast<UINT32>(t.size() - 1), TRUE, &x, &y, &hm);
+                    // The last line's top from the line metrics: the caret's y put the link a
+                    // line too low (owner, 2026-11-14).
+                    UINT32 count = 0;
+                    layout->GetLineMetrics(nullptr, 0, &count);
+                    std::vector<DWRITE_LINE_METRICS> lines(count);
+                    layout->GetLineMetrics(lines.data(), count, &count);
+                    float top = 0;
+                    for (UINT32 i = 0; i + 1 < count; ++i) top += lines[i].height;
+                    *end = {x, top};
+                    return x + 6 + linkW <= textW;
+                };
+                D2D1_POINT_2F end{};
+                if (!text.empty() && fits(text, &end)) {
+                    m_detailBriefCollapsed = text;
+                } else {
+                    // The first three lines' text, then shortened until "…" and the link fit.
+                    auto layout = MakeWrappedText(text, 12.0f, DWRITE_FONT_WEIGHT_NORMAL, textW, 4000.0f);
+                    UINT32 count = 0;
+                    layout->GetLineMetrics(nullptr, 0, &count);
+                    std::vector<DWRITE_LINE_METRICS> lines(count);
+                    layout->GetLineMetrics(lines.data(), count, &count);
+                    size_t cut = 0;
+                    for (UINT32 i = 0; i < std::min<UINT32>(count, 3); ++i) cut += lines[i].length;
+                    cut = std::min(cut, text.size());
+                    for (int tries = 0; cut > 0 && tries < 400; ++tries, --cut) {
+                        std::wstring t = text.substr(0, cut);
+                        while (!t.empty() && iswspace(t.back())) t.pop_back();
+                        t += L'\x2026';
+                        if (fits(t, &end)) {
+                            m_detailBriefCollapsed = std::move(t);
+                            break;
+                        }
+                    }
+                }
+                if (!m_detailBriefCollapsed.empty()) {
+                    inlineLink = {end.x + 6, end.y};
+                    used = std::min(used, end.y + 16.0f);
+                }
+            }
             float needed = briefTop + used + 12;
-            if (m_detailBriefOverflow) needed += 18;
+            if (m_detailBriefOverflow && inlineLink.x < 0) needed += 18;
             if (m_detailBriefExpanded) needed += 6; // pixel rounding must not clip the last line
             L.detailHeader.bottom = std::min<LONG>(
                 L.content.top + std::max<int>(PxI(kDetailHeaderHeight), PxI(needed)), L.content.bottom);
@@ -1867,13 +1936,19 @@ void MainWindow::UpdateLayout() {
                 auto link = MakeText(label, 12.0f, DWRITE_FONT_WEIGHT_NORMAL, 200.0f, 18.0f);
                 DWRITE_TEXT_METRICS linkMetrics{};
                 link->GetMetrics(&linkMetrics);
-                const int linkX = L.detailHeader.left + PxI(textX);
-                const int y = L.detailHeader.top + PxI(briefTop + used + 2);
+                const bool inLine = inlineLink.x >= 0;
+                const int linkX = L.detailHeader.left + PxI(textX + (inLine ? inlineLink.x : 0));
+                const int y = L.detailHeader.top + PxI(briefTop + (inLine ? inlineLink.y : used + 2));
                 const int w = PxI(std::ceil(linkMetrics.widthIncludingTrailingWhitespace) + 4.0f);
                 L.detailBriefToggle = {linkX, y, linkX + w, y + PxI(18)};
             }
         }
         L.list.top = L.detailHeader.bottom;
+    }
+    L.tabs = {};
+    if (m_page && !m_page->Tabs().empty()) {
+        L.tabs = {L.list.left, L.list.top, L.list.right, std::min<LONG>(L.list.top + PxI(kTabBand), L.list.bottom)};
+        L.list.top = L.tabs.bottom;
     }
 
     // Transport band: seek rule on top, capsule centered on the orb below it.
@@ -2060,7 +2135,9 @@ void MainWindow::UpdateLayout() {
     Place(m_navBar, L.navBar);
     Place(m_cmdBar, L.cmdBar);
     Place(m_contentTop, {L.content.left, L.content.top, L.content.right, L.content.top + PxI(14)});
-    Place(m_libraryBg, L.list);
+    Place(m_libraryBg, {L.list.left, L.tabs.bottom > L.tabs.top ? L.tabs.top : L.list.top, L.list.right,
+                        L.list.bottom});
+    LayoutTabs();
     if (m_detailHeader) {
         const bool show = m_detail.visible && L.detailHeader.right > L.detailHeader.left;
         m_detailHeader.IsVisible(show);
@@ -2369,17 +2446,18 @@ void MainWindow::RepaintTitle() {
 }
 
 void MainWindow::RefreshNowPlayingArt(bool refreshText) {
+    if (m_held.track.is_valid()) { // a song waiting for its cover: shown with it once it has come
+        ReleaseHeldTrack(false);
+        return;
+    }
     auto pc = playback_control::get();
     metadb_handle_ptr now;
     winrt::com_ptr<IWICBitmapSource> art;
     if (pc->get_now_playing(now)) {
         const std::wstring identity = lyrics::Service::TrackIdentity(now);
-        const bool identityChanged = identity != m_artTrackIdentity;
-        if (identityChanged) {
-            m_artTrackIdentity = identity;
-            m_art = nullptr;
-            m_lyricsArt = nullptr;
-        }
+        // Another song than the one shown comes in through ShowTrack (with its text), never here.
+        if (identity != m_artTrackIdentity) return;
+        const bool identityChanged = false;
         const std::uint64_t generation = ++m_artGeneration;
         const int sizePx = std::max(PxI(TransportHeight()), PxI(64));
         ArtCache::Get().Find(now, sizePx, &art);
@@ -2391,8 +2469,10 @@ void MainWindow::RefreshNowPlayingArt(bool refreshText) {
         m_art = std::move(art);
         m_lyricsArt = m_art;
     } else {
-        if (!refreshText && m_artTrackIdentity.empty() && !m_art) return;
-        m_artTrackIdentity.clear();
+        // Between songs (or an output restart) the last one stays shown whole; a stop clears it
+        // (ClearShownTrack).
+        if (m_lyricsTrack.is_valid() || !m_artTrackIdentity.empty()) return;
+        if (!refreshText && !m_art) return;
         m_art = nullptr;
         m_lyricsArt = nullptr;
         ++m_artGeneration;
@@ -2522,14 +2602,25 @@ void MainWindow::RepaintNowPlaying() {
         };
         float end = x;
         m_npArtistRect = {};
+        m_npCut.clear();
+        const float fullTitleW = titleW, fullArtistW = artistW;
         if (lyricRow) {
             // Share the row: the title first, the artist keeps at least 40 % when both are long.
-            const float room = std::max(0.0f, limit - x - kStar - (artistW > 0 ? kGap : 0));
-            if (titleW + artistW > room) {
-                artistW = std::min(artistW, std::max(std::min(artistW, 60.0f), room * 0.4f));
-                titleW = std::min(titleW, room - artistW);
-                artistW = std::min(artistW, room - titleW);
+            // Too narrow for both to stay readable, the artist leaves the row to the title
+            // (owner, 2026-11-14: in the narrowest window the two were drawn over each other).
+            const float room = std::max(0.0f, limit - x - kStar);
+            constexpr float kBothMin = 140;
+            if (artistW > 0 && titleW + kGap + artistW > room) {
+                const float share = room - kGap;
+                if (share < kBothMin) {
+                    artistW = 0;
+                } else {
+                    artistW = std::min(artistW, std::max(std::min(artistW, 60.0f), share * 0.4f));
+                    titleW = std::min(titleW, share - artistW);
+                    artistW = std::min(artistW, share - titleW);
+                }
             }
+            titleW = std::min(titleW, room);
             m_npTitleRect = toClient(text(m_trackTitle, x, top, titleW, dark.get(), m_npHot == 1));
             end = x + titleW;
             if (artistW > 0) {
@@ -2607,11 +2698,22 @@ void MainWindow::PaintNowPlayingLyric() {
         for (size_t i = 0; i < m_npLyrics->lines.size() && m_npLyrics->lines[i].start <= ms; ++i)
             index = static_cast<int>(i);
     m_npLyricLine = index;
+    m_lyricCut.clear();
     host.Draw(m_npLyricSurface, m_scale, [&](ID2D1DeviceContext* dc) {
         if (index < 0) return;
         const lyrics::Line& line = m_npLyrics->lines[static_cast<size_t>(index)];
         const float width = std::max(1.0f, NowPlayingWidth() - m_npTextX);
         auto layout = MakeText(line.text, 12.0f, DWRITE_FONT_WEIGHT_NORMAL, width, kInfoRow + 2);
+        {
+            DWRITE_TEXT_METRICS natural{};
+            MakeText(line.text, 12.0f, DWRITE_FONT_WEIGHT_NORMAL, 10000, kInfoRow + 2)->GetMetrics(&natural);
+            if (natural.widthIncludingTrailingWhitespace > width + 0.5f) {
+                const RECT& np = m_layout.nowPlaying;
+                m_lyricCut.push_back({{np.left + PxI(m_npTextX), np.top + PxI(m_npLyricTop),
+                                       np.left + PxI(m_npTextX + width), np.top + PxI(m_npLyricTop + kInfoRow)},
+                                      line.text});
+            }
+        }
         com_ptr<ID2D1SolidColorBrush> grey, blue;
         dc->CreateSolidColorBrush(Hex(0x6E6E6E), grey.put());
         dc->CreateSolidColorBrush(Hex(0x1F5FB8), blue.put());
@@ -2681,6 +2783,7 @@ void MainWindow::RepaintStreamInfo() {
     if (m_deviceName.empty()) RefreshDeviceName();
     const std::wstring device = m_deviceName.empty() ? Tr(L"Output device") : m_deviceName;
     float deviceLeft = 0, deviceTop = 0, deviceRight = 0;
+    m_streamCut.clear();
     host.Repaint(m_streamVisual, w, h, m_scale, [&](ID2D1DeviceContext* dc) {
         const float W = w / m_scale, H = h / m_scale;
         com_ptr<ID2D1SolidColorBrush> grey, link;
@@ -2691,6 +2794,12 @@ void MainWindow::RepaintStreamInfo() {
             auto info = MakeText(m_streamInfo, 11.5f, DWRITE_FONT_WEIGHT_NORMAL, W, lh + 2);
             info->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_TRAILING);
             dc->DrawTextLayout({0, top - 1}, info.get(), grey.get());
+            DWRITE_TEXT_METRICS natural{};
+            MakeText(m_streamInfo, 11.5f, DWRITE_FONT_WEIGHT_NORMAL, 10000, lh + 2)->GetMetrics(&natural);
+            if (natural.widthIncludingTrailingWhitespace > W + 0.5f) {
+                const RECT& r = m_layout.stream;
+                m_streamCut.push_back({{r.left, r.top + PxI(top), r.right, r.top + PxI(top + lh)}, m_streamInfo});
+            }
         }
         const std::wstring label = device + L"  ▾";
         auto dev = MakeText(label, 11.5f, DWRITE_FONT_WEIGHT_NORMAL, W, lh + 2);
@@ -2706,6 +2815,14 @@ void MainWindow::RepaintStreamInfo() {
         dc->DrawTextLayout({0, top + lh - 1}, dev.get(), link.get());
         DWRITE_TEXT_METRICS tm{};
         dev->GetMetrics(&tm);
+        {
+            DWRITE_TEXT_METRICS natural{};
+            MakeText(label, 11.5f, DWRITE_FONT_WEIGHT_NORMAL, 10000, lh + 2)->GetMetrics(&natural);
+            if (natural.widthIncludingTrailingWhitespace > W + 0.5f) {
+                const RECT& r = m_layout.stream;
+                m_streamCut.push_back({{r.left, r.top + PxI(top + lh), r.right, r.top + PxI(top + 2 * lh)}, device});
+            }
+        }
         deviceLeft = tm.left;
         deviceRight = tm.left + tm.width;
         deviceTop = top + lh;
@@ -3401,6 +3518,15 @@ void MainWindow::AddLyricsDocumentActions(std::vector<MenuAction>& actions, HWND
         select.push_back(std::move(pick));
     }
     if (select.empty()) select.push_back(disabled({Tr(L"No other lyrics found yet"), nullptr}, true));
+    {
+        // None at all, until "Use automatic lyrics" (owner, 2026-11-14).
+        MenuAction none{Tr(L"No lyrics"), [this, now, alive] {
+                            if (alive.expired() || lyrics::Service::TrackIdentity(now) != m_lyricsTrackIdentity) return;
+                            OnLyrics(lyrics::Service::Get().SelectNone(now));
+                        }};
+        none.checked = current && m_lyricsResult.status == lyrics::Status::NotFound;
+        select.push_back(std::move(none));
+    }
     select.push_back({});
     select.push_back({Tr(L"Search lyrics..."), [this, now, owner, alive] {
                           ShowLyricsSearch(owner, now, L"", [this, now, alive](const lyrics::Candidate& candidate) {
@@ -3751,7 +3877,7 @@ std::vector<MenuAction> MainWindow::SavedAlbumsMenu(stream::Provider& provider, 
     std::vector<MenuAction> out;
     for (const auto& album : provider.SavedAlbums()) {
         if (out.size() >= kMenuItemLimit) break;
-        out.push_back({album.name, go(AlbumView(provider, album.id, album.name, {}, {}, sectionId))});
+        out.push_back({album.name, go(AlbumView(provider, album.id, album.name, sectionId))});
     }
     if (out.empty()) {
         const auto section = FindProviderSection(provider, sectionId);
@@ -3790,14 +3916,14 @@ void MainWindow::AddRemoteCrumbs(std::vector<Crumb>& path, stream::Provider& pro
         break;
     case View::Kind::RemoteGroupTracks:
         if (section) addSection(*section);
-        named(m_view.name, L"Group", go(m_view));
+        named(view.name, L"Group", go(view));
         break;
     case View::Kind::RemoteShelf:
         if (section) addSection(*section);
         break;
     case View::Kind::RemotePlaylist:
         if (section) addSection(*section);
-        named(m_view.name, L"Playlist", go(m_view));
+        named(view.name, L"Playlist", go(view));
         break;
     case View::Kind::RemoteArtists:
         if (section) addSection(*section);
@@ -3937,10 +4063,10 @@ std::vector<MainWindow::Crumb> MainWindow::PlacePath(const View& view) {
             section.kind = View::Kind::Playlists;
             path.push_back({L"Playlists", go(section), [this] { return PlaylistListMenu(false); }});
         }
-        path.push_back({m_view.name, go(m_view), {}, true});
+        path.push_back({view.name, go(view), {}, true});
         return path;
     }
-    switch (m_view.library) {
+    switch (view.library) {
     case View::Library::All: {
         View home;
         home.library = View::Library::All;
@@ -4085,8 +4211,6 @@ void MainWindow::SaveLastView() {
     add(std::to_wstring(static_cast<int>(m_view.shelf)));
     add(m_view.shelfKnown ? L"1" : L"0");
     add(m_view.remoteId);
-    add(m_view.parentId);
-    add(m_view.parentName);
     add(m_view.sectionId);
     add(m_view.groupId);
     add(top == SIZE_MAX ? L"-1" : std::to_wstring(top));
@@ -4097,8 +4221,7 @@ bool MainWindow::LoadLastView(View& view, size_t& top) {
     const pfc::string8 stored = cfg_lastView.get();
     if (stored.is_empty()) return false;
     const auto f = SplitConfigFields(pfc::stringcvt::string_wide_from_utf8(stored.get_ptr()).get_ptr());
-    const bool v3 = !f.empty() && f[0] == L"3";
-    if ((!v3 && (f.empty() || f[0] != L"2")) || f.size() < (v3 ? 16u : 14u)) return false;
+    if (f.empty() || f[0] != L"4" || f.size() < 14u) return false;
     auto inRange = [](const std::wstring& text, int last) {
         const int value = _wtoi(text.c_str());
         return value >= 0 && value <= last ? value : -1;
@@ -4193,6 +4316,9 @@ void MainWindow::Navigate(const View& requested, bool push) {
     }
     // Resolve older or now-missing section ids before identity and scroll bookkeeping.
     if (provider) view = NormalizeRemoteView(*provider, std::move(view), false);
+    // A link to the page on screen (the playing song's artist while on that artist) leaves it
+    // as it is; Refresh asks for a reload with m_forcePageRefresh.
+    if (push && !m_forcePageRefresh && SameView(view, m_view) && (m_page || m_source)) return;
     // Remember where the page we are leaving was scrolled; ApplyPendingScroll puts the new
     // source back there (also after an asynchronous page replaces its loading placeholder).
     if (m_list && m_source && m_source->Count()) {
@@ -4488,9 +4614,9 @@ void MainWindow::PaintDetailHeader() {
             auto statsLayout = MakeText(m_detail.subtitle, 12.0f, DWRITE_FONT_WEIGHT_NORMAL, textW, 18);
             dc->DrawTextLayout({textX, 42}, statsLayout.get(), sub.get());
         }
-        DrawDetailFacts(dc, textX, kDetailTextTop, textW);
+        DrawDetailFacts(dc, textX, DetailTextTop(), textW);
         if (!m_detail.tagline.empty()) {
-            const float top = kDetailTextTop + DetailFactsHeight(textW);
+            const float top = DetailTextTop() + DetailFactsHeight(textW);
             auto tagline = MakeWrappedText(m_detail.tagline, 12.0f, DWRITE_FONT_WEIGHT_NORMAL, textW,
                                            DetailTaglineHeight(textW));
             dc->DrawTextLayout({textX, top}, tagline.get(), sub.get());
@@ -4505,9 +4631,13 @@ void MainWindow::PaintDetailHeader() {
                 dc->DrawTextLayout({textX, briefTop - m_detailBriefScroll}, full.get(), faint.get());
                 dc->PopAxisAlignedClip();
             } else {
-                const float maxH = m_detailBriefExpanded ? std::max(24.0f, m_detailBriefViewH) : 48.0f;
-                auto briefLayout =
-                    MakeWrappedText(m_detail.brief, 12.0f, DWRITE_FONT_WEIGHT_NORMAL, drawW, maxH);
+                // The collapsed text is already three lines at most: it gets their whole height.
+                // A 48 DIP box dropped the third line (each is a hair over 16 DIP), and Show more
+                // then stood alone after the line that was not drawn (owner, 2026-11-14).
+                const bool collapsed = !m_detailBriefExpanded && !m_detailBriefCollapsed.empty();
+                const float maxH = m_detailBriefExpanded ? std::max(24.0f, m_detailBriefViewH) : collapsed ? 4000.0f : 48.0f;
+                const std::wstring& shown = collapsed ? m_detailBriefCollapsed : m_detail.brief;
+                auto briefLayout = MakeWrappedText(shown, 12.0f, DWRITE_FONT_WEIGHT_NORMAL, drawW, maxH);
                 dc->DrawTextLayout({textX, briefTop}, briefLayout.get(), faint.get());
             }
             if (m_detailBriefScrollable && m_layout.detailBriefBar.right > m_layout.detailBriefBar.left) {
@@ -4562,6 +4692,12 @@ void MainWindow::RepaintDetailHeader() {
     PaintDetailHeader();
     if (Widget* action = WidgetById(kDetailAction)) action->Invalidate();
     if (Widget* brief = WidgetById(kDetailBriefToggle)) brief->Invalidate();
+}
+
+// Without a stats line (an artist the service gives no counts for) the facts close up under
+// the name instead of leaving its row empty (owner, 2026-11-14).
+float MainWindow::DetailTextTop() const {
+    return m_detail.subtitle.empty() ? kDetailTextTop - kDetailStatsLine : kDetailTextTop;
 }
 
 float MainWindow::DetailHeaderTextWidth() const {
@@ -4863,7 +4999,7 @@ std::vector<MenuAction> MainWindow::BuildArtistLinks(metadb_handle_list_cref ite
                              view.group = kind;
                              view.key = key;
                              view.name = label;
-                             Navigate(view, true);
+                             Open(view);
                          }});
     };
     size_t pos = 0;
@@ -4918,8 +5054,10 @@ std::vector<ContextAction> MainWindow::BuildContextActions(metadb_handle_list_cr
         const stream::Id sectionId = m_view.provider == provider->Key() ? m_view.sectionId : stream::Id{};
         if (track && !track->albumId.empty() && !onAlbumPage)
             actions.push_back(
-                {L"View album", [this, provider, id = track->albumId, name = track->album, sectionId] {
-                     Navigate(AlbumView(*provider, id, name, {}, {}, sectionId), true);
+                {L"Go to album", [this, provider, id = track->albumId, name = track->album, sectionId, first] {
+                     View v = AlbumView(*provider, id, name, sectionId);
+                     v.select = first;
+                     Open(v);
                  }});
     } else if (const media::Track* track = first.is_valid() ? m_library.FindTrack(first) : nullptr;
                track && track->albumIndex < m_library.Groups(media::GroupKind::Album).size()) {
@@ -4927,14 +5065,27 @@ std::vector<ContextAction> MainWindow::BuildContextActions(metadb_handle_list_cr
         const bool onAlbumPage = m_view.kind == View::Kind::Group &&
                                  m_view.group == media::GroupKind::Album && m_view.key == album.key;
         if (!onAlbumPage)
-            actions.push_back({L"View album", [this, key = album.key, name = album.name] {
+            actions.push_back({L"Go to album", [this, key = album.key, name = album.name, first] {
                                    View v;
                                    v.kind = View::Kind::Group;
                                    v.group = media::GroupKind::Album;
                                    v.key = key;
                                    v.name = name;
-                                   Navigate(v, true);
+                                   v.select = first;
+                                   Open(v);
                                }});
+    }
+    auto artistLinks = BuildArtistLinks(items);
+    if (artistLinks.size() == 1)
+        actions.push_back({L"Go to artist", artistLinks.front().run});
+    else if (!artistLinks.empty())
+        actions.push_back({L"Go to artist", nullptr, std::move(artistLinks)});
+    // One song of a source that has song details: its page.
+    if (provider && selected.get_count() == 1 && provider->Can(stream::Capability::SongDetails) &&
+        !(m_view.kind == View::Kind::RemoteSong && m_view.remoteId == provider->TrackId(selected[0]))) {
+        const stream::Id id = provider->TrackId(selected[0]);
+        if (!id.empty())
+            actions.push_back({L"Song info", [this, provider, id, title] { Open(SongView(*provider, id, title)); }});
     }
     if (!actions.empty()) actions.push_back({});
 
@@ -5371,6 +5522,7 @@ void MainWindow::ShowRemoteNavMenu(const NavPane::Item& item, POINT screen) {
 
 void MainWindow::RefreshCurrentPage() {
     if (!CanRefreshPage()) return;
+    m_page->RefreshRequested();
     // Only the refreshed source's pictures are revalidated, once: they keep showing while a
     // conditional request confirms them, and a cover whose URL changed is invalidated by the
     // page that learns the new URL. Local art and other sources are left alone.
@@ -5563,7 +5715,7 @@ void MainWindow::OnAlbumLink(size_t group, size_t line) {
         auto* provider = stream::FindProvider(link.provider);
         if (!provider) return;
         const stream::Id sectionId = m_view.provider == provider->Key() ? m_view.sectionId : stream::Id{};
-        v = link.kind == Kind::RemoteAlbum ? AlbumView(*provider, link.key, g.lines[0], {}, {}, sectionId)
+        v = link.kind == Kind::RemoteAlbum ? AlbumView(*provider, link.key, g.lines[0], sectionId)
                                            : ArtistView(*provider, link.key, g.lines[line], sectionId);
         break;
     }
@@ -6194,24 +6346,18 @@ void MainWindow::OnTrackChanged(bool playbackChanged) {
         m_art = nullptr;
         m_lyricsArt = nullptr;
     }
-    if (!retainStoppedTrack) {
-        m_trackTitle = Wide(title);
-        m_trackArtist = Wide(artist);
-    }
-    if (loaded) {
-        // Provider metadata can arrive before the core publishes stream info, or
-        // after it restores a remote playlist at startup. Use the same source
-        // records as the song table in both now-playing surfaces.
-        if (auto* provider = stream::ProviderOf(now)) {
-            if (const auto track = provider->FindTrack(provider->TrackId(now))) {
-                if (!track->title.empty()) m_trackTitle = track->title;
-                if (!track->artists.empty()) m_trackArtist = stream::JoinArtists(track->artists);
-            }
-        }
-        if (const media::RepairedText* r = media::CueCatalog::Get().Repair(now)) { // mis-decoded cue sheet
-            if (!r->title.empty()) m_trackTitle = r->title;
-            if (!r->artist.empty()) m_trackArtist = r->artist;
-        }
+    std::wstring newTitle = Wide(title), newArtist = Wide(artist);
+    if (loaded) TrackText(now, newTitle, newArtist);
+    if (!loaded && !retainStoppedTrack) {
+        m_trackTitle.clear();
+        m_trackArtist.clear();
+    } else if (loaded && trackIdentity == m_artTrackIdentity) { // the song shown: its text may have changed
+        m_trackTitle = newTitle;
+        m_trackArtist = newArtist;
+        m_startingFrom.clear();
+    } else if (loaded && trackIdentity != m_startingFrom) {
+        // Another song (not the last one still reported while the next one starts).
+        ShowTrack(now, newTitle, newArtist, false);
     }
     if (loaded || !retainStoppedTrack) {
         m_length = loaded ? pc->playback_get_length() : 0;
@@ -6437,6 +6583,7 @@ void MainWindow::UpdateFavoriteState() {
 
 void MainWindow::OnPlaylistContentChanged(size_t playlist) {
     if (playlist == media::FavoritesPlaylist(false)) UpdateFavoriteState();
+    if (m_player && playlist == playlist_manager::get()->get_playing_playlist()) m_player->WallAlbumsChanged();
     if (media::IsQueue(playlist)) SchedulePaneQueueRefresh();
     if (m_view.kind == View::Kind::Playlist && m_view.playlist == playlist && m_source) {
         static_cast<media::PlaylistSource*>(m_source.get())->Rebuild();
@@ -6631,16 +6778,32 @@ void MainWindow::HideTip() {
 
 // A detail value cut short shows in full in the tooltip once the pointer rests on it for the
 // system's tooltip delay (the double-click time, as Windows' own tooltips).
+// The list's own text cut short (a tile's title, a cell) shows the same way.
 void MainWindow::UpdateDetailTip(POINT pt) {
-    size_t over = SIZE_MAX;
+    std::wstring text;
+    RECT rect{};
     if (m_detail.visible)
-        for (size_t i = 0; i < m_detailCut.size(); ++i)
-            if (PtInRect(&m_detailCut[i].rect, pt)) over = i;
-    if (over == m_detailTipItem) return;
-    m_detailTipItem = over;
+        for (const auto& cut : m_detailCut)
+            if (PtInRect(&cut.rect, pt)) {
+                text = cut.text;
+                rect = cut.rect;
+            }
+    bool above = false;
+    for (const auto* cuts : {&m_npCut, &m_lyricCut, &m_streamCut})
+        for (const auto& cut : *cuts)
+            if (text.empty() && PtInRect(&cut.rect, pt)) {
+                text = cut.text;
+                rect = cut.rect;
+                above = true; // the control bar is at the window's bottom
+            }
+    if (text.empty() && m_list && m_list->HitTest(pt)) m_list->CutTextAt(pt, &text, &rect);
+    if (text == m_tipText && EqualRect(&rect, &m_tipRect)) return;
+    m_tipText = std::move(text);
+    m_tipRect = rect;
+    m_tipAbove = above;
     KillTimer(m_hwnd, kDetailTipTimer);
     if (!m_volumeHover) HideTip();
-    if (over != SIZE_MAX) {
+    if (!m_tipText.empty()) {
         m_detailTipAt = pt;
         SetTimer(m_hwnd, kDetailTipTimer, GetDoubleClickTime(), nullptr);
     }
@@ -6858,6 +7021,9 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
         }
         if (m_view.kind == View::Kind::AllRecentPlayed || m_view.kind == View::Kind::AllMostPlayed)
             Navigate(m_view, false);
+        else if (m_list)
+            m_list->Refresh(); // rows drawn with the settings (song tags before the artist)
+        RefreshPaneQueue();
         return 0;
 
     case kFrameMessage:
@@ -6877,6 +7043,21 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
 
     case WM_TIMER:
+        if (wp == kWindowOpenTimer) {
+            KillTimer(hwnd, kWindowOpenTimer);
+            m_shadow.SetSuppressed(false);
+            m_shadow.Sync();
+            return 0;
+        }
+        if (wp == kWindowCloseTimer) {
+            KillTimer(hwnd, kWindowCloseTimer);
+            standard_commands::main_exit();
+            return 0;
+        }
+        if (wp == kArtHoldTimer) { // the waiting song shows now, its cover still to come
+            ReleaseHeldTrack(true);
+            return 0;
+        }
         if (wp == kPaneRevealTimer) {
             StepPaneReveal();
             return 0;
@@ -7543,7 +7724,7 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
                 return 0;
             }
             if (wp == VK_SPACE && !m_search->Focused()) { // WMP's play / pause
-                playback_control::get()->play_or_pause();
+                if (!media::PendingPlay()) playback_control::get()->play_or_pause();
                 return 0;
             }
             if (wp == VK_BACK && !m_search->Focused()) {
@@ -7722,6 +7903,10 @@ void MainWindow::ShowSource(std::unique_ptr<media::ListSource> source) {
     // FindRow calls both collapse equal tracks and become quadratic for Select All.
     const bool hadRows = m_source && m_source->Count();
     const size_t topRow = hadRows ? m_list->TopRow() : SIZE_MAX;
+    const float topOffset = topRow != SIZE_MAX ? m_list->RowOffset(topRow) : 0.0f;
+    // At the top, the new layout starts at its top too: its headers (an artist's band, a
+    // group's caption) differ in height, so the first row's offset would leave a sliver.
+    const bool atTop = hadRows && m_list->AtTop();
     const size_t oldFocus = hadRows ? m_source->Focus() : SIZE_MAX;
     const size_t oldSort = m_source ? m_source->SortColumn() : SIZE_MAX;
     const bool descending = m_source && m_source->SortDescending();
@@ -7777,6 +7962,7 @@ void MainWindow::BeforeListChange() {
     m_pageAnchorOrdinal = 0;
     m_pageAnchorRow = m_list ? m_list->TopRow() : SIZE_MAX;
     if (!m_source || m_pageAnchorRow >= m_source->Count()) return;
+    m_pageAnchorOffset = m_list->RowOffset(m_pageAnchorRow);
     m_pageAnchor = m_source->RowKey(m_pageAnchorRow);
     if (m_pageAnchor.empty()) return;
     for (size_t row = 0; row < m_pageAnchorRow; ++row)

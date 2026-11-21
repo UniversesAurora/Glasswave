@@ -107,6 +107,9 @@ public:
         (void)actions, (void)items;
     }
     virtual bool CanRefresh() const { return false; }
+    // Refresh was asked for (F5, the menu): called just before the page is built again, so a page
+    // that keeps what it read across visits reads it anew this time.
+    virtual void RefreshRequested() {}
     // Pages that switch between cover tiles and a song list rebuild on a view style change.
     virtual bool StyleRebuildsPage() const { return false; }
     // A provider's names, covers, counts or library lists changed.

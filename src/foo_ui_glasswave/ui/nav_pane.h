@@ -103,6 +103,7 @@ private:
     std::vector<Item> m_items;
     std::set<std::wstring> m_collapsed;  // ExpandKey of the groups the user closed
     std::vector<ProviderSection> m_providers;
+    std::vector<DiscRow> m_discs;
     Target m_selTarget = Target::LibraryLocal;
     size_t m_selPlaylist = 0;
     const stream::Provider* m_selProvider = nullptr;

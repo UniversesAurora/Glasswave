@@ -1,6 +1,14 @@
 #include "pch.h"
 #include "ui/shell_glue.h"
+#include "cache/images.h"
 #include "gfx/composition_host.h"
+#include "ui/i18n.h"
+#include "ui/text.h"
+
+#include <commdlg.h>
+#include <filesystem>
+#include <fstream>
+#include <thread>
 
 namespace glasswave::ui {
 

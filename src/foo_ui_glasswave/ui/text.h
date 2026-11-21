@@ -16,6 +16,13 @@ winrt::com_ptr<IDWriteTextLayout> MakeWrappedText(std::wstring_view text, float 
                                                   DWRITE_TEXT_ALIGNMENT align = DWRITE_TEXT_ALIGNMENT_LEADING,
                                                   const wchar_t* family = L"Segoe UI");
 
+// A tag drawn by a name (a song's 原唱 before its artist): its text in `ink` inside a thin
+// rounded outline that hugs the glyphs' own ink with an even narrow margin, centred on `cy`
+// whatever the font's line metrics (the line box put Han glyphs low and to the right). Returns
+// its width; 0 when it does not fit before `right`. `scale` snaps it to device pixels.
+float DrawTag(ID2D1DeviceContext* dc, std::wstring_view text, float x, float cy, float right, D2D1_COLOR_F ink,
+              float size, float scale);
+
 std::wstring Wide(const char* utf8);
 std::string Utf8(std::wstring_view wide);
 

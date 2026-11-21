@@ -24,7 +24,6 @@ std::wstring ViewKey(const View& view) {
     key += L'|';
     key += std::to_wstring(static_cast<int>(view.shelf));
     key += view.shelfKnown ? L"|s|" : L"|u|";
-    key += view.parentId;
     return key;
 }
 

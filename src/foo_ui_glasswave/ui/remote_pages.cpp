@@ -214,6 +214,14 @@ std::wstring ProviderPlaylistText(const stream::Provider& provider, std::wstring
 
 // A list is visibly loading only while it has nothing to show. Re-reading behind rows that
 // are already on screen (a cached snapshot, a refresh) stays silent and updates in place.
+// Counts one record of an artist has and the next lacks stay (the album list's record has
+// the album count, the profile read after it may not: the stats line came and went).
+void KeepCounts(const stream::Artist& from, stream::Artist& to) {
+    if (to.albumCount < 0) to.albumCount = from.albumCount;
+    if (to.trackCount < 0) to.trackCount = from.trackCount;
+    if (to.videoCount < 0) to.videoCount = from.videoCount;
+}
+
 bool VisiblyLoading(const stream::ListState& state) {
     if (!state.loading && !state.refreshing) return false;
     return std::visit([](const auto& rows) { return rows.empty(); }, state.page.rows);
@@ -256,12 +264,15 @@ metadb_handle_list Items(stream::Provider& provider, const std::vector<stream::T
 struct AllSongsRequest {
     stream::Provider* provider = nullptr;
     std::function<void(metadb_handle_list)> ready;
+    std::function<void()> failed;       // the read ended without the list
+    std::wstring name;                  // the list's name, set before `ready` runs
     std::shared_ptr<stream::ListSession> session;
     PageHost* host = nullptr;
     media::ListSource* source = nullptr;
     std::weak_ptr<int> alive;
     std::wstring previousStatus;
     bool active = false;
+    bool settling = false;              // a look at the settled state is queued
 };
 
 std::vector<std::shared_ptr<AllSongsRequest>>& ActiveSongsRequests() {
@@ -271,6 +282,9 @@ std::vector<std::shared_ptr<AllSongsRequest>>& ActiveSongsRequests() {
 
 void FinishAllSongsRequest(const std::shared_ptr<AllSongsRequest>& request) {
     if (!request) return;
+    // Ended without the list (failed, cancelled with its provider or the window): say so.
+    request->ready = {};
+    if (auto failed = std::exchange(request->failed, {})) failed();
     request->active = false;
     std::erase_if(ActiveSongsRequests(), [&](const auto& active) { return active.get() == request.get(); });
     auto session = std::move(request->session);
@@ -316,23 +330,62 @@ void EndAllSongs(const std::shared_ptr<AllSongsRequest>& request) {
     request->source = nullptr;
 }
 
-void CompleteAllSongs(const std::shared_ptr<AllSongsRequest>& request, const stream::ListState& state) {
-    if (!request || !request->ready) return;
+// A whole list is taken once its read has settled. The read is shared with the list's page, so
+// what plays is what the page shows; a cache the service is being asked about again is not
+// taken, the rows that answer brings are (owner, 2026-11-20: the queue began with a song the page
+// did not show yet).
+void SettleAllSongs(const std::shared_ptr<AllSongsRequest>& request) {
+    if (!request->ready || !request->session) return;
+    const stream::ListState& state = request->session->View();
+    if (state.loading || state.refreshing) return; // its end is notified
     if (state.complete) {
         metadb_handle_list items = Items(*request->provider, Rows<stream::Track>(state.page.rows));
+        if (state.page.playlist) request->name = state.page.playlist->name;
+        else if (state.page.album) request->name = state.page.album->name;
         auto ready = std::move(request->ready);
         request->ready = {};
+        request->failed = {};
         EndAllSongs(request);
         FinishAllSongsRequest(request);
         ready(std::move(items));
         return;
     }
-    if (!state.error.empty() && !state.loading) {
-        request->ready = {};
+    if (!state.error.empty()) {
         EndAllSongs(request);
-        FinishAllSongsRequest(request);
+        FinishAllSongsRequest(request); // tells `failed`
         ShowProviderError(*request->provider, state.error);
     }
+}
+
+// Notifications are synchronous, and a cache hit is followed at once by the refresh it starts:
+// the state is looked at when the message in hand is done, so that refresh is seen.
+void CompleteAllSongs(const std::shared_ptr<AllSongsRequest>& request, const stream::ListState& state) {
+    if (!request || !request->ready || request->settling) return;
+    if (!state.complete && (state.error.empty() || state.loading)) return;
+    request->settling = true;
+    fb2k::inMainThread([weak = std::weak_ptr<AllSongsRequest>(request)] {
+        auto self = weak.lock();
+        if (!self) return;
+        self->settling = false;
+        SettleAllSongs(self);
+    });
+}
+
+// Joins the shared read of `query` (the one its page holds, if open) and reads it whole.
+void StartAllSongs(const std::shared_ptr<AllSongsRequest>& request, const stream::ListQuery& query) {
+    ActiveSongsRequests().push_back(request);
+    request->active = true;
+    BeginAllSongs(request);
+    auto session = stream::ListSession::Open(
+        *request->provider, query,
+        [weak = std::weak_ptr<AllSongsRequest>(request)](const stream::ListState& state) {
+            CompleteAllSongs(weak.lock(), state);
+        },
+        stream::ListLoadMode::All);
+    if (request->active)
+        request->session = std::move(session);
+    else
+        session->Cancel();
 }
 
 SongsFetch FetchListSongs(stream::Provider& provider, stream::ListQuery query, PageHost* host = nullptr) {
@@ -343,19 +396,7 @@ SongsFetch FetchListSongs(stream::Provider& provider, stream::ListQuery query, P
         request->ready = std::move(ready);
         request->host = host;
         if (host) request->alive = host->Lifetime();
-        ActiveSongsRequests().push_back(request);
-        request->active = true;
-        BeginAllSongs(request);
-        auto session = stream::ListSession::Open(
-            provider, query,
-            [weak = std::weak_ptr<AllSongsRequest>(request)](const stream::ListState& state) {
-                CompleteAllSongs(weak.lock(), state);
-            },
-            stream::ListLoadMode::All);
-        if (request->active)
-            request->session = std::move(session);
-        else
-            session->Cancel();
+        StartAllSongs(request, query);
     };
 }
 
@@ -584,9 +625,10 @@ stream::ListQuery SavedAlbumsQuery() {
     return Query(stream::ListKind::SavedAlbums);
 }
 
-std::unique_ptr<RemoteSongSource> Songs(stream::Provider& provider, const std::vector<stream::Track>& tracks,
-                                        std::wstring empty, size_t count = SIZE_MAX) {
-    return std::make_unique<RemoteSongSource>(provider, tracks, std::move(empty), count);
+std::unique_ptr<RemoteSongSource> Songs(stream::Provider& provider, stream::ListKind kind,
+                                        const std::vector<stream::Track>& tracks, std::wstring empty,
+                                        size_t count = SIZE_MAX) {
+    return std::make_unique<RemoteSongSource>(provider, kind, tracks, std::move(empty), count);
 }
 
 bool MatchesPublishedPrefix(RemoteSongSource& source, stream::Provider& provider,
@@ -824,7 +866,7 @@ class PagedPage : public RemotePage {
         auto* source = SongSource();
         if (!source) return;
         if (PlaybackReady()) {
-            media::PlayItems(source->VisibleItems(), row);
+            source->PlayFrom(row);
             return;
         }
         if (!source->NeedsCompleteList() && source->GetViewStyle() == media::ViewStyle::Details &&
@@ -840,14 +882,14 @@ class PagedPage : public RemotePage {
         }
         if (!m_state.error.empty() && !m_state.loading) {
             if (const size_t current = source->FindRowByIdentity(identity); current != SIZE_MAX)
-                media::PlayItems(source->VisibleItems(), current);
+                source->PlayFrom(current);
             return;
         }
         EnsureAllSongs(Guard([this, identity](bool complete) {
             auto* loaded = SongSource();
             if (!complete || !loaded) return;
             const size_t resolved = loaded->FindRowByIdentity(identity);
-            if (resolved != SIZE_MAX) media::PlayItems(loaded->VisibleItems(), resolved);
+            if (resolved != SIZE_MAX) loaded->PlayFrom(resolved);
         }));
     }
 
@@ -920,7 +962,7 @@ class TrackPagedPage : public PagedPage {
         const bool tiles = m_host.SavedStyle(media::ViewStyle::Details) == media::ViewStyle::Tiles;
         m_convertedTracks =
             tiles ? std::min(CurrentListState().metadataReadyRows, tracks.size()) : tracks.size();
-        auto source = Songs(m_provider, tracks, m_empty, m_convertedTracks);
+        auto source = Songs(m_provider, m_query.kind, tracks, m_empty, m_convertedTracks);
         if (tiles) source->SetViewStyle(media::ViewStyle::Tiles);
         m_sourceDataVersion = CurrentListState().dataVersion;
         return source;
@@ -1148,7 +1190,7 @@ class PlaylistPage final : public TrackPagedPage {
             actions.push_back({});
             actions.push_back(
                 {ProviderPlaylistText(m_provider, Saved() ? L"Uncollect playlist" : L"Collect playlist"),
-                 [this] { DetailAction(); }});
+                 [this] { SaveAction(); }});
         }
     }
 
@@ -1598,6 +1640,7 @@ class AlbumBrowsePage : public PagedPage {
             if (m_artist) {
                 if (m_artist->profile && !artist.profile) stream::CopyArtistProfile(*m_artist, artist);
                 if (artist.bio.empty()) artist.bio = m_artist->bio;
+                KeepCounts(*m_artist, artist);
                 if (!artist.followKnown && m_artist->followKnown) {
                     artist.followKnown = true;
                     artist.followed = m_artist->followed;
@@ -1622,9 +1665,7 @@ class AlbumBrowsePage : public PagedPage {
                 Guard([this](size_t row, const std::wstring& identity) { ActivateExpanded(row, identity); }));
     }
 
-    stream::ListLoadMode InitialMode() const override {
-        return Expanded() ? stream::ListLoadMode::All : stream::ListLoadMode::OnDemand;
-    }
+    stream::ListLoadMode InitialMode() const override { return stream::ListLoadMode::OnDemand; }
 
     void AddPageSpecificActions(std::vector<MenuAction>& actions) override {
         if (Expanded()) {
@@ -1646,7 +1687,9 @@ class AlbumBrowsePage : public PagedPage {
 
     std::wstring StatusText() const override {
         if (!m_trackError.empty()) return Tr(m_trackError);
-        if (Expanded() && !AlbumsAndTracksComplete() && m_state.error.empty()) return Tr(L"Loading...");
+        if (Expanded() && CompleteNeeded() && !AlbumsAndTracksComplete() && m_state.error.empty())
+            return Tr(L"Loading...");
+        if (Expanded() && m_filling && m_state.error.empty()) return Tr(L"Loading...");
         for (const auto& [id, session] : m_albumTrackSessions)
             if (session && VisiblyLoading(session->View())) return Tr(L"Loading...");
         return PagedPage::StatusText();
@@ -1728,18 +1771,68 @@ class AlbumBrowsePage : public PagedPage {
         }
     }
 
+    // Everything is needed: to sort or filter the songs, or for a play / add of all of them.
+    bool CompleteNeeded() const {
+        return !m_waiters.empty() || (m_source && (m_source->HasFilter() || m_source->SortColumn() != SIZE_MAX));
+    }
+
+    // One album's songs at a time, the next only when wanted (the list reached its end, or
+    // everything is needed) and never sooner than kAlbumTrackGapMs after the last request: NetEase
+    // answers a quick run of requests with "操作频繁" (owner, 2026-11-14).
     void StartNextAlbumTracks() {
         if (!Expanded() || !m_trackError.empty()) return;
+        const bool all = CompleteNeeded();
         for (const auto& album : m_albums) {
             if (album.id.empty()) continue;
             if (!m_albumTrackSessions.contains(album.id)) {
+                if (!all && !m_tracksWanted) return;
+                // The gap counts from the last request that went to the service: albums the
+                // disk cache holds follow one another at once.
+                const ULONGLONG now = GetTickCount64(), since = now - m_lastTrackRequest;
+                if (m_lastTrackRequest && since < kAlbumTrackGapMs) {
+                    ScheduleAlbumTracks(kAlbumTrackGapMs - since);
+                    return;
+                }
+                m_tracksWanted = false;
                 OpenAlbumTracks(album);
                 return;
             }
             const auto* state = AlbumTrackState(album.id);
             if (!state || !state->complete) return;
         }
+        // Every album listed so far has its songs: the next page of albums, when wanted.
+        if (!m_state.complete) {
+            if ((all || m_tracksWanted) && m_session && !m_state.loading && m_state.error.empty())
+                m_session->RequestNext();
+            return;
+        }
+        m_tracksWanted = false; // nothing left to want
         SettleWaiters();
+    }
+
+    bool AnyAlbumLoading() const {
+        for (const auto& [id, session] : m_albumTrackSessions)
+            if (session && !session->View().complete && session->View().error.empty()) return true;
+        return false;
+    }
+
+    // The screen is full (nothing more is wanted, nothing is on its way): one band covered the
+    // whole fill, instead of coming and going with each album (owner, 2026-11-14).
+    void EndFillIfIdle() {
+        if (!m_filling || m_tracksWanted || m_trackTimerArmed || AnyAlbumLoading() || m_state.loading) return;
+        m_filling = false;
+        UpdateLoadingText();
+        m_host.ListChanged();
+    }
+
+    void ScheduleAlbumTracks(ULONGLONG waitMs) {
+        if (m_trackTimerArmed) return;
+        m_trackTimerArmed = true;
+        fb2k::callLater(static_cast<double>(waitMs) / 1000.0, Guard([this] {
+                            m_trackTimerArmed = false;
+                            StartNextAlbumTracks();
+                            EndFillIfIdle();
+                        }));
     }
 
     void OpenAlbumTracks(const stream::Album& album) {
@@ -1750,6 +1843,8 @@ class AlbumBrowsePage : public PagedPage {
         query.id = album.id;
         auto changed = Guard([this, id = album.id, generation](const stream::ListState& state) {
             if (m_albumTrackGenerations[id] != generation) return;
+            if (state.loading || state.refreshing) m_lastTrackRequest = GetTickCount64();
+            if (VisiblyLoading(state)) m_filling = true; // read from the service: the band shows
             const auto [version, inserted] = m_albumTrackVersions.try_emplace(id, state.dataVersion);
             const bool dataChanged = inserted || version->second != state.dataVersion;
             version->second = state.dataVersion;
@@ -1762,8 +1857,9 @@ class AlbumBrowsePage : public PagedPage {
             }
             UpdateLoadingText();
             SettleWaiters();
-            m_host.ListChanged();
+            m_host.ListChanged(); // may find the screen not yet full (NearEnd: another album)
             if (state.complete || (!state.error.empty() && !state.loading)) StartNextAlbumTracks();
+            EndFillIfIdle();
         });
         auto session = stream::ListSession::Open(m_provider, PreparedQuery(m_provider, std::move(query)),
                                                  std::move(changed), stream::ListLoadMode::All);
@@ -1823,19 +1919,10 @@ class AlbumBrowsePage : public PagedPage {
         };
     }
 
-    void ActivateExpanded(size_t row, const std::wstring& identity) {
-        auto* source = SongSource();
-        if (!source) return;
-        if (AlbumsAndTracksComplete()) {
-            media::PlayItems(source->VisibleItems(), row);
-            return;
-        }
-        EnsureExpandedSongs(Guard([this, identity](bool complete) {
-            auto* loaded = SongSource();
-            if (!loaded) return;
-            const size_t resolved = loaded->FindRowByIdentity(identity);
-            if (complete && resolved != SIZE_MAX) media::PlayItems(loaded->VisibleItems(), resolved);
-        }));
+    // A song of the expanded view plays its album, at once (owner, 2026-11-14): waiting for
+    // every album of the artist first left a double click doing nothing for a long while.
+    void ActivateExpanded(size_t row, const std::wstring&) {
+        if (auto* source = SongSource()) source->PlayGroupFrom(row);
     }
 
     std::map<stream::Id, std::shared_ptr<stream::ListSession>> m_albumTrackSessions;
@@ -1843,6 +1930,11 @@ class AlbumBrowsePage : public PagedPage {
     std::map<stream::Id, uint64_t> m_albumTrackGenerations;
     std::vector<std::function<void(bool)>> m_waiters;
     std::wstring m_trackError;
+    static constexpr ULONGLONG kAlbumTrackGapMs = 600;
+    bool m_tracksWanted = true; // the first album's songs fill the empty list
+    bool m_trackTimerArmed = false;
+    bool m_filling = false; // filling the screen from the service: the band stays until it is full
+    ULONGLONG m_lastTrackRequest = 0; // the last album read from the service
 };
 
 class ArtistPage final : public AlbumBrowsePage {
@@ -2002,6 +2094,7 @@ class ArtistPage final : public AlbumBrowsePage {
                 if (artist.id.empty()) return;
                 if (artist.name.empty()) artist.name = m_view.name;
                 if (m_artist && artist.bio.empty()) artist.bio = m_artist->bio;
+                if (m_artist) KeepCounts(*m_artist, artist);
                 if (m_artist && CoverChanged(m_provider, m_artist->avatarUrl, artist.avatarUrl))
                     ArtCache::Get().Invalidate(m_provider.ArtKey(stream::ArtKind::Artist, artist.id));
                 m_artist = std::move(artist);
@@ -2061,7 +2154,7 @@ class SavedAlbumsPage final : public AlbumBrowsePage {
             m_provider, std::move(albums), std::wstring(), std::wstring(), L"No albums.",
             [this](const stream::Album* album) {
                 if (album)
-                    m_host.Open(AlbumView(m_provider, album->id, album->name, {}, {}, m_view.sectionId));
+                    m_host.Open(AlbumView(m_provider, album->id, album->name, m_view.sectionId));
             },
             [this](POINT screen, const stream::Album* album) {
                 if (album) TileMenu(screen, *album);
@@ -2305,12 +2398,12 @@ class AllFavoritesPage final : public Page {
         auto* source = SongSource();
         if (!source) return;
         if (Complete()) {
-            media::PlayItems(source->VisibleItems(), row);
+            source->PlayFrom(row);
             return;
         }
         if (HasError()) {
             const size_t current = source->FindRowByIdentity(identity);
-            if (current != SIZE_MAX) media::PlayItems(source->VisibleItems(), current);
+            if (current != SIZE_MAX) source->PlayFrom(current);
             return;
         }
         EnsureAllSongs(Guard([this, identity](bool complete) {
@@ -2318,11 +2411,11 @@ class AllFavoritesPage final : public Page {
             if (!loaded) return;
             if (!complete) {
                 const size_t current = loaded->FindRowByIdentity(identity);
-                if (current != SIZE_MAX) media::PlayItems(loaded->VisibleItems(), current);
+                if (current != SIZE_MAX) loaded->PlayFrom(current);
                 return;
             }
             const size_t resolved = loaded->FindRowByIdentity(identity);
-            if (resolved != SIZE_MAX) media::PlayItems(loaded->VisibleItems(), resolved);
+            if (resolved != SIZE_MAX) loaded->PlayFrom(resolved);
         }));
     }
 
@@ -2545,7 +2638,9 @@ class SongPage final : public Page {
         AddGoToArtist(actions, m_host, m_provider, track.artists, {});
         if (!track.albumId.empty())
             actions.push_back({L"Go to album", [this, track] {
-                                   m_host.Open(AlbumView(m_provider, track.albumId, track.album));
+                                   View v = AlbumView(m_provider, track.albumId, track.album);
+                                   v.select = m_provider.TrackItem(track.id); // shown selected there
+                                   m_host.Open(v);
                                }});
     }
 

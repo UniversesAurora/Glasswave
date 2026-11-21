@@ -146,18 +146,8 @@ std::vector<SongTableRow> FavoriteRows(const std::vector<metadb_handle_ptr>& loc
     std::vector<SongTableRow> rows;
     for (const auto& track : local) {
         if (!track.is_valid()) continue;
-        SongTableRow row;
-        row.handle = track;
-        row.title = LocalField(track, "$if2(%title%,%filename%)");
-        row.artist = LocalField(track, "[%artist%]");
-        row.album = LocalField(track, "[%album%]");
-        row.lengthMs = _wtoi(LocalField(track, "%length_seconds%").c_str()) * 1000;
-        row.source = Tr(L"Local Music");
-        const std::wstring albumArtist = LocalField(track, "[%album artist%]");
-        row.albumKey = LocalAlbumKey(L"l:", row, albumArtist, track);
-        row.artKey = LocalAlbumKey(L"fav:", row, albumArtist, track);
+        SongTableRow row = LocalRow(track, L"fav:");
         row.favorite = true;  // every local row comes from the Favorites playlist
-        FinishRow(row);
         rows.push_back(std::move(row));
     }
     for (const auto& [provider, tracks] : remote)
@@ -469,6 +459,11 @@ std::pair<std::wstring, std::wstring> SongTableSource::GroupInfo(size_t index) c
     case kArtist: return {media::Lower(item.artist), ArtistLabel(item)};
     case kAlbum: return {item.albumKey, AlbumLabel(item)};
     case kSource: return {item.source, item.source};
+    case kLyric: return {media::Lower(item.lyric), item.lyric};
+    case kPopularity: {
+        const int tens = std::clamp(item.popularity, 0, 100) / 10 * 10;
+        return {std::to_wstring(tens), std::to_wstring(tens) + L"-" + std::to_wstring(std::min(tens + 9, 100))};
+    }
     case kPlayCount: return {std::to_wstring(item.playCount), std::to_wstring(item.playCount)};
     case kFavorite: return {item.favorite ? L"1" : L"0", Tr(item.favorite ? L"Favorite" : L"Not in Favorites")};
     default: return {};  // # is the row number itself: nothing to group by
@@ -485,6 +480,8 @@ std::wstring SongTableSource::SortKey(size_t index) const {
     case kArtist: return ArtistLabel(item);
     case kAlbum: return AlbumLabel(item);
     case kSource: return item.source;
+    case kLyric: return item.lyric;
+    case kPopularity: return Padded(item.popularity);
     case kPlayCount: return Padded(item.playCount);
     case kFavorite: return std::wstring(item.favorite ? L"1" : L"0");
     default: return {};

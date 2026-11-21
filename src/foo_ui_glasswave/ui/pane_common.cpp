@@ -90,6 +90,49 @@ void DrawIcon(ID2D1DeviceContext* dc, wchar_t glyph, float size, D2D1_POINT_2F c
     dc->DrawText(text, 1, format.get(), D2D1::RectF(c.x - size, c.y - size, c.x + size, c.y + size), brush);
 }
 
+void DrawRepeat(ID2D1DeviceContext* dc, float size, D2D1_POINT_2F c, ID2D1Brush* brush, bool one) {
+    com_ptr<ID2D1Factory> factory;
+    dc->GetFactory(factory.put());
+    const float k = size / 16.0f; // drawn on a 16 unit square
+    const auto P = [&](float x, float y) { return D2D1::Point2F(c.x + (x - 8) * k, c.y + (y - 8) * k); };
+    com_ptr<ID2D1StrokeStyle> round;
+    factory->CreateStrokeStyle(D2D1::StrokeStyleProperties(D2D1_CAP_STYLE_ROUND, D2D1_CAP_STYLE_ROUND,
+                                                           D2D1_CAP_STYLE_ROUND, D2D1_LINE_JOIN_ROUND),
+                               nullptr, 0, round.put());
+    com_ptr<ID2D1PathGeometry> path;
+    com_ptr<ID2D1GeometrySink> sink;
+    if (FAILED(factory->CreatePathGeometry(path.put())) || FAILED(path->Open(sink.put()))) return;
+    const float r = 2.6f;
+    // The upper arrow: up the left side, round the corner, along the top to its head.
+    sink->BeginFigure(P(1.8f, 9.6f), D2D1_FIGURE_BEGIN_HOLLOW);
+    sink->AddLine(P(1.8f, 4.4f + r));
+    sink->AddArc({P(1.8f + r, 4.4f), {r * k, r * k}, 0, D2D1_SWEEP_DIRECTION_CLOCKWISE, D2D1_ARC_SIZE_SMALL});
+    sink->AddLine(P(13.4f, 4.4f));
+    sink->EndFigure(D2D1_FIGURE_END_OPEN);
+    sink->BeginFigure(P(11.2f, 2.2f), D2D1_FIGURE_BEGIN_HOLLOW);
+    sink->AddLine(P(13.4f, 4.4f));
+    sink->AddLine(P(11.2f, 6.6f));
+    sink->EndFigure(D2D1_FIGURE_END_OPEN);
+    // The lower one, the same turned half round.
+    sink->BeginFigure(P(14.2f, 6.4f), D2D1_FIGURE_BEGIN_HOLLOW);
+    sink->AddLine(P(14.2f, 11.6f - r));
+    sink->AddArc({P(14.2f - r, 11.6f), {r * k, r * k}, 0, D2D1_SWEEP_DIRECTION_CLOCKWISE, D2D1_ARC_SIZE_SMALL});
+    sink->AddLine(P(2.6f, 11.6f));
+    sink->EndFigure(D2D1_FIGURE_END_OPEN);
+    sink->BeginFigure(P(4.8f, 9.4f), D2D1_FIGURE_BEGIN_HOLLOW);
+    sink->AddLine(P(2.6f, 11.6f));
+    sink->AddLine(P(4.8f, 13.8f));
+    sink->EndFigure(D2D1_FIGURE_END_OPEN);
+    if (one) { // a "1" in the open middle, clear of both arrows
+        sink->BeginFigure(P(7.0f, 6.9f), D2D1_FIGURE_BEGIN_HOLLOW);
+        sink->AddLine(P(8.5f, 6.0f));
+        sink->AddLine(P(8.5f, 10.0f));
+        sink->EndFigure(D2D1_FIGURE_END_OPEN);
+    }
+    sink->Close();
+    dc->DrawGeometry(path.get(), brush, 1.5f * k, round.get());
+}
+
 void DrawCapsule(ID2D1DeviceContext* dc, D2D1_RECT_F bounds, ID2D1Brush* brush) {
     const float width = bounds.right - bounds.left, height = bounds.bottom - bounds.top;
     if (width <= 0 || height <= 0) return;

@@ -4,6 +4,34 @@
 
 namespace glasswave::ui {
 
+float DrawTag(ID2D1DeviceContext* dc, std::wstring_view text, float x, float cy, float right, D2D1_COLOR_F ink,
+              float size, float scale) {
+    constexpr float kPadX = 2.5f, kPadY = 1.5f; // DIP between the ink and the outline
+    auto layout = MakeText(text, size, DWRITE_FONT_WEIGHT_NORMAL, 400, 40);
+    if (!layout) return 0;
+    DWRITE_TEXT_METRICS m{};
+    layout->GetMetrics(&m);
+    // The overhangs are measured against the layout box: make it the text's own size.
+    layout->SetMaxWidth(std::max(m.widthIncludingTrailingWhitespace, 1.0f));
+    layout->SetMaxHeight(std::max(m.height, 1.0f));
+    DWRITE_OVERHANG_METRICS o{};
+    layout->GetOverhangMetrics(&o);
+    const float inkLeft = -o.left, inkTop = -o.top;
+    const float inkWidth = std::max(m.widthIncludingTrailingWhitespace + o.left + o.right, 1.0f);
+    const float inkHeight = std::max(m.height + o.top + o.bottom, 1.0f);
+    const auto snap = [scale](float v) { return std::round(v * scale) / scale; };
+    const float w = snap(inkWidth + 2 * kPadX), h = snap(inkHeight + 2 * kPadY);
+    const float left = snap(x), top = snap(cy - h / 2);
+    if (left + w > right) return 0;
+    winrt::com_ptr<ID2D1SolidColorBrush> brush;
+    dc->CreateSolidColorBrush(ink, brush.put());
+    const float px = 1.0f / scale;
+    dc->DrawRoundedRectangle({{left + px / 2, top + px / 2, left + w - px / 2, top + h - px / 2}, 2.0f, 2.0f},
+                             brush.get(), px);
+    dc->DrawTextLayout({left + kPadX - inkLeft, top + kPadY - inkTop}, layout.get(), brush.get());
+    return w;
+}
+
 winrt::com_ptr<IDWriteTextLayout> MakeText(std::wstring_view text, float size, DWRITE_FONT_WEIGHT weight,
                                            float maxW, float maxH, DWRITE_TEXT_ALIGNMENT align,
                                            const wchar_t* family) {
