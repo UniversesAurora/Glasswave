@@ -1067,7 +1067,10 @@ void PlayerWindow::CreateWidgets() {
                 paint::IconButton(dc, s, l, TransportGlyph::Stop, m_playing, false);
         },
         {})
-        ->onClick = [] { playback_control::get()->stop(); };
+        ->onClick = [] {
+        media::CancelPendingPlay(); // Stop also gives up a list still being read to play
+        playback_control::get()->stop();
+    };
     add(kPrev, m_barLayer,
         [this](auto* dc, D2D1_SIZE_F s, Layer l) {
             const bool enabled = m_playing && media::radio::CanGoBack();
@@ -3789,7 +3792,7 @@ LRESULT PlayerWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
             m_active = active;
             if (m_glass) m_glass->SetActive(active);
             for (auto& w : m_widgets)
-                if (w->Id() >= kCapMin) w->SetInactive(!active);
+                if (w->Id() >= kCapMin && w->Id() <= kCapClose) w->SetInactive(!active); // caption only
             m_shadow.SetActive(active);
             PaintSideHighlights();
         }
