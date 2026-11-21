@@ -15,6 +15,7 @@ inline constexpr wchar_t kCacheProviderTag[] = L"[glasswave-cache-provider:";
 inline constexpr wchar_t kCacheScopeTag[] = L"[glasswave-cache-scope:";
 inline constexpr wchar_t kFileTag[] = L"[glasswave-file:";          // a selection read from a file
 inline constexpr wchar_t kCodePageTag[] = L"[glasswave-codepage:";  // ... in this code page
+inline constexpr wchar_t kNoneTag[] = L"[glasswave-none:";          // the owner chose no lyrics
 
 struct Headers {
     std::wstring source;
@@ -23,6 +24,7 @@ struct Headers {
     std::wstring scope;
     std::wstring file;
     unsigned codePage = 0;
+    bool none = false;
     std::optional<long long> notFoundAt;
     size_t body = 0;
 };
@@ -87,6 +89,8 @@ inline Headers Parse(std::wstring_view text) {
             headers.file = UnescapeValue(*file);
         else if (const auto codePage = HeaderValue(line, kCodePageTag))
             headers.codePage = static_cast<unsigned>(_wtoi(codePage->c_str()));
+        else if (HeaderValue(line, kNoneTag))
+            headers.none = true;
         else
             break;
         offset = close + 1;
@@ -106,6 +110,9 @@ inline std::wstring Manual(std::wstring_view source, std::wstring_view lrc, std:
     if (codePage != 0) text += kCodePageTag + std::to_wstring(codePage) + L"]\n";
     return text + std::wstring(lrc);
 }
+
+// A selection of no lyrics at all for the track.
+inline std::wstring ManualNone() { return std::wstring(kNoneTag) + L"1]\n"; }
 
 inline std::wstring Automatic(std::wstring_view source, std::wstring_view sourceKey,
                               std::wstring_view provider, std::wstring_view scope, std::wstring_view lrc) {

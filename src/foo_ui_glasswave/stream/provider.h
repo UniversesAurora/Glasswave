@@ -189,6 +189,9 @@ class Provider {
     virtual std::wstring Wording(std::wstring_view english) const { return std::wstring(english); }
     // Translation context of this source's terms. Empty: only the common translations.
     virtual std::wstring_view TextContext() const { return {}; }
+    // The service's own desktop app as the Start menu names it (its display names in any
+    // language): its icon marks this source's covers in results mixed from several sources.
+    virtual std::vector<std::wstring> AppNames() const { return {}; }
     // Untranslated label for an artist's track-list tile and page.
     virtual std::wstring ArtistTracksLabel(const Id& artist) const;
     // Read-only, network-free descriptors for independently loadable artist views. Labels

@@ -58,6 +58,7 @@ std::string ContextFingerprint(std::string_view orderName) {
         AppendPart(value, std::to_string(scheduler->ScheduleRevision()));
     AppendPart(value, std::to_string(static_cast<int>(netease::GetQuality())));
     AppendPart(value, applemusic::GetAtmosEnabled() ? "atmos" : "lossless");
+    AppendPart(value, std::to_string(static_cast<int>(applemusic::GetAudioQuality())));
     AppendPart(value, std::to_string(static_cast<int>(applemusic::GetAtmosOutput())));
     for (stream::Provider* provider : stream::Providers()) {
         const std::string key = Utf8(provider->Key());

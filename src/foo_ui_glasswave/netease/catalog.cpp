@@ -10,6 +10,7 @@
 #include <filesystem>
 #include <fstream>
 #include <sstream>
+#include <unordered_set>
 
 namespace glasswave::netease {
 
@@ -43,6 +44,8 @@ void Fill(std::wstring& target, const std::wstring& value) {
 
 void MergeRestored(Song& target, const Song& source) {
     Fill(target.title, source.title);
+    if (target.note.empty()) target.note = source.note;
+    target.original = target.original || source.original;
     Fill(target.album, source.album);
     Fill(target.albumArtist, source.albumArtist);
     if (target.artists.empty()) target.artists = source.artists;
@@ -359,7 +362,7 @@ void Catalog::Load() {
             if (end == std::string::npos) break;
             start = end + 1;
         }
-        if (fields.size() != 14) continue;
+        if (fields.size() != 16) continue; // one current format; other lines are dropped
         Song song;
         song.id = _strtoi64(fields[0].c_str(), nullptr, 10);
         if (!song.id) continue;
@@ -403,6 +406,8 @@ void Catalog::Load() {
         song.coverUrl = Wide(fields[10]);
         song.codec = Wide(fields[11]);
         song.albumId = _strtoi64(fields[13].c_str(), nullptr, 10);
+        song.note = Wide(fields[14]);
+        song.original = fields[15] == "1";
         loaded.push_back(std::move(song));
     }
     if (loaded.empty()) return;
@@ -446,7 +451,7 @@ void Catalog::Save() const {
                 << song.sampleRate << '\t' << song.bitsPerSample << '\t' << Clean(song.title) << '\t'
                 << Clean(song.album) << '\t' << Clean(song.albumArtist) << '\t' << Clean(artists) << '\t'
                 << Clean(song.coverUrl) << '\t' << Clean(song.codec) << '\t' << Clean(artistIds) << '\t'
-                << song.albumId << '\n';
+                << song.albumId << '\t' << Clean(song.note) << '\t' << (song.original ? '1' : '0') << '\n';
         }
         out.close();
         if (!out) { // disk full or similar: keep the previous cache

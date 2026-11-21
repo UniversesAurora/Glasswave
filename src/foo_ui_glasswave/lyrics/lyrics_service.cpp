@@ -133,6 +133,7 @@ struct CacheEntry {
     bool notFound = false;
     std::shared_ptr<Lyrics> lyrics;
     std::optional<Candidate> candidate;
+    bool none = false; // the owner's selection: no lyrics
 };
 
 bool CacheScopeCurrent(std::wstring_view provider, std::wstring_view scope) {
@@ -195,6 +196,7 @@ std::optional<CacheEntry> ReadCache(const Query& q, bool selected = false) {
         if (!headers.provider.empty() && !CacheScopeCurrent(headers.provider, headers.scope))
             return std::nullopt;
     }
+    if (selected && headers.none) return CacheEntry{true, nullptr, std::nullopt, true};
     if (headers.notFoundAt) {
         const long long when = *headers.notFoundAt;
         if (_time64(nullptr) - when < kNotFoundRetrySeconds) return CacheEntry{true, nullptr, std::nullopt};
@@ -606,6 +608,10 @@ void Service::Start(const metadb_handle_ptr& track, bool useAutomaticCache,
             if (cache_format::ManualSelectionApplies(useAutomaticCache)) selected = ReadCache(query, true);
             if (useAutomaticCache && !(selected && !selected->notFound)) automatic = ReadCache(query);
         }
+        if (selected && selected->none) {
+            done({Status::NotFound, nullptr});
+            return;
+        }
         if (selected && !selected->notFound) {
             done({Status::Found, selected->lyrics});
             return;
@@ -822,6 +828,7 @@ void Service::SetOffset(const metadb_handle_ptr& track, const Lyrics& lyrics, in
         std::filesystem::remove(OffsetFile(track, lyrics), ec);
     else if (!WriteFile(OffsetFile(track, lyrics), std::to_string(offsetMs)))
         console::print("Glasswave lyrics: unable to save the lyrics offset");
+    NotifyChanged(track);
 }
 
 std::wstring Service::ProfileLyricsFolder() {
@@ -835,9 +842,12 @@ Result Service::Select(const metadb_handle_ptr& track, const Candidate& candidat
     const auto result = FromCandidate(candidate);
     if (result.status != Status::Found) return result;
     Cancel();
-    std::lock_guard lock(g_cacheMutex);
-    if (!WriteFile(SelectedFile(MakeQuery(track)), Utf8(ManualSelectionText(candidate))))
-        console::print("Glasswave lyrics: unable to save lyric selection");
+    {
+        std::lock_guard lock(g_cacheMutex);
+        if (!WriteFile(SelectedFile(MakeQuery(track)), Utf8(ManualSelectionText(candidate))))
+            console::print("Glasswave lyrics: unable to save lyric selection");
+    }
+    NotifyChanged(track);
     return result;
 }
 

@@ -514,6 +514,7 @@ JsonObject TrackJson(const stream::Track& track) {
     JsonObject object;
     SetString(object, L"id", track.id);
     SetString(object, L"title", track.title);
+    SetString(object, L"note", track.note);
     SetString(object, L"album", track.album);
     SetString(object, L"albumId", track.albumId);
     object.SetNamedValue(L"artists", ArtistsJson(track.artists));

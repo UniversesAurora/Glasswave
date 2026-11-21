@@ -26,17 +26,6 @@ std::wstring Wide(const char* s) {
     return s ? pfc::stringcvt::string_wide_from_utf8(s).get_ptr() : std::wstring();
 }
 
-std::vector<std::wstring> LevelsFor(Quality quality) {
-    switch (quality) {
-    case Quality::Lossless: return {L"lossless"};
-    case Quality::Hires: return {L"hires", L"lossless", L"exhigh", L"higher", L"standard"};
-    case Quality::Exhigh: return {L"exhigh", L"higher", L"standard"};
-    case Quality::Standard: return {L"standard"};
-    case Quality::Auto:
-    default: return {L"lossless", L"exhigh", L"higher", L"standard"};
-    }
-}
-
 std::string ExtensionFor(const SongUrl& url) {
     std::wstring type = url.type;
     for (auto& c : type) c = static_cast<wchar_t>(std::towlower(static_cast<wint_t>(c)));
@@ -371,7 +360,7 @@ public:
 
                 auto status = stream::SourceStatus::Unavailable;
                 std::wstring requestError;
-                for (const auto& level : LevelsFor(GetQuality())) {
+                for (const auto& level : QualityLevels(GetQuality())) {
                     const auto result = provider.Api().GetSongUrl(m_id, level, p_abort, resolved, error);
                     status = stream::CombineSourceStatus(status, result);
                     if (result == stream::SourceStatus::Playable) break;

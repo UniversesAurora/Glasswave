@@ -3,6 +3,7 @@
 #include "lyrics/lyrics.h"
 #include <atomic>
 #include <functional>
+#include <map>
 #include <memory>
 #include <cstdint>
 #include <string_view>

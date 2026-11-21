@@ -15,6 +15,7 @@ struct ArtistRef {
 struct Song {
     int64_t id = 0;
     std::wstring title;
+    std::wstring note; // alia, else tns: shown in grey after the title (stream::Track::note)
     std::wstring album;
     std::wstring albumArtist;
     std::vector<std::wstring> artists;
@@ -55,7 +56,7 @@ struct Playlist {
     std::wstring creatorName;
     std::wstring description;
     bool subscribed = false;
-    int64_t createTime = 0, updateTime = 0; // epoch milliseconds
+    int64_t createTime = 0, updateTime = 0; // epoch ms; updateTime = last song added/removed
     std::vector<std::wstring> tags;
     std::wstring updateFrequency; // "每日更新"
     std::wstring englishTitle;

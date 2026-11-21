@@ -236,7 +236,11 @@ Playlist ParsePlaylist(const json::Object& object) {
         playlist.creatorName = json::GetString(*creator, L"nickname");
     }
     playlist.createTime = json::GetInt64(object, L"createTime");
-    playlist.updateTime = json::GetInt64(object, L"trackUpdateTime", json::GetInt64(object, L"updateTime"));
+    // trackNumberUpdateTime moves when songs are added or removed. trackUpdateTime also moves
+    // whenever NetEase changes any listed song on its side (it reads "today" on lists nobody
+    // edited for years), so it is only a cache revision, never the displayed date.
+    playlist.updateTime =
+        json::GetInt64(object, L"trackNumberUpdateTime", json::GetInt64(object, L"updateTime"));
     if (const auto tags = json::GetArray(object, L"tags"))
         for (uint32_t i = 0; i < tags->Size(); ++i)
             if (const auto value = tags->GetAt(i);

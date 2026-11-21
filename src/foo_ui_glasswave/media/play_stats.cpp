@@ -361,7 +361,7 @@ std::vector<PlayRecord> PlayStats::MostPlayed(size_t limit) {
     std::vector<PlayRecord> out;
     out.reserve(m_records.size());
     for (const auto& record : m_records)
-        if (record.count > 0) out.push_back(record);  // ClearCounts zeroes this
+        if (record.count > 0 && Playable(record)) out.push_back(record);  // ClearCounts zeroes this
     std::sort(out.begin(), out.end(), [](const PlayRecord& a, const PlayRecord& b) {
         return a.count != b.count ? a.count > b.count : a.lastPlayed > b.lastPlayed;
     });

@@ -107,6 +107,7 @@ stream::Track ToTrack(const Song& song) {
     stream::Track track;
     track.id = IdText(song.id);
     track.title = song.title;
+    track.note = song.note;
     track.album = song.album;
     track.albumId = IdText(song.albumId);
     track.artists = Refs(song.artistRefs);

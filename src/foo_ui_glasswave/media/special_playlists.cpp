@@ -131,11 +131,49 @@ void EnsureSpecialPlaylists(bool restore) {
     for (const auto& preset : SmartPresets())
         if (preset.byDefault) AddSmartPreset(preset);
 }
+namespace {
+std::function<void()> g_playQueueListener;
+} // namespace
+
+void SetPlayQueueListener(std::function<void()> listener) {
+    g_playQueueListener = std::move(listener);
+}
+
+namespace {
+uint64_t g_pendingPlay = 0; // the request being read; 0: none
+uint64_t g_pendingSerial = 0;
+} // namespace
+
+uint64_t BeginPendingPlay() {
+    g_pendingPlay = ++g_pendingSerial;
+    auto pc = playback_control::get();
+    if (pc->is_playing()) pc->stop();
+    return g_pendingPlay;
+}
+
+bool TakePendingPlay(uint64_t token) {
+    if (token == 0 || token != g_pendingPlay) return false;
+    g_pendingPlay = 0;
+    return true;
+}
+
+void DropPendingPlay(uint64_t token) {
+    if (token == g_pendingPlay) g_pendingPlay = 0;
+}
+
+bool PendingPlay() { return g_pendingPlay != 0; }
+
+void CancelPendingPlay() { g_pendingPlay = 0; }
+
 void PlayQueue(const metadb_handle_list& items, size_t start) {
     if (items.get_count() == 0) return;
+    g_pendingPlay = 0; // whatever was being read to play, this is what plays now
     const t_size p = QueuePlaylist(true);
     Protect(p);
-    if (PlaybackScheduler::Get().PlayQueue(items, start)) return;
+    if (PlaybackScheduler::Get().PlayQueue(items, start)) {
+        if (g_playQueueListener) g_playQueueListener();
+        return;
+    }
     console::print("Glasswave: PlayQueue request rejected; queue left unchanged.");
 }
 

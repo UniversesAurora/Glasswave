@@ -102,6 +102,9 @@ class SizeHintScope {
     int m_previous;
 };
 int SizeHint();
+// Size hint for "the original": the largest, least compressed picture the provider has (saving
+// a cover to a file), never a rendition sized for the screen.
+inline constexpr int kOriginalSize = 0x7FFFFFFF;
 
 // Persistent cache for provider artwork: one download per identity, shared by every view
 // and every later run. A cached generation is returned at once; it is revalidated in the

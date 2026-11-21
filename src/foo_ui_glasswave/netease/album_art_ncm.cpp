@@ -12,20 +12,25 @@ namespace glasswave::netease {
 
 namespace {
 
-// Two renditions: 500 px for lists, grids and tiles, 1200 px where a cover is drawn larger
-// than that (the mini player and the full screen), each its own cache entry.
-constexpr int kSmallRendition = 500;
+// Three renditions: 500 px for lists, grids and tiles, 1200 px where a cover is drawn larger
+// than that (the mini player and the full screen), the original beyond 1200 px and for a
+// saved cover; each its own cache entry.
+constexpr int kSmallRendition = 500, kLargeRendition = 1200;
 struct Rendition {
     const wchar_t* param;
     const char* version;
 };
 Rendition RenditionFor(int sizePx) {
+    // The original is the uploaded file itself: the URL without a param. A cover drawn larger
+    // than the 1200 px rendition (full screen at a high DPI) and a saved one use it.
+    if (sizePx > kLargeRendition) return Rendition{nullptr, "original-v1"};
     return sizePx > kSmallRendition ? Rendition{L"1200y1200", "1200y1200-v1"} : Rendition{L"500y500", "500y500-v1"};
 }
 
 std::wstring CoverUrl(std::wstring url, const Rendition& rendition) {
     if (url.empty()) return {};
     if (url.rfind(L"http://", 0) == 0) url = L"https://" + url.substr(7); // NCM avatars come as http
+    if (!rendition.param) return url;
     url += (url.find(L'?') == std::wstring::npos ? L"?param=" : L"&param=") + std::wstring(rendition.param);
     return url;
 }
@@ -80,6 +85,7 @@ class NcmArtInstance : public album_art_extractor_instance_v2 {
 
         const Rendition rendition = RenditionFor(cache::SizeHint());
         cache::ImageRequest request;
+        if (!rendition.param) request.limits.maxBodyBytes = 64u * 1024u * 1024u; // an uploaded original
         request.identity = albumOfSong ? cache::ImageIdentity{"ncm", ArtKindName(CoverKind::Album),
                                                               std::to_string(albumOfSong), rendition.version}
                                        : cache::ImageIdentity{"ncm", ArtKindName(kind), std::to_string(id),
@@ -124,8 +130,30 @@ class NcmArtInstance : public album_art_extractor_instance_v2 {
                 if (!songs.empty() && url.empty()) cache::art_absence::StoreMissing(identity, account, epoch);
             }
 
+            // An album known only from its songs' rows: its own record has the cover's address,
+            // as a song's details do for a song (a never-opened album's cover stayed away until
+            // a restart, owner 2026-11-14).
+            if (kind == CoverKind::Album && url.empty()) {
+                if (attempt == 0 && cache::art_absence::KnownMissing(identity))
+                    return std::optional<cache::HttpSource>();
+                auto& provider = Session::Get();
+                std::wstring error;
+                if (!provider.Service().EnsureStarted(workerAbort, &error))
+                    return std::optional<cache::HttpSource>();
+                Album info;
+                std::vector<Song> songs;
+                if (!provider.Api().GetAlbum(id, workerAbort, info, songs, error))
+                    return std::optional<cache::HttpSource>();
+                Catalog::Get().Put(info);
+                url = info.coverUrl;
+                if (url.empty()) cache::art_absence::StoreMissing(identity, account, epoch);
+            }
+
             url = CoverUrl(std::move(url), rendition);
-            if (url.empty()) return std::optional<cache::HttpSource>();
+            if (url.empty()) {
+                noAddress->store(true);
+                return std::optional<cache::HttpSource>();
+            }
             cache::art_absence::Clear(identity, account, epoch);
             cache::HttpSource source;
             source.url = std::move(url);

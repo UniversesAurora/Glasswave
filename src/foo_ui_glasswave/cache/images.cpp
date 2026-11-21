@@ -188,10 +188,12 @@ std::wstring_view RunFailureReasonName(RunFailureReason reason) {
     return L"unknown";
 }
 
-void LogImageRunDiagnostic(std::string_view artKey, unsigned long status, RunFailureReason reason) noexcept {
+void LogImageRunDiagnostic(std::string_view artKey, unsigned long status, RunFailureReason reason,
+                           std::wstring_view detail = {}) noexcept {
     try {
         netease::Log(L"image cache: art=" + Wide(artKey) + L" status=" + std::to_wstring(status) +
-                     L" reason=" + std::wstring(RunFailureReasonName(reason)));
+                     L" reason=" + std::wstring(RunFailureReasonName(reason)) +
+                     (detail.empty() ? std::wstring() : L" (" + std::wstring(detail) + L")"));
     } catch (...) {
         // Diagnostics must never affect image delivery.
     }
@@ -528,7 +530,12 @@ struct Images::Impl {
                 response = net::SendHttp(source->url, current, m_abort);
                 haveResponse = true;
                 responseStatus = response.status;
-                if (!response.error.empty()) return fail(RunFailureReason::transport_error, responseStatus);
+                if (!response.error.empty()) {
+                    LogImageRunDiagnostic(outcome.artKey, responseStatus, RunFailureReason::transport_error,
+                                          response.error);
+                    if (attempt + 1 < kMaxSourceAttempts) continue; // a slow mirror: once more
+                    return outcome;
+                }
                 if (response.status == 304) break;
                 if (response.status != 401 && response.status != 403 && response.status != 404) break;
             }
