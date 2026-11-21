@@ -4,6 +4,7 @@
 #include "core/text.h"
 
 #include "media/special_playlists.h"
+#include "ui/i18n.h"
 #include "core/log.h"
 
 #include <deque>
@@ -276,8 +277,10 @@ void Play(stream::Provider& provider, const stream::Id& station, std::wstring na
             const std::wstring name = g_state.name;
             g_state = {};
             Notify();
-            popup_message::g_show(Utf8(error.empty() ? L"The station sent no songs." : error).c_str(),
-                                  Utf8(name).c_str());
+            // A read dropped because the source stopped or signed out is nothing to report.
+            if (!stream::IsRequestDropped(error))
+                popup_message::g_show(Utf8(ui::Tr(error.empty() ? L"The station sent no songs." : error)).c_str(),
+                                      Utf8(name).c_str());
             return;
         }
         // The first songs go into the queue; the rest wait until they are a song away.
@@ -293,7 +296,7 @@ void Play(stream::Provider& provider, const stream::Id& station, std::wstring na
             const std::wstring name = g_state.name;
             g_state = {};
             Notify();
-            popup_message::g_show(Utf8(L"The station sent no songs.").c_str(), Utf8(name).c_str());
+            popup_message::g_show(Utf8(ui::Tr(L"The station sent no songs.")).c_str(), Utf8(name).c_str());
             return;
         }
         g_state.generation = QueueContentGeneration();

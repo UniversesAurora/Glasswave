@@ -51,6 +51,8 @@ std::vector<stream::Id> TrackIds(stream::Provider& provider, const metadb_handle
 }
 
 void ShowProviderError(const stream::Provider& provider, const std::wstring& error) {
+    // A request the source dropped (it stopped, or the user signed out) is not a failure to report.
+    if (stream::IsRequestDropped(error)) return;
     const auto text = pfc::stringcvt::string_utf8_from_wide(Tr(error).c_str());
     const auto title = pfc::stringcvt::string_utf8_from_wide(Tr(provider.Name()).c_str());
     popup_message::g_show(text.get_ptr(), title.get_ptr());

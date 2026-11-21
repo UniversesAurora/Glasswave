@@ -29,9 +29,9 @@
 //
 // Completion: a `done` handed to any method runs exactly once, on the main thread, with an
 // empty error on success. A provider that is shut down, signed out or switched to another
-// account while a call is in flight, or that was never started, completes it with an error
-// instead of dropping it; GuardDone below is the tool for that. The one exception is a call
-// that carries a cancellation token (ListQuery::cancelled,
+// account while a call is in flight, or that was never started, completes it with
+// kRequestDropped instead of dropping it; GuardDone below is the tool for that. The one
+// exception is a call that carries a cancellation token (ListQuery::cancelled,
 // CatalogSearchSuggestionQuery::cancelled): once the token is set, `done` may be dropped
 // without running. What is not covered: a callback queued to the main thread when
 // foobar2000 quits never runs.
@@ -493,6 +493,16 @@ class Provider {
     uint64_t m_editSerial = 0;
 };
 
+// The error of a request a source dropped without running it: the source shut down, was signed
+// out or switched accounts while the request waited (GuardDone). It is not a failure the user can
+// act on, so the UI never reports it in a dialog (IsRequestDropped); a page may still show it in
+// place of rows it could not read.
+inline constexpr wchar_t kRequestDropped[] =
+    L"The request was dropped because the source stopped or its account changed.";
+inline bool IsRequestDropped(std::wstring_view error) {
+    return error == kRequestDropped;
+}
+
 namespace detail {
 
 template <class Fn>
@@ -536,14 +546,14 @@ struct GuardState {
 // Wraps a completion (any Provider::*Done type: the last parameter is the error text) so it
 // runs exactly once. The wrapper is copyable and shares one state: the first call runs the
 // original, and when the last copy is destroyed without a call (a queued task was dropped at
-// shutdown or on an account change) the original receives `error` on the main thread, with
-// default-constructed results. A set `cancelled` token waives that last step.
+// shutdown or on an account change) the original receives kRequestDropped on the main thread,
+// with default-constructed results. A set `cancelled` token waives that last step.
 template <class Fn>
-Fn GuardDone(Fn done, std::wstring error, std::shared_ptr<std::atomic_bool> cancelled = {}) {
+Fn GuardDone(Fn done, std::shared_ptr<std::atomic_bool> cancelled = {}) {
     if (!done) return done;
     auto state = std::make_shared<detail::GuardState<Fn>>();
     state->fn = std::move(done);
-    state->error = std::move(error);
+    state->error = kRequestDropped;
     state->cancelled = std::move(cancelled);
     return [state](auto&&... args) {
         Fn fn = std::move(state->fn);

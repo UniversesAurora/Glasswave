@@ -536,17 +536,10 @@ std::vector<stream::ListKind> StreamProvider::CatalogSearchKinds() const {
             CatalogSearchAlbums,     CatalogSearchPlaylists, CatalogSearchLyrics};
 }
 
-namespace {
-
-// What a completion hears when its request is dropped (shutdown, sign-out).
-constexpr wchar_t kRequestDropped[] = L"NetEase Cloud Music stopped before the request finished.";
-
-} // namespace
-
 void StreamProvider::FetchCatalogSearchSuggestions(CatalogSearchSuggestionQuery query,
                                                    CatalogSearchSuggestionsDone done) {
     if (ListCancelled(query.cancelled)) return;
-    done = stream::GuardDone(std::move(done), kRequestDropped, query.cancelled);
+    done = stream::GuardDone(std::move(done), query.cancelled);
     if (query.term.empty() || !m_exec.Running()) {
         if (done) done({}, {});
         return;
@@ -665,7 +658,7 @@ std::optional<stream::HomeCard> ToHomeCard(const HomeCard& card) {
 } // namespace
 
 void StreamProvider::FetchHome(HomeDone done) {
-    done = stream::GuardDone(std::move(done), kRequestDropped);
+    done = stream::GuardDone(std::move(done));
     if (!m_exec.Running()) {
         if (done) done({}, L"NetEase Cloud Music is not running.");
         return;
@@ -731,7 +724,7 @@ void StreamProvider::FetchHome(HomeDone done) {
 // The stations: the personal FM (私人漫游, three songs a call, 不感兴趣 for its songs) and heartbeat
 // mode (心动模式: songs like the last one, from and around the liked songs).
 void StreamProvider::FetchStationTracks(const stream::Id& station, TracksDone done) {
-    done = stream::GuardDone(std::move(done), kRequestDropped);
+    done = stream::GuardDone(std::move(done));
     if (!m_exec.Running() ||
         (station != kPersonalFm && station != kHeartbeat && !station.starts_with(kSimilar))) {
         if (done) done({}, L"This station is unavailable.");
@@ -776,7 +769,7 @@ bool StreamProvider::CanDislike(const stream::Id& station) const {
 }
 
 void StreamProvider::DislikeStationTrack(const stream::Id& station, const stream::Id& track, Done done) {
-    done = stream::GuardDone(std::move(done), kRequestDropped);
+    done = stream::GuardDone(std::move(done));
     if (!CanDislike(station) || !m_exec.Running()) {
         if (done) done(L"This station does not take feedback.");
         return;
@@ -1123,7 +1116,7 @@ void StreamProvider::FetchArtistBio(const Id& artist, TextDone done) {
 
 // The song's detail and wiki, and the wiki's similar songs in full (so they play like any row).
 void StreamProvider::FetchSongDetails(const Id& track, SongDetailsDone done) {
-    done = stream::GuardDone(std::move(done), kRequestDropped);
+    done = stream::GuardDone(std::move(done));
     if (!m_exec.Running()) {
         if (done) done({}, L"The NetEase provider has not started.");
         return;
@@ -1231,7 +1224,7 @@ bool StreamProvider::NeedsAccount(const stream::ListQuery& query) const {
 void StreamProvider::FetchListPage(const stream::ListQuery& query, const stream::ListCursor& cursor,
                                    size_t requested, stream::ListPageDone done) {
     if (!done || ListCancelled(query.cancelled)) return;
-    done = stream::GuardDone(std::move(done), kRequestDropped, query.cancelled);
+    done = stream::GuardDone(std::move(done), query.cancelled);
     // Playlist and favorites pages come from a known id list and may be large (their details
     // are fetched in parallel batches). Offset-paged endpoints keep the size the service
     // honors, since a short answer is how they report the end.

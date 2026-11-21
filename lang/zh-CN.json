@@ -709,5 +709,7 @@
   "Made for You": "为你推荐",
   "Nothing to show.": "没有可显示的内容。",
   "Not interested": "不感兴趣",
-  "Sign in to Apple Music or NetEase Cloud Music to see their home pages here.": "登录 Apple Music 或网易云音乐后，这里会显示它们的主页。"
+  "Sign in to Apple Music or NetEase Cloud Music to see their home pages here.": "登录 Apple Music 或网易云音乐后，这里会显示它们的主页。",
+  "The station sent no songs.": "电台没有发来歌曲。",
+  "The request was dropped because the source stopped or its account changed.": "来源已停止或账户已更改，请求已取消。"
 }

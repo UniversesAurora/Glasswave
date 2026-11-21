@@ -36,7 +36,8 @@ void AddBulkActions(std::vector<MenuAction>& actions, SongsFetch songs, stream::
 void AddRemotePlaylistMenu(std::vector<MenuAction>& actions, stream::Provider& provider, SongsFetch songs,
                            const stream::Id& exclude = {});
 
-// A provider error shown to the user.
+// A provider error shown to the user; nothing for a request the source dropped
+// (stream::IsRequestDropped).
 void ShowProviderError(const stream::Provider& provider, const std::wstring& error);
 
 // The provider ids of the items that belong to it.
