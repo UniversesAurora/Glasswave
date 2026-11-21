@@ -418,6 +418,8 @@ bool RequiresLogin(stream::ListKind kind) {
     case stream::ListKind::SavedAlbums:
     case stream::ListKind::FollowedArtists:
     case stream::ListKind::Playlists:
+    case stream::ListKind::ArtistSimilarArtists:
+    case stream::ListKind::HomeList:
         return true;
     default:
         return false;
@@ -1758,6 +1760,32 @@ void StreamProvider::FetchListPage(const stream::ListQuery& query, const stream:
             page.next = {snapshot->key.revision, cursor.offset + count};
             page.more = cursor.offset + count < snapshot->ids.size();
             page.revision = snapshot->key.revision;
+            break;
+        }
+        case stream::ListKind::HomeList: {
+            stream::Playlist info;
+            info.id = query.id;
+            if (query.id == kDailyList) {
+                info.name = L"每日推荐";
+                info.tagline = L"根据你的音乐口味生成，每天6:00更新";
+                client.DailySongs(*m_abort, hintSongs, error);
+            } else if (query.id.starts_with(kStyleList)) {
+                std::vector<std::wstring> parts;
+                std::wstring_view rest = std::wstring_view(query.id).substr(kStyleList.size());
+                for (size_t i = 0; i < 2; ++i) {
+                    const size_t colon = rest.find(L':');
+                    parts.emplace_back(rest.substr(0, colon));
+                    rest = colon == std::wstring_view::npos ? std::wstring_view() : rest.substr(colon + 1);
+                }
+                info.tagline = L"根据你的音乐口味生成，每天更新";
+                client.StyleDailySongs(parts[0], parts[1], rest, *m_abort, hintSongs, error);
+            } else {
+                error = L"This list is unavailable.";
+                break;
+            }
+            page.rows = ToTracks(hintSongs);
+            page.playlist = std::move(info);
+            page.total = hintSongs.size();
             break;
         }
         case stream::ListKind::AlbumTracks: {

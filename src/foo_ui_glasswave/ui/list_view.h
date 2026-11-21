@@ -1,7 +1,11 @@
 #pragma once
 #include "media/list_sources.h"
 
+#include <memory>
+
 namespace glasswave::ui {
+
+class CardLayer;
 
 // Virtualized WMP 12 style list: column header, rows painted on demand into one
 // viewport-sized surface (only visible rows are formatted), slim scrollbar.
@@ -29,11 +33,25 @@ public:
     void EnsureVisible(size_t row);
     // The first item row visible at or after the top line (SIZE_MAX when the view is empty).
     size_t TopRow() const;
+    // Scrolled to the very top (a page shown again in another layout stays there).
+    bool AtTop() const { return ContentTopDip() <= 0.5f; }
+    void ScrollToTop();
     void ScrollToRow(size_t row);
+    // DIP from the top of the view to the top of the row's line (negative above it), and back:
+    // the row put that far down again, so whatever stood above it (an album's header, the
+    // view's top) stays where it was while rows around it change.
+    float RowOffset(size_t row) const;
+    void ScrollToRow(size_t row, float offsetDip);
+    // Where each sideways shelf stands (columns, by the group's key), to come back to on Back; a
+    // shelf that arrives later takes its place then.
+    std::map<std::wstring, float> ShelfPositions() const;
+    void SetShelfPositions(const std::map<std::wstring, float>& positions);
 
     bool HitTest(POINT pt) const { return PtInRect(&m_bounds, pt) != FALSE; }
     bool Capturing() const { return m_drag != Drag::None || m_scrollPressed != 0; }
     LPCWSTR CursorAt(POINT pt) const;  // system cursor id, or null for the default
+    // Text shown cut short under the pointer: its whole text and its box in client px.
+    bool CutTextAt(POINT pt, std::wstring* text, RECT* rect) const;
     void OnMouseMove(POINT pt);
     void OnMouseLeave();
     void OnLButtonDown(POINT pt, bool ctrl, bool shift);
@@ -58,6 +76,8 @@ public:
     std::function<void()> onScrollAnim;
     std::function<void()> onScrollHold;
     bool AnimateScrollBar();  // one fade tick; true while a transition is running
+    // Whether the window can be seen: the cards' motion covers play only then.
+    void SetMotion(bool on);
     bool OnScrollRepeat();    // one auto-repeat tick; true while a press should continue
 
 private:

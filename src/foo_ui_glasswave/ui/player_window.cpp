@@ -65,6 +65,7 @@ constexpr float kLineHeight = 1.33f; // a line's height for its type size
 constexpr float kPaneMinH = 150, kPaneCloseDrag = 56;
 constexpr float kFullBarMaxW = 760, kFullBarMargin = 24; // full screen without ehres.dll
 constexpr uint32_t kNavy = 0x0B2C6B; // WMC's blue over the dimmed tiles
+constexpr uint32_t kCardRim = 0x2F64B4; // the full-screen card's clear rim: a lighter blue than kNavy
 constexpr uint32_t kTimeBlue = 0x8CCBFF;
 constexpr float kSeekInset = 6; // DIP at either end of the seek rectangle: room for the thumb
 constexpr float kCardPad = 10, kCardShadow = 32; // DIP: full screen pane card around the pane
@@ -2746,12 +2747,16 @@ void PlayerWindow::PaintPaneCard() {
                  p.bottom + PxI(kCardPad) + margin};
     Place(m_paneCard, r);
     const int w = r.right - r.left, h = r.bottom - r.top;
-    // The plate inside the outline (card inset 5, 6.5, 5, 5.5), in px.
-    const RECT plate{r.left + margin + PxI(5), r.top + margin + PxI(6.5f), r.right - margin - PxI(5),
-                     r.bottom - margin - PxI(5.5f)};
+    // The plate inside the outline (card inset 5, 6.5, 5, 5.5), in px. The glass reaches a
+    // device pixel under the rim: where the card's hole and the glass met edge to edge, both
+    // half-covered pixels let the bright wall through, a pale arc in each corner (owner,
+    // 2026-11-14).
+    const int lap = std::max(1, static_cast<int>(std::floor(m_scale)));
+    const RECT plate{r.left + margin + PxI(5) - lap, r.top + margin + PxI(6.5f) - lap,
+                     r.right - margin - PxI(5) + lap, r.bottom - margin - PxI(5.5f) + lap};
     Place(m_paneGlass, plate);
     m_paneGlassShape.Size(float2{static_cast<float>(plate.right - plate.left), static_cast<float>(plate.bottom - plate.top)});
-    m_paneGlassShape.CornerRadius(float2{Px(3), Px(3)});
+    m_paneGlassShape.CornerRadius(float2{Px(3) + lap, Px(3) + lap});
     if (m_paneGlassScale != m_scale) {
         m_paneGlassScale = m_scale;
         m_paneGlass.Brush(gfx::MakeGlassBrush(m_paneGlass.Compositor(), Px(14), 1.5f, D2D1::ColorF(kNavy, 0.42f)));
@@ -2762,14 +2767,17 @@ void PlayerWindow::PaintPaneCard() {
         FeatherRect(dc, {card.left + 6, card.top + 10, card.right - 6, card.bottom + 2}, kCardShadow - 4, 0x000814, 0.55f);
         com_ptr<ID2D1Factory> factory;
         dc->GetFactory(factory.put());
-        // The clear rim round the glass takes a little of its navy, paler than the glass and
-        // unblurred (owner, 2026-11-13). The shadow under it is cleared first so the rim is
-        // as even as the glass.
+        // The clear rim round the glass is blue, unblurred and paler than the glass, yet blue
+        // enough to read as blue (owner, 2026-11-13 / 14: navy at 20 % was hardly seen). The
+        // shadow under it is cleared first so the rim is as even as the glass.
         {
+            // The radius of OVERLAYS.OUTLINE's own corner (a white plate with a bright edge,
+            // about 3 px round): a rounder rim left a pale crescent of the plate in each corner
+            // between the two curves (owner, 2026-11-14).
             com_ptr<ID2D1RoundedRectangleGeometry> outer;
-            factory->CreateRoundedRectangleGeometry({card, 6, 6}, outer.put());
+            factory->CreateRoundedRectangleGeometry({card, 3, 3}, outer.put());
             com_ptr<ID2D1SolidColorBrush> rim;
-            dc->CreateSolidColorBrush(D2D1::ColorF(kNavy, 0.20f), rim.put());
+            dc->CreateSolidColorBrush(D2D1::ColorF(kCardRim, 0.36f), rim.put());
             dc->SetPrimitiveBlend(D2D1_PRIMITIVE_BLEND_COPY);
             dc->FillGeometry(outer.get(), rim.get());
             dc->SetPrimitiveBlend(D2D1_PRIMITIVE_BLEND_SOURCE_OVER);

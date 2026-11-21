@@ -2540,6 +2540,8 @@ std::unique_ptr<Page> MakeRemotePage(PageHost& host, stream::Provider& provider,
         return std::make_unique<GroupTracksPage>(host, provider, view);
     case View::Kind::RemoteSong:
         return std::make_unique<SongPage>(host, provider, view);
+    case View::Kind::RemoteHomeList:
+        return std::make_unique<HomeListPage>(host, provider, view);
     default:
         return nullptr;
     }
@@ -2628,14 +2630,18 @@ View ArtistView(const stream::Provider& provider, const stream::Id& id, std::wst
     return view;
 }
 
-View AlbumView(const stream::Provider& provider, const stream::Id& id, std::wstring name,
-               const stream::Id& artistId, std::wstring artistName, stream::Id sectionId) {
+View AlbumView(const stream::Provider& provider, const stream::Id& id, std::wstring name, stream::Id sectionId) {
     View view = RemoteView(provider, View::Kind::RemoteAlbum);
     view.remoteId = id;
     view.name = std::move(name);
-    view.parentId = artistId;
-    view.parentName = std::move(artistName);
     view.sectionId = std::move(sectionId);
+    return view;
+}
+
+View HomeListView(const stream::Provider& provider, const stream::Id& list, std::wstring name) {
+    View view = RemoteView(provider, View::Kind::RemoteHomeList);
+    view.remoteId = list;
+    view.name = std::move(name);
     return view;
 }
 

@@ -538,10 +538,35 @@ ListView::ListView(const wuc::ContainerVisual& parent) {
     m_status = comp.CreateSpriteVisual();
     m_rows = comp.CreateSpriteVisual();
     m_scroll = comp.CreateSpriteVisual();
-    m_root.Children().InsertAtTop(m_rows);
+    m_viewport = comp.CreateContainerVisual();
+    m_viewport.Clip(comp.CreateInsetClip());
+    m_content = comp.CreateContainerVisual();
+    m_viewport.Children().InsertAtTop(m_content);
+    m_root.Children().InsertAtTop(m_viewport);
+    m_content.Children().InsertAtTop(m_rows);
     m_root.Children().InsertAtTop(m_status);
     m_root.Children().InsertAtTop(m_header);
     m_root.Children().InsertAtTop(m_scroll);
+    m_thumb = comp.CreateSpriteVisual();
+    m_root.Children().InsertAtTop(m_thumb);
+    // thumb top (px) = clamp(a + b * (top - content offset), lo, hi): content coordinates are
+    // absolute, so the scroll position in px is minus m_content's offset, mid-glide included.
+    m_thumbPlace = comp.CreatePropertySet();
+    for (const wchar_t* term : {L"x", L"a", L"b", L"top", L"lo", L"hi"}) m_thumbPlace.InsertScalar(term, 0);
+    auto follow = comp.CreateExpressionAnimation(
+        L"Vector3(p.x, Clamp(p.a + p.b * (p.top - c.Offset.Y), p.lo, p.hi), 0)");
+    follow.SetReferenceParameter(L"p", m_thumbPlace);
+    follow.SetReferenceParameter(L"c", m_content);
+    m_thumb.StartAnimation(L"Offset", follow);
+    // A shelf sliding to another page: its tiles in their own strip under the rows (whose
+    // surface is clear there), clipped to the list, moved by the compositor.
+    m_slideClip = comp.CreateContainerVisual();
+    m_slideClip.Clip(comp.CreateInsetClip());
+    m_slideClip.IsVisible(false);
+    m_slide = comp.CreateSpriteVisual();
+    m_slideClip.Children().InsertAtTop(m_slide);
+    m_content.Children().InsertBelow(m_slideClip, m_rows);
+    m_cards = std::make_unique<CardLayer>(m_content, m_rows);
     m_status.IsVisible(false);
     parent.Children().InsertAtTop(m_root);
     // A plain list draws covers only in its Album art column.
@@ -1027,14 +1052,91 @@ void ListView::ScrollTopTo(float top) {
     m_topOffsetDip = std::max(top - LineTopDip(m_top), 0.0f);
 }
 
+float ListView::ContentHeightDip() const {
+    if (Lined()) return m_lineTop.empty() ? 0.0f : m_lineTop.back();
+    return static_cast<float>(LineCount()) * (LineHeightPx() / m_scale);
+}
+
+float ListView::MaxScrollDip() const { return std::max(0.0f, ContentHeightDip() - RowsHeightDip()); }
+
+void ListView::SetScrollDip(float top) {
+    m_glide.ms = 0;
+    top = std::round(std::clamp(top, 0.0f, MaxScrollDip()) * m_scale) / m_scale;
+    if (std::abs(top - ContentTopDip()) < 0.01f) return;
+    ScrollTopTo(top);
+    PaintRows();
+    PaintScrollBar();
+    CheckNearEnd();
+}
+
+namespace {
+// The glide's curve: ease-out cubic, cubic-bezier(0.33, 1, 0.68, 1), as browsers scroll.
+constexpr D2D1_POINT_2F kGlideP1{0.33f, 1.0f}, kGlideP2{0.68f, 1.0f};
+constexpr int kGlideMs = 220;
+float GlideAt(float t) { return BezierAt(kGlideP1, kGlideP2, t); }
+} // namespace
+
+bool ListView::Gliding() const {
+    return m_glide.ms > 0 &&
+           std::chrono::steady_clock::now() - m_glide.start < std::chrono::milliseconds(m_glide.ms);
+}
+
+float ListView::VisualTopDip() const {
+    if (!Gliding()) return ContentTopDip();
+    const float t = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - m_glide.start).count() /
+                    static_cast<float>(m_glide.ms);
+    return m_glide.from + (m_glide.to - m_glide.from) * GlideAt(std::clamp(t, 0.0f, 1.0f));
+}
+
+void ListView::GlideTo(float top) {
+    top = std::round(std::clamp(top, 0.0f, MaxScrollDip()) * m_scale) / m_scale;
+    if (std::abs(top - ContentTopDip()) < 0.01f) return;
+    BOOL animations = TRUE;
+    SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION, 0, &animations, 0);
+    if (!animations) {
+        SetScrollDip(top);
+        return;
+    }
+    const float viewH = RowsHeightDip();
+    float from = std::round(VisualTopDip() * m_scale) / m_scale;
+    // A long way glides only its last screen and a half (the rows painted for it stay bounded).
+    const float run = 1.5f * viewH;
+    const bool jump = std::abs(top - from) > run;
+    if (jump) from = top - std::copysign(run, top - from);
+    ScrollTopTo(top);
+    // The rows for the whole way, from where the content stands to where it goes, with a margin
+    // either side: `from` is this thread's estimate of where the running glide is, and the
+    // compositor (which started it a draw and a commit later) can be a little behind it.
+    const float margin = 0.25f * viewH;
+    m_glide = {from, top, std::chrono::steady_clock::now(), kGlideMs};
+    m_paintTop = std::max(0.0f, std::min(from, top) - margin);
+    m_paintHeight = std::max(from, top) + viewH + margin - m_paintTop;
+    PaintRows();
+    // Content coordinates are absolute (the offset is minus the scroll position, whatever range
+    // is painted), so the glide goes on from where the compositor shows the content now, not
+    // from an estimate: started from the estimate, the content jumped ahead at every wheel
+    // notch of a running glide (owner, 2026-11-21: scrolling up and down, content flashed over
+    // the home cards). A long jump starts from its last screen and a half.
+    const auto& comp = gfx::CompositionHost::Get().Compositor();
+    auto glide = comp.CreateVector3KeyFrameAnimation();
+    if (jump)
+        glide.InsertKeyFrame(0.0f, float3{0, -std::round(from * m_scale), 0});
+    else
+        glide.InsertExpressionKeyFrame(0.0f, L"this.StartingValue");
+    glide.InsertKeyFrame(1.0f, float3{0, -std::round(top * m_scale), 0},
+                         comp.CreateCubicBezierEasingFunction({kGlideP1.x, kGlideP1.y}, {kGlideP2.x, kGlideP2.y}));
+    glide.Duration(std::chrono::milliseconds(kGlideMs));
+    m_content.StartAnimation(L"Offset", glide);
+    PaintScrollBar();
+    CheckNearEnd();
+}
+
 void ListView::UpdateStatusText() {
     std::wstring next = m_source ? m_source->LoadingText() : std::wstring();
     if (next == m_statusText) return;
-    const bool wasVisible = !m_statusText.empty(), willBeVisible = !next.empty();
-    const int oldHeightPx = StatusHeightPx();
+    // The band takes its own room above the rows and pushes them down; the scroll position
+    // stays, so it never hides the first row (scrolling to make room hid it on every load).
     m_statusText = std::move(next);
-    if (wasVisible != willBeVisible)
-        ScrollTopTo(ContentTopDip() + (StatusHeightPx() - oldHeightPx) / std::max(m_scale, 0.001f));
 }
 
 // ---- Data -----------------------------------------------------------------------------------
@@ -1173,8 +1275,19 @@ void ListView::SetSource(media::ListSource* source, bool resetScroll) {
     m_hotGroup = SIZE_MAX;
     m_hotGroupHeader = SIZE_MAX;
     m_hotLinkGroup = SIZE_MAX;
+    m_hotShelf = SIZE_MAX;
+    m_moreGroup = m_moreOldGroup = m_morePressedGroup = m_shelfPressedGroup = SIZE_MAX;
+    m_moreHot = m_moreOldHot = m_morePress = 0;
+    m_playRow = m_playOldRow = SIZE_MAX;
+    m_playBlend = m_playOldBlend = m_playHotBlend = 0;
+    m_playHot = false;
     m_anchor = source ? source->Focus() : SIZE_MAX;
+    if (!m_slideKey.empty()) {
+        m_slideKey.clear();
+        m_slideClip.IsVisible(false);
+    }
     if (resetScroll) {
+        m_shelves.clear();
         m_top = 0;
         m_topOffsetDip = 0;
         m_statusText = m_source ? m_source->LoadingText() : std::wstring();
@@ -1403,21 +1516,60 @@ void ListView::PaintHeader() {
 
 void ListView::PaintRows() {
     auto& host = gfx::CompositionHost::Get();
-    const RECT rr = RowsRect();
-    const int w = std::max<int>(rr.right - rr.left, 1), h = std::max<int>(rr.bottom - rr.top, 1);
-    if (!m_rowsSurface || m_rowsSurfaceSize.cx != w || m_rowsSurfaceSize.cy != h) {
-        m_rowsSurface = host.CreateSurface(w, h);
-        m_rowsSurfaceSize = {w, h};
-        auto brush = host.Compositor().CreateSurfaceBrush(m_rowsSurface);
-        brush.Stretch(wuc::CompositionStretch::None);
-        brush.HorizontalAlignmentRatio(0);
-        brush.VerticalAlignmentRatio(0);
-        m_rows.Brush(brush);
+    if (!m_slideKey.empty() && ContentTopDip() != m_slideTop) { // scrolled meanwhile: the slide ends
+        m_slideKey.clear();
+        m_slide.StopAnimation(L"Offset");
+        m_slideClip.IsVisible(false);
     }
-    PlaceVisual(m_rows, 0, static_cast<float>(ContentOffsetPx()), static_cast<float>(w),
-                static_cast<float>(h));
+    const RECT rr = RowsRect();
+    const int w = std::max<int>(rr.right - rr.left, 1), viewPx = std::max<int>(rr.bottom - rr.top, 1);
+    PlaceVisual(m_viewport, 0, static_cast<float>(ContentOffsetPx()), static_cast<float>(w),
+                static_cast<float>(viewPx));
+    // A jump elsewhere (a row brought into view, the thumb, new rows) ends a glide.
+    if (m_glide.ms && (!Gliding() || std::abs(ContentTopDip() - m_glide.to) > 0.01f)) {
+        m_glide.ms = 0;
+        m_content.StopAnimation(L"Offset");
+    }
+    if (!Gliding()) {
+        // The glide this thread counts as over may still run its last frame in the compositor
+        // (or a jump left it): it stops here, at the place it was going to.
+        m_glide.ms = 0;
+        m_content.StopAnimation(L"Offset");
+        m_paintTop = ContentTopDip();
+        m_paintHeight = viewPx / m_scale;
+        m_content.Offset(float3{0, -std::round(m_paintTop * m_scale), 0});
+    }
+    const int h = std::max(1, static_cast<int>(std::ceil(m_paintHeight * m_scale)));
+    // Painted as if the view stood at the painted range's top and were as tall.
+    const size_t realTop = m_top;
+    const float realOffset = m_topOffsetDip;
+    ScrollTopTo(m_paintTop);
+    m_paintViewH = h / m_scale;
+    // Two surfaces drawn in turn: the one on screen is never drawn into. Drawn in place, its new
+    // rows (laid out for a new glide's start) could reach the screen a frame before the glide's
+    // new offset, the content standing a screen off for that frame (owner, 2026-11-21: what is
+    // further down flashed up over the home cards while scrolling up and down). The brush swap,
+    // like the offset, is a property: both land in the same frame. A surface only grows (in
+    // half views) while the view keeps its size: sized to each glide, every wheel step made one.
+    RowsBuffer& back = m_rowsBuffers[m_rowsFront ^ 1];
+    if (!back.surface || back.size.cx != w || back.size.cy < h || back.viewPx != viewPx) {
+        const int half = std::max(1, viewPx / 2);
+        const int surfaceH = (h + half - 1) / half * half;
+        back.surface = host.CreateSurface(w, surfaceH);
+        back.size = {w, surfaceH};
+        back.viewPx = viewPx;
+        back.brush = host.Compositor().CreateSurfaceBrush(back.surface);
+        back.brush.Stretch(wuc::CompositionStretch::None);
+        back.brush.HorizontalAlignmentRatio(0);
+        back.brush.VerticalAlignmentRatio(0);
+    }
+    // The painted range stands at its own place in the (absolute) content.
+    const float paintPx = std::round(m_paintTop * m_scale);
+    PlaceVisual(m_rows, 0, paintPx, static_cast<float>(w), static_cast<float>(h));
+    m_cards->SetBounds({0, static_cast<LONG>(paintPx), w, static_cast<LONG>(paintPx) + h}, m_scale);
     const float s = m_scale;
-    host.Draw(m_rowsSurface, s, [&](ID2D1DeviceContext* dc) {
+    m_glowSeen = false;
+    const bool drawn = host.Draw(back.surface, s, [&](ID2D1DeviceContext* dc) {
         const D2D1_SIZE_F size{w / s, h / s};
         if (!m_source) return;
         if (m_source->Count() == 0) {
@@ -2588,6 +2740,13 @@ void ListView::OnLButtonDown(POINT pt, bool ctrl, bool shift) {
         }
         break;
     case Part::Row: {
+        if (IsCard(hit.row)) { // a card presses in, and opens when released on it
+            m_drag = Drag::CardPress;
+            m_cardPress = hit.row;
+            m_source->SetFocus(hit.row);
+            m_cards->SetPressed(m_source, hit.row);
+            break;
+        }
         // Rating stars and the Favorite star act on the clicked song (and select it).
         const int kind = CellAt(pt, nullptr);
         if (kind == static_cast<int>(CellKind::Rating) && StarAt(pt) >= 0) {
@@ -2745,6 +2904,14 @@ void ListView::OnLButtonUp(POINT pt) {
 }
 
 void ListView::CancelDrag() {
+    if (m_drag == Drag::PlayPress) {
+        m_playPress = SIZE_MAX;
+        m_cards->SetPressed(m_source, SIZE_MAX);
+    }
+    if (m_drag == Drag::CardPress) {
+        m_cardPress = SIZE_MAX;
+        m_cards->SetPressed(m_source, SIZE_MAX);
+    }
     if (m_drag != Drag::None) m_drag = Drag::None;
     if (m_scrollPressed || m_scrollHot) {
         m_scrollPressed = 0;
@@ -2760,10 +2927,10 @@ void ListView::CancelDrag() {
 void ListView::OnDoubleClick(POINT pt) {
     const Hit hit = HitAt(pt);
     if (hit.part == Part::AlbumColumn && m_source) {
-        const auto& g = (*m_source->Groups())[hit.group];
-        if (g.count) m_source->Activate(g.first);
+        // The album's songs only, as the click on the album selected them (owner, 2026-11-15).
+        m_source->ActivateGroup(hit.group);
         PaintRows();
-    } else if (hit.part == Part::Row && m_source) {
+    } else if (hit.part == Part::Row && m_source && !IsCard(hit.row)) { // a card opened on the click
         m_source->Activate(hit.row);
         PaintRows();
     }
@@ -2870,6 +3037,67 @@ void ListView::ShowHeaderMenu(HWND owner, POINT pt, size_t displayCol) {
         SaveColumnLayout();
         Refresh();  // the cover column changes the row height
     }
+}
+
+// Text the list shows cut short under the pointer (a tile's line, a cell): its whole text and
+// where it stands, in client px, for the window's tooltip (owner, 2026-11-14).
+bool ListView::CutTextAt(POINT pt, std::wstring* text, RECT* rect) const {
+    if (!m_source || m_drag != Drag::None) return false;
+    const Hit hit = HitAt(pt);
+    if (hit.part != Part::Row || hit.row >= m_source->Count()) return false;
+    const D2D1_POINT_2F c = ContentPoint(pt);
+    const RECT rr = RowsRect();
+    const auto toClient = [&](D2D1_RECT_F r) {
+        return RECT{rr.left + static_cast<LONG>(std::floor((r.left - ScrollX()) * m_scale)),
+                    rr.top + static_cast<LONG>(std::floor((r.top - ContentTopDip()) * m_scale)),
+                    rr.left + static_cast<LONG>(std::ceil((r.right - ScrollX()) * m_scale)),
+                    rr.top + static_cast<LONG>(std::ceil((r.bottom - ContentTopDip()) * m_scale))};
+    };
+    const auto check = [&](const std::wstring& t, D2D1_RECT_F box) {
+        if (t.empty() || c.x < box.left || c.x >= box.right || c.y < box.top || c.y >= box.bottom) return false;
+        if (TextWidth(t, 100000) <= box.right - box.left - 1) return false;
+        *text = t;
+        *rect = toClient(box);
+        return true;
+    };
+    const size_t line = LineOfRow(hit.row);
+    const float y = LineTopDip(line);
+    if (m_mode == Mode::Tiles) {
+        // The tile's style and left edge, wherever its group puts it (a shelf slides).
+        media::TileStyle style = m_source->Tiles();
+        float x = 0;
+        if (m_tileGroups) {
+            if (line >= m_lines.size() || TileAtLine(m_lines[line], c.x, &x) != hit.row) return false;
+            style = GroupTiles(m_lines[line].group);
+        } else {
+            x = TileLeft(hit.row % TileColumns());
+        }
+        const D2D1_SIZE_F ts = TileSizeOf(style);
+        const media::TileInfo info = m_source->Tile(hit.row);
+        if (style == media::TileStyle::Song) {
+            const float tx = x + 8 + kSongTileArt + 10, mid = y + ts.height / 2;
+            return check(info.lines[0], {tx, mid - 18, x + ts.width - 6, mid}) ||
+                   check(info.lines[1], {tx, mid, x + ts.width - 6, mid + 18});
+        }
+        if (style == media::TileStyle::Artist) {
+            const float a = kArtistTileArt, ay = y + (ts.height - a) / 2, tx = x + 10 + a + 12;
+            for (size_t k = 0; k < info.lines.size(); ++k)
+                if (check(info.lines[k], {tx, ay + 2 + k * 18, x + ts.width - 6, ay + 2 + (k + 1) * 18})) return true;
+            return false;
+        }
+        const float a = kAlbumTileArt, ay = y + 10;
+        for (size_t k = 0; k < 2; ++k)
+            if (check(info.lines[k], {x + 6, ay + a + 5 + k * 17, x + ts.width - 6, ay + a + 5 + (k + 1) * 17}))
+                return true;
+        return false;
+    }
+    const float rowH = m_mode == Mode::Grouped && line < m_lines.size() ? LineHeightDip(m_lines[line]) : RowHeightPx() / m_scale;
+    for (const Col& col : Columns(RowsWidth())) {
+        if (c.x < col.x || c.x >= col.x + col.w) continue;
+        if (KindOf(m_source->Columns()[col.src]) != CellKind::Text) return false;
+        return check(m_source->Cell(hit.row, col.src), {col.x + kCellPad, y, col.x + col.w - kCellPad, y + rowH});
+    }
+    return false;
 }
 
 void ListView::UpdateMarquee() {

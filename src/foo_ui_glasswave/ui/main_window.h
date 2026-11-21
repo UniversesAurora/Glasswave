@@ -571,6 +571,11 @@ class MainWindow : public PageHost, public PlayerHost {
     struct ScrollPosition {
         stream::Id provider;
         size_t top = 0;
+        float offset = 0; // DIP from the view's top to that row: a group's header above it stays seen
+        // Scrolled to the very top: it comes back at the top, whatever the new layout's headers
+        // (an artist page rebuilt as Icon from Expanded tile has headers of another height).
+        bool atTop = false;
+        std::map<std::wstring, float> shelves; // where its sideways shelves stood (ListView::ShelfPositions)
     };
     std::map<std::wstring, ScrollPosition> m_scrollPositions; // last top row per visited view
     std::wstring m_pendingScrollKey;                          // view whose top row is being restored

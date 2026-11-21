@@ -149,6 +149,7 @@ class Provider {
     using TextDone = std::function<void(std::wstring text, std::wstring error)>;
     using SongDetailsDone = std::function<void(SongDetails details, std::wstring error)>;
     using CreatedDone = std::function<void(Id playlist, std::wstring error)>;
+    using HomeDone = std::function<void(Home home, std::wstring error)>;
     struct CatalogSearchSuggestionQuery {
         std::wstring term;
         std::shared_ptr<std::atomic_bool> cancelled;

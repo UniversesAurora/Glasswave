@@ -157,6 +157,7 @@ int NavPane::RowHeightPx() const { return static_cast<int>(std::lround(kRowHeigh
 
 std::wstring NavPane::ItemKey(const Item& item) {
     switch (item.target) {
+    case Target::Home: return L"home";
     case Target::Queue: return L"queue";
     case Target::LibraryAll: return L"all";
     case Target::LibraryLocal: return L"local";
@@ -314,6 +315,10 @@ bool NavPane::ApplyStaticMove(const Item& dragged, const Item& target, bool afte
 void NavPane::Rebuild() {
     m_items.clear();
     auto pm = playlist_manager::get();
+    // Home above everything, where a streaming source has a home page (owner, 2026-11-15).
+    if (std::any_of(stream::Providers().begin(), stream::Providers().end(),
+                    [](const stream::Provider* p) { return p->Can(stream::Capability::Home); }))
+        m_items.push_back({Target::Home, 0, 0, L"Home", wp::NavIcon::Library, false});
     // The play queue on top, like the "Up Next" / "Playing" list of current players.
     m_items.push_back({Target::Queue, media::QueuePlaylist(false), 0, L"Now Playing", wp::NavIcon::NowPlaying, false});
     // Playlists hold local and provider tracks alike, so they belong to All Music; each provider
@@ -715,6 +720,7 @@ void NavPane::Paint() {
                                          it.sectionKind == stream::SectionKind::Favorites)
                                     ? 29526
                                 : it.target == Target::Queue        ? 29513
+                                : it.target == Target::Home         ? 29635 // WMP's online globe with a note
                                 : it.target == Target::AllRecentPlayed ? 575   // clock with a music note
                                 : it.target == Target::AllMostPlayed   ? 550   // pie chart
                                 : it.target == Target::SmartHeader     ? 29572

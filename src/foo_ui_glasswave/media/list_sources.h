@@ -54,6 +54,12 @@ struct Link {
     explicit operator bool() const { return kind != Kind::None; }
 };
 
+// WMP 12 icon views: albums (cover above two lines) or artists (cover beside three lines); Song:
+// a small card, a small cover beside two lines (Apple Music's song shelves, Explorer's tiles).
+// Card: a featured card (the home page's top rows), drawn by the list's card layer
+// (ui/card_layer.h) from ListSource::Card instead of as a tile.
+enum class TileStyle { None, Album, Artist, Song, Card };
+
 // WMP 12 details view grouped by album: a header line, then the tracks next to an
 // album column showing the cover and up to four lines of album information.
 struct RowGroup {

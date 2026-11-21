@@ -46,6 +46,17 @@ t_size AddSmartPreset(const SmartPreset& preset);
 t_size NewSmartPlaylist();
 
 void PlayQueue(const metadb_handle_list& items, size_t start); // replace and play a fresh source
+// Playing a list that must be read first (a service's playlist or album from its card or page).
+// Asking stops what plays at once; until the list is read, Play does not bring the old queue
+// back (owner, 2026-11-20: the old song went on for 15 s after a card's play was pressed). A
+// newer request, Stop, or any queue that starts playing (PlayQueue) supersedes it.
+uint64_t BeginPendingPlay();
+bool TakePendingPlay(uint64_t token); // true when this request is still the one to play; clears it
+void DropPendingPlay(uint64_t token); // its read failed
+bool PendingPlay();                   // the transport's Play waits for the list instead
+void CancelPendingPlay();
+// Called after PlayQueue started a fresh source (the window notes a playlist played from its page).
+void SetPlayQueueListener(std::function<void()> listener);
 void PlayNext(const metadb_handle_list& items);                // newest priority block goes next
 void AddToQueue(const metadb_handle_list& items);              // ordinary future insertion
 // Feed/paging token: changed only by Replace/Clear, not ordinary edits or track advance.

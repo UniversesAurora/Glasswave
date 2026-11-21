@@ -336,7 +336,29 @@ stream::NavigationSection CreatedPlaylistSection(const stream::Provider& provide
             false};
 }
 
+// The section a page stands in. A section's own pages are in it; an album, an artist or a
+// playlist only when it is really there (saved, followed, the user's): otherwise it stands right
+// under its source (owner, 2026-11-21: an artist page read 唱片集 > ..., a playlist from Home
+// "my playlists"). Where a page was opened from is View::from's business, not this one's.
 std::optional<stream::NavigationSection> SectionForView(const stream::Provider& provider, const View& view) {
+    switch (view.kind) {
+    case View::Kind::RemoteArtist:
+    case View::Kind::RemoteTopTracks: {
+        const bool followed = provider.ArtistPreferenceState(view.remoteId).value_or([&] {
+            const auto artists = provider.FollowedArtists();
+            return std::any_of(artists.begin(), artists.end(),
+                               [&view](const stream::Artist& a) { return a.id == view.remoteId; });
+        }());
+        return followed ? FindProviderSection(provider, stream::SectionKind::Artists) : std::nullopt;
+    }
+    case View::Kind::RemoteAlbum:
+        return provider.IsAlbumSaved(view.remoteId) ? FindProviderSection(provider, stream::SectionKind::Albums)
+                                                    : std::nullopt;
+    case View::Kind::RemotePlaylist:
+        return provider.SectionOfPlaylist(view.remoteId);
+    default:
+        break;
+    }
     if (const auto section = FindProviderSection(provider, view.sectionId)) return section;
     switch (view.kind) {
     case View::Kind::RemoteFavorites:
@@ -3535,7 +3557,24 @@ std::vector<MenuAction> MainWindow::LibraryMenu() {
     View local;
     local.library = View::Library::Local;
     local.kind = View::Kind::AllMusic;
-    std::vector<MenuAction> out{{L"All Music", go(all)}, {L"Local Music", go(local)}};
+    // The navigation pane's top level, in its order (NavPane::Rebuild): the root of every path.
+    std::vector<MenuAction> out;
+    if (std::any_of(stream::Providers().begin(), stream::Providers().end(),
+                    [](const stream::Provider* p) { return p->Can(stream::Capability::Home); })) {
+        View home;
+        home.library = View::Library::All;
+        home.kind = View::Kind::Home;
+        out.push_back({L"Home", go(home)});
+    }
+    if (const t_size queue = media::QueuePlaylist(false); queue != SIZE_MAX) {
+        View now;
+        now.library = View::Library::All;
+        now.kind = View::Kind::Playlist;
+        now.playlist = queue;
+        out.push_back({L"Now Playing", go(now)});
+    }
+    out.push_back({L"All Music", go(all)});
+    out.push_back({L"Local Music", go(local)});
     for (auto* provider : stream::Providers())
         out.push_back({provider->Name(), go(ProviderLandingView(*provider))});
     return out;
@@ -3992,7 +4031,8 @@ bool MainWindow::LoadLastView(View& view, size_t& top) {
         return value >= 0 && value <= last ? value : -1;
     };
     const int library = inRange(f[1], static_cast<int>(View::Library::Remote));
-    const int kind = inRange(f[2], static_cast<int>(View::Kind::RemoteGroupTracks));
+    int kind = inRange(f[2], static_cast<int>(View::Kind::RemoteGroupTracks));
+    if (_wtoi(f[2].c_str()) == static_cast<int>(View::Kind::Home)) kind = static_cast<int>(View::Kind::Home);
     const int group = inRange(f[5], static_cast<int>(media::kGroupKinds) - 1);
     const int shelf = inRange(f[8], static_cast<int>(stream::Shelf::Recommended));
     if (library < 0 || kind < 0 || group < 0 || shelf < 0) return false;
@@ -4058,8 +4098,15 @@ bool MainWindow::LoadLastView(View& view, size_t& top) {
 
 void MainWindow::ApplyPendingScroll() {
     if (m_pendingScrollKey.empty() || !m_list || !m_source || m_source->Count() == 0) return;
-    if (auto it = m_scrollPositions.find(m_pendingScrollKey); it != m_scrollPositions.end())
-        m_list->ScrollToRow(std::min(it->second.top, m_source->Count() - 1));
+    // Back at the same distance from the top: restored by its row alone, the first row of a group
+    // came back at the very top and the group's header (or the album line above it) was hidden.
+    if (auto it = m_scrollPositions.find(m_pendingScrollKey); it != m_scrollPositions.end()) {
+        m_list->SetShelfPositions(it->second.shelves);
+        if (it->second.atTop)
+            m_list->ScrollToTop();
+        else
+            m_list->ScrollToRow(std::min(it->second.top, m_source->Count() - 1), it->second.offset);
+    }
     m_pendingScrollKey.clear();
 }
 
@@ -4078,9 +4125,13 @@ void MainWindow::Navigate(const View& requested, bool push) {
     if (m_list && m_source && m_source->Count()) {
         const size_t top = m_list->TopRow();
         if (top != SIZE_MAX)
-            m_scrollPositions[ViewKey(m_view)] = {m_view.IsRemote() ? m_view.provider : stream::Id{}, top};
+            m_scrollPositions[ViewKey(m_view)] = {m_view.IsRemote() ? m_view.provider : stream::Id{}, top,
+                                                  m_list->RowOffset(top), m_list->AtTop(),
+                                                  m_list->ShelfPositions()};
     }
     m_pendingScrollKey = ViewKey(view);
+    m_pendingSelect = view.select; // "View album" from a song: that song, once its row shows
+    view.select = nullptr;
     const bool sameView = SameView(view, m_view);
     m_detailHeaderSize = {}; // repaint the band for this page, not the previous one
     if (!sameView) {
