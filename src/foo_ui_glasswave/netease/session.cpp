@@ -3,6 +3,7 @@
 #include "netease/cookie.h"
 #include "core/log.h"
 #include "netease/session.h"
+#include "stream/provider.h"
 
 #include <atomic>
 #include <chrono>
@@ -230,7 +231,7 @@ bool Session::EnsureAccount(abort_callback& abort, int64_t& userId, std::wstring
     Account account;
     if (!m_client.GetAccount(abort, account, error)) return false;
     if (generation != m_accountGeneration) {
-        error = L"The NetEase account changed.";
+        error = stream::kRequestDropped;
         return false;
     }
     if (!account.loggedIn) {
@@ -248,7 +249,7 @@ bool Session::EnsureAccount(abort_callback& abort, int64_t& userId, std::wstring
     {
         std::lock_guard lock(m_mutex);
         if (generation != m_accountGeneration) {
-            error = L"The NetEase account changed.";
+            error = stream::kRequestDropped;
             return false;
         }
         SetAccountLocked(account);
@@ -351,7 +352,7 @@ void Session::RefreshAccount(DoneCallback done) {
         // A sign-out or a new sign-in while this ran: what was read belongs to the old account.
         const auto superseded = [&] {
             PostMain([done] {
-                if (done) done(false, L"The NetEase account changed.");
+                if (done) done(false, stream::kRequestDropped);
             });
         };
         if (!RequireLogin(error)) {
