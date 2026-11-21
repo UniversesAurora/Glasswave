@@ -1161,6 +1161,19 @@ size_t HydrateSongAlbums(std::vector<Song>& songs, const std::wstring& storefron
     return read.batches;
 }
 
+// A song read again from the service, joined with its record as it is now (a list may have put
+// a richer one meanwhile): the read fills what the record lacks, the way a page's enrichment
+// does, and is the record when there is none. Main thread, where the result is put.
+Song JoinWithRecord(const stream::Id& id, const Song& read) {
+    Song song = read;
+    if (const auto known = Catalog::Get().FindSongRaw(id)) {
+        song = *known;
+        MergeHydratedSong(song, read);
+    }
+    song.track.id = id;
+    return song;
+}
+
 std::vector<Song> LoadLibrarySongs(abort_callback& abort) {
     return ParseSongs(CollectionWithQuery(
         L"/v1/me/library/songs?limit=100&include=catalog,albums,artists&include[songs]=albums"
@@ -3972,18 +3985,10 @@ void StreamProvider::ReadSongs(std::vector<stream::Id> ids) {
             if (const Song* songRead = read.For(song)) found.emplace_back(song.track.id, *songRead);
         }
         m_exec.PostMain(generation, [found = std::move(found), answered = std::move(answered)] {
-            // Joined with the record as it is now: a list may have put a richer one meanwhile.
             std::vector<Song> songs;
             songs.reserve(found.size());
-            for (const auto& [id, songRead] : found) {
-                Song song = songRead;
-                if (const auto known = Catalog::Get().FindSongRaw(id)) {
-                    song = *known;
-                    MergeHydratedSong(song, songRead);
-                }
-                song.track.id = id;
-                songs.push_back(std::move(song));
-            }
+            for (const auto& [id, songRead] : found)
+                songs.push_back(JoinWithRecord(id, songRead));
             // Persisted with the restart catalog: a queue restored next time has its names at once.
             if (!songs.empty()) Catalog::Get().PutAndHint(songs, true);
             Catalog::Get().Records().Settle(answered);
@@ -4878,6 +4883,7 @@ void StreamProvider::FetchSongDetails(const stream::Id& track, SongDetailsDone d
     }
     m_exec.Post(kTasks, generation, [this, generation, track, storefront, done = std::move(done)]() mutable {
         stream::SongDetails details;
+        std::optional<Song> read; // the song as the catalog answered, with its album and artists
         std::wstring error;
         try {
             const auto known = Catalog::Get().FindSong(track);
@@ -4897,6 +4903,7 @@ void StreamProvider::FetchSongDetails(const stream::Id& track, SongDetailsDone d
                     parsed.id = track; // the identity the caller plays
                     details.track = std::move(parsed);
                     details.composer = song->composerName;
+                    read = *song;
                 }
                 details.disc = json::GetInt(*attributes, L"discNumber");
                 details.number = json::GetInt(*attributes, L"trackNumber");
@@ -4955,8 +4962,14 @@ void StreamProvider::FetchSongDetails(const stream::Id& track, SongDetailsDone d
         } catch (const std::exception& exception) {
             error = Wide(exception.what());
         }
-        m_exec.PostMain(generation, [done = std::move(done), details = std::move(details),
-                                     error = std::move(error)]() mutable {
+        m_exec.PostMain(generation, [track, done = std::move(done), details = std::move(details),
+                                     read = std::move(read), error = std::move(error)]() mutable {
+            // The page's answer completes the song's record too: its artist and album then open
+            // from every view that shows the song.
+            if (read) {
+                Catalog::Get().PutAndHint({JoinWithRecord(track, *read)}, true);
+                Catalog::Get().Records().Settle({track});
+            }
             if (done) done(std::move(details), std::move(error));
         });
     });
