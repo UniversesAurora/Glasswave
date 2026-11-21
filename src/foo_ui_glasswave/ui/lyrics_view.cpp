@@ -344,6 +344,7 @@ LyricsView::LyricsView(const wuc::ContainerVisual& parent) {
 }
 
 LyricsView::~LyricsView() {
+    *m_alive = false;
     if (m_viewport) {
         if (auto parent = m_viewport.Parent()) parent.Children().Remove(m_viewport);
     }
@@ -375,6 +376,7 @@ void LyricsView::SetVisible(bool visible) {
         Relayout();
         LayoutChrome();
         m_lastNow = Now();
+        m_lastNowAt = Clock::now();
         m_focus = -2;  // recomputed by Tick
         m_lastFrame = Clock::now();
         Tick();
@@ -440,6 +442,7 @@ void LyricsView::SetResult(const lyrics::Result& result) {
     PaintMessage();
     // New lyrics fly in from below, line after line.
     m_lastNow = Now();
+    m_lastNowAt = Clock::now();
     Tick();
     const float H = (m_bounds.bottom - m_bounds.top) / m_scale;
     for (auto& l : m_lines) l->y.Snap(l->y.Target() + H * 0.6f);
@@ -451,6 +454,8 @@ void LyricsView::SetPlaying(bool playing, bool paused) {
     if (playing == m_playing && paused == m_paused) return;
     m_playing = playing;
     m_paused = paused;
+    m_lastNow = Now(); // the clock the next tick measures a seek against starts here
+    m_lastNowAt = Clock::now();
     if (m_visible) {
         UpdateTargets(false, false, true);
         StartFrames();
@@ -458,8 +463,35 @@ void LyricsView::SetPlaying(bool playing, bool paused) {
 }
 
 void LyricsView::StartFrames() {
+    m_idle = false;
     m_lastFrame = Clock::now();
     if (onFrames) onFrames();
+}
+
+void LyricsView::Resync() {
+    if (!m_visible || !m_idle || !m_lyrics || !m_lyrics->synced || !m_playing || m_paused) return;
+    const double now = Now();
+    const double expected = m_lastNow + std::chrono::duration<double>(Clock::now() - m_lastNowAt).count();
+    if (std::abs(now - expected) > 0.6 || static_cast<int>(now * 1000) >= m_nextEventMs) StartFrames();
+}
+
+// A line-timed song changes nothing between one line's start or end and the next: frames
+// stop, and one wake-up (never more than one pending) brings them back at that moment.
+void LyricsView::SleepUntilNextEvent() {
+    ++m_wakeGeneration;
+    m_idle = true;
+    m_nextEventMs = INT_MAX;
+    if (!m_lyrics || !m_lyrics->synced || !m_playing || m_paused) return;
+    const int ms = static_cast<int>(m_lastNow * 1000);
+    for (const auto& l : m_lines) {
+        if (l->line->start > ms) m_nextEventMs = std::min(m_nextEventMs, l->line->start);
+        if (l->line->end > ms) m_nextEventMs = std::min(m_nextEventMs, l->line->end);
+    }
+    if (m_nextEventMs == INT_MAX) return;
+    const double delay = std::max(0.0, (m_nextEventMs - m_lastNow * 1000.0) / 1000.0) + 0.002;
+    fb2k::callLater(delay, [this, alive = m_alive, generation = m_wakeGeneration] {
+        if (*alive && generation == m_wakeGeneration && m_idle) StartFrames();
+    });
 }
 
 double LyricsView::Now() const {
@@ -700,7 +732,13 @@ void LyricsView::UpdateTargets(bool stagger, bool snap, bool slow) {
 
 bool LyricsView::NeedsFrames() const {
     if (!m_visible) return false;
-    if (m_lyrics && m_lyrics->synced && m_playing && !m_paused) return true;
+    if (m_lyrics && m_lyrics->synced && m_playing && !m_paused) {
+        // Only the interlude's dots and a word-timed line's fill follow the time itself.
+        if (m_interlude != -2) return true;
+        const int ms = static_cast<int>(m_lastNow * 1000);
+        for (const auto& l : m_lines)
+            if (!l->line->words.empty() && l->glow > 0.01f && ms <= l->line->end + 1200) return true;
+    }
     if (m_drag == Drag::Scroll || m_velocity != 0) return true;
     for (const auto& l : m_lines)
         if (l->y.Moving() || l->scale.Moving() || l->press.Moving() || l->blur != l->blurTarget ||
@@ -725,9 +763,13 @@ bool LyricsView::Tick() {
 
     if (synced) {
         // Jumps in time (seeking, a click on a line) move without the stagger, slowly.
-        const double expected = m_lastNow + ((m_playing && !m_paused) ? dt : 0);
+        // A sleeping view has not ticked for as long as the line lasted: measure against the
+        // clock, not against one frame.
+        const double expected =
+            m_lastNow + ((m_playing && !m_paused) ? std::chrono::duration<double>(frame - m_lastNowAt).count() : 0);
         const bool seek = std::abs(now - expected) > 0.6;
         m_lastNow = now;
+        m_lastNowAt = frame;
         const int ms = static_cast<int>(now * 1000);
         int focus = -1;
         for (size_t i = 0; i < m_lines.size(); ++i) {
@@ -810,7 +852,14 @@ bool LyricsView::Tick() {
     m_interludeShow = Approach(m_interludeShow, m_interlude != -2 ? 1.0f : 0.0f, dt, 0.4f);
     m_dim = Approach(m_dim, m_browsing ? kDimBrowsing : kDim, dt, 0.4f);
     Render();
-    return NeedsFrames();
+    const bool more = NeedsFrames();
+    if (more) {
+        m_idle = false;
+        ++m_wakeGeneration; // frames run: no wake-up is wanted
+    } else {
+        SleepUntilNextEvent();
+    }
+    return more;
 }
 
 // ---- Rendering --------------------------------------------------------------------------

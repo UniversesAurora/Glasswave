@@ -6456,6 +6456,7 @@ void MainWindow::OnPlaybackTime() {
         FlushPlaybackPaints();
     }
     RepaintNowPlaying();
+    if (m_pane) m_pane->OnPlaybackTime();
     StartSeekFrames(); // after a seek, a restore or a song change
     if (m_player) m_player->OnTime();
 }

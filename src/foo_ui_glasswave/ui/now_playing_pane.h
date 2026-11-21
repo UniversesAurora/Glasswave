@@ -52,6 +52,7 @@ class NowPlayingPane {
     void SetActive(bool active); // the window's focus: an inactive one shows no colour
     void SetResult(const lyrics::Result& result) { m_lyrics.SetResult(result); }
     void SetPlaying(bool playing, bool paused) { m_lyrics.SetPlaying(playing, paused); }
+    void OnPlaybackTime() { m_lyrics.Resync(); } // the position moved: a seek wakes an idle view
     QueueView& Queue() { return m_queue; }
 
     bool Tick(); // per frame; returns whether frames are still needed

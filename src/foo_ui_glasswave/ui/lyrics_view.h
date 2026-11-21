@@ -48,6 +48,9 @@ public:
     // is needed.
     bool Tick();
     bool NeedsFrames() const;
+    // The playback position moved (the core's time or seek callback): an idle view takes up
+    // a seek, or an event it has slept past, on the next frame.
+    void Resync();
 
     // Mouse input in client pixels; the window routes events here while the point is inside.
     bool HitTest(POINT pt) const;
@@ -83,6 +86,7 @@ private:
     int LineAt(POINT pt) const;
     double Now() const;  // playback position, seconds
     void StartFrames();
+    void SleepUntilNextEvent(); // idle: wake when the next line starts or ends
     float ContentTop() const;  // DIP: top of the lyrics (0: the view starts below the pane header)
     float AnchorY() const;     // DIP: where the focused line's top sits
     float TopSpace(float lineH) const; // DIP above a focused line this high (AnchorY's rule)
@@ -116,6 +120,13 @@ private:
     int m_interlude = -1;    // focused interlude: dots after this line (-1 before the first), -2 none
     double m_interludeStart = 0, m_interludeEnd = 0;
     double m_lastNow = 0;
+    std::chrono::steady_clock::time_point m_lastNowAt{}; // when m_lastNow was read
+    // No frames are running: the view sleeps until the next line starts or ends
+    // (m_nextEventMs, lyrics time) instead of ticking through a line-timed song.
+    bool m_idle = false;
+    int m_nextEventMs = INT_MAX;
+    unsigned m_wakeGeneration = 0;
+    std::shared_ptr<bool> m_alive = std::make_shared<bool>(true);
     std::chrono::steady_clock::time_point m_lastFrame{};
     Spring m_interludeY{0};
     float m_interludeShow = 0;
