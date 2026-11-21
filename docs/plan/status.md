@@ -2,7 +2,28 @@
 
 Updated: 2026-11-21
 
-## Review of the 63 commits after the code review (2026-11-21, latest)
+## Work list after the review (2026-11-21, latest)
+
+- NetEase recommended playlists are on disk again; the base `ListPolicy` has no memory-only case.
+- NetEase confirms library edits only with the mark taken when a library read began
+  (`Session::SetLibraryReadCallbacks`); `ConfirmLibraryEdits` reports changes a stale read did
+  not show, and NetEase reads again.
+- `media::transport` holds Play/Pause, Stop, Previous, Next and the shuffle / repeat rules for
+  the library window, both player forms, the taskbar and the Playback menu's Stop. Stop gives up
+  a pending play and a song still opening (`PlaybackScheduler::StopRequested`); any other start
+  supersedes a pending play. foobar2000's own Stop while nothing plays is invisible (no event).
+- Art absence: dropped invalidations act as a floor. Device loss: `RegisterDeviceRemovedEvent`
+  replaces the echo-only `RenderingDeviceReplaced` subscription.
+- Source knowledge left the UI and cache: `Register(provider, order)` (home and navigation
+  order), `NamedText` ("{0}" templates; the per-source keys left zh-CN.json),
+  `HomeListBadge`, `ListRequestGap`, `PlaybackSettings` (prefetch context),
+  `LyricsSearchers`; NetEase's sign-in window is `netease/login.*`.
+- Open (not started): caption buttons and glass setup, the other Phase 5 refactors (helpers,
+  motion/d2d utilities, ListView cell actions, file splits), Phase 6 CD path behaviour,
+  scheduler helpers, list-source helpers, the scheduler's probe seam, the home page's empty text.
+- Built warning-free; no tests run; nothing run in foobar2000.
+
+## Review of the 63 commits after the code review (2026-11-21)
 
 Every commit from 0a1ce54 to 43a859c was reviewed against 9fcfbed (was the finding real, is the
 fix the right design). Five `ui:` subjects of provider commits were reworded (`stream:`,
