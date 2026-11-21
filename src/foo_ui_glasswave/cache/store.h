@@ -57,7 +57,9 @@ class Writer {
     const std::filesystem::path& Path() const { return m_path; }
     // Close/flush writer handles first, or open them with FILE_SHARE_DELETE.
     // Only the latest write ticket in the still-current account scope can publish.
-    std::optional<Snapshot> Commit(Metadata metadata);
+    // `flushed`: the caller has already flushed the staging file (outside the store's lock), so
+    // Commit does not flush it again while holding that lock.
+    std::optional<Snapshot> Commit(Metadata metadata, bool flushed = false);
 
   private:
     Writer(Store& store, Key key, std::string digest, uint64_t ticket, std::filesystem::path path);
@@ -104,7 +106,7 @@ class Store {
     struct Impl;
     std::unique_ptr<Impl> m_impl;
     std::filesystem::path m_root;
-    std::optional<Snapshot> Commit(Writer& writer, Metadata metadata);
+    std::optional<Snapshot> Commit(Writer& writer, Metadata metadata, bool flushed);
     void Abandon(Writer& writer) noexcept;
     friend class Writer;
 };

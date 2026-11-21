@@ -3,9 +3,11 @@
 #include "core/hex.h"
 
 #include <atomic>
+#include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <limits>
+#include <set>
 #include <unordered_map>
 
 namespace glasswave::cache::audio {
@@ -307,11 +309,20 @@ struct Flight::Impl {
             if (participants > 0) --participants;
             cancel = participants == 0 && !done;
         }
-        if (cancel) Cancel();
+        // Nobody reads this any more: stop the transfer, but do not wait for a commit that may be
+        // flushing a large file (the last reader is often the decoder or the UI thread). A commit
+        // already past its checks publishes a copy that nobody asked for, which is harmless.
+        if (cancel) SignalCancel();
     }
 
+    // Cancels and waits for a commit in progress, so that once it returns nothing of this flight
+    // is published afterwards (Invalidate: the bytes were bad).
     void Cancel() noexcept {
         std::lock_guard publishLock(commitMutex);
+        SignalCancel();
+    }
+
+    void SignalCancel() noexcept {
         Fetcher abandoned;
         {
             std::lock_guard lock(mutex);
@@ -390,20 +401,26 @@ struct Flight::Impl {
     }
 
     void Complete() {
-        std::lock_guard publishLock(commitMutex);
         {
             std::lock_guard lock(mutex);
             if (cancelled) throw exception_aborted();
         }
         if (!Available()) throw exception_io_data("Audio source returned no encoded bytes");
+        // The one flush of the file, before any lock that others wait on: Store::Commit skips its
+        // own (it would run under the store-wide lock every cache lookup shares).
         NoThrow([this] { FlushFileBuffers(writeHandle.get()); });
+        std::lock_guard publishLock(commitMutex);
+        {
+            std::lock_guard lock(mutex);
+            if (cancelled) throw exception_aborted();
+        }
         writeHandle.reset();
 
         std::optional<Snapshot> published;
         if (writer) {
             try {
                 if (!metadata.validatedAt) metadata.validatedAt = Store::Now();
-                published = writer->Commit(metadata);
+                published = writer->Commit(metadata, true);
             } catch (...) {
                 // Cache publication is optional. The open staging handle remains usable.
             }
@@ -607,14 +624,41 @@ class Manager {
 
         abort.check();
         lock.lock();
-        if (stopping) throw exception_aborted();
-        // Another opener may have installed the shared flight while this lookup ran.
-        if (auto opened = adoptLocked()) return std::move(*opened);
+        for (;;) {
+            if (stopping) throw exception_aborted();
+            // Another opener may have installed the shared flight while this lookup ran.
+            if (auto opened = adoptLocked()) return std::move(*opened);
+            if (!opening.contains(digest)) break;
+            // Another opener is creating this key's staging file: join its flight when it is
+            // there rather than start a second writer, which would revoke the first one's ticket.
+            changed.wait_for(lock, std::chrono::milliseconds(100));
+            abort.check();
+        }
         if (cached) return std::move(*cached);
         if (request.cachedOnly) return Opened{{}, {}, false, false};
 
         if (requested == Workload::Prefetch && prefetchFlights >= kMaxPrefetchFlights)
             return Opened{{}, {}, false, false};
+
+        // Reserve the key (and the prefetch slot), then create the staging file without the manager
+        // lock: Store::Begin and the file creation touch the disk, and Finish, Promote and Adopt
+        // take this lock.
+        opening.insert(digest);
+        if (requested == Workload::Prefetch) ++prefetchFlights;
+        lock.unlock();
+        struct Reservation {
+            Manager& manager;
+            const std::string& digest;
+            bool prefetch;
+            bool active = true;
+            ~Reservation() {
+                if (!active) return;
+                std::lock_guard guard(manager.mutex);
+                manager.opening.erase(digest);
+                if (prefetch && manager.prefetchFlights) --manager.prefetchFlights;
+                manager.changed.notify_all();
+            }
+        } reservation{*this, digest, requested == Workload::Prefetch};
 
         std::unique_ptr<Writer> writer;
         fs::path fallback;
@@ -666,8 +710,15 @@ class Manager {
             throw;
         }
 
+        lock.lock();
+        if (stopping) {
+            lock.unlock(); // the reservation takes the lock to release the key
+            state->Cancel();
+            throw exception_aborted();
+        }
+        reservation.active = false;
+        opening.erase(digest);
         flights[digest] = state;
-        if (requested == Workload::Prefetch) ++prefetchFlights;
         queue.push_back(std::move(state));
         changed.notify_all();
         return Opened{std::move(stream), std::move(flight), false, true};
@@ -828,6 +879,7 @@ class Manager {
     std::condition_variable changed;
     std::deque<std::shared_ptr<Flight::Impl>> queue;
     std::unordered_map<std::string, std::weak_ptr<Flight::Impl>> flights;
+    std::set<std::string> opening; // keys whose staging file is being created (outside the lock)
     std::vector<std::thread> workers;
     size_t prefetchFlights = 0;
     size_t activePrefetch = 0;

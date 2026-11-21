@@ -431,8 +431,8 @@ Writer::Writer(Store& store, Key key, std::string digest, uint64_t ticket, fs::p
 Writer::~Writer() {
     if (!m_path.empty()) m_store.Abandon(*this);
 }
-std::optional<Snapshot> Writer::Commit(Metadata metadata) {
-    return m_store.Commit(*this, std::move(metadata));
+std::optional<Snapshot> Writer::Commit(Metadata metadata, bool flushed) {
+    return m_store.Commit(*this, std::move(metadata), flushed);
 }
 void Store::Abandon(Writer& writer) noexcept {
     Remove(writer.m_path);
@@ -478,7 +478,7 @@ std::unique_ptr<Writer> Store::Begin(const Key& key) {
     }
 }
 
-std::optional<Snapshot> Store::Commit(Writer& writer, Metadata metadata) {
+std::optional<Snapshot> Store::Commit(Writer& writer, Metadata metadata, bool flushed) {
     if (writer.m_path.empty()) return std::nullopt;
     const auto withinLimit = [](const std::string& value) { return value.size() <= kMetadataLimit; };
     if (!withinLimit(metadata.contentType) || !withinLimit(metadata.etag) ||
@@ -497,15 +497,18 @@ std::optional<Snapshot> Store::Commit(Writer& writer, Metadata metadata) {
     const uint64_t previousSize = existing.Int(2) > 0 ? static_cast<uint64_t>(existing.Int(2)) : 0;
     const auto name = Random() + ".blob";
     const auto destination = m_root / L"objects" / name;
-    // Flush data before publishing the SQLite reference. On failure the old entry survives.
-    HANDLE file = CreateFileW(writer.m_path.c_str(), GENERIC_WRITE,
-                              FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
-                              FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (file == INVALID_HANDLE_VALUE) return std::nullopt;
-    const BOOL flushed = FlushFileBuffers(file);
-    CloseHandle(file);
-    if (!flushed || !MoveFileExW(writer.m_path.c_str(), destination.c_str(), MOVEFILE_WRITE_THROUGH))
-        return std::nullopt;
+    // Flush data before publishing the SQLite reference. On failure the old entry survives. A
+    // caller that flushed the file already (a large audio file, outside this lock) skips it.
+    if (!flushed) {
+        HANDLE file = CreateFileW(writer.m_path.c_str(), GENERIC_WRITE,
+                                  FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+                                  FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (file == INVALID_HANDLE_VALUE) return std::nullopt;
+        const BOOL ok = FlushFileBuffers(file);
+        CloseHandle(file);
+        if (!ok) return std::nullopt;
+    }
+    if (!MoveFileExW(writer.m_path.c_str(), destination.c_str(), MOVEFILE_WRITE_THROUGH)) return std::nullopt;
     try {
         Statement publish(m_impl->db, "UPDATE entries SET file=?,size=?,used=?,validated=?,mime=?,etag=?,"
                                       "modified=?,extra=?,rev=? WHERE k=? AND gen=?");
