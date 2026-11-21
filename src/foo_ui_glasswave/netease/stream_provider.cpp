@@ -59,20 +59,23 @@ std::vector<int64_t> Nums(const std::vector<Id>& ids) {
     return out;
 }
 
-int Year(int64_t publishTimeMs) {
-    if (publishTimeMs <= 0) return 0;
-    const time_t seconds = static_cast<time_t>(publishTimeMs / 1000 + 8 * 3600); // see Date
-    std::tm day{};
-    return gmtime_s(&day, &seconds) == 0 ? day.tm_year + 1900 : 0;
+// A publish time as the calendar day the service means. It stores release days as midnight in
+// China (UTC+8), so the day is read there, not in the local time zone.
+bool ReleaseDay(int64_t publishTimeMs, std::tm& day) {
+    if (publishTimeMs <= 0) return false;
+    const time_t seconds = static_cast<time_t>(publishTimeMs / 1000 + 8 * 3600);
+    return gmtime_s(&day, &seconds) == 0;
 }
 
-// "YYYY-MM-DD" of a publish time. The service stores release days as midnight in China
-// (UTC+8), so the day is read there, not in the local time zone.
-std::wstring Date(int64_t publishTimeMs) {
-    if (publishTimeMs <= 0) return {};
-    const time_t seconds = static_cast<time_t>(publishTimeMs / 1000 + 8 * 3600);
+int Year(int64_t publishTimeMs) {
     std::tm day{};
-    if (gmtime_s(&day, &seconds) != 0) return {};
+    return ReleaseDay(publishTimeMs, day) ? day.tm_year + 1900 : 0;
+}
+
+// "YYYY-MM-DD" of a publish time.
+std::wstring Date(int64_t publishTimeMs) {
+    std::tm day{};
+    if (!ReleaseDay(publishTimeMs, day)) return {};
     wchar_t text[16]{};
     swprintf_s(text, L"%04d-%02d-%02d", day.tm_year + 1900, day.tm_mon + 1, day.tm_mday);
     return text;
@@ -254,7 +257,7 @@ std::vector<stream::Album> ToAlbums(const std::vector<Album>& albums) {
     return out;
 }
 
-stream::Artist ToArtist(const Artist& artist) {
+stream::Artist ToArtist(const Artist& artist, const std::vector<Artist>& followed) {
     stream::Artist out;
     out.id = IdText(artist.id);
     out.name = artist.name;
@@ -281,12 +284,16 @@ stream::Artist ToArtist(const Artist& artist) {
                : artist.type == 3 ? stream::ArtistKind::Group
                                   : stream::ArtistKind::Unknown;
     // The followed-artists list is authoritative even when a profile lags behind a follow.
-    for (const auto& saved : Ncm().FollowedArtists())
+    for (const auto& saved : followed)
         if (saved.id == artist.id) {
             out.followKnown = out.followed = true;
             break;
         }
     return out;
+}
+
+stream::Artist ToArtist(const Artist& artist) {
+    return ToArtist(artist, Ncm().FollowedArtists());
 }
 
 Artist FromArtist(const stream::Artist& artist) {
@@ -305,8 +312,9 @@ Artist FromArtist(const stream::Artist& artist) {
 std::vector<stream::Artist> ToArtists(const std::vector<Artist>& artists) {
     std::vector<stream::Artist> out;
     out.reserve(artists.size());
+    const std::vector<Artist> followed = Ncm().FollowedArtists(); // one copy, not one per artist
     for (const auto& artist : artists)
-        out.push_back(ToArtist(artist));
+        out.push_back(ToArtist(artist, followed));
     return out;
 }
 
@@ -1263,15 +1271,7 @@ stream::DownloadSource StreamProvider::ResolveDownload(const Id& track, abort_ca
         song = info.song;
         source.tags.disc = info.disc;
         source.tags.number = info.number;
-        if (info.publishTime > 0) {
-            const time_t seconds = static_cast<time_t>(info.publishTime / 1000);
-            tm local{};
-            if (localtime_s(&local, &seconds) == 0) {
-                wchar_t date[16];
-                swprintf_s(date, L"%04d-%02d-%02d", local.tm_year + 1900, local.tm_mon + 1, local.tm_mday);
-                source.tags.date = date;
-            }
-        }
+        source.tags.date = Date(info.publishTime); // the same day the pages show
         source.tags.genres = info.styles;
     } else if (auto known = Catalog::Get().FindSong(id)) {
         song = *known;
