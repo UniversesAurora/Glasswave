@@ -16,7 +16,9 @@ foobar2000's; we only build the UI. Read before changing anything substantial:
 5. [docs/plan/status.md](docs/plan/status.md) — where things stand, what is next
 6. [docs/third-party.md](docs/third-party.md) — inventory, patch rules and upgrade SOP for all
    external codebases, runtime helpers and lyric scripts
-7. [docs/agent/handoff.md](docs/agent/handoff.md) — the owner's working rules and the state
+7. [docs/deploy/README.md](docs/deploy/README.md) — packaging, end-user install, personal daily
+   driver update and dev/prod isolation SOPs
+8. [docs/agent/handoff.md](docs/agent/handoff.md) — the owner's working rules and the state
    left by the previous agent (read this first when you are new to the project)
 
 ## Non-negotiables

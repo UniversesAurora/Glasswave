@@ -2,7 +2,48 @@
 
 Updated: 2026-11-22
 
-## Apple Music Genres empty-list fix, Preferences Dark Mode & PlaybackDriver seam (2026-11-22, latest)
+## Release packaging, configurable cache folder, zero-hardcode Apple Music runtime & production migration (2026-11-22, latest)
+
+1. **Component-relative bundled resources (`core/paths.*`, `ui/i18n.cpp`, `lyrics/scripts.cpp`)**:
+   - Added `core::ComponentRoot()` returning the directory containing `foo_ui_glasswave.dll`.
+   - `ui/i18n.cpp` checks `<profile>\glasswave\lang\zh-CN.json` first and falls back to
+     `<component>\lang\zh-CN.json`.
+   - `lyrics/scripts.cpp` scans `<component>\lyrics\scripts\` before `<profile>\eslyric-data\scripts\`
+     and `<profile>\glasswave\lyrics\scripts\` so built-in MIT scripts ship inside `.fb2k-component`
+     while user scripts override them.
+2. **Configurable shared cache folder (`cache/config.h`, `cache/service.cpp`, `ui/settings_page.cpp`, `lang/zh-CN.json`)**:
+   - Added `cache::CacheFolder()`, `cache::CustomCacheFolder()`, and `cache::SetCacheFolder()` backed
+     by `cfg_var.B83BE425-E106-48B8-A2CD-9A9377FA6211` (empty = default `<profile>\glasswave\cache`).
+   - Added **Cache folder (after a restart)**, **Change cache folder...**, **Reset cache folder**,
+     and **Open cache folder** controls to **Preferences → Display → Glasswave → Shared cache**.
+3. **Zero-hardcode auto-managed Apple Music runtime (`applemusic/service.*`, `applemusic/client.cpp`)**:
+   - Split `ServiceManager::EnsureStarted` into `runtimeBin` (read-only binaries from
+     `<component>\applemusic\runtime\`) and `runtimeData` (writable `files\mpl_db\`, `widevine\`,
+     `logs\`, and user-supplied `rootfs\system\lib64\*.so` under `<profile>\glasswave\applemusic\runtime\`).
+   - When `bridge.json` is absent, Glasswave automatically allocates an ephemeral free loopback port,
+     generates a per-process 32-byte random hex token via `BCryptGenRandom`, and writes
+     `runtimeData\config.yaml` with the current `drm-binary-path` and `drm-base-dir`. Explicit
+     `bridge.json` overrides continue working unchanged for `.local/fb2k-dev` and probes.
+4. **Packaging, personal install scripts, cleanup & SOP suite**:
+   - Added `scripts/package.ps1` producing a clean, safety-audited `dist/foo_ui_glasswave.fb2k-component`
+     (`15` files, `21.84 MiB` — zero Microsoft/Apple proprietary binaries, zero personal state, zero
+     unrelated third-party plugins).
+   - Added `scripts/install-personal.ps1` for one-command production updates without touching user
+     accounts, playlists, config, or caches.
+   - Cleaned `2,179.4 MiB` of historical debug/test/crashdump artifacts from `.local/` and root
+     `winhttp_test.obj`; added `/dist/` and `/userdata/` to `.gitignore`.
+   - Migrated owner's production Standard install (`E:\music\foobar2000`, profile
+     `%APPDATA%\foobar2000-v2`) with the `9.3 GB` cache at `E:\music\Glasswave\userdata\cache\v1`,
+     downloads at `E:\music\Glasswave\userdata\downloads`, converted portable relative paths to
+     `file://E:\music\CDs\`, and synced all 6 owner third-party components, accounts, playlists,
+     Win7 assets, Apple Android `.so` libraries, and lyric scripts.
+   - Added modular, cross-referenced SOPs under `docs/deploy/` (`README.md`, `user-install.md`,
+     `release-packaging.md`, `personal-setup.md`, `dev-vs-prod.md`).
+- Verification: `pwsh -File scripts/build.ps1` (Release|x64, `0` warnings / `0` errors),
+  `scripts/test-component-load.ps1` PASS, `scripts/test-applemusic-bridge-config.ps1` PASS,
+  `scripts/package.ps1` PASS, `scripts/install-personal.ps1` PASS.
+
+## Apple Music Genres empty-list fix, Preferences Dark Mode & PlaybackDriver seam (2026-11-22)
 
 1. **Apple Music Genres (`流派`) & Composers empty-list root cause fix (`applemusic/stream_provider.*`)**:
    - `ReadGroupsPage` called `songs.clear()` right before returning `load.songs` to `FinishListPage`,

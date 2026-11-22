@@ -46,6 +46,17 @@ pwsh -File scripts/run-dev.ps1
 executed). `run-dev` deploys the Release build there and starts it. No other foobar2000
 installation is touched.
 
+## Packaging, installation and operations
+
+See [docs/deploy/README.md](docs/deploy/README.md) for modular SOPs covering:
+
+- End-user installation (`foo_ui_glasswave.fb2k-component`), custom cache/download folders,
+  and optional non-redistributable assets ([docs/deploy/user-install.md](docs/deploy/user-install.md))
+- Maintainer release packaging (`scripts/package.ps1`) and redistribution boundaries
+  ([docs/deploy/release-packaging.md](docs/deploy/release-packaging.md))
+- Development vs production isolation and cleanup
+  ([docs/deploy/dev-vs-prod.md](docs/deploy/dev-vs-prod.md))
+
 ## Repository layout
 
 | Path | Contents |
@@ -54,10 +65,13 @@ installation is touched.
 | `src/foo_ui_glasswave/aero/` | Win7 Aero: colorization math, glass material, painters, shadow |
 | `src/foo_ui_glasswave/gfx/` | Composition host, D2D/D3D devices, effect interop |
 | `src/foo_ui_glasswave/ui/` | Main window, widgets, main menu |
-| `scripts/` | bootstrap / build / run-dev |
+| `lang/` | UI translations bundled into `.fb2k-component` |
+| `scripts/` | bootstrap / build / run-dev / package / install-personal |
 | `third_party/` | `deps.lock.json` (pinned versions + hashes); fetched code is not committed |
-| `docs/` | requirements, architecture, ADRs, visual spec, research, plan, agent guides |
-| `.local/` | dev instance, caches, screenshots, reference images (ignored) |
+| `docs/` | requirements, architecture, ADRs, visual spec, deploy SOPs, plan, agent guides |
+| `dist/` | packaged `.fb2k-component` release archives (ignored) |
+| `userdata/` | owner production cache & downloads storage (ignored, never touched by dev scripts) |
+| `.local/` | dev instance, upstream build checkouts, references (ignored) |
 
 ## License
 
