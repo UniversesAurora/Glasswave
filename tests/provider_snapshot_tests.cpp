@@ -91,12 +91,16 @@ Snapshot Fixture() {
     snapshot.accountName = "Glasswave Listener";
     snapshot.sourceStorefront = "US";
     snapshot.displayRegion = 1;
+    // Named fields: stream::Playlist grows details between the count and the flags.
     snapshot.created = {
-        {L"p.created-1", L"My Playlist", L"https://example.invalid/cover-1", {}, {}, 12, true, false},
-        {L"p.created-2", L"朝のプレイリスト", L"https://example.invalid/cover-2", {}, {}, -1, true, false},
+        {.id = L"p.created-1", .name = L"My Playlist", .coverUrl = L"https://example.invalid/cover-1",
+         .trackCount = 12, .own = true},
+        {.id = L"p.created-2", .name = L"朝のプレイリスト", .coverUrl = L"https://example.invalid/cover-2",
+         .trackCount = -1, .own = true},
     };
     snapshot.saved = {
-        {L"p.saved-1", L"Saved Playlist", L"https://example.invalid/cover-3", {}, {}, 24, false, true},
+        {.id = L"p.saved-1", .name = L"Saved Playlist", .coverUrl = L"https://example.invalid/cover-3",
+         .trackCount = 24, .saved = true},
     };
     snapshot.bindings = {{"favorites", "p.favorite-system-playlist"}};
     return snapshot;
