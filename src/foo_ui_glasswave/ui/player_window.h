@@ -167,7 +167,7 @@ class PlayerWindow {
     void SetPaneShown(bool shown, NowPlayingPane::Mode mode);
     void SlideBack(bool animate); // Media Center's back orb in or out with the pane
     void TogglePane(NowPlayingPane::Mode mode);
-    void ShowChrome(bool show);
+    void ShowChrome(bool show, bool animateLayout = true);
     void ArmHideTimer();
     void SetPopup(bool open);
     void StepVolume(float delta);
@@ -260,7 +260,22 @@ class PlayerWindow {
     gfx::RetainedSurface m_infoBacking, m_timesBacking, m_barBacking, m_topBacking, m_lyricBacking,
         m_menuShadeBacking, m_seekBacking, m_sliderBacking, m_paneCardBacking;
     SIZE m_coverPainted{};
+    bool m_coverPlaced = false;
+    RECT m_paneCardPanel{};
+    float m_paneCardScale = 0;
     float m_framePainted = 0;
+    // Active morph of m_info / m_lyric (full-screen chrome hide/show): sampled when another
+    // transition interrupts mid-flight so the text stays locked to the cover with no jump.
+    struct MorphState {
+        bool active = false;
+        int infoStyle = -1;
+        ULONGLONG startTick = 0;
+        float fromX = 0, fromY = 0;
+        float toX = 0, toY = 0;
+        float fromMetric = 1.0f;
+        float toMetric = 1.0f;
+    };
+    MorphState m_infoMorph, m_lyricMorph;
 
     std::vector<std::unique_ptr<Widget>> m_widgets;
     Widget* m_hover = nullptr;

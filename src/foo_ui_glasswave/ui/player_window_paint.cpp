@@ -55,6 +55,9 @@ void PlayerWindow::PaintPaneCard() {
     m_paneCard.IsVisible(show);
     m_paneGlass.IsVisible(show);
     if (!show) return;
+    if (EqualRect(&m_layout.panel, &m_paneCardPanel) && m_paneCardScale == m_scale) return;
+    m_paneCardPanel = m_layout.panel;
+    m_paneCardScale = m_scale;
     const int margin = PxI(kCardShadow);
     const RECT& p = m_layout.panel;
     const RECT r{p.left - PxI(kCardPad) - margin, p.top - PxI(kCardPad) - margin, p.right + PxI(kCardPad) + margin,
@@ -177,7 +180,11 @@ void PlayerWindow::PaintShade() {
             band = {cover.left - pad * 2.2f, cover.top - pad, std::max(info.right + pad * 1.5f, W + pad), cover.bottom + pad};
         } else if (L.infoStyle == 0) {
             const float mid = (info.left + info.right) / 2;
-            const float half = std::min((info.right - info.left) / 2 + 30, 290.0f * L.textScale);
+            float half = std::min((info.right - info.left) / 2 + 30, 290.0f * L.textScale);
+            if (m_mode == Mode::Full && !Empty(L.panel)) {
+                const float maxRight = dip(L.panel).left - 12.0f;
+                if (mid + half > maxRight) half = std::max(0.0f, maxRight - mid);
+            }
             const float bottom = Empty(L.lyric) ? info.bottom : std::max(info.bottom, dip(L.lyric).bottom);
             band = {mid - half, info.top - 30, mid + half, bottom + 6};
         } else {

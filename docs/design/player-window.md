@@ -83,10 +83,23 @@ menu; like Win7's window frame but heavier, and not frosted. The card's own shad
 under the glass so that it blurs the wall, not the shadow. The clear rim between the outline
 and the glass takes the same navy at 20 %, unblurred (owner, 2026-11-13).
 
-When the chrome leaves or comes back the cover grows or shrinks and the group moves; the
-song's lines and the sung line keep step with it, scaled from their top left on the cover's
-curve (ease 0.16, 0.9, 0.2, 1) from their old place and size, instead of fading out and in
-(owner, 2026-11-13). They are painted at the new size at once.
+When the chrome leaves or comes back the cover grows or shrinks and the group moves in both
+full-screen states:
+- Without the pane (`infoStyle 1`): the cover grows from 0.40 H to 0.47 H and the cover + lines
+  group centres across the screen; the song's lines and the sung line morph from their top left
+  on the cover's curve (ease 0.16, 0.9, 0.2, 1, 480 ms) instead of fading out and in (owner,
+  2026-11-13).
+- With the pane (`infoStyle 0`): once the left menu leaves, the left column opens from
+  `[menuRight, 0.50 W]` to `[0.04 W, 0.48 W]` (centre `0.26 W`, mirroring the right glass pane's
+  `[0.52 W, 0.96 W]` / centre `0.74 W`), the cover grows to `min(0.50 H, 0.78 colW)`, the stacked
+  lines grow with it (`min(side / 260, (colW - 16) / 340)` clamped to `1.0..2.35`, gap
+  `max(22 DIP, 0.065 side)`), and the cover + text block centres vertically against the pane.
+  The centred lines morph from their top centre on the same 480 ms `kPlace` curve so they stay
+  locked to the cover with no horizontal jump, while the right pane stays steady.
+- Interrupting any morph mid-flight samples the active `kPlace` curve at the interruption instant
+  so the text reverses or redirects seamlessly with the cover; cross-style transitions (opening
+  or closing the pane while chrome is on or off) reset scale/anchor cleanly and fade the new
+  text layout in. They are painted at the new size at once.
 
 Between two songs the player never shows "nothing playing": while playback switches (from the
 start or stop command to the new song decoding) it keeps the previous song's cover, lines and

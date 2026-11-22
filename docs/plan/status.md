@@ -2,7 +2,32 @@
 
 Updated: 2026-11-23
 
-## Full-project audit: data unification, performance fixes & cross-provider generalization (2026-11-23, latest)
+## Full-screen player idle-with-pane layout & interruptible morph animations (2026-11-23, latest)
+
+- **Balanced left-stage idle layout beside the full-screen glass pane (`ui/player_window.*`, `ui/player_window_paint.cpp`)**:
+  - When full-screen chrome hides with the lyrics/queue pane open (`!m_chromeShown && m_paneShown`),
+    `ShowChrome` now triggers `UpdateLayout(true)` so the left column opens from
+    `[menuRight, 0.50 W]` to `[0.04 W, 0.48 W]` (centre `0.26 W`, mirroring the right glass
+    pane's `[0.52 W, 0.96 W]` / centre `0.74 W`).
+  - Cover grows to `min(0.50 H, 0.78 colW)` (repainted at target size before growing so it stays
+    sharp), stacked song lines scale with it (`min(side / 260, (colW - 16) / 340)` clamped to
+    `1.0..2.35`), and the cover + text block centres vertically against the pane while the right
+    pane stays steady (skipping redundant `SetBounds` and `PaintPaneCard` repaints when `L.panel`
+    is unchanged).
+  - Clamped the `infoStyle == 0` meta gradient band right edge cleanly left of the pane card.
+- **Unified, interruptible full-screen morph transitions (`ui/player_window.cpp`)**:
+  - Extended `Morph` to support top-center anchoring for stacked text (`infoStyle == 0`) alongside
+    top-left anchoring for side-by-side WMC text (`infoStyle == 1`), animating on `kPlace`
+    (480 ms) in lockstep with `m_cover` and its drop shadow.
+  - Added `MorphState` tracking (`m_infoMorph`, `m_lyricMorph`) so interrupting any chrome
+    hide/show morph mid-flight (rapid mouse movement, or toggling the pane via `L`/`Q` while
+    chrome is hidden or animating) smoothly redirects from the exact current eased position and
+    scale with no snap, resets `Scale`/`CenterPoint` cleanly on cross-style transitions, preserves
+    opacity handoff via `FadeTo`, and avoids snapping in-flight animations on unrelated
+    non-animated passes (e.g. Lyrics ↔ Queue switching or synced-lyrics arrival).
+  - Re-armed the chrome hide timer on `L`/`Q` when chrome is already visible.
+
+## Full-project audit: data unification, performance fixes & cross-provider generalization (2026-11-23)
 
 1. **Data unification, artwork cascade & F5 refresh fixes (`1afba42`)**:
    - Unified `ShelfPage` onto `Provider::SectionPlaylists(sectionId)` (the same in-memory

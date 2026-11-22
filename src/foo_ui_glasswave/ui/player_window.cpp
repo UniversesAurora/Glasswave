@@ -68,26 +68,33 @@ void GlassFace(ID2D1DeviceContext* dc, float W, float H, float radius, float sca
                              pane::White(dc, 0.52f).get(), line);
 }
 
-// A visual already placed (and painted) at its new rect starts out drawn at `from`, scaled by
-// `scale` from its top left, and grows or shrinks into place on Place's curve, so it keeps
-// step with a neighbour that Place animates.
-void Morph(const wuc::Visual& v, const RECT& from, float scale) {
+// A visual already placed (and painted) at `target` starts with its anchor `(centerX, 0)` at
+// `(fromAnchorX, fromAnchorY)`, scaled by `scale` around that anchor, and grows or shrinks into
+// place on Place's curve so it keeps step with the cover. Opacity hands off softly to 1.0 in
+// case a previous cross-layout fade-in was interrupted mid-flight.
+void Morph(const wuc::Visual& v, const RECT& target, float fromAnchorX, float fromAnchorY, float centerX, float scale) {
     const auto comp = v.Compositor();
     const auto ease = gfx::Easing(gfx::curve::kPlace);
-    const float3 to = v.Offset();
-    v.StopAnimation(L"Opacity");
-    v.Opacity(1.0f);
-    v.CenterPoint(float3{0, 0, 0});
+    const float3 from{fromAnchorX - centerX, fromAnchorY, 0.0f};
+    const float3 to{static_cast<float>(target.left), static_cast<float>(target.top), 0.0f};
+    FadeTo(v, 1.0f, 180);
+    v.CenterPoint(float3{centerX, 0.0f, 0.0f});
     auto move = comp.CreateVector3KeyFrameAnimation();
-    move.InsertKeyFrame(0.0f, float3{static_cast<float>(from.left), static_cast<float>(from.top), 0});
+    move.InsertKeyFrame(0.0f, from);
     move.InsertKeyFrame(1.0f, to, ease);
     move.Duration(std::chrono::milliseconds(kMoveMs));
     v.StartAnimation(L"Offset", move);
     auto grow = comp.CreateVector3KeyFrameAnimation();
-    grow.InsertKeyFrame(0.0f, float3{scale, scale, 1});
-    grow.InsertKeyFrame(1.0f, float3{1, 1, 1}, ease);
+    grow.InsertKeyFrame(0.0f, float3{scale, scale, 1.0f});
+    grow.InsertKeyFrame(1.0f, float3{1.0f, 1.0f, 1.0f}, ease);
     grow.Duration(std::chrono::milliseconds(kMoveMs));
     v.StartAnimation(L"Scale", grow);
+}
+
+void ResetMorphVisual(const wuc::Visual& v) {
+    v.StopAnimation(L"Scale");
+    v.Scale(float3{1.0f, 1.0f, 1.0f});
+    v.CenterPoint(float3{0.0f, 0.0f, 0.0f});
 }
 
 } // namespace
@@ -101,6 +108,11 @@ PlayerWindow::PlayerWindow(PlayerHost& host) : m_host(host) {
 // old device are recreated by their Repaint). A hidden window does this when it is shown.
 void PlayerWindow::OnDeviceReplaced() {
     m_coverPainted = {};
+    m_coverPlaced = false;
+    m_paneCardPanel = {};
+    m_paneCardScale = 0;
+    m_infoMorph.active = false;
+    m_lyricMorph.active = false;
     m_framePainted = 0;
     m_paneGlassScale = 0;
     m_frostScale = 0;
@@ -472,8 +484,11 @@ void PlayerWindow::ApplyMode(bool first) {
         }
     }
     m_scale = GetDpiForWindow(m_hwnd) / 96.0f;
+    m_coverPlaced = false;
+    m_infoMorph.active = false;
+    m_lyricMorph.active = false;
     m_chromeShown = false;
-    ShowChrome(true);
+    ShowChrome(true, false);
     UpdateLayout(false);
     for (auto& w : m_widgets) w->Invalidate(); // the two forms draw different artwork
     m_frame->Glass().UpdateReflectionAnchor(m_hwnd);
@@ -639,7 +654,7 @@ void PlayerWindow::TogglePane(NowPlayingPane::Mode mode) {
 // Full screen, Media Center's chrome does not just fade: the top bar leaves upwards, the
 // bottom bar downwards, the menu to the left, and they come back the same way, quickly out of
 // rest and softly into place. The stage then regroups around what is left.
-void PlayerWindow::ShowChrome(bool show) {
+void PlayerWindow::ShowChrome(bool show, bool animateLayout) {
     if (show == m_chromeShown) return;
     m_chromeShown = show;
     if (show && SeekLive()) StartFrames(); // the head catches up on the next frame
@@ -692,7 +707,7 @@ void PlayerWindow::ShowChrome(bool show) {
     slide(m_barLayer, 0, barH, 0);
     slide(m_capsLayer, 0, -topH, 0);
     slide(m_menuLayer, -menuW, 0, show ? 60 : 0);
-    if (!m_paneShown) UpdateLayout(true); // the cover and its lines take the room the menu left
+    if (animateLayout) UpdateLayout(true); // the cover and its lines take the room the menu left
 }
 
 void PlayerWindow::ArmHideTimer() {
@@ -900,17 +915,32 @@ void PlayerWindow::UpdateLayout(bool animate) {
         // Placed above; the title is over the cover (PaintCompactTitle).
     } else if (full) {
         if (m_paneShown) {
-            const int colL = menuRight, colR = static_cast<int>(W * 0.50f), colW = colR - colL;
-            const int side = static_cast<int>(std::min(H * 0.44f, colW * 0.74f));
-            L.textScale = std::clamp((colR - colL - PxI(16)) / m_scale / 340.0f, 1.0f, 1.7f);
-            const int textH = PxI(UnderStack(L.textScale, false).block);
-            const int top = std::max(PxI(48), (H - side - textH) / 2 - PxI(24));
-            L.cover = {colL + (colW - side) / 2, top, colL + (colW - side) / 2 + side, top + side};
-            L.info = {colL + PxI(8), L.cover.bottom + PxI(22), colR - PxI(8), L.cover.bottom + PxI(22) + textH};
-            L.infoStyle = 0;
+            const bool paneIdle = !m_chromeShown;
             L.panel = {static_cast<int>(W * 0.52f), PxI(wmc ? kWmcTop + 4 : 64.0f), W - static_cast<int>(W * 0.04f),
                        L.bar.top - PxI(8)};
             L.pane = L.panel;
+            // With the menu away the cover and its lines move onto the left half's own centre
+            // (mirroring the pane's [0.52, 0.96] -> [0.04, 0.48], centre 0.26 W) and grow to
+            // balance the glass card beside them.
+            const int colL = paneIdle ? static_cast<int>(W * 0.04f) : menuRight;
+            const int colR = static_cast<int>(W * (paneIdle ? 0.48f : 0.50f));
+            const int colW = colR - colL;
+            const int side = paneIdle ? static_cast<int>(std::min(H * 0.50f, colW * 0.78f))
+                                      : static_cast<int>(std::min(H * 0.44f, colW * 0.74f));
+            const float colTextScale = (colW - PxI(16)) / m_scale / 340.0f;
+            if (paneIdle) {
+                const float byCover = side / m_scale / 260.0f;
+                L.textScale = std::clamp(std::min(byCover, colTextScale), 1.0f, 2.35f);
+            } else {
+                L.textScale = std::clamp(colTextScale, 1.0f, 1.7f);
+            }
+            const int gap = paneIdle ? std::max(PxI(22), static_cast<int>(side * 0.065f)) : PxI(22);
+            const int textH = PxI(UnderStack(L.textScale, false).block);
+            const int top = paneIdle ? std::max<int>(PxI(48), (L.panel.top + L.panel.bottom - side - gap - textH) / 2 - PxI(4))
+                                     : std::max<int>(PxI(48), (H - side - textH) / 2 - PxI(24));
+            L.cover = {colL + (colW - side) / 2, top, colL + (colW - side) / 2 + side, top + side};
+            L.info = {colL + PxI(8), L.cover.bottom + gap, colR - PxI(8), L.cover.bottom + gap + textH};
+            L.infoStyle = 0;
         } else {
             // WMC: the cover with the song's lines beside it, centred as a group.
             const int side = static_cast<int>(H * (idle ? 0.47f : 0.40f)); // larger once it stands alone
@@ -988,14 +1018,24 @@ void PlayerWindow::UpdateLayout(bool animate) {
             L.lyric = {L.info.left, L.info.top + PxI(s.top[4] - 2 * tk), L.info.right,
                        L.info.top + PxI(s.top[4] + kStackLine * tk * kLineHeight + 2 * tk)};
     }
-    const bool infoChanged = !EqualRect(&L.info, &m_layout.info) || L.infoStyle != m_layout.infoStyle;
-    const bool lyricMoved = Empty(m_layout.lyric) != Empty(L.lyric) || L.infoStyle != m_layout.infoStyle;
-    // Full screen, the menu coming or going only resizes the cover and moves the group: the
-    // song's lines and the sung line then grow or shrink with the cover on its curve instead
-    // of fading out and in (owner, 2026-11-13).
-    const RECT oldCover = m_layout.cover, oldInfo = m_layout.info, oldLyric = m_layout.lyric;
-    const bool morph = animate && full && L.infoStyle == 1 && m_layout.infoStyle == 1 && !Empty(oldCover) &&
-                       !Empty(L.cover) && !Empty(oldInfo);
+    const RECT oldCover = m_layout.cover, oldInfo = m_layout.info, oldLyric = m_layout.lyric, oldPane = m_layout.pane,
+               oldPanel = m_layout.panel;
+    const int oldInfoStyle = m_layout.infoStyle;
+    const float oldTextScale = m_layout.textScale;
+    const bool coverChanged = !EqualRect(&L.cover, &oldCover);
+    const bool infoChanged = !EqualRect(&L.info, &oldInfo) || L.infoStyle != oldInfoStyle ||
+                             std::abs(L.textScale - oldTextScale) > 0.001f;
+    const bool lyricChanged = !EqualRect(&L.lyric, &oldLyric) || L.infoStyle != oldInfoStyle;
+    const bool lyricMoved = Empty(oldLyric) != Empty(L.lyric) || L.infoStyle != oldInfoStyle;
+    // Full screen, the menu coming or going only resizes the cover and moves the group (both
+    // beside the cover in style 1 and under the cover beside the pane in style 0): the song's
+    // lines (and the sung line in style 1) then grow or shrink with the cover on its curve
+    // instead of fading out and in.
+    const bool morph = animate && full && L.infoStyle == oldInfoStyle && (L.infoStyle == 0 || L.infoStyle == 1) &&
+                       !Empty(oldCover) && !Empty(L.cover) && !Empty(oldInfo) && !Empty(L.info) &&
+                       (coverChanged || infoChanged);
+    const bool shadeChanged =
+        coverChanged || infoChanged || lyricChanged || !EqualRect(&L.panel, &oldPanel) || !m_shade.Brush();
     m_layout = L;
 
     // Apply.
@@ -1010,7 +1050,7 @@ void PlayerWindow::UpdateLayout(bool animate) {
     PlaceWall();
     m_light->SetSize({W, H});
     m_veil->SetSize({W, H});
-    if (m_pane && m_paneShown) m_pane->SetBounds(L.pane, m_scale);
+    if (m_pane && m_paneShown && (!animate || !EqualRect(&L.pane, &oldPane))) m_pane->SetBounds(L.pane, m_scale);
     PaintPaneCard();
 
     for (auto& w : m_widgets) {
@@ -1067,50 +1107,130 @@ void PlayerWindow::UpdateLayout(bool animate) {
                                             [](ID2D1DeviceContext* dc) { wt::ClusterBackground(dc); });
     }
 
+    const ULONGLONG now = GetTickCount64();
+    const auto sampleMorph = [now](const MorphState& st, int style, float fallbackX, float fallbackY,
+                                   float fallbackMetric, float& outX, float& outY, float& outMetric) {
+        if (st.active && st.infoStyle == style) {
+            const float u = std::clamp(static_cast<float>(now - st.startTick) / kMoveMs, 0.0f, 1.0f);
+            const float e = gfx::Ease(gfx::curve::kPlace, u);
+            outX = st.fromX + (st.toX - st.fromX) * e;
+            outY = st.fromY + (st.toY - st.fromY) * e;
+            outMetric = st.fromMetric + (st.toMetric - st.fromMetric) * e;
+            return;
+        }
+        outX = fallbackX;
+        outY = fallbackY;
+        outMetric = fallbackMetric;
+    };
+
     if (!Empty(L.cover)) {
         const SIZE want{L.cover.right - L.cover.left, L.cover.bottom - L.cover.top};
         // Paint for the larger of the two sizes before an animated move, so nothing is upscaled.
-        if (want.cx > m_coverPainted.cx || !animate) {
+        if (want.cx > m_coverPainted.cx || (!animate && want.cx != m_coverPainted.cx)) {
             m_coverPainted = want;
             PaintCover();
             RequestArt();
         }
-        Place(m_cover, L.cover, animate);
-        Place(m_coverOld, L.cover, animate);
-        for (const auto& v : {m_cover, m_coverOld}) {
-            if (auto shadow = v.Shadow().try_as<wuc::DropShadow>()) {
-                shadow.BlurRadius(want.cx * 0.07f + Px(8));
-                shadow.Offset(float3{0, want.cx * 0.02f + Px(2), 0});
-                shadow.Opacity(kCoverShadow * L.coverEdge);
+        // Keep an in-flight cover glide running when an unrelated non-animated pass (such as
+        // switching Lyrics <-> Queue or lyrics arriving) leaves the cover rect unchanged.
+        if (animate || coverChanged || !m_coverPlaced) {
+            const bool animateCover = animate && coverChanged;
+            Place(m_cover, L.cover, animateCover);
+            Place(m_coverOld, L.cover, animateCover);
+            m_coverPlaced = true;
+            const float targetBlur = want.cx * 0.07f + Px(8);
+            const float3 targetOffset{0, want.cx * 0.02f + Px(2), 0};
+            const auto ease = animateCover ? gfx::Easing(gfx::curve::kPlace) : nullptr;
+            for (const auto& v : {m_cover, m_coverOld}) {
+                if (auto shadow = v.Shadow().try_as<wuc::DropShadow>()) {
+                    if (animateCover) {
+                        const auto comp = v.Compositor();
+                        auto blurAnim = comp.CreateScalarKeyFrameAnimation();
+                        blurAnim.InsertKeyFrame(1.0f, targetBlur, ease);
+                        blurAnim.Duration(Ms(kMoveMs));
+                        shadow.StartAnimation(L"BlurRadius", blurAnim);
+                        auto offAnim = comp.CreateVector3KeyFrameAnimation();
+                        offAnim.InsertKeyFrame(1.0f, targetOffset, ease);
+                        offAnim.Duration(Ms(kMoveMs));
+                        shadow.StartAnimation(L"Offset", offAnim);
+                    } else {
+                        shadow.StopAnimation(L"BlurRadius");
+                        shadow.StopAnimation(L"Offset");
+                        shadow.BlurRadius(targetBlur);
+                        shadow.Offset(targetOffset);
+                    }
+                    shadow.Opacity(kCoverShadow * L.coverEdge);
+                }
             }
         }
         for (const auto& f : m_coverFrame) f.Opacity(L.coverEdge);
     }
-    const float morphFrom =
-        morph ? static_cast<float>(oldCover.right - oldCover.left) / std::max<LONG>(1, L.cover.right - L.cover.left) : 1.0f;
+    const bool infoMorphRunning = m_infoMorph.active && (now - m_infoMorph.startTick) < kMoveMs;
     m_info.IsVisible(!Empty(L.info)); // the compact window has none: its title is over the cover
-    if (L.compact) PaintInfo();
-    if (!Empty(L.info)) {
-        Place(m_info, L.info);
-        if (morph) {
-            Morph(m_info, oldInfo, morphFrom);
-        } else if (infoChanged && animate) {
-            m_info.Opacity(0.0f);
-            gfx::FadeIn(m_info, 320, 180); // with the song's other lines
-        }
+    if (L.compact) {
+        m_infoMorph.active = false;
+        ResetMorphVisual(m_info);
         PaintInfo();
+    }
+    if (!Empty(L.info)) {
+        if (morph) {
+            const bool centered = L.infoStyle == 0;
+            const float oldAnchorX = centered ? (oldInfo.left + oldInfo.right) * 0.5f : static_cast<float>(oldInfo.left);
+            const float oldAnchorY = static_cast<float>(oldInfo.top);
+            const float oldMetric =
+                centered ? oldTextScale : static_cast<float>(std::max<LONG>(1, oldCover.right - oldCover.left));
+            const float newAnchorX = centered ? (L.info.left + L.info.right) * 0.5f : static_cast<float>(L.info.left);
+            const float newAnchorY = static_cast<float>(L.info.top);
+            const float newMetric =
+                centered ? L.textScale : static_cast<float>(std::max<LONG>(1, L.cover.right - L.cover.left));
+            float curX = oldAnchorX, curY = oldAnchorY, curMetric = oldMetric;
+            sampleMorph(m_infoMorph, L.infoStyle, oldAnchorX, oldAnchorY, oldMetric, curX, curY, curMetric);
+            const float centerX = centered ? (L.info.right - L.info.left) * 0.5f : 0.0f;
+            const float startScale = curMetric / std::max(0.01f, newMetric);
+            Place(m_info, L.info);
+            Morph(m_info, L.info, curX, curY, centerX, startScale);
+            m_infoMorph = {true, L.infoStyle, now, curX, curY, newAnchorX, newAnchorY, curMetric, newMetric};
+            PaintInfo();
+        } else if (infoChanged || !infoMorphRunning) {
+            m_infoMorph.active = false;
+            ResetMorphVisual(m_info);
+            Place(m_info, L.info);
+            if (infoChanged && animate) {
+                m_info.Opacity(0.0f);
+                gfx::FadeIn(m_info, 320, 180); // with the song's other lines
+            }
+            PaintInfo();
+        } else {
+            PaintInfo();
+        }
+    } else {
+        m_infoMorph.active = false;
+        ResetMorphVisual(m_info);
     }
     for (size_t i = 0; i < 4; ++i) Place(m_menuGlow[i], L.menu[i]);
     Place(m_menuShade, L.menuShade);
     PaintMenuShade();
     // The sung line does not travel with the cover when the pane opens or closes: it goes at
     // once, and comes back in its new place fading in with the song's other lines.
-    Place(m_lyric, L.lyric);
+    const bool lyricMorphRunning = m_lyricMorph.active && (now - m_lyricMorph.startTick) < kMoveMs;
     m_lyric.IsVisible(!Empty(L.lyric));
-    if (morph && !lyricMoved && !Empty(L.lyric) && !Empty(oldLyric)) {
-        Morph(m_lyric, oldLyric, morphFrom);
-    } else if (lyricMoved && animate && !Empty(L.lyric)) {
-        gfx::FadeIn(m_lyric, 320, 180);
+    if (morph && L.infoStyle == 1 && !lyricMoved && !Empty(L.lyric) && !Empty(oldLyric)) {
+        const float oldAnchorX = static_cast<float>(oldLyric.left), oldAnchorY = static_cast<float>(oldLyric.top);
+        const float oldMetric = static_cast<float>(std::max<LONG>(1, oldCover.right - oldCover.left));
+        const float newAnchorX = static_cast<float>(L.lyric.left), newAnchorY = static_cast<float>(L.lyric.top);
+        const float newMetric = static_cast<float>(std::max<LONG>(1, L.cover.right - L.cover.left));
+        float curX = oldAnchorX, curY = oldAnchorY, curMetric = oldMetric;
+        sampleMorph(m_lyricMorph, L.infoStyle, oldAnchorX, oldAnchorY, oldMetric, curX, curY, curMetric);
+        Place(m_lyric, L.lyric);
+        Morph(m_lyric, L.lyric, curX, curY, 0.0f, curMetric / std::max(0.01f, newMetric));
+        m_lyricMorph = {true, L.infoStyle, now, curX, curY, newAnchorX, newAnchorY, curMetric, newMetric};
+    } else if (lyricChanged || !lyricMorphRunning) {
+        m_lyricMorph.active = false;
+        ResetMorphVisual(m_lyric);
+        Place(m_lyric, L.lyric);
+        if (lyricMoved && animate && !Empty(L.lyric)) {
+            gfx::FadeIn(m_lyric, 320, 180);
+        }
     }
     m_lyricLine = -2;
     PaintLyric();
@@ -1132,16 +1252,18 @@ void PlayerWindow::UpdateLayout(bool animate) {
     PaintBars();
     PaintSeek();
     PaintTimes();
-    if (animate && m_shade.Brush()) {
-        // The blue changes shape with the layout: the old one fades out as the new one comes.
-        auto& host = gfx::CompositionHost::Get();
-        m_shadeOld.Brush(m_shade.Brush());
-        m_shadeOld.Opacity(1.0f);
-        host.AnimateOpacity(m_shadeOld, 0.0f, 620);
-        m_shade.Opacity(0.0f);
-        host.AnimateOpacity(m_shade, 1.0f, 480);
+    if (shadeChanged || !animate) {
+        if (animate && m_shade.Brush()) {
+            // The blue changes shape with the layout: the old one fades out as the new one comes.
+            auto& host = gfx::CompositionHost::Get();
+            m_shadeOld.Brush(m_shade.Brush());
+            m_shadeOld.Opacity(1.0f);
+            host.AnimateOpacity(m_shadeOld, 0.0f, 620);
+            m_shade.Opacity(0.0f);
+            host.AnimateOpacity(m_shade, 1.0f, 480);
+        }
+        PaintShade();
     }
-    PaintShade();
     if (m_popupOpen) PaintPopup();
 }
 
@@ -1399,6 +1521,9 @@ LRESULT PlayerWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
         SetWindowPos(hwnd, nullptr, r->left, r->top, r->right - r->left, r->bottom - r->top,
                      SWP_NOZORDER | SWP_NOACTIVATE);
         m_coverPainted = {};
+        m_coverPlaced = false;
+        m_infoMorph.active = false;
+        m_lyricMorph.active = false;
         if (m_shown) UpdateLayout(false);
         return 0;
     }
@@ -1769,9 +1894,11 @@ LRESULT PlayerWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         case 'L':
             TogglePane(NowPlayingPane::Mode::Lyrics);
+            if (m_chromeShown) ArmHideTimer();
             return 0;
         case 'Q':
             TogglePane(NowPlayingPane::Mode::Queue);
+            if (m_chromeShown) ArmHideTimer();
             return 0;
         }
         return 0;
