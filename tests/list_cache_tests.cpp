@@ -933,6 +933,94 @@ void TestGenerationStateBound() {
     manager->Shutdown();
 }
 
+void TestTouchValidatedAndMarkStale() {
+    auto manager = std::make_shared<glasswave::cache::lists::Manager>();
+    const Identity identity{.provider = "touch", .logical = "playlist/v1/p1", .accountRevision = 0};
+
+    auto waitBool = [](auto startFn) {
+        auto promise = std::make_shared<std::promise<bool>>();
+        auto future = promise->get_future();
+        startFn([promise](bool ok) { promise->set_value(ok); });
+        if (future.wait_for(std::chrono::seconds(5)) != std::future_status::ready)
+            throw TestFailure("List-cache persistence callback timed out.");
+        return future.get();
+    };
+
+    // Marking a missing entry stale is a safe no-op.
+    Check(waitBool([&](auto done) { manager->MarkStale(identity, std::move(done)); }),
+          "MarkStale failed for a missing manifest");
+    Check(!LoadWithManagerAndWait(*manager, identity).has_value(),
+          "MarkStale created a manifest where none existed");
+
+    // Persist a two-page snapshot at t1.
+    auto page1 = MakePageRecord({MakeTrack(L"t1", L"First"), MakeTrack(L"t2", L"Second")}, 1, true, L"c2", 2, 3);
+    page1.validatedAt = 1'760'000'100;
+    auto page2 = MakePageRecord({MakeTrack(L"t3", L"Third")}, 2, false, {}, 3, 3);
+    page2.validatedAt = 1'760'000'100;
+    Check(waitBool([&](auto done) { manager->SavePage(identity, page1, 7, std::move(done)); }),
+          "Saving page 1 failed");
+    Check(waitBool([&](auto done) { manager->SavePage(identity, page2, 7, std::move(done)); }),
+          "Saving page 2 failed");
+
+    const auto loaded1 = LoadWithManagerAndWait(*manager, identity);
+    Check(loaded1 && loaded1->validatedAt == 1'760'000'100 && Rows(*loaded1).size() == 3 && !loaded1->base.empty(),
+          "Initial persisted snapshot did not load as expected");
+
+    // TouchValidated by current-run generation advances validatedAt without touching pages.
+    Check(waitBool([&](auto done) {
+              manager->TouchValidated(identity, {}, 7, 1'760'000'500, std::move(done));
+          }),
+          "TouchValidated by generation failed");
+    const auto loaded2 = LoadWithManagerAndWait(*manager, identity);
+    Check(loaded2 && loaded2->validatedAt == 1'760'000'500 && loaded2->base == loaded1->base &&
+              Rows(*loaded2).size() == 3 && Rows(*loaded2)[2].id == L"t3",
+          "TouchValidated by generation did not update validatedAt while preserving pages");
+
+    // TouchValidated by loaded base generation (e.g., after restart) advances validatedAt again.
+    Check(waitBool([&](auto done) {
+              manager->TouchValidated(identity, loaded2->base, 0, 1'760'001'000, std::move(done));
+          }),
+          "TouchValidated by base failed");
+    const auto loaded3 = LoadWithManagerAndWait(*manager, identity);
+    Check(loaded3 && loaded3->validatedAt == 1'760'001'000 && loaded3->base == loaded1->base,
+          "TouchValidated by base did not advance validatedAt");
+
+    // Older timestamp does not regress validatedAt; mismatched generation/base is rejected.
+    Check(waitBool([&](auto done) {
+              manager->TouchValidated(identity, loaded3->base, 0, 1'760'000'200, std::move(done));
+          }),
+          "TouchValidated with older timestamp failed unexpectedly");
+    const auto loaded4 = LoadWithManagerAndWait(*manager, identity);
+    Check(loaded4 && loaded4->validatedAt == 1'760'001'000, "TouchValidated regressed validatedAt");
+    Check(!waitBool([&](auto done) {
+              manager->TouchValidated(identity, "wrong-base", 0, 1'760'002'000, std::move(done));
+          }),
+          "TouchValidated accepted a mismatched base generation");
+    Check(!waitBool([&](auto done) {
+              manager->TouchValidated(identity, {}, 6, 1'760'002'000, std::move(done));
+          }),
+          "TouchValidated accepted an older current-run generation");
+
+    // MarkStale sets validatedAt = 0 while preserving every persisted page and generation token.
+    Check(waitBool([&](auto done) { manager->MarkStale(identity, std::move(done)); }),
+          "MarkStale failed for an existing manifest");
+    const auto stale = LoadWithManagerAndWait(*manager, identity);
+    Check(stale && stale->validatedAt == 0 && stale->base == loaded1->base && !stale->page.more &&
+              Rows(*stale).size() == 3 && Rows(*stale)[0].id == L"t1" && Rows(*stale)[2].id == L"t3",
+          "MarkStale did not preserve pages while marking the manifest stale");
+
+    // TouchValidated can refresh a stale snapshot again once confirmed unchanged.
+    Check(waitBool([&](auto done) {
+              manager->TouchValidated(identity, stale->base, 0, 1'760'003'000, std::move(done));
+          }),
+          "TouchValidated failed after MarkStale");
+    const auto refreshed = LoadWithManagerAndWait(*manager, identity);
+    Check(refreshed && refreshed->validatedAt == 1'760'003'000 && Rows(*refreshed).size() == 3,
+          "TouchValidated did not restore freshness after MarkStale");
+
+    manager->Shutdown();
+}
+
 } // namespace
 
 namespace glasswave::cache {
@@ -999,6 +1087,7 @@ int wmain(int argc, wchar_t** argv) {
         TestContextRevisitReusesOnlyItsSnapshot();
         TestShutdownDrainsGuardRotation();
         TestGenerationStateBound();
+        TestTouchValidatedAndMarkStale();
 
         glasswave::cache::lists::Shutdown();
         const auto lateCallback = std::make_shared<std::atomic_bool>(false);

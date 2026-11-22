@@ -56,6 +56,14 @@ struct ListQuery {
     }
 };
 
+// Identifies which cached lists a provider write affected. Empty `id` or `section`
+// matches any list of `kind`.
+struct ListTarget {
+    ListKind kind = ListKind::PlaylistTracks;
+    Id id;
+    Id section;
+};
+
 // The provider owns the cursor encoding. For offset services, `offset` counts source records
 // consumed, not rows emitted after availability filtering. `value` carries any opaque server
 // cursor or stable snapshot version needed to make the continuation safe.

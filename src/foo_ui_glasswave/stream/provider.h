@@ -456,7 +456,7 @@ class Provider {
     void RemoveListener(Listener* listener);
 
   protected:
-    void NotifyListChanged();
+    void NotifyListChanged(std::vector<ListTarget> targets = {});
     void NotifyAccountObserved();
     void NotifyAccountChanged();
     void NotifyLibraryChanged();

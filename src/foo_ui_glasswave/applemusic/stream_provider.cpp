@@ -2113,7 +2113,7 @@ void StreamProvider::ResetSessionLocked(bool authPending) {
     m_refreshGeneration = 0;
     ++m_refreshSequence;
     m_refreshPreservePlaylistDetails = false;
-    m_refreshInvalidatesLists = false;
+    m_refreshInvalidationTargets.clear();
     m_displayChangePosted = false;
     m_refreshWaiters.clear();
     m_artistCountsInFlight = false;
@@ -2690,7 +2690,7 @@ void StreamProvider::OnLanguageChanged() {
         m_locale = locale;
         if (!m_started) return;
         generation = m_exec.Bump();
-        m_refreshInvalidatesLists = false;
+        m_refreshInvalidationTargets.clear();
         m_artistVerificationCondition.notify_all();
     }
     Catalog::Get().RefreshHints();
@@ -3596,7 +3596,7 @@ void StreamProvider::CompleteRefresh(uint64_t generation, Snapshot snapshot, std
     bool accountChanged = false;
     bool accountObserved = false;
     bool favoritesChanged = false;
-    bool invalidateLists = false;
+    std::vector<stream::ListTarget> invalidationTargets;
     bool snapshotReady = false;
     bool storefrontChanged = false;
     bool clearCatalog = false;
@@ -3610,8 +3610,7 @@ void StreamProvider::CompleteRefresh(uint64_t generation, Snapshot snapshot, std
         m_refreshGeneration = 0;
         const bool preservePlaylistDetails = m_refreshPreservePlaylistDetails;
         m_refreshPreservePlaylistDetails = false;
-        invalidateLists = m_refreshInvalidatesLists;
-        m_refreshInvalidatesLists = false;
+        invalidationTargets.swap(m_refreshInvalidationTargets);
         waiters.swap(m_refreshWaiters);
         const AccountState previous = m_account;
         const bool previouslyVerified = m_gate.verified && previous.signedIn;
@@ -3820,7 +3819,8 @@ void StreamProvider::CompleteRefresh(uint64_t generation, Snapshot snapshot, std
     // The catalog deletes its cache files: not under the provider lock, which the UI takes.
     if (clearCatalog) Catalog::Get().Clear();
     if (accountObserved) NotifyAccountObserved();
-    if (invalidateLists && snapshotReady && !accountChanged) NotifyListChanged();
+    if (!invalidationTargets.empty() && snapshotReady && !accountChanged)
+        NotifyListChanged(std::move(invalidationTargets));
     if (accountChanged) NotifyAccountChanged();
     if (favoritesChanged) NotifyFavoritesChanged();
     NotifyLibraryChanged();
@@ -3864,14 +3864,16 @@ void StreamProvider::RefreshLibraryPreservingDetails(Done done) {
     RefreshAccountAsync(generation, std::move(done), true);
 }
 
-void StreamProvider::RefreshLibraryAfterMutation(Done done) {
+void StreamProvider::RefreshLibraryAfterMutation(Done done, std::vector<stream::ListTarget> targets) {
     uint64_t generation = 0;
     bool started = false;
     {
         std::lock_guard lock(m_mutex);
         started = m_started;
         generation = m_exec.Generation();
-        if (started) m_refreshInvalidatesLists = true;
+        if (started)
+            m_refreshInvalidationTargets.insert(m_refreshInvalidationTargets.end(), targets.begin(),
+                                                targets.end());
     }
     if (!started) {
         if (done) done(L"Apple Music is not running.");
@@ -4367,7 +4369,15 @@ void StreamProvider::WriteSongsSaved(std::vector<stream::Id> tracks, bool saved,
                     // The library's songs are read again when next wanted (an added one joins them).
                     m_librarySongsAt = {};
                 }
-                NotifyListChanged();
+                NotifyListChanged({
+                    {stream::ListKind::SectionTracks, {}, kSongsSection},
+                    {stream::ListKind::Groups, {}, kGenresSection},
+                    {stream::ListKind::Groups, {}, kComposersSection},
+                    {stream::ListKind::SectionTracks, {}, kGenresSection},
+                    {stream::ListKind::SectionTracks, {}, kComposersSection},
+                    {stream::ListKind::SavedAlbums, {}, {}},
+                    {stream::ListKind::FollowedArtists, {}, {}},
+                });
                 NotifyLibraryChanged();
                 if (done) done({});
             });
@@ -6312,8 +6322,10 @@ void StreamProvider::WriteFavorite(const stream::Id& track, bool favorite, Done 
                         // The service accepted the change, so the known set is updated in place.
                         // Reading the whole Favorite Songs playlist back after every star (all
                         // its pages, their related records and names) only repeated the answer.
+                        stream::Id favoritePlaylistId;
                         {
                             std::lock_guard lock(m_mutex);
+                            favoritePlaylistId = m_favoritePlaylistId;
                             if (favorite) {
                                 m_favoriteIds.insert(track);
                             } else {
@@ -6325,7 +6337,13 @@ void StreamProvider::WriteFavorite(const stream::Id& track, bool favorite, Done 
                             if (favorite) m_favoriteSongsLoaded = false;
                         }
                         SaveFavoriteIdsAsync();
-                        NotifyListChanged();
+                        std::vector<stream::ListTarget> targets{
+                            {stream::ListKind::Favorites, {}, {}},
+                            {stream::ListKind::SectionTracks, favoritePlaylistId, kFavoritesSection},
+                        };
+                        if (!favoritePlaylistId.empty())
+                            targets.push_back({stream::ListKind::PlaylistTracks, favoritePlaylistId, {}});
+                        NotifyListChanged(std::move(targets));
                         if (done) done({});
                     });
                 });
@@ -6573,7 +6591,7 @@ void StreamProvider::WriteLibraryItem(bool album, const stream::Id& id, bool sav
                             m_refreshInFlight = false;
                             m_refreshGeneration = 0;
                             m_refreshPreservePlaylistDetails = false;
-                            m_refreshInvalidatesLists = false;
+                            m_refreshInvalidationTargets.clear();
                         }
                         if (album) {
                             AlbumMutation mutation;
@@ -6640,10 +6658,29 @@ void StreamProvider::WriteLibraryItem(bool album, const stream::Id& id, bool sav
                 }
                 for (auto& waiter : superseded)
                     if (waiter) waiter(L"The Apple Music refresh was superseded by a library change.");
-                NotifyListChanged();
+                std::vector<stream::ListTarget> targets;
+                if (album) {
+                    targets = {
+                        {stream::ListKind::SavedAlbums, {}, {}},
+                        {stream::ListKind::FollowedArtists, {}, {}},
+                        {stream::ListKind::SectionTracks, {}, kSongsSection},
+                        {stream::ListKind::Groups, {}, kGenresSection},
+                        {stream::ListKind::Groups, {}, kComposersSection},
+                        {stream::ListKind::SectionTracks, {}, kGenresSection},
+                        {stream::ListKind::SectionTracks, {}, kComposersSection},
+                    };
+                    if (!libraryId.empty()) targets.push_back({stream::ListKind::AlbumTracks, libraryId, {}});
+                } else {
+                    targets.push_back({stream::ListKind::Playlists, {}, {}});
+                    if (!libraryId.empty())
+                        targets.push_back({stream::ListKind::PlaylistTracks, libraryId, {}});
+                    if (!catalogId.empty() && catalogId != libraryId)
+                        targets.push_back({stream::ListKind::PlaylistTracks, catalogId, {}});
+                }
+                NotifyListChanged(targets);
                 NotifyLibraryChanged();
                 if (done) done({});
-                RefreshLibraryAfterMutation({});
+                RefreshLibraryAfterMutation({}, std::move(targets));
             });
         });
 }
@@ -7041,17 +7078,18 @@ void StreamProvider::CreatePlaylist(std::wstring name, CreatedDone done) {
                         if (done) done(id, std::move(error));
                         return;
                     }
-                    RefreshLibraryAfterMutation([this, id,
-                                                 done = std::move(done)](std::wstring refreshError) mutable {
-                        if (refreshError.empty()) {
-                            const auto playlists = Playlists(stream::Shelf::Created);
-                            if (std::none_of(
-                                    playlists.begin(), playlists.end(),
-                                    [&id](const stream::Playlist& playlist) { return playlist.id == id; }))
-                                refreshError = L"Apple Music did not expose the new playlist after refresh.";
-                        }
-                        if (done) done(id, std::move(refreshError));
-                    });
+                    RefreshLibraryAfterMutation(
+                        [this, id, done = std::move(done)](std::wstring refreshError) mutable {
+                            if (refreshError.empty()) {
+                                const auto playlists = Playlists(stream::Shelf::Created);
+                                if (std::none_of(
+                                        playlists.begin(), playlists.end(),
+                                        [&id](const stream::Playlist& playlist) { return playlist.id == id; }))
+                                    refreshError = L"Apple Music did not expose the new playlist after refresh.";
+                            }
+                            if (done) done(id, std::move(refreshError));
+                        },
+                        {{stream::ListKind::Playlists, {}, {}}});
                 });
         });
 }
@@ -7164,23 +7202,25 @@ void StreamProvider::DeletePlaylist(const stream::Id& playlist, Done done) {
                         m_playlistTracks.erase(libraryId);
                         m_playlistSongs.erase(libraryId);
                     }
-                    RefreshLibraryAfterMutation([this, libraryId,
-                                                 done = std::move(done)](std::wstring refreshError) mutable {
-                        if (refreshError.empty()) {
-                            const auto exists = [&libraryId](const std::vector<stream::Playlist>& playlists) {
-                                return std::any_of(playlists.begin(), playlists.end(),
-                                                   [&libraryId](const stream::Playlist& playlist) {
-                                                       return playlist.id == libraryId;
-                                                   });
-                            };
-                            if (exists(Playlists(stream::Shelf::Created)) ||
-                                exists(Playlists(stream::Shelf::Saved)))
-                                refreshError = L"Apple Music did not confirm the playlist deletion.";
-                            else
-                                Catalog::Get().RemovePlaylist(libraryId);
-                        }
-                        if (done) done(std::move(refreshError));
-                    });
+                    RefreshLibraryAfterMutation(
+                        [this, libraryId, done = std::move(done)](std::wstring refreshError) mutable {
+                            if (refreshError.empty()) {
+                                const auto exists = [&libraryId](const std::vector<stream::Playlist>& playlists) {
+                                    return std::any_of(playlists.begin(), playlists.end(),
+                                                       [&libraryId](const stream::Playlist& playlist) {
+                                                           return playlist.id == libraryId;
+                                                       });
+                                };
+                                if (exists(Playlists(stream::Shelf::Created)) ||
+                                    exists(Playlists(stream::Shelf::Saved)))
+                                    refreshError = L"Apple Music did not confirm the playlist deletion.";
+                                else
+                                    Catalog::Get().RemovePlaylist(libraryId);
+                            }
+                            if (done) done(std::move(refreshError));
+                        },
+                        {{stream::ListKind::PlaylistTracks, libraryId, {}},
+                         {stream::ListKind::Playlists, {}, {}}});
                 });
         });
 }
@@ -7331,7 +7371,6 @@ void StreamProvider::RefreshKnownPlaylist(const stream::Id& id, Done done, bool 
                                 return;
                             }
                         }
-                        if (invalidateLists) NotifyListChanged();
                         if (applied) {
                             Catalog::Get().PutAndHint(data.songs);
                             {
@@ -7358,8 +7397,17 @@ void StreamProvider::RefreshKnownPlaylist(const stream::Id& id, Done done, bool 
                                 update(m_createdPlaylists);
                                 update(m_savedPlaylists);
                             }
-                            NotifyLibraryChanged();
                         }
+                        if (invalidateLists) {
+                            std::vector<stream::ListTarget> targets{
+                                {stream::ListKind::PlaylistTracks, id, {}},
+                                {stream::ListKind::Playlists, {}, {}},
+                            };
+                            if (!data.catalogId.empty() && data.catalogId != id)
+                                targets.push_back({stream::ListKind::PlaylistTracks, data.catalogId, {}});
+                            NotifyListChanged(std::move(targets));
+                        }
+                        if (applied) NotifyLibraryChanged();
                         if (done) done(std::move(error));
                     });
                 });

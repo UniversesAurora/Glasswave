@@ -95,7 +95,8 @@ class StreamProvider final : public stream::Provider {
     void OnSessionChanged();
     void PostListPage(stream::ListPageDone done, stream::ListPage page, std::vector<SongRecord> songs,
                       std::wstring error, std::shared_ptr<std::atomic_bool> cancelled);
-    void FinishListWrite(bool ok, std::wstring error, Done done);
+    void FinishListWrite(bool ok, std::wstring error, Done done,
+                         std::vector<stream::ListTarget> targets = {});
     void ClearIdSnapshots();
     // The catalog's reader (stream::Catalog::StartReading): songs asked for that it lacks or
     // holds without their album or artist ids, read in one batch and published to foobar2000's

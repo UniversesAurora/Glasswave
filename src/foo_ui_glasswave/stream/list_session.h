@@ -75,8 +75,10 @@ class ListSession final {
 void InvalidateListCache(std::wstring_view provider, bool restart, ListCacheInvalidation mode);
 // The provider's lists may have changed (a write went through). Nothing is dropped: lists on
 // screen re-read behind their rows, the others when they are opened next, and the persisted
-// snapshots keep serving the first paint after a restart.
-void RevalidateLists(std::wstring_view provider);
+// snapshots keep serving the first paint after a restart. When `targets` is non-empty, only
+// matching lists are revalidated; when empty, every mutable user list of the provider is
+// revalidated while catalog lists stay untouched.
+void RevalidateLists(std::wstring_view provider, std::vector<ListTarget> targets = {});
 // The provider's account was confirmed to be the one its cached data belongs to: reads that
 // were waiting for that start now. Reads already under way are left alone.
 void ResumeLists(std::wstring_view provider);

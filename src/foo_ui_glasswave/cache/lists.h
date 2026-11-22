@@ -37,6 +37,15 @@ void SavePage(Identity identity, Record record, uint64_t generation, Persisted p
 // Replaces only the cached rows and enrichment marker of an existing page. The source page's
 // identity, row kind/count, ordering, cursor, total and revision are immutable.
 void UpdatePage(Identity identity, Record record, uint64_t generation, Persisted persisted = {});
+// Refreshes only the persisted manifest's validation timestamp when a cached snapshot is
+// confirmed unchanged against the service, without rewriting any page chunks. When `base` is
+// non-empty it matches that loaded snapshot generation; otherwise `generation` matches the
+// snapshot written in this run.
+void TouchValidated(Identity identity, std::string base, uint64_t generation, int64_t validatedAt,
+                    Persisted persisted = {});
+// Marks an existing persisted snapshot as needing background revalidation on next open
+// (validatedAt = 0) while preserving all persisted pages for immediate first paint.
+void MarkStale(Identity identity, Persisted persisted = {});
 // Cancels in-memory publishers and resets generation ownership while keeping the current
 // account scope, context key and persisted guard readable.
 void RetireProvider(std::string provider);

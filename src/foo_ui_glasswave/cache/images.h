@@ -112,6 +112,7 @@ class CacheOnlyScope {
   private:
     bool m_previous;
 };
+bool IsCacheOnly() noexcept;
 bool TakeCacheMiss();
 
 // The pixel size the picture is decoded for, while one is alive on a thread (0: unknown). A

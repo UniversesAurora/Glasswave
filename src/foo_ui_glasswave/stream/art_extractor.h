@@ -169,8 +169,10 @@ template <class Traits> class ArtInstance : public album_art_extractor_instance_
         } catch (...) {
             reason = L"unknown error";
         }
-        // A request dropped for an account change or an abort is not a failed cover.
-        if (!abort.is_aborting() && cache::AccountRevision(Traits::kProvider) == account)
+        // A cache-only probe miss, an abort, or a request dropped for an account change is not a
+        // failed cover download.
+        if (!cache::IsCacheOnly() && !abort.is_aborting() &&
+            cache::AccountRevision(Traits::kProvider) == account)
             LogArtFailure(cache::ImageArtKey(request.identity) + "/" + rendition.version,
                           core::Wide(Traits::kProvider) + L" " + core::Wide(kind) + L" " + ref.id + L" (" +
                               core::Wide(rendition.version) + L"): " + reason);

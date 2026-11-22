@@ -20,13 +20,37 @@ constexpr size_t kMaxRows = 200000;
 constexpr size_t kMaxPages = 4096;
 constexpr size_t kWarmSessions = 24;
 constexpr size_t kWarmRows = 128000;
-// A list confirmed within this window is shown without asking the service again. Changes
-// made here revalidate at once (RevalidateLists), a manual refresh always re-reads; the
-// window only bounds how late a change made on another device shows up by itself.
-constexpr int64_t kFreshSeconds = 5 * 60;
+// Lists confirmed within these windows are served without asking the service again. Changes
+// made in Glasswave revalidate affected lists at once (RevalidateLists) and a manual refresh
+// always re-reads; these windows only bound how soon external changes appear on their own.
+constexpr int64_t kUserListFreshSeconds = 30 * 60;
+constexpr int64_t kCatalogListFreshSeconds = 24 * 60 * 60;
 constexpr size_t kEnrichmentConcurrency = 2;
+constexpr size_t kMaxTrackedMutations = 256;
+constexpr size_t kMaxCompletedRevalidations = 1024;
 
 using core::Utf8;
+
+bool IsCatalogList(ListKind kind) {
+    return kind == ListKind::AlbumTracks || kind == ListKind::ArtistTopTracks ||
+           kind == ListKind::ArtistAlbums || kind == ListKind::ArtistPlaylists ||
+           kind == ListKind::ArtistSimilarArtists;
+}
+bool IsMutableUserList(ListKind kind) {
+    return !IsCatalogList(kind) && !IsCatalogSearch(kind);
+}
+int64_t FreshSecondsFor(ListKind kind) {
+    return IsCatalogList(kind) ? kCatalogListFreshSeconds : kUserListFreshSeconds;
+}
+bool MatchesTarget(const ListQuery& query, const ListTarget& target) {
+    return target.kind == query.kind && (target.id.empty() || target.id == query.id) &&
+           (target.section.empty() || target.section == query.section);
+}
+bool MatchesAnyTarget(const ListQuery& query, const std::vector<ListTarget>& targets) {
+    if (targets.empty()) return IsMutableUserList(query.kind);
+    return std::any_of(targets.begin(), targets.end(),
+                       [&query](const ListTarget& target) { return MatchesTarget(query, target); });
+}
 
 void Part(std::string& target, std::string_view value) {
     target += std::to_string(value.size()) + ":";
@@ -179,6 +203,7 @@ struct Read : std::enable_shared_from_this<Read> {
     ListQuery query;
     ListCachePolicy policy;
     std::string cacheContext;
+    std::string cacheKey;
     cache::lists::Identity identity;
     ListState state;
     std::vector<std::weak_ptr<Lease>> leases;
@@ -190,6 +215,7 @@ struct Read : std::enable_shared_from_this<Read> {
     uint64_t request = 0, generation = 0, used = 0;
     uint64_t restoreAttempt = 0;
     uint64_t saveSequence = 0;
+    uint64_t fetchMutationSeq = 0;
     size_t networkPages = 0, shadowTarget = 0, emptyPages = 0;
     int64_t validatedAt = 0;
     bool started = false, initializing = false, cacheLoading = false, inFlight = false, valid = true;
@@ -213,8 +239,9 @@ struct Read : std::enable_shared_from_this<Read> {
     bool pumpingEnrichment = false;
 
     Read(Provider& source, ListQuery value, ListCachePolicy storage, std::string logicalKey,
-         std::string context)
+         std::string context, std::string sessionKey)
         : provider(source), query(std::move(value)), policy(storage), cacheContext(std::move(context)),
+          cacheKey(std::move(sessionKey)),
           identity{Utf8(source.Key()), std::move(logicalKey), cache::AccountRevision(Utf8(source.Key()))} {
         state.page = EmptyPage(query.kind);
     }
@@ -294,9 +321,158 @@ struct Read : std::enable_shared_from_this<Read> {
     }
 };
 
+struct MutationStamp {
+    int64_t atSeconds = 0;
+    uint64_t seq = 0;
+};
+struct TargetMutation {
+    ListTarget target;
+    MutationStamp stamp;
+};
+struct ProviderMutations {
+    MutationStamp allMutable;
+    std::vector<TargetMutation> targeted;
+};
+
 std::map<std::string, std::shared_ptr<Read>> reads;
-uint64_t clock = 0, nextGeneration = 0;
+std::map<std::string, ProviderMutations> providerMutations;
+std::map<std::string, uint64_t> completedRevalidations;
+uint64_t clock = 0, nextGeneration = 0, mutationSeq = 0;
 bool stopping = false;
+
+void RecordMutations(const std::string& providerKey, const std::vector<ListTarget>& targets) {
+    const MutationStamp stamp{cache::Store::Now(), ++mutationSeq};
+    auto& entry = providerMutations[providerKey];
+    if (targets.empty()) {
+        entry.allMutable = stamp;
+        return;
+    }
+    for (const auto& target : targets) {
+        const auto existing = std::find_if(entry.targeted.begin(), entry.targeted.end(),
+                                           [&target](const TargetMutation& item) {
+                                               return item.target.kind == target.kind &&
+                                                      item.target.id == target.id &&
+                                                      item.target.section == target.section;
+                                           });
+        if (existing != entry.targeted.end()) {
+            existing->stamp = stamp;
+        } else {
+            if (entry.targeted.size() >= kMaxTrackedMutations) {
+                const auto oldest = std::min_element(
+                    entry.targeted.begin(), entry.targeted.end(),
+                    [](const TargetMutation& a, const TargetMutation& b) { return a.stamp.seq < b.stamp.seq; });
+                if (oldest != entry.targeted.end()) entry.targeted.erase(oldest);
+            }
+            entry.targeted.push_back({target, stamp});
+        }
+    }
+}
+
+bool MutatedSince(const std::string& providerKey, const ListQuery& query, int64_t validatedAt,
+                  const std::string& sessionKey) {
+    const auto found = providerMutations.find(providerKey);
+    if (found == providerMutations.end()) return false;
+    uint64_t completed = 0;
+    if (const auto it = completedRevalidations.find(sessionKey); it != completedRevalidations.end())
+        completed = it->second;
+    const auto newer = [validatedAt, completed](const MutationStamp& stamp) {
+        return stamp.seq != 0 && stamp.seq > completed && stamp.atSeconds >= validatedAt;
+    };
+    if (IsMutableUserList(query.kind) && newer(found->second.allMutable)) return true;
+    for (const auto& item : found->second.targeted)
+        if (MatchesTarget(query, item.target) && newer(item.stamp)) return true;
+    return false;
+}
+
+void MarkRevalidated(const std::string& sessionKey, uint64_t seq) {
+    if (seq == 0 || sessionKey.empty()) return;
+    if (completedRevalidations.size() >= kMaxCompletedRevalidations && !completedRevalidations.contains(sessionKey)) {
+        const auto oldest =
+            std::min_element(completedRevalidations.begin(), completedRevalidations.end(),
+                             [](const auto& a, const auto& b) { return a.second < b.second; });
+        if (oldest != completedRevalidations.end()) completedRevalidations.erase(oldest);
+    }
+    auto& slot = completedRevalidations[sessionKey];
+    if (seq > slot) slot = seq;
+}
+
+void ClearProviderMutations(const std::string& providerKey) {
+    providerMutations.erase(providerKey);
+    const std::string prefix = providerKey + ";";
+    std::erase_if(completedRevalidations,
+                  [&prefix](const auto& entry) { return entry.first.starts_with(prefix); });
+}
+
+void MarkDiskTargetsStale(std::wstring_view provider, const std::vector<ListTarget>& targets,
+                          const std::set<std::string>& alreadyCovered) {
+    if (targets.empty()) return;
+    Provider* source = FindProvider(provider);
+    if (!source) return;
+    const std::string providerKey = Utf8(provider);
+    const uint64_t accountRevision = cache::AccountRevision(providerKey);
+    std::set<std::string> marked;
+    const auto markQuery = [&](const ListQuery& query) {
+        const auto policy = IsCatalogSearch(query.kind) && !query.cache ? ListCachePolicy::None
+                                                                        : source->ListPolicy(query);
+        if (policy != ListCachePolicy::Persistent) return;
+        std::string context = source->ListCacheContext(query);
+        std::string logical = LogicalKey(query, context);
+        std::string key = providerKey + ";" + logical;
+        Part(key, std::to_string(accountRevision));
+        Part(key, std::to_string(static_cast<int>(policy)));
+        if (alreadyCovered.contains(key) || !marked.insert(key).second) return;
+        cache::lists::MarkStale({providerKey, std::move(logical), accountRevision});
+    };
+    for (const auto& target : targets) {
+        switch (target.kind) {
+        case ListKind::PlaylistTracks:
+        case ListKind::AlbumTracks:
+            if (!target.id.empty()) {
+                ListQuery q;
+                q.kind = target.kind;
+                q.id = target.id;
+                markQuery(q);
+            }
+            break;
+        case ListKind::Favorites:
+        case ListKind::SavedAlbums:
+        case ListKind::FollowedArtists: {
+            ListQuery q;
+            q.kind = target.kind;
+            markQuery(q);
+            break;
+        }
+        case ListKind::Playlists: {
+            for (const Shelf shelf : {Shelf::Created, Shelf::Saved}) {
+                ListQuery q;
+                q.kind = ListKind::Playlists;
+                q.shelf = shelf;
+                markQuery(q);
+            }
+            break;
+        }
+        case ListKind::SectionTracks:
+            if (!target.section.empty()) {
+                ListQuery q;
+                q.kind = ListKind::SectionTracks;
+                q.id = target.id;
+                q.section = target.section;
+                markQuery(q);
+            }
+            break;
+        case ListKind::Groups:
+            if (!target.section.empty()) {
+                ListQuery q;
+                q.kind = ListKind::Groups;
+                q.section = target.section;
+                markQuery(q);
+            }
+            break;
+        default:
+            break;
+        }
+    }
+}
 
 void Prune() {
     size_t count = 0, rows = 0;
@@ -332,8 +508,8 @@ void Read::Start() {
     used = ++clock;
     if (started) {
         const bool refresh = !inFlight && !cacheLoading &&
-                             (generation == 0 || (cancelled && cancelled->load()) ||
-                              cache::Store::Now() - validatedAt >= kFreshSeconds);
+                             (generation == 0 || (cancelled && cancelled->load()) || validatedAt == 0 ||
+                              cache::Store::Now() - validatedAt >= FreshSecondsFor(query.kind));
         if (refresh) {
             if (!NetworkAllowed()) {
                 BeginRestoreAttempt(false);
@@ -404,9 +580,12 @@ void Read::LoadCache() {
             self->writeGeneration = 0;
             self->writeBase = std::move(cached->base);
             self->Emit();
-            // A complete snapshot that was confirmed moments ago needs no request at all.
-            if (self->state.complete && !self->state.page.enrichmentPending &&
-                cache::Store::Now() - self->validatedAt < kFreshSeconds) {
+            const bool mutated =
+                MutatedSince(self->identity.provider, self->query, self->validatedAt, self->cacheKey);
+            if (self->validatedAt == 0 || mutated) self->changedByWrite = true;
+            // A complete snapshot that was confirmed within its freshness window needs no request at all.
+            if (self->state.complete && !self->state.page.enrichmentPending && self->validatedAt != 0 &&
+                !mutated && cache::Store::Now() - self->validatedAt < FreshSecondsFor(self->query.kind)) {
                 self->generation = ++nextGeneration;
                 return;
             }
@@ -575,6 +754,7 @@ void Read::Refresh(bool preserveDemand, bool allowRestoreRetry) {
     cacheLoading = false;
     initializing = false;
     generation = ++nextGeneration;
+    fetchMutationSeq = mutationSeq;
     inFlight = false;
     fullReread = !preserveDemand || changedByWrite; // asked for explicitly, or known to differ
     changedByWrite = false;
@@ -757,6 +937,10 @@ void Read::Received(uint64_t id, ListPage page, std::wstring error) {
         state.loading = state.refreshing = false;
         state.updatedRows.reset();
         validatedAt = cache::Store::Now();
+        MarkRevalidated(cacheKey, fetchMutationSeq);
+        if (policy == ListCachePolicy::Persistent && (!writeBase.empty() || writeGeneration != 0))
+            cache::lists::TouchValidated(identity, writeBase, writeBase.empty() ? writeGeneration : 0,
+                                         validatedAt);
         const bool continueRead = !state.complete && (WantsAll() || WantsNext());
         ConsumeNext();
         Emit();
@@ -799,7 +983,10 @@ void Read::Received(uint64_t id, ListPage page, std::wstring error) {
     }
     state.updatedRows.reset();
     // Rows still waiting behind an unpublished re-read are not confirmed yet.
-    if (!shadow) validatedAt = cache::Store::Now();
+    if (!shadow) {
+        validatedAt = cache::Store::Now();
+        MarkRevalidated(cacheKey, fetchMutationSeq);
+    }
     state.loading = false;
     const auto publishedGeneration = generation;
     Emit();
@@ -934,6 +1121,7 @@ void Read::Enriched(const std::shared_ptr<EnrichmentWork>& work, ListPage page, 
     // The re-read may have been waiting for this description (or for its failure).
     if (PublishShadowIfReady()) {
         validatedAt = cache::Store::Now();
+        MarkRevalidated(cacheKey, fetchMutationSeq);
         Emit();
     }
     PumpEnrichment();
@@ -962,7 +1150,7 @@ std::shared_ptr<ListSession> ListSession::Open(Provider& provider, ListQuery que
     auto& read = reads[key];
     if (!read || !read->valid)
         read = std::make_shared<Read>(provider, std::move(query), policy, std::move(logicalKey),
-                                      std::move(cacheContext));
+                                      std::move(cacheContext), key);
     auto impl = std::make_shared<Impl>();
     impl->read = read;
     impl->lease = std::make_shared<Lease>(Lease{std::move(changed), mode, false});
@@ -1051,10 +1239,12 @@ void InvalidateListCache(std::wstring_view provider, bool restart, ListCacheInva
         else
             it = reads.erase(it);
     }
-    if (mode == ListCacheInvalidation::PurgePersistent)
+    if (mode == ListCacheInvalidation::PurgePersistent) {
+        ClearProviderMutations(providerKey);
         cache::lists::InvalidateProvider(providerKey);
-    else
+    } else {
         cache::lists::RetireProvider(providerKey);
+    }
     for (const auto& read : affected) {
         if (restart && read->HasLeases() && read->identity.accountRevision == accountRevision)
             read->Refresh(mode == ListCacheInvalidation::RetireInMemory);
@@ -1072,33 +1262,43 @@ void ResumeLists(std::wstring_view provider) {
         // restarting it would send the request it has in flight a second time.
         if (read->inFlight || read->cacheLoading) continue;
         // A read the closed gate interrupted starts again; so does one that was never
-        // confirmed. Rows confirmed moments ago need nothing.
+        // confirmed. Rows confirmed within their freshness window need nothing.
         const bool confirmed = !read->gated && read->generation != 0 && read->state.error.empty() &&
-                               !read->shadow && cache::Store::Now() - read->validatedAt < kFreshSeconds;
+                               !read->shadow && read->validatedAt != 0 &&
+                               cache::Store::Now() - read->validatedAt < FreshSecondsFor(read->query.kind);
         if (!confirmed) waiting.push_back(read);
     }
     for (const auto& read : waiting)
         read->Refresh(true);
 }
-void RevalidateLists(std::wstring_view provider) {
+void RevalidateLists(std::wstring_view provider, std::vector<ListTarget> targets) {
     if (stopping) return;
+    const std::string providerKey = Utf8(provider);
+    RecordMutations(providerKey, targets);
     std::vector<std::shared_ptr<Read>> affected;
+    std::set<std::string> coveredKeys;
     for (const auto& [key, read] : reads) {
-        (void)key;
-        if (read->provider.Key() == provider && read->valid) affected.push_back(read);
+        if (read->provider.Key() == provider && read->valid && MatchesAnyTarget(read->query, targets)) {
+            affected.push_back(read);
+            coveredKeys.insert(key);
+        }
     }
     for (const auto& read : affected) {
         // The rows stay where they are: a list on screen catches up behind them, the others
-        // do so when they are opened next.
+        // do so when they are opened next, and persisted snapshots still serve the first paint.
         read->validatedAt = 0;
-        // The lists on screen are the ones a write was made from; they are read in full. The
-        // others are compared with their first page when they are opened next.
-        read->changedByWrite = read->HasLeases();
-        if (read->HasLeases() && read->started && !read->cacheLoading) read->Refresh(true);
+        read->changedByWrite = true;
+        if (read->HasLeases() && read->started && !read->cacheLoading)
+            read->Refresh(true);
+        else if (read->policy == ListCachePolicy::Persistent)
+            cache::lists::MarkStale(read->identity);
     }
+    MarkDiskTargetsStale(provider, targets, coveredKeys);
 }
 void ShutdownListSessions() {
     stopping = true;
+    providerMutations.clear();
+    completedRevalidations.clear();
     auto retired = std::move(reads);
     reads.clear();
     for (const auto& [key, read] : retired) {

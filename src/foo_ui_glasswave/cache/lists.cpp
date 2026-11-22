@@ -1640,6 +1640,53 @@ bool UpdatePageDocument(Store& store, const Identity& identity, const std::strin
     return true;
 }
 
+bool TouchValidatedDocument(Store& store, const Identity& identity, const std::string& accountScope,
+                            const std::string& guardScope, const std::string& base, uint64_t generationInput,
+                            const std::string& generation, int64_t validatedAt,
+                            const std::function<bool()>& stillCurrent,
+                            std::mutex* publicationGate = nullptr) {
+    const bool continues = !base.empty();
+    if (!continues && generationInput == 0) return false;
+    auto existing = ReadManifest(store, identity, accountScope, guardScope);
+    const std::string token = continues ? base : generation;
+    if (!existing || existing->generation != token ||
+        (!continues && existing->generationInput != generationInput))
+        return false;
+    const int64_t timestamp = validatedAt ? validatedAt : Store::Now();
+    if (existing->validatedAt >= timestamp) return true;
+    existing->validatedAt = timestamp;
+    std::string body;
+    try {
+        body = SerializeManifest(*existing);
+    } catch (...) {
+        return false;
+    }
+    if (!stillCurrent()) return false;
+    RunTestManifestPause();
+    return WriteSnapshot(store, ManifestKey(identity, accountScope, guardScope), body, kManifestContentType,
+                         existing->validatedAt, "schema=3;generation=" + token + ";touched=1", publicationGate,
+                         &stillCurrent);
+}
+
+bool MarkStaleDocument(Store& store, const Identity& identity, const std::string& accountScope,
+                       const std::string& guardScope, const std::function<bool()>& stillCurrent,
+                       std::mutex* publicationGate = nullptr) {
+    auto existing = ReadManifest(store, identity, accountScope, guardScope);
+    if (!existing || existing->validatedAt == 0) return true;
+    existing->validatedAt = 0;
+    std::string body;
+    try {
+        body = SerializeManifest(*existing);
+    } catch (...) {
+        return false;
+    }
+    if (!stillCurrent()) return false;
+    RunTestManifestPause();
+    return WriteSnapshot(store, ManifestKey(identity, accountScope, guardScope), body, kManifestContentType,
+                         Store::Now(), "schema=3;generation=" + existing->generation + ";stale=1",
+                         publicationGate, &stillCurrent);
+}
+
 std::string InternalProvider(const std::string& provider) {
     return "lists:" + provider;
 }
@@ -1867,6 +1914,82 @@ class Manager final : public std::enable_shared_from_this<Manager> {
                 }
                 self->CompletePersisted(std::move(*completion), success);
             }, true);
+        if (!queued) CompletePersisted(std::move(*completion), false);
+    }
+
+    void TouchValidated(Identity identity, std::string base, uint64_t generation, int64_t validatedAt,
+                        Persisted persisted = {}) {
+        const std::string logicalKey = StateKey(identity);
+        uint64_t epoch = 0;
+        uint64_t guard = 0;
+        bool rejected = false;
+        {
+            std::lock_guard lock(m_mutex);
+            if (m_stopping || (base.empty() && generation == 0)) {
+                rejected = true;
+            } else {
+                if (base.empty()) {
+                    const auto found = m_states.find(logicalKey);
+                    if (found != m_states.end()) {
+                        found->second.lastUsed = ++m_stateClock;
+                        if (found->second.hasGeneration && found->second.generation != generation)
+                            rejected = true;
+                    }
+                }
+                if (!rejected) {
+                    epoch = PublisherEpoch(identity.provider);
+                    guard = GuardRevision(identity.provider);
+                }
+            }
+        }
+        if (rejected) {
+            CompletePersisted(std::move(persisted), false);
+            return;
+        }
+        const std::string chain = ChainKey(identity, epoch, guard);
+        auto self = shared_from_this();
+        auto completion = std::make_shared<Persisted>(std::move(persisted));
+        const bool queued =
+            m_pool.Post(std::move(chain), [self, completion, identity = std::move(identity),
+                                          base = std::move(base), generation, validatedAt, epoch,
+                                          guard]() mutable {
+                bool success = false;
+                try {
+                    success = self->RunTouchValidated(std::move(identity), std::move(base), generation,
+                                                      validatedAt, epoch, guard);
+                } catch (...) {
+                }
+                self->CompletePersisted(std::move(*completion), success);
+            }, true);
+        if (!queued) CompletePersisted(std::move(*completion), false);
+    }
+
+    void MarkStale(Identity identity, Persisted persisted = {}) {
+        uint64_t epoch = 0;
+        uint64_t guard = 0;
+        {
+            std::lock_guard lock(m_mutex);
+            if (m_stopping) {
+                CompletePersisted(std::move(persisted), false);
+                return;
+            }
+            epoch = PublisherEpoch(identity.provider);
+            guard = GuardRevision(identity.provider);
+        }
+        const std::string chain = ChainKey(identity, epoch, guard);
+        auto self = shared_from_this();
+        auto completion = std::make_shared<Persisted>(std::move(persisted));
+        const bool queued =
+            m_pool.Post(std::move(chain),
+                        [self, completion, identity = std::move(identity), epoch, guard]() mutable {
+                            bool success = false;
+                            try {
+                                success = self->RunMarkStale(std::move(identity), epoch, guard);
+                            } catch (...) {
+                            }
+                            self->CompletePersisted(std::move(*completion), success);
+                        },
+                        true);
         if (!queued) CompletePersisted(std::move(*completion), false);
     }
 
@@ -2114,6 +2237,63 @@ class Manager final : public std::enable_shared_from_this<Manager> {
         RunTestManifestComplete();
         return success;
     }
+    bool RunTouchValidated(Identity identity, std::string base, uint64_t generation, int64_t validatedAt,
+                           uint64_t epoch, uint64_t guard) {
+        if (!CurrentEpoch(identity.provider, epoch)) return false;
+        if (!EnsureGuardRotation(identity.provider, guard)) return false;
+        CapturedScope scope;
+        if (!CaptureScope(identity, scope)) return false;
+        if (!CurrentEpoch(identity.provider, epoch) ||
+            AccountRevision(identity.provider) != identity.accountRevision)
+            return false;
+        const std::string generationToken = GenerationToken(epoch, generation);
+        const auto stillCurrent = [this, &identity, epoch, &scope] {
+            if (!CurrentEpoch(identity.provider, epoch) ||
+                AccountRevision(identity.provider) != identity.accountRevision)
+                return false;
+            try {
+                return GetStore().Scope(InternalProvider(identity.provider)) == scope.guard;
+            } catch (...) {
+                return false;
+            }
+        };
+        bool success = false;
+        try {
+            success = TouchValidatedDocument(GetStore(), identity, scope.account, scope.guard, base,
+                                             generation, generationToken, validatedAt, stillCurrent,
+                                             &m_publicationGate);
+        } catch (...) {
+        }
+        RunTestManifestComplete();
+        return success;
+    }
+    bool RunMarkStale(Identity identity, uint64_t epoch, uint64_t guard) {
+        if (!CurrentEpoch(identity.provider, epoch)) return false;
+        if (!EnsureGuardRotation(identity.provider, guard)) return false;
+        CapturedScope scope;
+        if (!CaptureScope(identity, scope)) return false;
+        if (!CurrentEpoch(identity.provider, epoch) ||
+            AccountRevision(identity.provider) != identity.accountRevision)
+            return false;
+        const auto stillCurrent = [this, &identity, epoch, &scope] {
+            if (!CurrentEpoch(identity.provider, epoch) ||
+                AccountRevision(identity.provider) != identity.accountRevision)
+                return false;
+            try {
+                return GetStore().Scope(InternalProvider(identity.provider)) == scope.guard;
+            } catch (...) {
+                return false;
+            }
+        };
+        bool success = false;
+        try {
+            success = MarkStaleDocument(GetStore(), identity, scope.account, scope.guard, stillCurrent,
+                                        &m_publicationGate);
+        } catch (...) {
+        }
+        RunTestManifestComplete();
+        return success;
+    }
     void RunLoad(Identity identity, Loaded done, uint64_t epoch, uint64_t guard) {
         std::optional<Record> record;
         if (CurrentEpoch(identity.provider, epoch) && EnsureGuardRotation(identity.provider, guard)) {
@@ -2202,6 +2382,30 @@ void UpdatePage(Identity identity, Record record, uint64_t generation, Persisted
     }
     if (auto manager = Instance())
         manager->UpdatePage(std::move(identity), std::move(record), generation, std::move(persisted));
+    else if (persisted)
+        persisted(false);
+}
+
+void TouchValidated(Identity identity, std::string base, uint64_t generation, int64_t validatedAt,
+                    Persisted persisted) {
+    if (!ValidIdentity(identity)) {
+        if (persisted) persisted(false);
+        return;
+    }
+    if (auto manager = Instance())
+        manager->TouchValidated(std::move(identity), std::move(base), generation, validatedAt,
+                                std::move(persisted));
+    else if (persisted)
+        persisted(false);
+}
+
+void MarkStale(Identity identity, Persisted persisted) {
+    if (!ValidIdentity(identity)) {
+        if (persisted) persisted(false);
+        return;
+    }
+    if (auto manager = Instance())
+        manager->MarkStale(std::move(identity), std::move(persisted));
     else if (persisted)
         persisted(false);
 }

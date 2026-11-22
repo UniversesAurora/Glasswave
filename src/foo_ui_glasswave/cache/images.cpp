@@ -881,6 +881,10 @@ CacheOnlyScope::~CacheOnlyScope() {
     t_cacheOnly = m_previous;
 }
 
+bool IsCacheOnly() noexcept {
+    return t_cacheOnly;
+}
+
 bool TakeCacheMiss() {
     return std::exchange(t_cacheMiss, false);
 }

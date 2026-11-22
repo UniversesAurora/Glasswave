@@ -1266,10 +1266,11 @@ void StreamProvider::ClearIdSnapshots() {
     if (snapshots) snapshots->Clear();
 }
 
-void StreamProvider::FinishListWrite(bool ok, std::wstring error, Done done) {
+void StreamProvider::FinishListWrite(bool ok, std::wstring error, Done done,
+                                     std::vector<stream::ListTarget> targets) {
     if (ok) {
         ClearIdSnapshots();
-        NotifyListChanged();
+        NotifyListChanged(std::move(targets));
     }
     if (done) done(ok ? std::wstring() : ErrorOf(std::move(error)));
 }
@@ -1635,48 +1636,58 @@ void StreamProvider::WriteFavorite(const Id& track, bool favorite, Done done) {
     done = stream::GuardDone(std::move(done));
     Ncm().ToggleLike(Num(track), favorite,
                      [this, done = std::move(done)](bool ok, std::wstring error) mutable {
-                         FinishListWrite(ok, std::move(error), std::move(done));
+                         std::vector<stream::ListTarget> targets{{stream::ListKind::Favorites, {}, {}}};
+                         if (const int64_t likedId = Ncm().LikedPlaylistId(); likedId != 0)
+                             targets.push_back({stream::ListKind::PlaylistTracks, IdText(likedId), {}});
+                         FinishListWrite(ok, std::move(error), std::move(done), std::move(targets));
                      });
 }
 
 void StreamProvider::WriteFollowed(const Id& artist, bool follow, Done done) {
     done = stream::GuardDone(std::move(done));
-    Ncm().SetArtistFollow(Num(artist), follow,
-                          [this, done = std::move(done)](bool ok, std::wstring error) mutable {
-                              FinishListWrite(ok, std::move(error), std::move(done));
-                          });
+    Ncm().SetArtistFollow(
+        Num(artist), follow, [this, done = std::move(done)](bool ok, std::wstring error) mutable {
+            FinishListWrite(ok, std::move(error), std::move(done),
+                            {{stream::ListKind::FollowedArtists, {}, {}}});
+        });
 }
 
 void StreamProvider::WriteAlbumSaved(const Id& album, bool saved, Done done) {
     done = stream::GuardDone(std::move(done));
-    Ncm().SetAlbumCollected(Num(album), saved,
-                            [this, done = std::move(done)](bool ok, std::wstring error) mutable {
-                                FinishListWrite(ok, std::move(error), std::move(done));
-                            });
+    Ncm().SetAlbumCollected(
+        Num(album), saved, [this, done = std::move(done)](bool ok, std::wstring error) mutable {
+            FinishListWrite(ok, std::move(error), std::move(done), {{stream::ListKind::SavedAlbums, {}, {}}});
+        });
 }
 
 void StreamProvider::WritePlaylistSaved(const Id& playlist, bool saved, Done done) {
     done = stream::GuardDone(std::move(done));
-    Ncm().SetPlaylistSubscribed(Num(playlist), saved,
-                                [this, done = std::move(done)](bool ok, std::wstring error) mutable {
-                                    FinishListWrite(ok, std::move(error), std::move(done));
-                                });
+    Ncm().SetPlaylistSubscribed(
+        Num(playlist), saved, [this, done = std::move(done)](bool ok, std::wstring error) mutable {
+            FinishListWrite(ok, std::move(error), std::move(done), {{stream::ListKind::Playlists, {}, {}}});
+        });
 }
 
 void StreamProvider::AddToPlaylist(const Id& playlist, std::vector<Id> tracks, Done done) {
     done = stream::GuardDone(std::move(done));
-    Ncm().AddToPlaylist(Num(playlist), Nums(tracks),
-                        [this, done = std::move(done)](bool ok, std::wstring error) mutable {
-                            FinishListWrite(ok, std::move(error), std::move(done));
-                        });
+    Ncm().AddToPlaylist(
+        Num(playlist), Nums(tracks),
+        [this, playlist, done = std::move(done)](bool ok, std::wstring error) mutable {
+            FinishListWrite(ok, std::move(error), std::move(done),
+                            {{stream::ListKind::PlaylistTracks, playlist, {}},
+                             {stream::ListKind::Playlists, {}, {}}});
+        });
 }
 
 void StreamProvider::RemoveFromPlaylist(const Id& playlist, std::vector<Id> tracks, Done done) {
     done = stream::GuardDone(std::move(done));
-    Ncm().RemoveFromPlaylist(Num(playlist), Nums(tracks),
-                             [this, done = std::move(done)](bool ok, std::wstring error) mutable {
-                                 FinishListWrite(ok, std::move(error), std::move(done));
-                             });
+    Ncm().RemoveFromPlaylist(
+        Num(playlist), Nums(tracks),
+        [this, playlist, done = std::move(done)](bool ok, std::wstring error) mutable {
+            FinishListWrite(ok, std::move(error), std::move(done),
+                            {{stream::ListKind::PlaylistTracks, playlist, {}},
+                             {stream::ListKind::Playlists, {}, {}}});
+        });
 }
 
 void StreamProvider::CreatePlaylist(std::wstring name, CreatedDone done) {
@@ -1685,7 +1696,7 @@ void StreamProvider::CreatePlaylist(std::wstring name, CreatedDone done) {
         std::move(name), [this, done = std::move(done)](bool ok, int64_t id, std::wstring error) mutable {
             if (ok) {
                 ClearIdSnapshots();
-                NotifyListChanged();
+                NotifyListChanged({{stream::ListKind::Playlists, {}, {}}});
             }
             if (!done) return;
             if (ok && id)
@@ -1697,25 +1708,31 @@ void StreamProvider::CreatePlaylist(std::wstring name, CreatedDone done) {
 
 void StreamProvider::RenamePlaylist(const Id& playlist, std::wstring name, Done done) {
     done = stream::GuardDone(std::move(done));
-    Ncm().RenamePlaylist(Num(playlist), std::move(name),
-                         [this, done = std::move(done)](bool ok, std::wstring error) mutable {
-                             FinishListWrite(ok, std::move(error), std::move(done));
-                         });
+    Ncm().RenamePlaylist(
+        Num(playlist), std::move(name),
+        [this, playlist, done = std::move(done)](bool ok, std::wstring error) mutable {
+            FinishListWrite(ok, std::move(error), std::move(done),
+                            {{stream::ListKind::PlaylistTracks, playlist, {}},
+                             {stream::ListKind::Playlists, {}, {}}});
+        });
 }
 
 void StreamProvider::DeletePlaylist(const Id& playlist, Done done) {
     done = stream::GuardDone(std::move(done));
-    Ncm().DeletePlaylist(Num(playlist), [this, done = std::move(done)](bool ok, std::wstring error) mutable {
-        FinishListWrite(ok, std::move(error), std::move(done));
-    });
+    Ncm().DeletePlaylist(
+        Num(playlist), [this, playlist, done = std::move(done)](bool ok, std::wstring error) mutable {
+            FinishListWrite(ok, std::move(error), std::move(done),
+                            {{stream::ListKind::PlaylistTracks, playlist, {}},
+                             {stream::ListKind::Playlists, {}, {}}});
+        });
 }
 
 void StreamProvider::ReorderPlaylists(std::vector<Id> playlists, Done done) {
     done = stream::GuardDone(std::move(done));
-    Ncm().ReorderPlaylists(Nums(playlists),
-                           [this, done = std::move(done)](bool ok, std::wstring error) mutable {
-                               FinishListWrite(ok, std::move(error), std::move(done));
-                           });
+    Ncm().ReorderPlaylists(
+        Nums(playlists), [this, done = std::move(done)](bool ok, std::wstring error) mutable {
+            FinishListWrite(ok, std::move(error), std::move(done), {{stream::ListKind::Playlists, {}, {}}});
+        });
 }
 
 } // namespace glasswave::netease

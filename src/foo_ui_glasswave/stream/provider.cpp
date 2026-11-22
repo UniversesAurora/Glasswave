@@ -436,8 +436,8 @@ void Provider::NotifyDisplayChanged() {
         listener->OnDisplayChanged(*this);
 }
 
-void Provider::NotifyListChanged() {
-    RevalidateLists(Key());
+void Provider::NotifyListChanged(std::vector<ListTarget> targets) {
+    RevalidateLists(Key(), std::move(targets));
 }
 
 ListCachePolicy Provider::ListPolicy(const ListQuery& query) const {

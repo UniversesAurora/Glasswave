@@ -153,7 +153,7 @@ class StreamProvider final : public stream::Provider {
     void WriteLibraryItem(bool album, const stream::Id& id, bool saved, Done done);
     void RefreshAccountAsync(uint64_t generation, Done done, bool preservePlaylistDetails = false);
     void RefreshLibraryPreservingDetails(Done done = {});
-    void RefreshLibraryAfterMutation(Done done = {});
+    void RefreshLibraryAfterMutation(Done done = {}, std::vector<stream::ListTarget> targets = {});
     uint64_t ApplyVerifiedAccount(uint64_t generation, uint64_t refreshToken, const AccountState& account);
     void CompleteRefresh(uint64_t generation, Snapshot snapshot, std::wstring error);
     void LoadBootstrapSnapshot(uint64_t generation);
@@ -260,7 +260,7 @@ class StreamProvider final : public stream::Provider {
     uint64_t m_refreshGeneration = 0;
     uint64_t m_refreshSequence = 0;
     bool m_refreshPreservePlaylistDetails = false;
-    bool m_refreshInvalidatesLists = false;
+    std::vector<stream::ListTarget> m_refreshInvalidationTargets;
     bool m_displayChangePosted = false;
     std::vector<Done> m_refreshWaiters;
     bool m_artistCountsInFlight = false;
