@@ -2,7 +2,47 @@
 
 Updated: 2026-11-22
 
-## Radio mode: Next guard, fixed order across History/Up Next, immediate lookahead & restart fidelity (2026-11-22, latest)
+## Dolby Atmos: remove double attenuation, preserve LFE in 2.0/Headphones & fast EC-3 seek (2026-11-22, latest)
+
+1. **Remove redundant `-3 dB` double attenuation and align Cavern speaker setup with Cavernize**:
+   - Removed the extra `JocCalibrationGain = 0.707f` multiplier in
+     `third_party/glasswave-cavern/NativeExports.cs` (Cavern's `EnhancedAC3Renderer` and
+     `ObjectInfoBlock` already apply the `-3 dB` JOC calibration internally). Speaker layouts now
+     run at `Listener.Volume = 1.0f` and Headphones at `HeadphoneHeadroomGain` (`-6 dB`, matching
+     `headroom_db = 6`), restoring ~+3 dB of loudness with zero clipping on the real Atmos
+     fixture (2.0 peak `0.7785`, 5.1/7.1 peak `0.6957`, Headphones peak `0.9871`).
+   - Enabled `LFESeparation = true` and `DirectLFE = true` and switched speaker layouts to
+     `ChannelPrototype.ToLayoutAlternative(...)` so Atmos bed channels snap 1:1 to speaker
+     positions and non-LFE objects do not bleed into LFE (matching Cavernize).
+2. **Preserve `.1` LFE in Stereo speakers (2.0) and Headphones modes**:
+   - Stereo speakers (`Stereo2_0`) now render through Cavern's 5.1 (`ref510`) layout so `.1` LFE,
+     center, and surrounds are preserved rather than silently dropped by `ref200`, then fold down
+     using the standard ITU-R BS.775-3 / Dolby `Lo/Ro` constant-power matrix (`FL + 0.7071*(FC +
+     LFE + SL)`, `FR + 0.7071*(FC + LFE + SR)`) with Cavern's limiter-only `Normalizer(true)`
+     clipping protector.
+   - Extended `scripts/applemusic/atmos/cavern-buffer-drain.patch` (`VirtualizerFilter.cs`) to add
+     a dedicated LFE channel to the headphone virtualizer layout (folded unspatialized at `-3 dB`
+     to L/R) and preserve `centerDelay` across layout switches.
+   - Serialized `new EnhancedAC3Decoder(blocks)` under `ListenerAdmission` (with an 8 KB initial
+     prefetch outside the lock) to eliminate a multi-session race on Cavern's static IMDCT
+     `FFTCache`.
+3. **Fast EC-3 syncframe seeking in `EncodedInputBase::SeekAtmos`**:
+   - Added `IndexEc3Frames` in `src/foo_ui_glasswave/stream/encoded_input.cpp` to parse E-AC-3
+     syncframe headers (`0x0B77`, `frmsiz`, `numblkscod`) lazily on first seek (~4 ms for a
+     full song), jump directly to `targetFrame - 4` (128 ms pre-roll for MDCT/QMF/OAMD/HRIR
+     warm-up), and discard only the short pre-roll window instead of decoding from `00:00`.
+   - Verified on `.local/tests/applemusic-atmos-source.ec3` at `120.0 s`: seek time dropped from
+     `6138 ms` to `13.8–29.5 ms` (~200–400x faster).
+4. **Verification & deployment**:
+   - `pwsh -File scripts/applemusic/atmos/build-renderer.ps1`: all 8 Cavern probe cases pass
+     (2.0, 5.1, 7.1, Headphones, interleaved 2.0, interleaved Headphones, mixed 2.0+5.1
+     bit-exact SHA-256, and short-EOF 144,384-frame fixture).
+   - `pwsh -File scripts/build.ps1`: Release|x64 built with 0 warnings / 0 errors.
+   - Deployed both `foo_ui_glasswave.dll` and `glasswave_cavern.dll` to `.local/fb2k-dev` via
+     `pwsh -File scripts/run-dev.ps1 -NoLaunch`. Pending owner listening & seek acceptance in
+     `.local/fb2k-dev`.
+
+## Radio mode: Next guard, fixed order across History/Up Next, immediate lookahead & restart fidelity (2026-11-22)
 
 1. **Prevent advancing past the end of loaded radio tracks & grey out Next**:
    - Added `media::radio::CanGoNext()`, `GoNext()`, and `GoPrevious()` tracking both the committed
