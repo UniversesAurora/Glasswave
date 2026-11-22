@@ -1356,6 +1356,10 @@ void StoreArtistDisplayNames(AppleMusicDisplayRegion region, uint64_t displayEpo
     names.name = localized.name;
     names.bio = localized.bio;
     names.avatarUrl = localized.avatarUrl;
+    if (!localized.id.empty() && localized.id != source.id) {
+        DisplayMetadata::Get().PutArtistFor(region, sourceStorefront, localized.id, names, true,
+                                            displayEpoch);
+    }
     DisplayMetadata::Get().PutArtistFor(region, sourceStorefront, source.id, std::move(names), true,
                                         displayEpoch);
 }
@@ -2904,10 +2908,7 @@ StreamProvider::AlbumRequest StreamProvider::ResolveAlbumRequest(const stream::I
 }
 
 stream::Id StreamProvider::CatalogIdForArtist(const stream::Id& id) const {
-    if (!IsLibraryId(id) || id.empty() || id[0] != L'r') return id;
-    std::lock_guard lock(m_mutex);
-    const auto found = m_artistCatalogIds.find(id);
-    return found == m_artistCatalogIds.end() ? stream::Id() : found->second;
+    return ArtistCatalogId(id);
 }
 
 stream::Id StreamProvider::CatalogIdForPlaylist(const stream::Id& id) const {
@@ -3089,11 +3090,7 @@ void StreamProvider::ResolveArtistDisplayNames(std::vector<stream::Artist>& arti
         if (artist.id.empty() || DisplayMetadata::Get().IsArtistComplete(region, sourceStorefront, artist.id))
             continue;
         const stream::Id catalogId = CatalogIdForArtist(artist.id);
-        if (catalogId.empty()) {
-            if (canCommit())
-                DisplayMetadata::Get().PutArtistFor(region, sourceStorefront, artist.id, {}, true,
-                                                    displayEpoch);
-        } else {
+        if (!catalogId.empty()) {
             pending.push_back({&artist, catalogId});
         }
     }

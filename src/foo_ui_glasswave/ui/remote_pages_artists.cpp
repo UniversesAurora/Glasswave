@@ -92,7 +92,11 @@ class AlbumBrowsePage : public PagedPage {
         if (const auto& header = m_state.artist; header && !header->id.empty()) {
             stream::Artist artist = *header;
             if (m_artist) {
-                if (m_artist->profile && !artist.profile) stream::CopyArtistProfile(*m_artist, artist);
+                if (m_artist->profile && !artist.profile) {
+                    stream::CopyArtistProfile(*m_artist, artist);
+                    if (!m_artist->name.empty()) artist.name = m_artist->name;
+                    if (!m_artist->avatarUrl.empty()) artist.avatarUrl = m_artist->avatarUrl;
+                }
                 if (artist.bio.empty()) artist.bio = m_artist->bio;
                 KeepCounts(*m_artist, artist);
                 if (!artist.followKnown && m_artist->followKnown) {

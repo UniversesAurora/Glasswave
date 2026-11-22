@@ -2,7 +2,29 @@
 
 Updated: 2026-11-22
 
-## Release packaging, configurable cache folder, zero-hardcode Apple Music runtime & production migration (2026-11-22, latest)
+## Apple Music regional artist names fix & public v0.1.0 release (2026-11-22, latest)
+
+1. **Apple Music regional artist names in Artists list & artist page header (`applemusic/stream_provider.cpp`, `ui/remote_pages_artists.cpp`)**:
+   - `CatalogIdForArtist(id)` only checked the in-memory `m_artistCatalogIds` map and missed
+     `Catalog::Get().FindArtistCatalogId(id)` (which `ParseArtist` populates on
+     `/v1/me/library/artists?include=catalog`). As a result, `ResolveArtistDisplayNames` got empty
+     catalog IDs for library `r.*` artists and then wrote empty `{}` entries with `complete = true`
+     into `DisplayMetadata`, poisoning the Artists list (`FollowedArtists`) to stay on US names
+     for 15 minutes.
+   - Delegated `CatalogIdForArtist` to `ArtistCatalogId` (checking both `m_artistCatalogIds` and
+     `Catalog`), stopped poisoning `DisplayMetadata` when a library artist's catalog ID is not yet
+     known, and stored resolved artist display names under both library ID and catalog ID in
+     `StoreArtistDisplayNames`.
+   - In `AlbumBrowsePage::ApplyPageState()`, preserved `m_artist->name` and `m_artist->avatarUrl`
+     when `m_artist->profile` is already loaded and a later non-profile list header arrives,
+     preventing an artist page's localized title (e.g. `ヰ世界情緒`) from reverting to its US name
+     (`Isekaijoucho`).
+2. **Public GitHub repository & v0.1.0 release**:
+   - Bumped `DECLARE_COMPONENT_VERSION` to `0.1.0`, refreshed `README.md`, created public repo
+     `UniversesAurora/Glasswave`, pushed `main`, and published release `v0.1.0` with
+     `dist/foo_ui_glasswave.fb2k-component`.
+
+## Release packaging, configurable cache folder, zero-hardcode Apple Music runtime & production migration (2026-11-22)
 
 1. **Component-relative bundled resources (`core/paths.*`, `ui/i18n.cpp`, `lyrics/scripts.cpp`)**:
    - Added `core::ComponentRoot()` returning the directory containing `foo_ui_glasswave.dll`.
