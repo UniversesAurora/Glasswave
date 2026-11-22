@@ -490,16 +490,27 @@ void MainWindow::SetLyricLineShown(bool shown) {
     if (m_player) m_player->OnLyricLineSetting();
 }
 
-int MainWindow::NowPlayingPartAt(POINT pt) const {
+int MainWindow::NowPlayingPartAt(POINT pt) {
     if (PtInRect(&m_npTitleRect, pt)) return 1;
-    if (PtInRect(&m_npArtistRect, pt)) return 2;
+    if (PtInRect(&m_npArtistRect, pt)) return NowPlayingArtistLinks() ? 2 : 0;
     if (PtInRect(&m_npStarRect, pt)) return 4;
     if (const RECT d = DeviceRect(); PtInRect(&d, pt)) return 3;
     if (PtInRect(&m_npArtRect, pt)) return 5; // like Apple Music: the cover opens the mini player
     return 0;
 }
 
+bool MainWindow::NowPlayingArtistLinks() {
+    if (!m_npArtistLinks) {
+        metadb_handle_ptr now;
+        metadb_handle_list items;
+        if (playback_control::get()->get_now_playing(now)) items.add_item(now);
+        m_npArtistLinks = !BuildArtistLinks(items).empty();
+    }
+    return *m_npArtistLinks;
+}
+
 void MainWindow::UpdateNowPlayingHover(POINT pt) {
+    if (!PtInRect(&m_npArtistRect, pt)) m_npArtistLinks.reset(); // asked again on the next hover
     const int part = NowPlayingPartAt(pt);
     if (part == m_npHot) return;
     const int old = m_npHot;
@@ -647,6 +658,7 @@ void MainWindow::ReleaseHeldTrack(bool timedOut) {
 void MainWindow::ApplyShownTrack(const HeldTrack& track, winrt::com_ptr<IWICBitmapSource> art) {
     m_trackTitle = track.title;
     m_trackArtist = track.artist;
+    m_npArtistLinks.reset();
     m_artTrackIdentity = track.identity;
     ++m_artGeneration;
     m_art = std::move(art);
@@ -742,6 +754,7 @@ void MainWindow::OnTrackChanged(bool playbackChanged) {
     } else if (loaded && trackIdentity == m_artTrackIdentity) { // the song shown: its text may have changed
         m_trackTitle = newTitle;
         m_trackArtist = newArtist;
+        m_npArtistLinks.reset(); // its record may have been completed
         m_startingFrom.clear();
     } else if (loaded && trackIdentity != m_startingFrom) {
         // Another song (not the last one still reported while the next one starts).

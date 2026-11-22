@@ -410,7 +410,13 @@ class MainWindow : public PageHost, public PlayerHost {
     winrt::Windows::UI::Composition::SpriteVisual m_time{nullptr}, m_streamVisual{nullptr};
     service_ptr m_outputCallback;
     void RepaintStreamInfo();
-    int NowPlayingPartAt(POINT pt) const;
+    // The part of the now playing block under `pt`. The artist counts only when it leads
+    // somewhere (BuildArtistLinks): a song whose artists are not known by id is plain text.
+    int NowPlayingPartAt(POINT pt);
+    // Whether the playing song's artist opens anything; asked once per hover and song, as the
+    // record may be completed meanwhile (stream::Catalog::Want).
+    std::optional<bool> m_npArtistLinks;
+    bool NowPlayingArtistLinks();
     void UpdateNowPlayingHover(POINT pt);
     void OnNowPlayingClick(int part);
     void JumpToPlaying();
