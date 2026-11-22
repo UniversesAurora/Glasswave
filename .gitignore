@@ -45,5 +45,9 @@
 # Local dev instance, download cache, screenshots, copyrighted reference images
 /.local/
 
+# Packaged release archives and owner's local production data (cache, downloads)
+/dist/
+/userdata/
+
 # Personal Claude Code settings
 .claude/settings.local.json
