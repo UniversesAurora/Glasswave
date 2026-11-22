@@ -885,7 +885,6 @@ std::wstring StreamProvider::AccountName() const {
 void StreamProvider::SignIn(HWND owner) {
     ShowLogin(owner, [this] {
         ClearIdSnapshots();
-        cache::RotateAccountScope("ncm");
         {
             std::lock_guard lock(m_cacheMutex);
             m_gate.authPending = true;
@@ -922,9 +921,10 @@ void StreamProvider::OnSessionChanged() {
         }
         m_signedIn = signedIn;
     }
+    if (signedIn && !accountId.empty()) cache::SelectAccountScope("ncm", Utf8(accountId));
     if (accountChanged) {
         ClearIdSnapshots();
-        cache::RotateAccountScope("ncm");
+        if (!signedIn || accountId.empty()) cache::RotateAccountScope("ncm");
         NotifyAccountChanged();
         return;
     }

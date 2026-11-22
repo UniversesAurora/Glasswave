@@ -26,7 +26,8 @@ namespace {
 namespace fs = std::filesystem;
 constexpr uint64_t kMiB = 1024ull * 1024;
 constexpr size_t kMetadataLimit = 64 * 1024;
-constexpr int kIndexSchemaVersion = 2;
+constexpr int kIndexSchemaVersion = 3;
+constexpr std::string_view kSignedOutScopePrefix = "signed-out:";
 
 void Check(int result) {
     if (result != SQLITE_OK && result != SQLITE_DONE && result != SQLITE_ROW)
@@ -268,13 +269,15 @@ Store::Store(fs::path root) : m_impl(std::make_unique<Impl>()), m_root(fs::absol
             }
             if (schemaVersion == 0) {
                 Statement tables(m_impl->db, "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND "
-                                             "name IN ('scopes','sequence','entries')");
+                                             "name IN ('scopes','account_scopes','sequence','entries')");
                 tables.Step();
                 if (tables.Int(0) != 0)
                     throw std::runtime_error(
                         "The cache index uses an unsupported format; clear the disposable cache.");
                 Execute(m_impl->db,
                         "CREATE TABLE scopes(provider TEXT PRIMARY KEY,token TEXT NOT NULL);"
+                        "CREATE TABLE account_scopes(provider TEXT NOT NULL,account TEXT NOT NULL,"
+                        "token TEXT NOT NULL,PRIMARY KEY(provider,account));"
                         "CREATE TABLE sequence(n INTEGER NOT NULL);"
                         "INSERT INTO sequence VALUES(0);"
                         "CREATE TABLE entries(k TEXT PRIMARY KEY,provider TEXT NOT NULL,scope TEXT NOT NULL,"
@@ -284,7 +287,7 @@ Store::Store(fs::path root) : m_impl(std::make_unique<Impl>()), m_root(fs::absol
                         "mime TEXT NOT NULL DEFAULT '',etag TEXT NOT NULL DEFAULT '',"
                         "modified TEXT NOT NULL DEFAULT '',extra TEXT NOT NULL DEFAULT '');"
                         "CREATE INDEX entries_lru ON entries(kind,used);"
-                        "PRAGMA user_version=2;");
+                        "PRAGMA user_version=3;");
             } else if (schemaVersion != kIndexSchemaVersion) {
                 throw std::runtime_error(
                     "The cache index uses an unsupported format; clear the disposable cache.");
@@ -376,6 +379,62 @@ void Store::RotateScope(const std::string& provider) {
     rotate.Text(1, provider);
     rotate.Text(2, Random());
     rotate.Step();
+}
+void Store::SignOutScope(const std::string& provider) {
+    std::lock_guard lock(m_impl->mutex);
+    Statement rotate(m_impl->db, "INSERT INTO scopes(provider,token) VALUES(?,?) "
+                                 "ON CONFLICT(provider) DO UPDATE SET token=excluded.token");
+    rotate.Text(1, provider);
+    rotate.Text(2, std::string(kSignedOutScopePrefix) + Random());
+    rotate.Step();
+}
+bool Store::SelectAccountScope(const std::string& provider, const std::string& account) {
+    if (account.empty()) {
+        SignOutScope(provider);
+        return true;
+    }
+    std::lock_guard lock(m_impl->mutex);
+    Transaction transaction(m_impl->db);
+    std::string current;
+    {
+        Statement read(m_impl->db, "SELECT token FROM scopes WHERE provider=?");
+        read.Text(1, provider);
+        if (read.Step()) current = read.Text(0);
+    }
+    std::string target;
+    {
+        Statement read(m_impl->db, "SELECT token FROM account_scopes WHERE provider=? AND account=?");
+        read.Text(1, provider);
+        read.Text(2, account);
+        if (read.Step()) target = read.Text(0);
+    }
+    if (target.empty()) {
+        bool currentClaimed = false;
+        if (!current.empty() && !current.starts_with(kSignedOutScopePrefix)) {
+            Statement claimed(m_impl->db, "SELECT 1 FROM account_scopes WHERE provider=? AND token=? LIMIT 1");
+            claimed.Text(1, provider);
+            claimed.Text(2, current);
+            currentClaimed = claimed.Step();
+        }
+        target = (!current.empty() && !current.starts_with(kSignedOutScopePrefix) && !currentClaimed)
+                     ? current
+                     : Random();
+        Statement bind(m_impl->db, "INSERT INTO account_scopes(provider,account,token) VALUES(?,?,?)");
+        bind.Text(1, provider);
+        bind.Text(2, account);
+        bind.Text(3, target);
+        bind.Step();
+    }
+    const bool changed = current != target;
+    if (changed) {
+        Statement set(m_impl->db, "INSERT INTO scopes(provider,token) VALUES(?,?) "
+                                  "ON CONFLICT(provider) DO UPDATE SET token=excluded.token");
+        set.Text(1, provider);
+        set.Text(2, target);
+        set.Step();
+    }
+    transaction.Commit();
+    return changed;
 }
 
 std::optional<Snapshot> Store::Lookup(const Key& key) {

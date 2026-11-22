@@ -759,6 +759,64 @@ void ThreadedTicketCollisionDoesNotCorruptDatabase(const fs::path& root) {
     }
 }
 
+void StablePerAccountScopeReusesCacheAcrossSwitches(const fs::path& root) {
+    const std::string provider = "provider.account";
+    const auto bytesA = Payload("account-a-payload", 241);
+    const auto bytesB = Payload("account-b-payload", 263);
+    const auto metaA = MakeMetadata("acct-a", 100);
+    const auto metaB = MakeMetadata("acct-b", 200);
+    std::string scopeA;
+    std::string scopeB;
+
+    {
+        Store store(root);
+        // Existing unclaimed scope is bound to the first verified account without losing its data.
+        const std::string initial = store.Scope(provider);
+        CommitUnpinned(store, MakeKey(store, provider, "cover-1"), bytesA, metaA, "account A pre-bind");
+        Check(!store.SelectAccountScope(provider, "acct-A"),
+              "First account bind unexpectedly changed an unclaimed initial scope");
+        scopeA = store.Scope(provider);
+        Check(scopeA == initial, "First account bind did not claim the existing scope");
+
+        // Signing out isolates from Account A without forgetting Account A's binding.
+        store.SignOutScope(provider);
+        const std::string signedOut = store.Scope(provider);
+        Check(signedOut != scopeA, "SignOutScope did not leave Account A's scope");
+        Check(!store.Lookup({Kind::Data, provider, scopeA, "cover-1", "1"}).has_value(),
+              "Signed-out scope could still read Account A's entry");
+
+        // Signing into a different account B creates a distinct isolated scope (not reusing signed-out).
+        Check(store.SelectAccountScope(provider, "acct-B"),
+              "Selecting a new account B did not switch scope");
+        scopeB = store.Scope(provider);
+        Check(scopeB != scopeA && scopeB != signedOut, "Account B collided with Account A or signed-out");
+        CommitUnpinned(store, MakeKey(store, provider, "cover-1"), bytesB, metaB, "account B entry");
+        CheckSnapshot(RequireSnapshot(store, MakeKey(store, provider, "cover-1"), "account B read"),
+                      bytesB, metaB, "account B read");
+
+        // Switching back to Account A restores Account A's exact scope and cached entries.
+        Check(store.SelectAccountScope(provider, "acct-A"),
+              "Switching back to Account A did not report scope change");
+        Check(store.Scope(provider) == scopeA, "Switching back to Account A did not restore its scope");
+        CheckSnapshot(RequireSnapshot(store, MakeKey(store, provider, "cover-1"), "account A restored"),
+                      bytesA, metaA, "account A restored");
+        Check(!store.SelectAccountScope(provider, "acct-A"),
+              "Re-selecting the already-active Account A reported a spurious change");
+    }
+
+    // Bindings survive a store reopen.
+    {
+        Store reopened(root);
+        Check(reopened.Scope(provider) == scopeA, "Active Account A scope did not persist across reopen");
+        Check(reopened.SelectAccountScope(provider, "acct-B"),
+              "Switching to Account B after reopen did not change scope");
+        Check(reopened.Scope(provider) == scopeB,
+              "Account B binding did not survive reopen");
+        CheckSnapshot(RequireSnapshot(reopened, MakeKey(reopened, provider, "cover-1"), "account B reopen"),
+                      bytesB, metaB, "account B reopen");
+    }
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -786,6 +844,7 @@ int main(int argc, char** argv) {
         run("pins", PinnedSnapshotsSurviveEvictionAndClear);
         run("empty", EmptyDataAndZeroLimit);
         run("threads", ThreadedTicketCollisionDoesNotCorruptDatabase);
+        run("account-scopes", StablePerAccountScopeReusesCacheAcrossSwitches);
 
         if (!failures.empty()) {
             SafeRemove(root, root, true);

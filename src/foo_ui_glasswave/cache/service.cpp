@@ -67,12 +67,31 @@ std::string AccountScope(const std::string& provider) {
     if (revoked.contains(provider)) throw std::runtime_error("The cache account scope is unavailable.");
     return GetStore().Scope(provider);
 }
+bool SelectAccountScope(const std::string& provider, const std::string& accountId) {
+    if (accountId.empty()) {
+        RotateAccountScope(provider);
+        return true;
+    }
+    std::lock_guard lock(scopeMutex);
+    const bool wasRevoked = revoked.contains(provider);
+    bool changed = false;
+    try {
+        changed = GetStore().SelectAccountScope(provider, accountId);
+        revoked.erase(provider);
+    } catch (...) {
+        revoked.insert(provider);
+        ++revisions[provider];
+        return true;
+    }
+    if (changed || wasRevoked) ++revisions[provider];
+    return changed || wasRevoked;
+}
 void RotateAccountScope(const std::string& provider) {
     // Revocation must complete before the provider publishes its new account state.
     // Scope readers share this lock so a failed disk revocation cannot grant the old scope.
     std::lock_guard lock(scopeMutex);
     try {
-        GetStore().RotateScope(provider);
+        GetStore().SignOutScope(provider);
         revoked.erase(provider);
     } catch (...) {
         // Signing out must still succeed when the cache disk/index is unavailable.

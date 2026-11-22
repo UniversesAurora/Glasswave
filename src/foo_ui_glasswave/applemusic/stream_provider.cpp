@@ -3285,8 +3285,8 @@ void StreamProvider::SignIn(HWND owner) {
             m_artistPreferenceSequence = 0;
             m_appliedArtistPreferenceSequence = 0;
         }
-        // A completed sign-in starts a fresh opaque account generation for provider caches.
-        cache::RotateAccountScope(Utf8(Key()));
+        // ApplyVerifiedAccount/CompleteRefresh selects the stable cache scope once the signed-in
+        // account identity is verified.
         RefreshAccountAsync(generation, {});
     });
 }
@@ -3541,12 +3541,14 @@ uint64_t StreamProvider::ApplyVerifiedAccount(uint64_t generation, uint64_t refr
         accountObserved = firstVerification || storefrontChanged;
 
         currentGeneration = generation;
+        if (account.signedIn && !account.accountId.empty())
+            cache::SelectAccountScope("apple", Utf8(account.accountId));
         if (accountChanged || identityChanged) {
             // Keep the refresh-owned binding epoch. The current worker will fetch B's playlist
             // collection after this phase, while older targeted reads fail the generation guard.
             clearCatalog = true;
             DisplayMetadata::Get().Clear();
-            cache::RotateAccountScope("apple");
+            if (!account.signedIn || account.accountId.empty()) cache::RotateAccountScope("apple");
             m_snapshots.Reset();
             m_albumMutations.clear();
             m_playlistMutations.clear();
@@ -3639,10 +3641,13 @@ void StreamProvider::CompleteRefresh(uint64_t generation, Snapshot snapshot, std
         } else {
             m_lastAuthError.clear();
         }
+        if (snapshot.accountVerified && snapshot.account.signedIn && !snapshot.account.accountId.empty())
+            cache::SelectAccountScope("apple", Utf8(snapshot.account.accountId));
         if (accountChanged || identityChanged) {
             clearCatalog = true;
             DisplayMetadata::Get().Clear();
-            cache::RotateAccountScope("apple");
+            if (!snapshot.accountVerified || !snapshot.account.signedIn || snapshot.account.accountId.empty())
+                cache::RotateAccountScope("apple");
             m_snapshots.Reset();
             m_albumMutations.clear();
             m_playlistMutations.clear();

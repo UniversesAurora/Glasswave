@@ -85,6 +85,11 @@ class Store {
     Store& operator=(const Store&) = delete;
     std::string Scope(const std::string& provider);
     void RotateScope(const std::string& provider);
+    // Selects the stable scope token bound to `(provider, account)` so switching back to a
+    // previous account reuses its persisted cache. Returns true if the active scope changed.
+    bool SelectAccountScope(const std::string& provider, const std::string& account);
+    // Moves `provider` to an ephemeral signed-out scope without forgetting per-account bindings.
+    void SignOutScope(const std::string& provider);
     std::optional<Snapshot> Lookup(const Key& key);
     std::unique_ptr<Writer> Begin(const Key& key);
     void Erase(const Key& key);
@@ -115,6 +120,11 @@ class Store {
 // GetStore() is initialized by provider workers, never by painting.
 Store& GetStore();
 std::string AccountScope(const std::string& provider);
+// Selects the stable cache scope for `accountId` (reusing its cache if previously signed in)
+// and bumps AccountRevision when the active scope changes. Empty `accountId` signs out.
+bool SelectAccountScope(const std::string& provider, const std::string& accountId);
+// Moves `provider` to an ephemeral signed-out scope and bumps AccountRevision without
+// forgetting saved per-account scope bindings.
 void RotateAccountScope(const std::string& provider);
 // In-memory account generation for UI keys; never opens the index or touches disk.
 uint64_t AccountRevision(const std::string& provider);

@@ -407,7 +407,10 @@ void Provider::NotifyAccountChanged() {
         m_pendingEdits.clear();
     }
     ResetSourceAvailability();
-    InvalidateListCache(Key(), false, ListCacheInvalidation::PurgePersistent);
+    // Account isolation is enforced by cache::AccountScope(provider). Retiring in-memory
+    // sessions without rotating the shared list guard lets switching back to an account reuse
+    // its persisted list snapshots.
+    InvalidateListCache(Key(), false, ListCacheInvalidation::RetireInMemory);
     for (Listener* listener : std::vector<Listener*>(m_listeners))
         listener->OnAccountChanged(*this);
 }
