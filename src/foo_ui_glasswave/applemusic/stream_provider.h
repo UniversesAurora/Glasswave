@@ -202,6 +202,7 @@ class StreamProvider final : public stream::Provider {
                                      abort_callback& abort);
     void ApplyArtistPreferenceOverlay(stream::Artist& artist, uint64_t capturedEpoch) const;
     void ApplyArtistPreferenceOverlayLocked(stream::Artist& artist, uint64_t capturedEpoch) const;
+    void ApplyCreatedPlaylistMutationsLocked(std::vector<stream::Playlist>& playlists, bool addCreated) const;
     std::optional<bool> PlaylistSavedStateLocked(const stream::Id& playlist) const;
     bool IsEditablePlaylist(const stream::Id& id) const;
     bool IsFavoritePlaylist(const stream::Id& id) const;
@@ -314,6 +315,13 @@ class StreamProvider final : public stream::Provider {
         bool saved = false;
         bool pending = false;
     };
+    struct CreatedPlaylistMutation {
+        stream::Playlist playlist;
+        uint64_t epoch = 0;
+        bool created = false;
+        bool renamed = false;
+        bool deleted = false;
+    };
     struct ArtistPreferenceMutation {
         stream::Id sourceId;
         stream::Id catalogId;
@@ -329,6 +337,7 @@ class StreamProvider final : public stream::Provider {
     std::unordered_map<std::wstring, ArtistExistenceEntry> m_artistExistence;
     std::unordered_map<stream::Id, AlbumMutation> m_albumMutations;
     std::unordered_map<stream::Id, PlaylistMutation> m_playlistMutations;
+    std::unordered_map<stream::Id, CreatedPlaylistMutation> m_createdPlaylistMutations;
     mutable std::unordered_map<stream::Id, ArtistPreferenceMutation> m_artistPreferenceMutations;
     uint64_t m_libraryMutationEpoch = 0;
     uint64_t m_libraryMutationSequence = 0;

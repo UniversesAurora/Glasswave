@@ -51,7 +51,16 @@ void LayoutPrompt(PromptState& state) {
 }
 
 void ClosePrompt(const std::shared_ptr<PromptState>& state) {
-    if (state && !state->closed) DestroyWindow(state->hwnd);
+    if (!state || state->closed) return;
+    state->closed = true;
+    // Re-enable and activate the owner before destroying the modal popup, otherwise
+    // Windows cannot return focus to the disabled owner and sends the app behind other windows.
+    if (state->owner && IsWindow(state->owner)) {
+        EnableWindow(state->owner, TRUE);
+        SetActiveWindow(state->owner);
+        SetForegroundWindow(state->owner);
+    }
+    DestroyWindow(state->hwnd);
 }
 
 void Submit(const std::shared_ptr<PromptState>& state) {
@@ -60,7 +69,7 @@ void Submit(const std::shared_ptr<PromptState>& state) {
     if (state->edit) text = WindowText(state->edit);
     auto callback = std::move(state->onOk);
     state->onOk = {};
-    DestroyWindow(state->hwnd);
+    ClosePrompt(state);
     if (callback) callback(std::move(text));
 }
 
@@ -122,7 +131,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 (*holder)->closed = true;
                 if ((*holder)->edit) RemoveWindowSubclass((*holder)->edit, EditProc, 1);
                 if ((*holder)->font) DeleteObject((*holder)->font);
-                if ((*holder)->owner) EnableWindow((*holder)->owner, TRUE);
+                if ((*holder)->owner && IsWindow((*holder)->owner)) EnableWindow((*holder)->owner, TRUE);
             }
             delete holder;
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);

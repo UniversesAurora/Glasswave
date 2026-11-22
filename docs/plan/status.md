@@ -2,7 +2,26 @@
 
 Updated: 2026-11-22
 
-## Per-view sort persistence, stable `#` row numbers & newest-first Apple Music playlists (2026-11-22, latest)
+## TextPrompt focus restoration & Apple Music playlist creation/mutation consistency (2026-11-22, latest)
+
+1. **Keep main window in foreground when closing `PromptText` (`ui/text_prompt.cpp`)**:
+   - Re-enable and activate/foreground `state->owner` (`EnableWindow(owner, TRUE)`,
+     `SetActiveWindow`, `SetForegroundWindow`) *before* `DestroyWindow(state->hwnd)` in
+     `ClosePrompt` (used by both `Submit` and Cancel/`WM_CLOSE`), preventing Windows from
+     sending Glasswave behind other top-level windows when closing the modal playlist prompt.
+2. **Apple Music playlist creation, rename, deletion & empty-playlist loading (`applemusic/stream_provider.*`)**:
+   - Added `m_createdPlaylistMutations` overlay (matching `m_albumMutations` and
+     `m_playlistMutations`) so `CreatePlaylist`, `RenamePlaylist`, and `DeletePlaylist` apply
+     immediately on HTTP 2xx instead of failing when Apple Music's eventually consistent
+     `/v1/me/library/playlists` endpoint takes several seconds to reflect the change.
+   - `CreatePlaylist` now parses the returned `201 Created` playlist object, overlays it in
+     `RawPlaylists(Shelf::Created)`, `ShelfOf`, `ReadPlaylistsPage`, and `Catalog`, reconciles
+     it on subsequent refreshes, and opens the new playlist immediately.
+   - `LoadPlaylistTracks` now handles Apple Music's HTTP 404 (`No related resources found for
+     tracks`) on page 1 of an empty library playlist by verifying/using the playlist record and
+     returning an empty 0-track page cleanly.
+
+## Per-view sort persistence, stable `#` row numbers & native Apple Music playlist paging (2026-11-22)
 
 1. **Remember column sort per view type (`media/list_sources.h`, `ui/list_view*`)**:
    - Extended `listview::SavedLayout` (`cfg_columns`) with `sortColumn` and `sortDescending`,

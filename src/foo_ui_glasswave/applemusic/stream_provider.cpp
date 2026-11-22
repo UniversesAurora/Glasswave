@@ -2156,6 +2156,7 @@ void StreamProvider::ClearLibraryLocked() {
     m_editablePlaylists.clear();
     m_renameablePlaylists.clear();
     m_deletablePlaylists.clear();
+    m_createdPlaylistMutations.clear();
     m_favoritePlaylistId.clear();
     m_favoriteBindingState = FavoriteBindingState::Unknown;
     m_favoriteBindingReadInFlight = false;
@@ -3809,6 +3810,46 @@ void StreamProvider::CompleteRefresh(uint64_t generation, Snapshot snapshot, std
                 else
                     ++it;
             }
+            for (auto it = m_createdPlaylistMutations.begin(); it != m_createdPlaylistMutations.end();) {
+                CreatedPlaylistMutation& mutation = it->second;
+                const stream::Id& id = it->first;
+                if (mutation.epoch > snapshot.libraryMutationEpoch) {
+                    ++it;
+                    continue;
+                }
+                const auto foundCreated = std::find_if(
+                    m_createdPlaylists.begin(), m_createdPlaylists.end(),
+                    [&id](const stream::Playlist& playlist) { return playlist.id == id; });
+                const bool inSaved =
+                    std::any_of(m_savedPlaylists.begin(), m_savedPlaylists.end(),
+                                [&id](const stream::Playlist& playlist) { return playlist.id == id; });
+                if (mutation.deleted) {
+                    if (foundCreated == m_createdPlaylists.end() && !inSaved)
+                        it = m_createdPlaylistMutations.erase(it);
+                    else
+                        ++it;
+                    continue;
+                }
+                if (foundCreated != m_createdPlaylists.end()) mutation.created = false;
+                if (mutation.renamed && foundCreated != m_createdPlaylists.end() &&
+                    foundCreated->name == mutation.playlist.name)
+                    mutation.renamed = false;
+                if (!mutation.created && !mutation.renamed)
+                    it = m_createdPlaylistMutations.erase(it);
+                else
+                    ++it;
+            }
+            for (const auto& [id, mutation] : m_createdPlaylistMutations) {
+                if (mutation.deleted) {
+                    m_editablePlaylists.erase(id);
+                    m_renameablePlaylists.erase(id);
+                    m_deletablePlaylists.erase(id);
+                } else if (mutation.created) {
+                    m_editablePlaylists.emplace(id);
+                    m_renameablePlaylists.emplace(id);
+                    m_deletablePlaylists.emplace(id);
+                }
+            }
         }
         favoritesChanged =
             previousFavoritesLoaded != m_favoriteSongsLoaded || previousFavoriteIds != m_favoriteIds;
@@ -4008,6 +4049,28 @@ std::vector<stream::Playlist> StreamProvider::Playlists(stream::Shelf shelf) con
     return DisplayPlaylists(RawPlaylists(shelf));
 }
 
+void StreamProvider::ApplyCreatedPlaylistMutationsLocked(std::vector<stream::Playlist>& playlists,
+                                                         bool addCreated) const {
+    if (m_createdPlaylistMutations.empty()) return;
+    std::erase_if(playlists, [this](const stream::Playlist& item) {
+        const auto found = m_createdPlaylistMutations.find(item.id);
+        return found != m_createdPlaylistMutations.end() && found->second.deleted;
+    });
+    for (auto& item : playlists) {
+        const auto found = m_createdPlaylistMutations.find(item.id);
+        if (found != m_createdPlaylistMutations.end() && found->second.renamed && !found->second.deleted &&
+            !found->second.playlist.name.empty())
+            item.name = found->second.playlist.name;
+    }
+    if (!addCreated) return;
+    for (const auto& [id, mutation] : m_createdPlaylistMutations) {
+        if (mutation.deleted || !mutation.created || mutation.playlist.id.empty()) continue;
+        const bool present = std::any_of(playlists.begin(), playlists.end(),
+                                         [&id](const stream::Playlist& item) { return item.id == id; });
+        if (!present) playlists.push_back(mutation.playlist);
+    }
+}
+
 std::vector<stream::Playlist> StreamProvider::RawPlaylists(stream::Shelf shelf) const {
     std::vector<stream::Playlist> playlists;
     std::unordered_map<stream::Id, PlaylistMutation> mutations;
@@ -4016,9 +4079,11 @@ std::vector<stream::Playlist> StreamProvider::RawPlaylists(stream::Shelf shelf) 
         switch (shelf) {
         case stream::Shelf::Created:
             playlists = m_createdPlaylists;
+            ApplyCreatedPlaylistMutationsLocked(playlists, true);
             break;
         case stream::Shelf::Saved:
             playlists = m_savedPlaylists;
+            ApplyCreatedPlaylistMutationsLocked(playlists, false);
             mutations = m_playlistMutations;
             break;
         case stream::Shelf::Recommended:
@@ -4047,6 +4112,10 @@ std::vector<stream::Playlist> StreamProvider::RawPlaylists(stream::Shelf shelf) 
 
 std::optional<stream::Shelf> StreamProvider::ShelfOf(const stream::Id& playlist) const {
     std::lock_guard lock(m_mutex);
+    if (const auto found = m_createdPlaylistMutations.find(playlist); found != m_createdPlaylistMutations.end()) {
+        if (found->second.deleted) return std::nullopt;
+        if (found->second.created) return stream::Shelf::Created;
+    }
     if (std::any_of(m_createdPlaylists.begin(), m_createdPlaylists.end(),
                     [&playlist](const stream::Playlist& item) { return item.id == playlist; })) {
         return stream::Shelf::Created;
@@ -5259,7 +5328,25 @@ struct StreamProvider::ListLoad {
             if (!page.total && page.playlist->trackCount >= 0)
                 page.total = static_cast<size_t>(page.playlist->trackCount);
         } else {
-            objects = TracksCollectionPage(tracksPath, library);
+            try {
+                objects = TracksCollectionPage(tracksPath, library);
+            } catch (const std::exception& exception) {
+                // Apple Music answers 404 ("No related resources found for tracks") on page 1
+                // of an empty library playlist (such as a newly created one).
+                if (library && cursor.path.empty() && DefiniteNotFound(exception)) {
+                    if (!page.playlist) {
+                        const Object response = Apple(PlaylistPath(playlist, storefront, true, false), abort);
+                        if (const auto item = FirstData(response)) page.playlist = ParsePlaylist(*item);
+                    }
+                    if (!page.playlist) throw;
+                    page.total = 0;
+                    page.more = false;
+                    page.next = {};
+                    objects.clear();
+                } else {
+                    throw;
+                }
+            }
         }
         songs = ParseSongs(objects);
     }
@@ -5873,9 +5960,14 @@ void StreamProvider::ReadPlaylistsPage(ListLoad& load) {
         rows.push_back(std::move(*playlist));
     }
     page.rows = std::move(rows);
-    if (cursorState.path.empty() && query.shelf == stream::Shelf::Saved) {
+    if (query.shelf == stream::Shelf::Created) {
         auto& playlists = std::get<std::vector<stream::Playlist>>(page.rows);
         std::lock_guard lock(m_mutex);
+        ApplyCreatedPlaylistMutationsLocked(playlists, cursorState.path.empty());
+    } else if (cursorState.path.empty() && query.shelf == stream::Shelf::Saved) {
+        auto& playlists = std::get<std::vector<stream::Playlist>>(page.rows);
+        std::lock_guard lock(m_mutex);
+        ApplyCreatedPlaylistMutationsLocked(playlists, false);
         std::erase_if(playlists, [&](const stream::Playlist& item) {
             return std::any_of(m_playlistMutations.begin(), m_playlistMutations.end(),
                                [&](const auto& entry) {
@@ -7064,35 +7156,55 @@ void StreamProvider::CreatePlaylist(std::wstring name, CreatedDone done) {
     m_exec.Post(
         kTasks, generation, [this, generation, name = std::move(name), done = std::move(done)]() mutable {
             stream::Id id;
+            stream::Playlist created;
             std::wstring error;
             try {
                 const Object body = CreatePlaylistBody(name);
                 const Object response = Apple(L"/v1/me/library/playlists", m_exec.Abort(), L"POST", &body);
-                if (const auto item = FirstData(response)) id = json::GetString(*item, L"id");
+                if (const auto item = FirstData(response)) {
+                    id = json::GetString(*item, L"id");
+                    if (auto parsed = ParsePlaylist(*item)) created = std::move(*parsed);
+                }
                 if (id.empty()) error = L"Apple Music did not return the new playlist id.";
             } catch (const exception_aborted&) {
                 return;
             } catch (const std::exception& exception) {
                 error = Wide(exception.what());
             }
+            if (error.empty()) {
+                created.id = id;
+                if (created.name.empty()) created.name = name;
+                created.own = true;
+                created.saved = false;
+                if (created.trackCount == stream::kUnknownCount) created.trackCount = 0;
+            }
             m_exec.PostMain(
-                generation, [this, id, done = std::move(done), error = std::move(error)]() mutable {
+                generation,
+                [this, id, created = std::move(created), done = std::move(done), error = std::move(error)]() mutable {
                     if (!error.empty()) {
                         if (done) done(id, std::move(error));
                         return;
                     }
-                    RefreshLibraryAfterMutation(
-                        [this, id, done = std::move(done)](std::wstring refreshError) mutable {
-                            if (refreshError.empty()) {
-                                const auto playlists = Playlists(stream::Shelf::Created);
-                                if (std::none_of(
-                                        playlists.begin(), playlists.end(),
-                                        [&id](const stream::Playlist& playlist) { return playlist.id == id; }))
-                                    refreshError = L"Apple Music did not expose the new playlist after refresh.";
-                            }
-                            if (done) done(id, std::move(refreshError));
-                        },
-                        {{stream::ListKind::Playlists, {}, {}}});
+                    // Apple Music's /v1/me/library/playlists list is eventually consistent and often
+                    // omits a newly POSTed playlist for several seconds. Keep the returned playlist
+                    // overlaid until a later refresh exposes it, and open it immediately.
+                    {
+                        std::lock_guard lock(m_mutex);
+                        auto& entry = m_createdPlaylistMutations[id];
+                        entry.playlist = created;
+                        entry.epoch = ++m_libraryMutationEpoch;
+                        entry.created = true;
+                        entry.renamed = false;
+                        entry.deleted = false;
+                        m_editablePlaylists.emplace(id);
+                        m_renameablePlaylists.emplace(id);
+                        m_deletablePlaylists.emplace(id);
+                    }
+                    Catalog::Get().Put(created);
+                    NotifyListChanged({{stream::ListKind::Playlists, {}, {}}});
+                    NotifyLibraryChanged();
+                    RefreshLibraryAfterMutation({}, {{stream::ListKind::Playlists, {}, {}}});
+                    if (done) done(id, {});
                 });
         });
 }
@@ -7144,17 +7256,40 @@ void StreamProvider::RenamePlaylist(const stream::Id& playlist, std::wstring nam
                     if (done) done(std::move(error));
                     return;
                 }
-                RefreshKnownPlaylist(
-                    libraryId,
-                    [this, libraryId, name, done = std::move(done)](std::wstring refreshError) mutable {
-                        if (refreshError.empty()) {
-                            const auto playlist = FindPlaylist(libraryId);
-                            if (!playlist || playlist->name != name)
-                                refreshError = L"Apple Music did not confirm the playlist rename.";
+                std::optional<stream::Playlist> updated = Catalog::Get().FindPlaylistRaw(libraryId);
+                {
+                    std::lock_guard lock(m_mutex);
+                    auto& entry = m_createdPlaylistMutations[libraryId];
+                    if (entry.playlist.id.empty()) {
+                        if (updated)
+                            entry.playlist = *updated;
+                        else {
+                            entry.playlist.id = libraryId;
+                            entry.playlist.own = true;
                         }
-                        if (done) done(std::move(refreshError));
-                    },
-                    true);
+                    }
+                    entry.playlist.name = name;
+                    entry.epoch = ++m_libraryMutationEpoch;
+                    entry.renamed = true;
+                    entry.deleted = false;
+                    for (auto& item : m_createdPlaylists) {
+                        if (item.id == libraryId) {
+                            item.name = name;
+                            if (!updated) updated = item;
+                            break;
+                        }
+                    }
+                    if (!updated) updated = entry.playlist;
+                }
+                if (updated) {
+                    updated->name = name;
+                    Catalog::Get().Put(*updated);
+                }
+                NotifyListChanged({{stream::ListKind::PlaylistTracks, libraryId, {}},
+                                   {stream::ListKind::Playlists, {}, {}}});
+                NotifyLibraryChanged();
+                RefreshKnownPlaylist(libraryId, {}, true);
+                if (done) done({});
             });
         });
 }
@@ -7204,26 +7339,24 @@ void StreamProvider::DeletePlaylist(const stream::Id& playlist, Done done) {
                         ++m_playlistDetailEpoch;
                         m_playlistTracks.erase(libraryId);
                         m_playlistSongs.erase(libraryId);
+                        m_editablePlaylists.erase(libraryId);
+                        m_renameablePlaylists.erase(libraryId);
+                        m_deletablePlaylists.erase(libraryId);
+                        auto& entry = m_createdPlaylistMutations[libraryId];
+                        entry.playlist = {};
+                        entry.epoch = ++m_libraryMutationEpoch;
+                        entry.created = false;
+                        entry.renamed = false;
+                        entry.deleted = true;
                     }
+                    Catalog::Get().RemovePlaylist(libraryId);
+                    NotifyListChanged({{stream::ListKind::PlaylistTracks, libraryId, {}},
+                                       {stream::ListKind::Playlists, {}, {}}});
+                    NotifyLibraryChanged();
                     RefreshLibraryAfterMutation(
-                        [this, libraryId, done = std::move(done)](std::wstring refreshError) mutable {
-                            if (refreshError.empty()) {
-                                const auto exists = [&libraryId](const std::vector<stream::Playlist>& playlists) {
-                                    return std::any_of(playlists.begin(), playlists.end(),
-                                                       [&libraryId](const stream::Playlist& playlist) {
-                                                           return playlist.id == libraryId;
-                                                       });
-                                };
-                                if (exists(Playlists(stream::Shelf::Created)) ||
-                                    exists(Playlists(stream::Shelf::Saved)))
-                                    refreshError = L"Apple Music did not confirm the playlist deletion.";
-                                else
-                                    Catalog::Get().RemovePlaylist(libraryId);
-                            }
-                            if (done) done(std::move(refreshError));
-                        },
-                        {{stream::ListKind::PlaylistTracks, libraryId, {}},
-                         {stream::ListKind::Playlists, {}, {}}});
+                        {}, {{stream::ListKind::PlaylistTracks, libraryId, {}},
+                             {stream::ListKind::Playlists, {}, {}}});
+                    if (done) done({});
                 });
         });
 }
@@ -7375,30 +7508,53 @@ void StreamProvider::RefreshKnownPlaylist(const stream::Id& id, Done done, bool 
                             }
                         }
                         if (applied) {
-                            Catalog::Get().PutAndHint(data.songs);
+                            bool deletedHere = false;
+                            bool keptPendingRename = false;
                             {
                                 std::lock_guard lock(m_mutex);
-                                m_playlistTracks[id] = Tracks(data.songs);
-                                m_playlistSongs[id] = data.songs;
-                                if (!data.catalogId.empty()) m_playlistLibraryIds[data.catalogId] = id;
-                                m_editablePlaylists.erase(id);
-                                m_renameablePlaylists.erase(id);
-                                m_deletablePlaylists.erase(id);
-                                if (data.info.own) m_editablePlaylists.emplace(id);
-                                if (data.canRename) m_renameablePlaylists.emplace(id);
-                                if (data.canDelete) m_deletablePlaylists.emplace(id);
-                                const auto update = [&id, &data](std::vector<stream::Playlist>& playlists) {
-                                    for (auto& playlist : playlists) {
-                                        if (playlist.id != id) continue;
-                                        if (!data.info.name.empty()) playlist.name = data.info.name;
-                                        playlist.trackCount = data.info.trackCount;
-                                        if (!data.info.coverUrl.empty())
-                                            playlist.coverUrl = data.info.coverUrl;
-                                        break;
+                                if (const auto found = m_createdPlaylistMutations.find(id);
+                                    found != m_createdPlaylistMutations.end()) {
+                                    if (found->second.deleted) {
+                                        deletedHere = true;
+                                    } else if (found->second.renamed && !found->second.playlist.name.empty()) {
+                                        if (data.info.name == found->second.playlist.name) {
+                                            found->second.renamed = false;
+                                            if (!found->second.created) m_createdPlaylistMutations.erase(found);
+                                        } else {
+                                            data.info.name = found->second.playlist.name;
+                                            keptPendingRename = true;
+                                        }
                                     }
-                                };
-                                update(m_createdPlaylists);
-                                update(m_savedPlaylists);
+                                }
+                                if (!deletedHere) {
+                                    m_playlistTracks[id] = Tracks(data.songs);
+                                    m_playlistSongs[id] = data.songs;
+                                    if (!data.catalogId.empty()) m_playlistLibraryIds[data.catalogId] = id;
+                                    m_editablePlaylists.erase(id);
+                                    m_renameablePlaylists.erase(id);
+                                    m_deletablePlaylists.erase(id);
+                                    if (data.info.own) m_editablePlaylists.emplace(id);
+                                    if (data.canRename) m_renameablePlaylists.emplace(id);
+                                    if (data.canDelete) m_deletablePlaylists.emplace(id);
+                                    const auto update = [&id, &data](std::vector<stream::Playlist>& playlists) {
+                                        for (auto& playlist : playlists) {
+                                            if (playlist.id != id) continue;
+                                            if (!data.info.name.empty()) playlist.name = data.info.name;
+                                            playlist.trackCount = data.info.trackCount;
+                                            if (!data.info.coverUrl.empty())
+                                                playlist.coverUrl = data.info.coverUrl;
+                                            break;
+                                        }
+                                    };
+                                    update(m_createdPlaylists);
+                                    update(m_savedPlaylists);
+                                }
+                            }
+                            if (deletedHere) {
+                                Catalog::Get().RemovePlaylist(id);
+                            } else {
+                                if (keptPendingRename) Catalog::Get().Put(data.info);
+                                Catalog::Get().PutAndHint(data.songs);
                             }
                         }
                         if (invalidateLists) {
