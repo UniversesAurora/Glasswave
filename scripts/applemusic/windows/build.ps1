@@ -163,8 +163,12 @@ function New-AndroidStubs {
     )
 
     $clang = Join-Path $llvmBin 'clang.exe'
+    $clangxx = Join-Path $llvmBin 'clang++.exe'
     if (-not (Test-Path -LiteralPath $clang -PathType Leaf)) {
         throw "LLVM clang is missing: $clang"
+    }
+    if (-not (Test-Path -LiteralPath $clangxx -PathType Leaf)) {
+        throw "LLVM clang++ is missing: $clangxx"
     }
     New-Item -ItemType Directory -Force -Path $Output | Out-Null
     $stubSource = Join-Path $DrmSource 'stubs\empty_stub.c'
@@ -188,6 +192,41 @@ function New-AndroidStubs {
         if ($LASTEXITCODE -ne 0) {
             throw "Unable to generate Android ELF stub: $name"
         }
+    }
+
+    # Build libdrm_guard.so: a tiny guest ELF C++ exception barrier linked against
+    # DT_NEEDED libc++_shared.so (via an ephemeral link-only stub, never shipped).
+    $guardSource = Join-Path $DrmSource 'stubs\drm_guard.cpp'
+    if (-not (Test-Path -LiteralPath $guardSource -PathType Leaf)) {
+        throw "DRM guard source is missing: $guardSource"
+    }
+    $linkScratch = Join-Path $stageRoot 'guard-link-scratch'
+    New-Item -ItemType Directory -Force -Path $linkScratch | Out-Null
+    try {
+        $cxxStubSource = Join-Path $linkScratch 'cxx_stub.c'
+        $cxxStubLib = Join-Path $linkScratch 'libc++_shared.so'
+        [IO.File]::WriteAllText(
+            $cxxStubSource,
+            "void __gxx_personality_v0(void){}`nvoid __cxa_begin_catch(void){}`nvoid __cxa_end_catch(void){}`nchar _ZTISt9exception[16];`n",
+            [Text.Encoding]::ASCII
+        )
+        & $clang '--target=x86_64-linux-gnu' '-fuse-ld=lld' '-shared' '-fPIC' '-nostdlib' '-O2' `
+            '-Wl,--hash-style=both' '-Wl,-soname,libc++_shared.so' '-o' $cxxStubLib $cxxStubSource
+        if ($LASTEXITCODE -ne 0) {
+            throw 'Unable to generate link-only libc++_shared.so stub for libdrm_guard.so.'
+        }
+        & $clangxx '--target=x86_64-linux-gnu' '-fuse-ld=lld' '-shared' '-fPIC' `
+            '-fexceptions' '-funwind-tables' '-O2' `
+            '-nostdinc' '-nostdinc++' '-nostdlib' '-nodefaultlibs' `
+            '-Wl,--hash-style=both' '-Wl,-soname,libdrm_guard.so' `
+            '-Wl,--no-as-needed' $cxxStubLib '-Wl,--as-needed' `
+            '-o' (Join-Path $Output 'libdrm_guard.so') $guardSource
+        if ($LASTEXITCODE -ne 0) {
+            throw 'Unable to generate Android ELF exception barrier: libdrm_guard.so'
+        }
+    }
+    finally {
+        Remove-GeneratedStageTree $linkScratch
     }
 }
 
@@ -378,7 +417,8 @@ if ($PromoteArtifactOnly) {
         'libwinpthread-1.dll',
         'android-stubs\libandroid.so',
         'android-stubs\libdl.so',
-        'android-stubs\libOpenSLES.so'
+        'android-stubs\libOpenSLES.so',
+        'android-stubs\libdrm_guard.so'
     )) {
         $artifactPath = Join-Path $stageOutput $relative
         if (-not (Test-Path -LiteralPath $artifactPath -PathType Leaf)) {
@@ -399,7 +439,7 @@ if ($PromoteArtifactOnly) {
     Copy-Item -Path (Join-Path $stageOutput 'android-stubs\*') -Destination $runtimeStubs -Recurse -Force
     $runtimeLib64 = Join-Path $paths.RuntimeRoot 'rootfs\system\lib64'
     New-Item -ItemType Directory -Force -Path $runtimeLib64 | Out-Null
-    foreach ($stub in @('libandroid.so', 'libdl.so', 'libOpenSLES.so')) {
+    foreach ($stub in @('libandroid.so', 'libdl.so', 'libOpenSLES.so', 'libdrm_guard.so')) {
         Copy-Item -LiteralPath (Join-Path $stageOutput "android-stubs\$stub") `
             -Destination (Join-Path $runtimeLib64 $stub) -Force
     }
@@ -591,7 +631,7 @@ Copy-Item -Path (Join-Path $stubOutput '*') -Destination $runtimeStubs -Recurse 
 
 $runtimeLib64 = Join-Path $paths.RuntimeRoot 'rootfs\system\lib64'
 New-Item -ItemType Directory -Force -Path $runtimeLib64 | Out-Null
-foreach ($stub in @('libandroid.so', 'libdl.so', 'libOpenSLES.so')) {
+foreach ($stub in @('libandroid.so', 'libdl.so', 'libOpenSLES.so', 'libdrm_guard.so')) {
     Copy-Item -LiteralPath (Join-Path $stubOutput $stub) -Destination (Join-Path $runtimeLib64 $stub) -Force
 }
 foreach ($dll in @('libgcc_s_seh-1.dll', 'libstdc++-6.dll', 'libwinpthread-1.dll')) {

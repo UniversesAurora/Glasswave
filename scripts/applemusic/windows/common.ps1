@@ -52,6 +52,7 @@ function Get-GlasswaveRuntimeFiles {
         (Join-Path $paths.RuntimeRoot 'rootfs\system\lib64\libandroid.so')
         (Join-Path $paths.RuntimeRoot 'rootfs\system\lib64\libdl.so')
         (Join-Path $paths.RuntimeRoot 'rootfs\system\lib64\libOpenSLES.so')
+        (Join-Path $paths.RuntimeRoot 'rootfs\system\lib64\libdrm_guard.so')
     )
 }
 

@@ -1,8 +1,46 @@
+diff --git a/drm/drm_hybris.c b/drm/drm_hybris.c
+index 4e308cf..a0121b4 100644
+--- a/drm/drm_hybris.c
++++ b/drm/drm_hybris.c
+@@ -23,6 +23,9 @@
+ #endif
+ 
+ extern void hybris_bind_lib_handles(void *ssc, void *apm, void *core);
++#ifdef _WIN32
++extern void hybris_bind_guard_invoke(void *invoke_fn);
++#endif
+ 
+ /* Windows loads these libraries RTLD_GLOBAL so the later symbol lookups through the
+  * wrapper see them; the Linux flags are unchanged. */
+@@ -671,6 +674,23 @@ int hybris_backend_init(
+      * forwarding layer must not open the same guest libraries a second time. */
+     hybris_bind_lib_handles(g_hybris.ssc_handle, g_hybris.appmusic_handle,
+                             g_hybris.corefp_handle);
++
++    /* Load the guest-side C++ exception barrier so Android DWARF exceptions
++     * (such as SVError from getPersistentKey) are caught inside an ELF frame
++     * rather than terminating engine.exe when unwinding hits the host PE stack. */
++    void *guard_handle = g_hybris.android_dlopen("libdrm_guard.so", RTLD_NOW);
++    void *guard_invoke = guard_handle
++                             ? g_hybris.android_dlsym(guard_handle, "drm_guard_invoke")
++                             : NULL;
++    fprintf(stderr, "[drm] libdrm_guard.so handle=%p invoke=%p\n",
++            guard_handle, guard_invoke);
++    fflush(stderr);
++    if (guard_invoke) {
++        hybris_bind_guard_invoke(guard_invoke);
++    } else {
++        fprintf(stderr, "[hybris] libdrm_guard.so unavailable; guest C++ exceptions will not be caught\n");
++        fflush(stderr);
++    }
+ #endif
+ 
+ #ifndef _WIN32
 diff --git a/drm/drm_linux.c b/drm/drm_linux.c
-index fd47294..14669bf 100644
+index 1f5fc9d..ae6c56a 100644
 --- a/drm/drm_linux.c
 +++ b/drm/drm_linux.c
-@@ -100,7 +100,7 @@ void drm_shutdown(void)
+@@ -99,7 +99,7 @@ void drm_shutdown(void)
  
  /*
   * Returns a malloc'd JSON string:
@@ -11,7 +49,7 @@ index fd47294..14669bf 100644
   *
   * The Go layer parses this as AccountInfo. DevToken is fetched separately
   * by the Go layer, so it is left empty here.
-@@ -126,6 +126,8 @@ static char *json_escape(const char *in)
+@@ -125,6 +125,8 @@ static char *json_escape(const char *in)
      return out;
  }
  
@@ -20,7 +58,7 @@ index fd47294..14669bf 100644
  char *drm_get_account(void)
  {
      char mt_path[4096], sf_path[4096];
-@@ -156,12 +158,13 @@ char *drm_get_account(void)
+@@ -158,12 +160,13 @@ char *drm_get_account(void)
          return NULL;
      }
  
@@ -37,57 +75,61 @@ index fd47294..14669bf 100644
      free(mt_e);
      free(sf_e);
      return json;
-diff --git a/drm/native/drm_lib.c b/drm/native/drm_lib.c
-index 342f050..ed674d1 100644
---- a/drm/native/drm_lib.c
-+++ b/drm/native/drm_lib.c
-@@ -70,6 +70,7 @@ extern void hybris_guest_fs_leave(void);
- 
- /* account helpers */
- extern char *get_account_storefront_id(struct shared_ptr reqCtx);
-+extern int64_t get_active_account_dsid(void);
- extern char *get_dev_token(struct shared_ptr reqCtx);
- extern char *get_music_user_token(char *guid, char *authToken, struct shared_ptr reqCtx);
- extern char *get_guid(void);
-@@ -391,15 +392,16 @@ char *drm_lib_get_account(void)
-     if (!g_storefront_id || !g_dev_token || !g_music_token)
-         return NULL;
- 
--    /* Build JSON: {"storefront_id":"…","dev_token":"…","music_token":"…"} */
-+    /* Build JSON: {"storefront_id":"…","dev_token":"…","music_token":"…","dsid":…} */
-+    int64_t dsid = get_active_account_dsid();
-     size_t len = strlen(g_storefront_id) + strlen(g_dev_token) +
--                 strlen(g_music_token) + 80;
-+                 strlen(g_music_token) + 128;
-     char *buf = malloc(len);
-     if (!buf)
-         return NULL;
-     snprintf(buf, len,
--        "{\"storefront_id\":\"%s\",\"dev_token\":\"%s\",\"music_token\":\"%s\"}",
--        g_storefront_id, g_dev_token, g_music_token);
-+        "{\"storefront_id\":\"%s\",\"dev_token\":\"%s\",\"music_token\":\"%s\",\"dsid\":%lld}",
-+        g_storefront_id, g_dev_token, g_music_token, (long long)dsid);
-     return buf;
- }
- 
-diff --git a/drm/native/drm_lib.h b/drm/native/drm_lib.h
-index 9d379a2..cca2c84 100644
---- a/drm/native/drm_lib.h
-+++ b/drm/native/drm_lib.h
-@@ -68,7 +68,7 @@ void drm_lib_shutdown(void);
-  * Returns a malloc'd string the caller must free(), or NULL on error. */
- char *drm_lib_get_m3u8(unsigned long adam_id);
- 
--/* drm_lib_get_account — return {"storefront_id":…,"dev_token":…,"music_token":…}.
-+/* drm_lib_get_account — return {"storefront_id":…,"dev_token":…,"music_token":…,"dsid":…}.
-  * Returns a malloc'd JSON string the caller must free(), or NULL on error. */
- char *drm_lib_get_account(void);
- 
 diff --git a/drm/native/hybris_stubs.c b/drm/native/hybris_stubs.c
-index 576fcf3..a32d81c 100644
+index b664911..6820f2c 100644
 --- a/drm/native/hybris_stubs.c
 +++ b/drm/native/hybris_stubs.c
-@@ -502,6 +502,21 @@ void _ZN17storeservicescore14RequestContext24setFairPlayDirectoryPathERKNSt6__nd
+@@ -12,6 +12,9 @@
+ #include <string.h>
+ #include <stdint.h>
+ #include "hybris_types.h"
++#ifdef _WIN32
++#include "../stubs/drm_guard.h"
++#endif
+ 
+ extern int drm_lib_debug_enabled(void); /* drm_lib.c: ADAM_DRM_DEBUG */
+ 
+@@ -36,6 +39,39 @@ void hybris_bind_lib_handles(void *ssc, void *apm, void *core) {
+     if (core) h_core = core;
+ }
+ 
++#ifdef _WIN32
++static int (__attribute__((sysv_abi)) *g_guard_invoke)(drm_guard_call_t *) = NULL;
++
++void hybris_bind_guard_invoke(void *invoke_fn) {
++    memcpy(&g_guard_invoke, &invoke_fn, sizeof(g_guard_invoke));
++}
++
++static int guard_call(const char *label, void *fn, int argc,
++                      void *a0, void *a1, void *a2, void *a3,
++                      void *a4, void *a5, void *a6, void *a7,
++                      void *a8, void *a9, void **out_ret) {
++    drm_guard_call_t c;
++    memset(&c, 0, sizeof(c));
++    c.fn = fn;
++    c.argc = argc;
++    c.args[0] = a0; c.args[1] = a1; c.args[2] = a2; c.args[3] = a3;
++    c.args[4] = a4; c.args[5] = a5; c.args[6] = a6; c.args[7] = a7;
++    c.args[8] = a8; c.args[9] = a9;
++    char err_buf[256] = {0};
++    c.err_buf = err_buf;
++    c.err_cap = sizeof(err_buf);
++    int rc = g_guard_invoke(&c);
++    if (rc != 0) {
++        fprintf(stderr, "[drm-guard] %s threw guest C++ exception (rc=%d): %s\n",
++                label, rc, err_buf[0] ? err_buf : "unknown");
++        fflush(stderr);
++        return rc;
++    }
++    if (out_ret) *out_ret = c.ret;
++    return 0;
++}
++#endif
++
+ /* ── vtable data arrays ──────────────────────────────────────────────────────
+  * import.h declares these as "extern void *_ZTV...;" (single pointer).
+  * main.c uses them as "&_ZTV... + 2" — taking the address of the symbol and
+@@ -487,6 +523,21 @@ void _ZN17storeservicescore14RequestContext24setFairPlayDirectoryPathERKNSt6__nd
      fn(obj,path);
  }
  
@@ -109,12 +151,169 @@ index 576fcf3..a32d81c 100644
  void _ZN14FootHillConfig6configERKNSt6__ndk112basic_stringIcNS0_11char_traitsIcEENS0_9allocatorIcEEEE(union std_string *cfg) {
      static void (__attribute__((sysv_abi)) *fn)(union std_string*) = NULL;
      static int by_value = 0;
+@@ -509,8 +560,24 @@ void _ZN14FootHillConfig6configERKNSt6__ndk112basic_stringIcNS0_11char_traitsIcE
+         memset(&own, 0, sizeof own);
+         own.mark = (uint8_t)(cfg->size << 1);
+         memcpy(own.str, (const void *)cfg->data, cfg->size);
++#ifdef _WIN32
++        if (g_guard_invoke) {
++            guard_call("FootHillConfig::config", (void *)fn, 1, &own, NULL, NULL, NULL,
++                       NULL, NULL, NULL, NULL, NULL, NULL, NULL);
++            return;
++        }
++#endif
+         fn(&own);
+-    } else fn(cfg);
++    } else {
++#ifdef _WIN32
++        if (g_guard_invoke) {
++            guard_call("FootHillConfig::config", (void *)fn, 1, cfg, NULL, NULL, NULL,
++                       NULL, NULL, NULL, NULL, NULL, NULL, NULL);
++            return;
++        }
++#endif
++        fn(cfg);
++    }
+ }
+ 
+ void _ZNSt6__ndk110shared_ptrIN17storeservicescore14RequestContextEE11make_sharedIJRNS_12basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEEEEES3_DpOT_(
+@@ -572,6 +639,13 @@ void _ZNSt6__ndk110shared_ptrIN17storeservicescore16AuthenticateFlowEE11make_sha
+ void _ZN17storeservicescore16AuthenticateFlow3runEv(void *obj) {
+     static void (__attribute__((sysv_abi)) *fn)(void*) = NULL;
+     if (!fn) fn = sym("_ZN17storeservicescore16AuthenticateFlow3runEv");
++#ifdef _WIN32
++    if (g_guard_invoke) {
++        guard_call("AuthenticateFlow::run", (void *)fn, 1, obj, NULL, NULL, NULL,
++                   NULL, NULL, NULL, NULL, NULL, NULL, NULL);
++        return;
++    }
++#endif
+     fn(obj);
+ }
+ 
+@@ -591,18 +665,39 @@ void _ZN22SVPlaybackLeaseManagerC2ERKNSt6__ndk18functionIFvRKiEEERKNS1_IFvRKNS0_
+     void *obj, void *endcb, void *errcb) {
+     static void (__attribute__((sysv_abi)) *fn)(void*,void*,void*) = NULL;
+     if (!fn) fn = sym("_ZN22SVPlaybackLeaseManagerC2ERKNSt6__ndk18functionIFvRKiEEERKNS1_IFvRKNS0_10shared_ptrIN17storeservicescore19StoreErrorConditionEEEEEE");
++#ifdef _WIN32
++    if (g_guard_invoke) {
++        guard_call("SVPlaybackLeaseManager::C2", (void *)fn, 3, obj, endcb, errcb, NULL,
++                   NULL, NULL, NULL, NULL, NULL, NULL, NULL);
++        return;
++    }
++#endif
+     fn(obj,endcb,errcb);
+ }
+ 
+ void _ZN22SVPlaybackLeaseManager25refreshLeaseAutomaticallyERKb(void *obj, uint8_t *flag) {
+     static void (__attribute__((sysv_abi)) *fn)(void*,uint8_t*) = NULL;
+     if (!fn) fn = sym("_ZN22SVPlaybackLeaseManager25refreshLeaseAutomaticallyERKb");
++#ifdef _WIN32
++    if (g_guard_invoke) {
++        guard_call("SVPlaybackLeaseManager::refreshLeaseAutomatically", (void *)fn, 2,
++                   obj, flag, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL);
++        return;
++    }
++#endif
+     fn(obj,flag);
+ }
+ 
+ void _ZN22SVPlaybackLeaseManager12requestLeaseERKb(void *obj, uint8_t *flag) {
+     static void (__attribute__((sysv_abi)) *fn)(void*,uint8_t*) = NULL;
+     if (!fn) fn = sym("_ZN22SVPlaybackLeaseManager12requestLeaseERKb");
++#ifdef _WIN32
++    if (g_guard_invoke) {
++        guard_call("SVPlaybackLeaseManager::requestLease", (void *)fn, 2,
++                   obj, flag, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL);
++        return;
++    }
++#endif
+     fn(obj,flag);
+ }
+ 
+@@ -621,6 +716,15 @@ void _ZN21SVFootHillSessionCtrl16getPersistentKeyERKNSt6__ndk112basic_stringIcNS
+                       union std_string*,union std_string*,union std_string*,union std_string*,
+                       union std_string*,union std_string*,union std_string*,union std_string*) = NULL;
+     if (!fn) fn = sym("_ZN21SVFootHillSessionCtrl16getPersistentKeyERKNSt6__ndk112basic_stringIcNS0_11char_traitsIcEENS0_9allocatorIcEEEES8_S8_S8_S8_S8_S8_S8_");
++#ifdef _WIN32
++    if (g_guard_invoke) {
++        if (guard_call("SVFootHillSessionCtrl::getPersistentKey", (void *)fn, 10,
++                       ret, obj, a, b, c, d, e, f, g, h, NULL) != 0) {
++            if (ret) { ret->obj = NULL; ret->ctrl_blk = NULL; }
++        }
++        return;
++    }
++#endif
+     fn(ret,obj,a,b,c,d,e,f,g,h);
+ }
+ 
+@@ -628,6 +732,15 @@ void _ZN21SVFootHillSessionCtrl14decryptContextERKNSt6__ndk112basic_stringIcNS0_
+     struct shared_ptr *ret, void *obj, union std_string *ckc) {
+     static void (__attribute__((sysv_abi)) *fn)(struct shared_ptr*,void*,union std_string*) = NULL;
+     if (!fn) fn = sym("_ZN21SVFootHillSessionCtrl14decryptContextERKNSt6__ndk112basic_stringIcNS0_11char_traitsIcEENS0_9allocatorIcEEEERKN11SVDecryptor15SVDecryptorTypeERKb");
++#ifdef _WIN32
++    if (g_guard_invoke) {
++        if (guard_call("SVFootHillSessionCtrl::decryptContext", (void *)fn, 3,
++                       ret, obj, ckc, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL) != 0) {
++            if (ret) { ret->obj = NULL; ret->ctrl_blk = NULL; }
++        }
++        return;
++    }
++#endif
+     fn(ret,obj,ckc);
+ }
+ 
+@@ -774,6 +887,13 @@ void _ZN17storeservicescore14RequestContext4initERKNSt6__ndk110shared_ptrINS_20R
+     void *obj, void *unused, struct shared_ptr *cfg) {
+     static void (__attribute__((sysv_abi)) *fn)(void*,void*,struct shared_ptr*) = NULL;
+     if (!fn) fn = sym("_ZN17storeservicescore14RequestContext4initERKNSt6__ndk110shared_ptrINS_20RequestContextConfigEEE");
++#ifdef _WIN32
++    if (g_guard_invoke) {
++        guard_call("RequestContext::init", (void *)fn, 3, obj, unused, cfg, NULL,
++                   NULL, NULL, NULL, NULL, NULL, NULL, NULL);
++        return;
++    }
++#endif
+     fn(obj,unused,cfg);
+ }
+ 
+@@ -793,6 +913,13 @@ union std_string *_ZNK17storeservicescore14RequestContext20storeFrontIdentifierE
+ void _ZN21SVFootHillSessionCtrl16resetAllContextsEv(void *obj) {
+     static void (__attribute__((sysv_abi)) *fn)(void*) = NULL;
+     if (!fn) fn = sym("_ZN21SVFootHillSessionCtrl16resetAllContextsEv");
++#ifdef _WIN32
++    if (g_guard_invoke) {
++        guard_call("SVFootHillSessionCtrl::resetAllContexts", (void *)fn, 1, obj, NULL, NULL, NULL,
++                   NULL, NULL, NULL, NULL, NULL, NULL, NULL);
++        return;
++    }
++#endif
+     fn(obj);
+ }
+ 
+@@ -852,6 +979,16 @@ void *_ZN17storeservicescore10URLRequest19setRequestParameterERKNSt6__ndk112basi
+ void *_ZN17storeservicescore10URLRequest3runEv(void *obj) {
+     static void *(__attribute__((sysv_abi)) *fn)(void*) = NULL;
+     if (!fn) fn = sym("_ZN17storeservicescore10URLRequest3runEv");
++#ifdef _WIN32
++    if (g_guard_invoke) {
++        void *ret = NULL;
++        if (guard_call("URLRequest::run", (void *)fn, 1, obj, NULL, NULL, NULL,
++                       NULL, NULL, NULL, NULL, NULL, NULL, &ret) != 0) {
++            return NULL;
++        }
++        return ret;
++    }
++#endif
+     return fn(obj);
+ }
+ struct shared_ptr *_ZNK17storeservicescore10URLRequest5errorEv(void *obj) {
 diff --git a/drm/native/import.h b/drm/native/import.h
-index 17c0c1e..7195a05 100644
+index 6e401ef..80ead73 100644
 --- a/drm/native/import.h
 +++ b/drm/native/import.h
-@@ -278,6 +278,7 @@ extern union std_string *_ZNK17storeservicescore13PlaybackAsset7flavorEv(void *,
- extern union std_string *_ZNK17storeservicescore13PlaybackAsset11downloadKeyEv(void *, void *);
+@@ -249,6 +249,7 @@ extern void _ZN21RequestContextManager9configureERKNSt6__ndk110shared_ptrIN17sto
+ 	struct shared_ptr *);
  
  extern union std_string *_ZNK17storeservicescore14RequestContext20storeFrontIdentifierERKNSt6__ndk110shared_ptrINS_6URLBagEEE(void *, void *, struct shared_ptr *);
 +extern int64_t _ZN17storeservicescore14RequestContext20preferredAccountDSIDEv(void *);
@@ -122,10 +321,28 @@ index 17c0c1e..7195a05 100644
  extern void _ZN21SVFootHillSessionCtrl16resetAllContextsEv(void *);
  extern int __android_log_print(int prio, const char *tag, const char *fmt, ...);
 diff --git a/drm/native/main.c b/drm/native/main.c
-index a1dd4c8..c061792 100644
+index 04ee045..7162cd4 100644
 --- a/drm/native/main.c
 +++ b/drm/native/main.c
-@@ -1895,6 +1895,11 @@ char* get_account_storefront_id(struct shared_ptr reqCtx) {
+@@ -616,7 +616,7 @@ void *getKdContext(const char *const adam,
+     union std_string protocolType = new_std_string("simplified");
+     union std_string fpsCert = new_std_string(fairplayCert);
+ 
+-    struct shared_ptr persistK = {.obj = NULL};
++    struct shared_ptr persistK = {.obj = NULL, .ctrl_blk = NULL};
+     _ZN21SVFootHillSessionCtrl16getPersistentKeyERKNSt6__ndk112basic_stringIcNS0_11char_traitsIcEENS0_9allocatorIcEEEES8_S8_S8_S8_S8_S8_S8_(
+         &persistK, FHinstance, &defaultId, &defaultId, &keyUri, &keyFormat,
+         &keyFormatVer, &serverUri, &protocolType, &fpsCert);
+@@ -624,7 +624,7 @@ void *getKdContext(const char *const adam,
+     if (persistK.obj == NULL)
+         return NULL;
+ 
+-    struct shared_ptr SVFootHillPContext;
++    struct shared_ptr SVFootHillPContext = {.obj = NULL, .ctrl_blk = NULL};
+     _ZN21SVFootHillSessionCtrl14decryptContextERKNSt6__ndk112basic_stringIcNS0_11char_traitsIcEENS0_9allocatorIcEEEERKN11SVDecryptor15SVDecryptorTypeERKb(
+         &SVFootHillPContext, FHinstance, persistK.obj);
+ 
+@@ -701,6 +701,11 @@ char* get_account_storefront_id(struct shared_ptr reqCtx) {
      return NULL;
  }
  
@@ -135,8 +352,155 @@ index a1dd4c8..c061792 100644
 +}
 +
  void write_storefront_id(void) {
-     FILE *fp = fopen(strcat_b(args_info.base_dir_arg, "/STOREFRONT_ID"), "w");
-     DRM_DEBUG("[+] StoreFront ID: %s\n", g_storefront_id);
+     char p[1100];
+     FILE *fp = fopen(base_path(p, sizeof(p), "/STOREFRONT_ID"), "w");
+@@ -771,10 +776,13 @@ char *get_music_user_token(char *guid, char *authToken, struct shared_ptr reqCtx
+         return NULL;
+     }
+     struct shared_ptr *urlResp = _ZNK17storeservicescore10URLRequest8responseEv(urlRequest);
++    if (!urlResp || !urlResp->obj) return NULL;
+     struct shared_ptr *resp = _ZNK17storeservicescore11URLResponse18underlyingResponseEv(urlResp->obj);
++    if (!resp || !resp->obj) return NULL;
+     void *http_message_obj = resp->obj;
+     void* data_ptr = *(void**)((char*)http_message_obj + 48);
+     char *respBody = data_ptr ? _ZNK13mediaplatform4Data5bytesEv(data_ptr) : NULL;
++    if (!respBody) return NULL;
+     cJSON *json = cJSON_Parse(respBody);
+     cJSON *token_obj = cJSON_GetObjectItemCaseSensitive(json, "music_token");
+     char *token = cJSON_GetStringValue(token_obj);
+@@ -818,11 +826,14 @@ char* get_dev_token(struct shared_ptr reqCtx) {
+         return NULL;
+     }
+     struct shared_ptr *urlResp = _ZNK17storeservicescore10URLRequest8responseEv(urlRequest);
++    if (!urlResp || !urlResp->obj) return NULL;
+     struct shared_ptr *resp = _ZNK17storeservicescore11URLResponse18underlyingResponseEv(urlResp->obj);
++    if (!resp || !resp->obj) return NULL;
+     void *http_message_obj = resp->obj;
+     void** data_ptr_location = (void**)((char*)http_message_obj + 48);
+     void* data_ptr = *data_ptr_location;
+-    char *respBody = _ZNK13mediaplatform4Data5bytesEv(data_ptr);
++    char *respBody = data_ptr ? _ZNK13mediaplatform4Data5bytesEv(data_ptr) : NULL;
++    if (!respBody) return NULL;
+     cJSON *json = cJSON_Parse(respBody);
+     cJSON *token_obj = cJSON_GetObjectItemCaseSensitive(json, "token");
+     char *token = cJSON_GetStringValue(token_obj);
+diff --git a/drm/stubs/drm_guard.cpp b/drm/stubs/drm_guard.cpp
+new file mode 100644
+index 0000000..1ff2077
+--- /dev/null
++++ b/drm/stubs/drm_guard.cpp
+@@ -0,0 +1,84 @@
++/*
++ * drm_guard.cpp — guest-side C++ exception barrier for Android ELF libraries
++ * loaded through libhybris on Windows.
++ *
++ * Apple's Android FairPlay libraries (libandroidappmusic.so, etc.) throw C++
++ * exceptions such as SVError using Bionic libc++_shared.so's DWARF unwinder.
++ * A Windows PE host frame has no ELF .eh_frame entry in the guest linker, so
++ * any exception reaching the host frame terminates the process via abort().
++ *
++ * Compiling this tiny trampoline as an x86_64 Linux ELF shared library linked
++ * against libc++_shared.so keeps the try/catch frame inside the guest linker's
++ * dl_iterate_phdr list, so DWARF unwinding runs guest destructors cleanly,
++ * captures e.what(), and returns a non-zero error code to the host caller.
++ */
++#include "drm_guard.h"
++
++namespace std {
++class exception {
++  public:
++    virtual ~exception() noexcept;
++    virtual const char *what() const noexcept;
++};
++} // namespace std
++
++static void copy_err(char *buf, unsigned long long cap, const char *msg) noexcept
++{
++    if (!buf || cap == 0) return;
++    if (!msg) msg = "unknown C++ exception";
++    unsigned long long i = 0;
++    while (i + 1 < cap && msg[i] != '\0') {
++        buf[i] = msg[i];
++        ++i;
++    }
++    buf[i] = '\0';
++}
++
++extern "C" int drm_guard_invoke(drm_guard_call_t *call)
++{
++    if (!call || !call->fn) {
++        if (call) copy_err(call->err_buf, call->err_cap, "null guard target");
++        return -3;
++    }
++    if (call->err_buf && call->err_cap > 0) call->err_buf[0] = '\0';
++    call->ret = nullptr;
++
++    try {
++        switch (call->argc) {
++        case 0:
++            call->ret = reinterpret_cast<void *(*)()>(call->fn)();
++            return 0;
++        case 1:
++            call->ret = reinterpret_cast<void *(*)(void *)>(call->fn)(call->args[0]);
++            return 0;
++        case 2:
++            call->ret = reinterpret_cast<void *(*)(void *, void *)>(call->fn)(
++                call->args[0], call->args[1]);
++            return 0;
++        case 3:
++            call->ret = reinterpret_cast<void *(*)(void *, void *, void *)>(call->fn)(
++                call->args[0], call->args[1], call->args[2]);
++            return 0;
++        case 4:
++            call->ret = reinterpret_cast<void *(*)(void *, void *, void *, void *)>(call->fn)(
++                call->args[0], call->args[1], call->args[2], call->args[3]);
++            return 0;
++        case 10:
++            call->ret = reinterpret_cast<void *(*)(
++                void *, void *, void *, void *, void *,
++                void *, void *, void *, void *, void *)>(call->fn)(
++                call->args[0], call->args[1], call->args[2], call->args[3], call->args[4],
++                call->args[5], call->args[6], call->args[7], call->args[8], call->args[9]);
++            return 0;
++        default:
++            copy_err(call->err_buf, call->err_cap, "unsupported arg count");
++            return -3;
++        }
++    } catch (const std::exception &e) {
++        copy_err(call->err_buf, call->err_cap, e.what());
++        return -1;
++    } catch (...) {
++        copy_err(call->err_buf, call->err_cap, "unknown C++ exception");
++        return -2;
++    }
++}
+diff --git a/drm/stubs/drm_guard.h b/drm/stubs/drm_guard.h
+new file mode 100644
+index 0000000..b626efd
+--- /dev/null
++++ b/drm/stubs/drm_guard.h
+@@ -0,0 +1,21 @@
++/*
++ * drm_guard.h — ABI shared between the Windows host wrapper (PE64) and the
++ * guest ELF exception barrier (libdrm_guard.so, x86_64-linux-gnu).
++ *
++ * Uses only fixed-size / ABI-identical types so LP64 guest and LLP64 host
++ * agree on every field offset.
++ */
++#ifndef DRM_GUARD_H
++#define DRM_GUARD_H
++
++typedef struct drm_guard_call {
++    void *fn;
++    void *args[10];
++    void *ret;
++    char *err_buf;
++    unsigned long long err_cap;
++    int argc;
++    int reserved;
++} drm_guard_call_t;
++
++#endif /* DRM_GUARD_H */
 diff --git a/drm/tests/test_drm_linux.c b/drm/tests/test_drm_linux.c
 index 2adaf66..70c85dd 100644
 --- a/drm/tests/test_drm_linux.c
@@ -162,7 +526,7 @@ index 2adaf66..70c85dd 100644
      drm_shutdown();
  }
 diff --git a/engine/cmd/apiserver.go b/engine/cmd/apiserver.go
-index 7c368e4..8ab018c 100644
+index ded5997..ba3ddef 100644
 --- a/engine/cmd/apiserver.go
 +++ b/engine/cmd/apiserver.go
 @@ -40,6 +40,7 @@ import (
@@ -205,9 +569,9 @@ index 7c368e4..8ab018c 100644
  		Video    bool `json:"video"`
  		Atmos    bool `json:"atmos"`
  	} `json:"capabilities"`
-@@ -233,6 +238,14 @@ func (l *engineLifecycle) OnFairPlayReady(onRefreshDue func()) {
- 	l.drmReadyMu.Lock()
- 	defer l.drmReadyMu.Unlock()
+@@ -240,6 +245,14 @@ func (l *engineLifecycle) OnFairPlayReady(onRefreshDue func()) {
+ 	}
+ 	l.drmReadyActive = true
  	l.drmReadySince = time.Now()
 +	if glasswaveHeadlessEnabled() {
 +		l.drmRefreshAt = time.Time{}
@@ -220,10 +584,10 @@ index 7c368e4..8ab018c 100644
  	l.drmRefreshAt = l.drmReadySince.Add(drmSessionTTL - drmRefreshLeadTime)
  	if l.drmRefreshTimer != nil {
  		l.drmRefreshTimer.Stop()
-@@ -480,6 +493,14 @@ type APIServer struct {
- 	libStore    *library.Store      // local library metadata cache (songs, playlists)
+@@ -499,6 +512,14 @@ type APIServer struct {
  	vlcPlayer   *vlc.Player         // nil when libvlc is not available
  	vlcGate     vlcGate             // session that currently owns vlcPlayer
+ 	vlcLoads    loadOrder           // keeps /vlc/load requests in arrival order
 +	headless    bool                // GLASSWAVE_HEADLESS=1: loopback HTTP and no speculative subsystems
 +
 +	glasswaveHTTPClient *http.Client
@@ -235,10 +599,10 @@ index 7c368e4..8ab018c 100644
  
  	tokenMu     sync.RWMutex
  	cachedToken string // bearer token cached from the most recent browser request
-@@ -508,19 +529,26 @@ type ServerConfig struct {
- 
+@@ -528,19 +549,26 @@ type ServerConfig struct {
  // NewAPIServer wires all routes.
  func NewAPIServer(port int, cfg ServerConfig) *APIServer {
+ 	setupStart := time.Now()
 -	initMVPrefs()
 +	headless := glasswaveHeadlessEnabled()
 +	if !headless {
@@ -271,7 +635,7 @@ index 7c368e4..8ab018c 100644
  	}
  
  	// DRM subsystem constructed first: DRMManager is passed to the PlaybackManager
-@@ -611,7 +639,7 @@ func NewAPIServer(port int, cfg ServerConfig) *APIServer {
+@@ -634,7 +662,7 @@ func NewAPIServer(port int, cfg ServerConfig) *APIServer {
  	// Eager-start decision (executed in Start(), after the session lock is held):
  	// if a session DB exists, initialise DRM immediately so process/fairplay
  	// state is visible without waiting for the first playback request.
@@ -280,7 +644,7 @@ index 7c368e4..8ab018c 100644
  
  	// PlaybackManager receives DRMManager as the CBCSDialer for ALAC/Atmos.
  	// DRMManager.DialCBCS auto-starts DRM if a session exists, then returns an
-@@ -624,33 +652,44 @@ func NewAPIServer(port int, cfg ServerConfig) *APIServer {
+@@ -647,33 +675,44 @@ func NewAPIServer(port int, cfg ServerConfig) *APIServer {
  		cbcsDialer = s.dm
  		acctSource = &drmAccountAdapter{dm: s.dm, getMUT: s.musicUserToken}
  	}
@@ -341,8 +705,8 @@ index 7c368e4..8ab018c 100644
  
  	// Disk cache — decrypted per-track audio; falls back gracefully on error.
  	// Limits (persistLimitMB, persistTTLDays) are pushed by the frontend on
-@@ -660,28 +699,31 @@ func NewAPIServer(port int, cfg ServerConfig) *APIServer {
- 			s.diskCache = dc
+@@ -686,28 +725,31 @@ func NewAPIServer(port int, cfg ServerConfig) *APIServer {
+ 			dc.RemoveInFlight()
  			s.alac = newALACGate()
  			invalidateALACCacheIfStale(filepath.Join(cacheBase, "playback"))
 -			go func() {
@@ -392,9 +756,9 @@ index 7c368e4..8ab018c 100644
  		}
  	}
  
-@@ -756,6 +798,12 @@ func NewAPIServer(port int, cfg ServerConfig) *APIServer {
+@@ -782,6 +824,12 @@ func NewAPIServer(port int, cfg ServerConfig) *APIServer {
+ 	mux.HandleFunc("DELETE /api/v1/drm/session", cors(s.handleDRMClearSession))
  	mux.HandleFunc("POST /api/v1/drm/forget-device", cors(s.handleDRMForgetDevice))
- 	mux.HandleFunc("POST /api/v1/drm/challenge/resend", cors(s.handleDRMResend))
  
 +	// Glasswave headless integration. Apple API calls use native account tokens
 +	// resolved inside the engine; the C++ client never receives credentials.
@@ -405,18 +769,18 @@ index 7c368e4..8ab018c 100644
  	// Library — local metadata cache (songs, playlists, playlist tracks).
  	// Mirrors what Android's MediaLibrary and Windows' AMPLibraryAgent provide:
  	// instant queue building from local SQLite instead of live Apple Music API calls.
-@@ -781,7 +829,9 @@ func NewAPIServer(port int, cfg ServerConfig) *APIServer {
- 
+@@ -808,7 +856,9 @@ func NewAPIServer(port int, cfg ServerConfig) *APIServer {
  	// VLC player — libvlc-backed playback for ALAC/Atmos that the browser cannot decode.
  	// Routes are no-ops when libvlc is not installed; frontend falls back to MSE.
+ 	vlcStart := time.Now()
 -	s.vlcPlayer, _ = vlc.New() // nil if libvlc unavailable
 +	if !headless {
 +		s.vlcPlayer, _ = vlc.New() // nil if libvlc unavailable
 +	}
+ 	vlcSetup := time.Since(vlcStart)
  	mux.HandleFunc("POST /api/v1/vlc/load", cors(s.handleVLCLoad))
  	mux.HandleFunc("POST /api/v1/vlc/pause", cors(s.handleVLCPause))
- 	mux.HandleFunc("POST /api/v1/vlc/resume", cors(s.handleVLCResume))
-@@ -823,6 +873,9 @@ func NewAPIServer(port int, cfg ServerConfig) *APIServer {
+@@ -852,6 +902,9 @@ func NewAPIServer(port int, cfg ServerConfig) *APIServer {
  // returns an error so this instance refuses to run (preventing dual ownership
  // of the single-user Apple session).
  func (s *APIServer) Start() error {
@@ -426,7 +790,7 @@ index 7c368e4..8ab018c 100644
  	if s.drmReady {
  		lock, err := drm.AcquireSessionLock(s.sessionDir)
  		if err != nil {
-@@ -872,11 +925,23 @@ func (s *APIServer) Start() error {
+@@ -901,11 +954,23 @@ func (s *APIServer) Start() error {
  		}()
  	}
  
@@ -448,9 +812,9 @@ index 7c368e4..8ab018c 100644
  	if err != nil {
 +		l.Close() //nolint:errcheck
  		slog.Error("loopback TLS setup failed", "err", err)
- 		return fmt.Errorf("TLS setup failed: %w", err)
- 	}
-@@ -929,8 +994,9 @@ func (s *APIServer) Stop() {
+ 		// Give back what this call took: the port and the session lock would otherwise stay held by a server that never runs.
+ 		l.Close()
+@@ -971,8 +1036,9 @@ func (s *APIServer) Stop() {
  	}
  }
  
@@ -462,7 +826,7 @@ index 7c368e4..8ab018c 100644
  // a non-loopback Host (DNS rebinding) or a browser Origin outside the
  // allowlist (cross-site "simple" POSTs skip CORS preflight entirely).
  // Media elements and the Electron main process send no Origin and pass.
-@@ -1008,8 +1074,8 @@ func setCORSHeaders(w http.ResponseWriter, r *http.Request) {
+@@ -1050,8 +1116,8 @@ func setCORSHeaders(w http.ResponseWriter, r *http.Request) {
  	default:
  		w.Header().Set("Access-Control-Allow-Origin", "https://music.apple.com")
  	}
@@ -2711,10 +3075,10 @@ index 9e353e5..73c0d45 100644
  		http.Error(w, "job not found", http.StatusNotFound)
  		return
 diff --git a/engine/cmd/handlers_metadata.go b/engine/cmd/handlers_metadata.go
-index 75b77ed..513c3ca 100644
+index 9e6eb57..7811a3b 100644
 --- a/engine/cmd/handlers_metadata.go
 +++ b/engine/cmd/handlers_metadata.go
-@@ -174,21 +174,9 @@ func streamsFromTraits(traits []string) []StreamInfo {
+@@ -184,21 +184,9 @@ func streamsFromTraits(traits []string) []StreamInfo {
  		set[t] = true
  	}
  	var out []StreamInfo
@@ -2738,7 +3102,7 @@ index 75b77ed..513c3ca 100644
  	}
  	if set["atmos"] {
  		out = append(out, StreamInfo{Codec: "E-AC-3"})
-@@ -196,3 +184,35 @@ func streamsFromTraits(traits []string) []StreamInfo {
+@@ -206,3 +194,35 @@ func streamsFromTraits(traits []string) []StreamInfo {
  	out = append(out, StreamInfo{Codec: "AAC", Bitrate: 256000})
  	return out
  }
@@ -2775,7 +3139,7 @@ index 75b77ed..513c3ca 100644
 +	return 0, 0
 +}
 diff --git a/engine/cmd/handlers_playback.go b/engine/cmd/handlers_playback.go
-index 6deab9a..fe8db0b 100644
+index f396b2d..7d6a081 100644
 --- a/engine/cmd/handlers_playback.go
 +++ b/engine/cmd/handlers_playback.go
 @@ -16,6 +16,7 @@ import (
@@ -2833,18 +3197,28 @@ index 6deab9a..fe8db0b 100644
  	}
  
  	// Use a pre-warmed session if the prefetch scheduler already opened one
-@@ -156,7 +147,9 @@ func (s *APIServer) handleCreatePlayback(w http.ResponseWriter, r *http.Request)
- 	// and AAC sessions are tracked separately — the scheduler now pre-warms
+@@ -157,13 +148,15 @@ func (s *APIServer) handleCreatePlayback(w http.ResponseWriter, r *http.Request)
  	// at whichever quality the renderer reported via ContextPayload.Lossless.
+ 	// The renderer's idea of what is available can be stale (FairPlay not up yet, or lost since): serve AAC rather
+ 	// than open a lossless session that cannot decrypt.
+-	if l, h, a, dropped := clampQuality(req.Capabilities.Lossless, req.Capabilities.HiRes, req.Capabilities.Atmos, s.drmCapabilities()); dropped {
+-		log.Printf("[playback] %s: DRM not ready (lossless %t->%t hiRes %t->%t atmos %t->%t), opening as AAC", req.AssetID,
+-			req.Capabilities.Lossless, l, req.Capabilities.HiRes, h, req.Capabilities.Atmos, a)
+-		req.Capabilities.Lossless, req.Capabilities.HiRes, req.Capabilities.Atmos = l, h, a
++	if !s.headless {
++		if l, h, a, dropped := clampQuality(req.Capabilities.Lossless, req.Capabilities.HiRes, req.Capabilities.Atmos, s.drmCapabilities()); dropped {
++			log.Printf("[playback] %s: DRM not ready (lossless %t->%t hiRes %t->%t atmos %t->%t), opening as AAC", req.AssetID,
++				req.Capabilities.Lossless, l, req.Capabilities.HiRes, h, req.Capabilities.Atmos, a)
++			req.Capabilities.Lossless, req.Capabilities.HiRes, req.Capabilities.Atmos = l, h, a
++		}
+ 	}
  	var sess *playback.Session
 -	if !req.Capabilities.Atmos && !req.Capabilities.Video {
-+	// Pre-warmed sessions carry the best ALAC; a request capped below hi-res opens its own.
-+	cappedLossless := req.Capabilities.Lossless && !req.Capabilities.HiRes
-+	if s.scheduler != nil && !req.PreferAtmos && !req.Capabilities.Atmos && !req.Capabilities.Video && !cappedLossless {
- 		if sessionID, ok := s.scheduler.TakePreWarmed(req.AssetID, req.Capabilities.Lossless); ok {
++	if s.scheduler != nil && !req.PreferAtmos && !req.Capabilities.Atmos && !req.Capabilities.Video {
+ 		if sessionID, ok := s.scheduler.TakePreWarmed(req.AssetID, req.Capabilities.Lossless, req.Capabilities.HiRes); ok {
  			if preOpened, found := s.pm.GetSession(sessionID); found {
  				sess = preOpened
-@@ -173,16 +166,18 @@ func (s *APIServer) handleCreatePlayback(w http.ResponseWriter, r *http.Request)
+@@ -180,16 +173,18 @@ func (s *APIServer) handleCreatePlayback(w http.ResponseWriter, r *http.Request)
  		t0 := time.Now()
  		var err error
  		sess, err = s.pm.Open(r.Context(), playback.OpenRequest{
@@ -2873,7 +3247,7 @@ index 6deab9a..fe8db0b 100644
  		})
  		latMs := time.Since(t0).Milliseconds()
  		if err != nil {
-@@ -229,6 +224,38 @@ func (s *APIServer) handlePlaybackAudio(w http.ResponseWriter, r *http.Request)
+@@ -236,6 +231,38 @@ func (s *APIServer) handlePlaybackAudio(w http.ResponseWriter, r *http.Request)
  		return
  	}
  
@@ -2912,7 +3286,7 @@ index 6deab9a..fe8db0b 100644
  	// ?t=<seconds> — seek to an approximate time offset.
  	// The response header X-Actual-Start reports the real segment start time so
  	// the frontend can set audio.currentTime accurately after a seek.
-@@ -238,6 +265,13 @@ func (s *APIServer) handlePlaybackAudio(w http.ResponseWriter, r *http.Request)
+@@ -245,6 +272,13 @@ func (s *APIServer) handlePlaybackAudio(w http.ResponseWriter, r *http.Request)
  			seekSec = v
  		}
  	}
@@ -2926,7 +3300,7 @@ index 6deab9a..fe8db0b 100644
  
  	// Disk cache: serve cached files for non-seek requests so replays skip CDN.
  	// Seeks (seekSec > 0) bypass the cache — the cached file may be truncated from a
-@@ -253,7 +287,7 @@ func (s *APIServer) handlePlaybackAudio(w http.ResponseWriter, r *http.Request)
+@@ -260,7 +294,7 @@ func (s *APIServer) handlePlaybackAudio(w http.ResponseWriter, r *http.Request)
  		streamMedia(w, r, func(dst io.Writer) error {
  			cw.w = dst
  			return s.pm.Stream(r.Context(), id, pipeline.KindAudio, cw)
@@ -2935,13 +3309,12 @@ index 6deab9a..fe8db0b 100644
  		log.Printf("[INTERCEPT] MV audio stream END id=%s totalBytes=%d", id, cw.n)
  		return
  	}
-@@ -262,14 +296,17 @@ func (s *APIServer) handlePlaybackAudio(w http.ResponseWriter, r *http.Request)
+@@ -268,15 +302,15 @@ func (s *APIServer) handlePlaybackAudio(w http.ResponseWriter, r *http.Request)
+ 	// MV sessions stream audio direct to MSE — skip disk cache to avoid
  	// colliding with same-AssetID song cache entries.
  	if s.diskCache != nil && sess.Type != "mv" && seekSec == 0 {
- 		qualifier := sess.Codec
-+		if sess.SourceVersion != "" {
-+			qualifier += "-" + sess.SourceVersion
-+		}
+-		qualifier := playbackCacheQualifier(sess.Codec, sess.SampleRate)
++		qualifier := sessionCacheQualifier(sess, s.headless)
  		if f, ok := s.diskCache.Get(sess.AssetID, qualifier); ok {
  			defer f.Close()
 -			w.Header().Set("Content-Type", "audio/mp4")
@@ -2955,7 +3328,7 @@ index 6deab9a..fe8db0b 100644
  		// This cuts first-play latency from the full lossless download time
  		// (~5-15 s) to the initial buffer fill (~0.5 s). The download goroutine
  		// uses a detached context so the file is always committed even when VLC
-@@ -277,12 +314,27 @@ func (s *APIServer) handlePlaybackAudio(w http.ResponseWriter, r *http.Request)
+@@ -284,12 +318,27 @@ func (s *APIServer) handlePlaybackAudio(w http.ResponseWriter, r *http.Request)
  		// On commit the file is served via http.ServeContent with full byte-range
  		// support on every subsequent play, enabling accurate SetTime seeks.
  		//
@@ -2988,7 +3361,7 @@ index 6deab9a..fe8db0b 100644
  			// VLC Range seek during an active streaming download: serve the
  			// requested byte range from the in-progress writer only if the
  			// offset has already been written. Return 416 immediately when the
-@@ -307,7 +359,7 @@ func (s *APIServer) handlePlaybackAudio(w http.ResponseWriter, r *http.Request)
+@@ -314,7 +363,7 @@ func (s *APIServer) handlePlaybackAudio(w http.ResponseWriter, r *http.Request)
  					// Use a 1 GiB sentinel for the total size (no ALAC file is that
  					// large) since the true size is unknown during streaming.
  					const sentinel = int64(1 << 30)
@@ -2997,26 +3370,41 @@ index 6deab9a..fe8db0b 100644
  					w.Header().Set("Accept-Ranges", "bytes")
  					w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", offset, sentinel-1, sentinel))
  					w.WriteHeader(http.StatusPartialContent)
-@@ -320,8 +372,7 @@ func (s *APIServer) handlePlaybackAudio(w http.ResponseWriter, r *http.Request)
+@@ -327,11 +376,9 @@ func (s *APIServer) handlePlaybackAudio(w http.ResponseWriter, r *http.Request)
  
  			if spw, _ := s.diskCache.BeginStreamingPut(sess.AssetID, qualifier); spw != nil {
  				s.startCacheDownload(id, spw)
 -				w.Header().Set("Content-Type", "audio/mp4")
 -				w.Header().Set("Accept-Ranges", "bytes")
-+				w.Header().Set("Content-Type", playbackAudioContentType(sess))
  				reader := spw.NewReader()
  				defer reader.Close()
- 				io.Copy(w, reader) //nolint:errcheck — client disconnect is normal
-@@ -339,7 +390,7 @@ func (s *APIServer) handlePlaybackAudio(w http.ResponseWriter, r *http.Request)
+-				io.Copy(w, reader) //nolint:errcheck — client disconnect is normal
++				serveStreamingReader(w, r, reader, playbackAudioContentType(sess), id, "ALAC")
+ 				return
+ 			}
+ 		}
+@@ -346,27 +393,16 @@ func (s *APIServer) handlePlaybackAudio(w http.ResponseWriter, r *http.Request)
  		// hit the committed file above via http.ServeContent.
  		if spw, _ := s.diskCache.BeginStreamingPut(sess.AssetID, qualifier); spw != nil {
  			s.startCacheDownload(id, spw)
 -			w.Header().Set("Content-Type", "audio/mp4")
-+			w.Header().Set("Content-Type", playbackAudioContentType(sess))
  			reader := spw.NewReader()
  			defer reader.Close()
- 			// The streaming reader surfaces the download error (Discard sets it) as a
-@@ -359,7 +410,7 @@ func (s *APIServer) handlePlaybackAudio(w http.ResponseWriter, r *http.Request)
+-			// The streaming reader surfaces the download error (Discard sets it) as a
+-			// non-EOF read error. If it fails before any byte reached the client, the
+-			// 200 headers are not yet committed, so report a clean 502 instead of an
+-			// empty 200. A mid-stream failure (n>0) can only be logged — headers are out.
+-			if n, err := io.Copy(w, reader); err != nil {
+-				if n == 0 && r.Context().Err() == nil {
+-					writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+-				} else if r.Context().Err() == nil {
+-					slog.Error("AAC stream error (partial)", "id", id, "err", err)
+-				}
+-			}
++			serveStreamingReader(w, r, reader, playbackAudioContentType(sess), id, "AAC")
+ 			return
+ 		}
+ 		// Fallback: another goroutine is already caching this key (BeginStreamingPut
  		// returned nil) — stream without caching.
  		streamMedia(w, r, func(dst io.Writer) error {
  			return s.pm.Stream(r.Context(), id, pipeline.KindAudio, dst)
@@ -3025,7 +3413,7 @@ index 6deab9a..fe8db0b 100644
  		return
  	}
  
-@@ -377,13 +428,22 @@ func (s *APIServer) handlePlaybackAudio(w http.ResponseWriter, r *http.Request)
+@@ -384,13 +420,44 @@ func (s *APIServer) handlePlaybackAudio(w http.ResponseWriter, r *http.Request)
  		streamMedia(w, r, func(dst io.Writer) error {
  			_, err := s.pm.StreamFrom(seekCtx, id, pipeline.KindAudio, seekSec, dst)
  			return err
@@ -3047,10 +3435,32 @@ index 6deab9a..fe8db0b 100644
 +		}
 +	}
 +	return "audio/mp4"
++}
++
++// sessionCacheQualifier scopes disk-cache entries to the delivered audio format.
++// In headless mode, sample rate, bit depth and duration are included so a track
++// remastered or upgraded by Apple never collides with a stale older file on disk.
++func sessionCacheQualifier(sess *playback.Session, headless bool) string {
++	qualifier := playbackCacheQualifier(sess.Codec, sess.SampleRate)
++	if headless {
++		if sess.SampleRate > 0 {
++			qualifier += fmt.Sprintf("-%d", sess.SampleRate)
++		}
++		if sess.BitDepth > 0 {
++			qualifier += fmt.Sprintf("-%dbit", sess.BitDepth)
++		}
++		if sess.DurationMs > 0 {
++			qualifier += fmt.Sprintf("-%dms", sess.DurationMs)
++		}
++	}
++	if sess.SourceVersion != "" {
++		qualifier += "-" + sess.SourceVersion
++	}
++	return qualifier
  }
  
  // startCacheDownload fills spw from the session's audio stream in the
-@@ -410,6 +470,10 @@ func (s *APIServer) startCacheDownload(id string, spw *diskcache.StreamingPutWri
+@@ -417,6 +484,10 @@ func (s *APIServer) startCacheDownload(id string, spw *diskcache.StreamingPutWri
  // session so VLC can load it instantly on the next track change. Returns 202
  // immediately; the download runs in a detached goroutine.
  func (s *APIServer) handlePlaybackPrecache(w http.ResponseWriter, r *http.Request) {
@@ -3061,7 +3471,7 @@ index 6deab9a..fe8db0b 100644
  	id := r.PathValue("id")
  	sess, ok := s.pm.GetSession(id)
  	if !ok {
-@@ -479,6 +543,10 @@ func (s *APIServer) handlePlaybackTouch(w http.ResponseWriter, r *http.Request)
+@@ -486,6 +557,10 @@ func (s *APIServer) handlePlaybackTouch(w http.ResponseWriter, r *http.Request)
  // The renderer is telling the engine "the user is looking at this content."
  // All scheduling policy (which tracks, order, concurrency) is engine-internal.
  func (s *APIServer) handlePlaybackContext(w http.ResponseWriter, r *http.Request) {
@@ -3072,8 +3482,58 @@ index 6deab9a..fe8db0b 100644
  	r.Body = http.MaxBytesReader(w, r.Body, 512<<10) // 512 KB — up to 50 tracks
  	var payload prefetch.ContextPayload
  	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+@@ -498,11 +573,34 @@ func (s *APIServer) handlePlaybackContext(w http.ResponseWriter, r *http.Request
+ 	writeJSON(w, http.StatusAccepted, map[string]string{"jobId": jobID})
+ }
+ 
++// serveStreamingReader streams a diskcache.StreamingReader to the HTTP client.
++// Before the first byte is committed, download failures (spw.Discard) become a
++// clean 502 JSON error instead of an empty 200. Once bytes are already on the
++// wire, a download error aborts the HTTP response when running under net/http's
++// Server so the client does not receive a clean chunked EOF on a truncated file.
++func serveStreamingReader(w http.ResponseWriter, r *http.Request, reader io.Reader, ct, id, label string) {
++	bw := &firstByteWriter{w: w, ct: ct}
++	if _, err := io.Copy(bw, reader); err != nil {
++		if r.Context().Err() != nil {
++			return // client disconnected — not an error
++		}
++		if !bw.started {
++			writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
++			return
++		}
++		slog.Error(label+" stream error (partial)", "id", id, "err", err)
++		if r.Context().Value(http.ServerContextKey) != nil {
++			panic(http.ErrAbortHandler)
++		}
++	}
++}
++
+ // streamMedia runs fn into a firstByteWriter so that:
+ //   - If fn produces no bytes and returns an error, the client receives a
+ //     502 JSON error instead of a silent empty 200 response.
+ //   - If fn produces at least one byte before failing, headers are already
+-//     committed; the partial stream is what the client sees (best effort).
++//     committed; abort the chunked connection under net/http so the client
++//     knows the stream was truncated.
+ func streamMedia(w http.ResponseWriter, r *http.Request, fn func(io.Writer) error, ct string) {
+ 	bw := &firstByteWriter{w: w, ct: ct}
+ 	if err := fn(bw); err != nil {
+@@ -513,8 +611,12 @@ func streamMedia(w http.ResponseWriter, r *http.Request, fn func(io.Writer) erro
+ 			writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+ 			return
+ 		}
+-		// Headers already committed; log and let the client handle the truncated stream.
++		// Headers already committed; log and abort the chunked response so clients
++		// do not mistake a truncated stream for a complete file.
+ 		slog.Error("stream error (partial)", "err", err)
++		if r.Context().Value(http.ServerContextKey) != nil {
++			panic(http.ErrAbortHandler)
++		}
+ 	}
+ }
+ 
 diff --git a/engine/cmd/handlers_playback_test.go b/engine/cmd/handlers_playback_test.go
-index 2e497f7..298f3e5 100644
+index 2e497f7..3945ba9 100644
 --- a/engine/cmd/handlers_playback_test.go
 +++ b/engine/cmd/handlers_playback_test.go
 @@ -1,6 +1,7 @@
@@ -3387,7 +3847,7 @@ index 2e497f7..298f3e5 100644
  type shortWriter struct{}
  
  func (*shortWriter) Write([]byte) (int, error) { return 2, nil }
-@@ -248,3 +522,74 @@ func TestPlaybackTouchKeepsSessionAlive(t *testing.T) {
+@@ -248,3 +522,155 @@ func TestPlaybackTouchKeepsSessionAlive(t *testing.T) {
  		t.Fatalf("touch of an unknown session = %d, want 404", got)
  	}
  }
@@ -3403,6 +3863,25 @@ index 2e497f7..298f3e5 100644
 +	aac := &playback.Session{Codec: "aac", CodecMIMEType: "audio/mp4"}
 +	if got := playbackAudioContentType(aac); got != "audio/mp4" {
 +		t.Fatalf("AAC content type = %q", got)
++	}
++}
++
++func TestSessionCacheQualifierSeparatesRemasteredFormats(t *testing.T) {
++	oldMaster := &playback.Session{Codec: "alac", SampleRate: 48000, BitDepth: 16, DurationMs: 160000}
++	newMaster := &playback.Session{Codec: "alac", SampleRate: 48000, BitDepth: 16, DurationMs: 163655}
++	hiBit := &playback.Session{Codec: "alac", SampleRate: 48000, BitDepth: 24, DurationMs: 163655}
++
++	qOld := sessionCacheQualifier(oldMaster, true)
++	qNew := sessionCacheQualifier(newMaster, true)
++	qHiBit := sessionCacheQualifier(hiBit, true)
++	if qOld == qNew {
++		t.Fatalf("different durations collided in headless cache key: %q", qOld)
++	}
++	if qNew == qHiBit {
++		t.Fatalf("different bit depths collided in headless cache key: %q", qNew)
++	}
++	if got := sessionCacheQualifier(&playback.Session{Codec: "alac"}, true); got != "alac" {
++		t.Fatalf("zero-metadata headless qualifier = %q, want alac", got)
 +	}
 +}
 +
@@ -3462,23 +3941,68 @@ index 2e497f7..298f3e5 100644
 +	}
 +	return fMP4.Bytes(), raw.Bytes()
 +}
-diff --git a/engine/cmd/handlers_vlc.go b/engine/cmd/handlers_vlc.go
-index a322e57..7ef523b 100644
---- a/engine/cmd/handlers_vlc.go
-+++ b/engine/cmd/handlers_vlc.go
-@@ -14,9 +14,9 @@ import (
- )
- 
- // alacCacheVersion is bumped whenever a bug fix changes which bytes are written
--// to the ALAC disk cache. On mismatch, all *-alac.m4a files are deleted so VLC
--// never replays a fragment-0 that was written by the old, broken key path.
--const alacCacheVersion = "cbcs-fairplay-upstream-v9"
-+// to the ALAC disk cache. On mismatch, committed *-alac.m4a files are discarded
-+// so no consumer replays samples produced by an older, incorrect stream path.
-+const alacCacheVersion = "cbcs-complete-key-schedule-v10"
- 
- // invalidateALACCacheIfStale deletes every committed ALAC cache file when the
- // on-disk version marker does not match alacCacheVersion. This is a one-time
++
++func TestServeStreamingReaderPropagatesErrors(t *testing.T) {
++	t.Run("zero-byte failure returns 502", func(t *testing.T) {
++		cache, err := diskcache.New(t.TempDir())
++		if err != nil {
++			t.Fatal(err)
++		}
++		spw, err := cache.BeginStreamingPut("fail-zero", "alac")
++		if err != nil {
++			t.Fatal(err)
++		}
++		reader := spw.NewReader()
++		defer reader.Close()
++		spw.Discard()
++
++		r := httptest.NewRequest(http.MethodGet, "/audio", nil)
++		w := httptest.NewRecorder()
++		serveStreamingReader(w, r, reader, "audio/mp4", "sess-1", "ALAC")
++		if w.Code != http.StatusBadGateway {
++			t.Fatalf("status = %d, want 502 on pre-first-byte failure", w.Code)
++		}
++	})
++
++	t.Run("partial failure aborts HTTP response instead of clean EOF", func(t *testing.T) {
++		cache, err := diskcache.New(t.TempDir())
++		if err != nil {
++			t.Fatal(err)
++		}
++		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++			spw, err := cache.BeginStreamingPut("fail-partial", "alac")
++			if err != nil {
++				http.Error(w, err.Error(), http.StatusInternalServerError)
++				return
++			}
++			reader := spw.NewReader()
++			defer reader.Close()
++			go func() {
++				_, _ = spw.Write([]byte("partial-init-bytes"))
++				time.Sleep(20 * time.Millisecond)
++				spw.Discard()
++			}()
++			serveStreamingReader(w, r, reader, "audio/mp4", "sess-2", "ALAC")
++		}))
++		defer srv.Close()
++
++		resp, err := srv.Client().Get(srv.URL)
++		if err != nil {
++			t.Fatalf("GET: %v", err)
++		}
++		defer resp.Body.Close()
++		if resp.StatusCode != http.StatusOK {
++			t.Fatalf("status = %d, want 200 after first bytes committed", resp.StatusCode)
++		}
++		body, readErr := io.ReadAll(resp.Body)
++		if readErr == nil {
++			t.Fatalf("expected truncated chunked stream error after Discard, got clean EOF with body=%q", string(body))
++		}
++		if string(body) != "partial-init-bytes" {
++			t.Fatalf("partial body = %q, want %q", string(body), "partial-init-bytes")
++		}
++	})
++}
 diff --git a/engine/cmd/http_middleware_test.go b/engine/cmd/http_middleware_test.go
 index a6dbcdb..43b2bfa 100644
 --- a/engine/cmd/http_middleware_test.go
@@ -3518,10 +4042,10 @@ index a6dbcdb..43b2bfa 100644
  
  func TestHandleMetrics_ResponseShape(t *testing.T) {
 diff --git a/engine/cmd/main.go b/engine/cmd/main.go
-index 05e1015..58c8305 100644
+index b331f88..4f93b79 100644
 --- a/engine/cmd/main.go
 +++ b/engine/cmd/main.go
-@@ -41,13 +41,15 @@ func main() {
+@@ -42,13 +42,15 @@ func main() {
  	// so the engine's RSS ratchets up and never falls. FreeOSMemory hands them
  	// back. Purely additive — it only releases memory the GC already freed, so it
  	// cannot OOM or throttle any playback path (ALAC/VLC included).
@@ -3544,7 +4068,7 @@ index 05e1015..58c8305 100644
  
  	if err := loadConfig(); err != nil {
  		log.Printf("load config failed (%v); using defaults", err)
-@@ -87,7 +89,9 @@ func main() {
+@@ -88,7 +90,9 @@ func main() {
  	}
  	flag.IntVar(&apiPort, "api", 0, "Start local HTTP API server on given port (e.g. --api 20025)")
  	flag.Parse()
@@ -3635,7 +4159,7 @@ index 0000000..93c3589
 +	}
 +}
 diff --git a/engine/core/apple/apple_test.go b/engine/core/apple/apple_test.go
-index 2857e65..763885f 100644
+index dd46e17..763885f 100644
 --- a/engine/core/apple/apple_test.go
 +++ b/engine/core/apple/apple_test.go
 @@ -1,7 +1,13 @@
@@ -3652,29 +4176,24 @@ index 2857e65..763885f 100644
  )
  
  // White-box tests for the unexported helpers.
-@@ -41,19 +47,281 @@ func TestTraitSet_Empty(t *testing.T) {
- 
- func TestExtractALACQuality_HiRes(t *testing.T) {
- 	t.Parallel()
--	// A hi-res trait like "lossless-audio-192-24" → sampleRate 192, bitDepth 24.
-+	// An explicitly numeric trait is evidence and is normalised to Hz.
- 	sr, bd := extractALACQuality([]string{"lossless-audio-192-24"})
--	if sr != 192 || bd != 24 {
--		t.Errorf("got %d/%d want 192/24", sr, bd)
-+	if sr != 192000 || bd != 24 {
-+		t.Errorf("got %d/%d want 192000/24", sr, bd)
+@@ -39,6 +45,286 @@ func TestTraitSet_Empty(t *testing.T) {
  	}
  }
  
--func TestExtractALACQuality_Standard(t *testing.T) {
++func TestExtractALACQuality_HiRes(t *testing.T) {
++	t.Parallel()
++	// An explicitly numeric trait is evidence and is normalised to Hz.
++	sr, bd := extractALACQuality([]string{"lossless-audio-192-24"})
++	if sr != 192000 || bd != 24 {
++		t.Errorf("got %d/%d want 192000/24", sr, bd)
++	}
++}
++
 +func TestExtractALACQuality_DoesNotGuess(t *testing.T) {
- 	t.Parallel()
--	// No parseable numeric quality → default 96000/24.
++	t.Parallel()
 +	// Generic Apple traits say only that lossless exists. Without a numeric
 +	// quality in the trait or HLS group, both fields must stay unknown.
- 	sr, bd := extractALACQuality([]string{"lossless", "atmos"})
--	if sr != 96000 || bd != 24 {
--		t.Errorf("got %d/%d want default 96000/24", sr, bd)
++	sr, bd := extractALACQuality([]string{"lossless", "atmos"})
 +	if sr != 0 || bd != 0 {
 +		t.Errorf("got %d/%d want 0/0 for generic traits", sr, bd)
 +	}
@@ -3938,11 +4457,14 @@ index 2857e65..763885f 100644
 +		"")
 +	if err != nil || master != nil {
 +		t.Fatalf("master=%v err=%v, want clean absence for fallback", master, err)
- 	}
- }
- 
++	}
++}
++
+ func TestFmtArtwork(t *testing.T) {
+ 	t.Parallel()
+ 	got := fmtArtwork("https://art/{w}x{h}.jpg", 500)
 diff --git a/engine/core/apple/provider.go b/engine/core/apple/provider.go
-index 4383664..b5449bb 100644
+index 74e2c5f..875d441 100644
 --- a/engine/core/apple/provider.go
 +++ b/engine/core/apple/provider.go
 @@ -80,6 +80,13 @@ type AccountTokenSource interface {
@@ -4002,7 +4524,7 @@ index 4383664..b5449bb 100644
  	token := strings.TrimPrefix(req.Token, "Bearer ")
  	if token == "" {
  		var err error
-@@ -127,29 +152,28 @@ func (p *appleMusicProvider) openSong(ctx context.Context, req media.OpenRequest
+@@ -130,25 +155,27 @@ func (p *appleMusicProvider) openSong(ctx context.Context, req media.OpenRequest
  	}
  	a := song.Data[0].Attributes
  
@@ -4018,15 +4540,10 @@ index 4383664..b5449bb 100644
 -	switch {
 -	case req.Atmos && traits["atmos"]:
 -		codec, hlsFilter = pipeline.CodecAtmos, "ec-3"
--	case req.Lossless && req.HiRes && traits["hi-res-lossless"]:
+-	case req.Lossless && (traits["lossless"] || traits["hi-res-lossless"]):
 -		codec, hlsFilter = pipeline.CodecALAC, "alac"
--		sr, bd = extractALACQuality(a.AudioTraits)
--	case req.Lossless && traits["lossless"]:
--		codec, hlsFilter = pipeline.CodecALAC, "alac"
--		sr, bd = 44100, 16
 -	default:
 -		codec, hlsFilter = pipeline.CodecAAC, "mp4a.40.2"
-+
 +	// Fetch the enhanced master only when this request can use an HLS audio
 +	// format. A transport or HTTP failure is fatal: falling back after it would
 +	// silently downgrade a requested lossless stream because Apple was briefly
@@ -4051,7 +4568,7 @@ index 4383664..b5449bb 100644
  	if codec == pipeline.CodecAAC {
  		// Standard AAC content (256 kbps) is CTR-encrypted in the webplayback
  		// API's "28:ctrp256" asset.  Those media playlists carry
-@@ -161,15 +185,6 @@ func (p *appleMusicProvider) openSong(ctx context.Context, req media.OpenRequest
+@@ -160,24 +187,6 @@ func (p *appleMusicProvider) openSong(ctx context.Context, req media.OpenRequest
  		if err != nil {
  			return nil, fmt.Errorf("webplayback AAC asset: %w", err)
  		}
@@ -4060,14 +4577,23 @@ index 4383664..b5449bb 100644
 -		if err != nil {
 -			return nil, fmt.Errorf("open master playlist: %w", err)
 -		}
--		playlistURL = master.SelectByCodec(hlsFilter)
--		if playlistURL == "" {
--			return nil, fmt.Errorf("no HLS variant matching codec %q", hlsFilter)
+-		if codec == pipeline.CodecALAC {
+-			// The playlist states each rendition's real format; report that, not a guess from the catalog traits.
+-			v, ok := master.SelectALAC(req.HiRes)
+-			if !ok {
+-				return nil, fmt.Errorf("no HLS variant matching codec %q", hlsFilter)
+-			}
+-			playlistURL, sr, bd = v.URL, v.SampleRate, v.BitDepth
+-		} else {
+-			playlistURL = master.SelectByCodec(hlsFilter)
+-			if playlistURL == "" {
+-				return nil, fmt.Errorf("no HLS variant matching codec %q", hlsFilter)
+-			}
 -		}
  	}
  
  	lp := p.lp
-@@ -212,6 +227,27 @@ func (p *appleMusicProvider) openSong(ctx context.Context, req media.OpenRequest
+@@ -220,6 +229,27 @@ func (p *appleMusicProvider) openSong(ctx context.Context, req media.OpenRequest
  	}, nil
  }
  
@@ -4095,7 +4621,7 @@ index 4383664..b5449bb 100644
  // audioFormatFields returns (bitRate bps, channelCount, codecMIMEType) for the
  // given codec.  Values are Apple Music defaults; they are informational only and
  // never used in the decryption path.
-@@ -610,7 +646,7 @@ func (p *appleMusicProvider) makeCBCSTrackOpener(
+@@ -618,7 +648,7 @@ func (p *appleMusicProvider) makeCBCSTrackOpener(
  		// Android SQLite cache by the time the CBCS pipeline needs it.  This
  		// overlaps the ~2 s hybris key fetch with the ~2 s CDN init-segment
  		// download, cutting ALAC start latency roughly in half for first plays.
@@ -4104,16 +4630,12 @@ index 4383664..b5449bb 100644
  			go fairplay.WarmCBCSKey(context.Background(), dialer, assetID, firstKey)
  		}
  		// The file's own length wins over the catalog's: it is stored in the moov (the player reports it) and is
-@@ -722,16 +758,111 @@ func traitSet(traits []string) map[string]bool {
+@@ -732,6 +762,115 @@ func traitSet(traits []string) map[string]bool {
+ 	return m
+ }
  
- func extractALACQuality(traits []string) (sampleRate, bitDepth int) {
- 	for _, t := range traits {
--		parts := strings.Split(t, "-")
--		if len(parts) >= 2 {
--			fmt.Sscanf(parts[len(parts)-2], "%d", &sampleRate)
--			fmt.Sscanf(parts[len(parts)-1], "%d", &bitDepth)
--			if sampleRate > 0 && bitDepth > 0 {
--				return
++func extractALACQuality(traits []string) (sampleRate, bitDepth int) {
++	for _, t := range traits {
 +		lower := strings.ToLower(t)
 +		if !strings.Contains(lower, "lossless") && !strings.Contains(lower, "alac") {
 +			continue
@@ -4124,7 +4646,7 @@ index 4383664..b5449bb 100644
 +			depth, depthErr := strconv.Atoi(parts[i+1])
 +			if rateErr != nil || depthErr != nil {
 +				continue
- 			}
++			}
 +			if rate == 44 || rate == 48 || rate == 88 || rate == 96 || rate == 176 || rate == 192 {
 +				rate *= 1000
 +			}
@@ -4137,9 +4659,8 @@ index 4383664..b5449bb 100644
 +				continue
 +			}
 +			return rate, depth
- 		}
- 	}
--	return 96000, 24
++		}
++	}
 +	return 0, 0
 +}
 +
@@ -4220,9 +4741,11 @@ index 4383664..b5449bb 100644
 +	}
 +
 +	return songFormat{Codec: pipeline.CodecAAC, FallbackToAAC: req.Lossless}, nil
- }
- 
++}
++
  func fmtArtwork(template string, size int) string {
+ 	s := strconv.Itoa(size)
+ 	return strings.ReplaceAll(strings.ReplaceAll(template, "{w}", s), "{h}", s)
 diff --git a/engine/core/apple/uploaded.go b/engine/core/apple/uploaded.go
 new file mode 100644
 index 0000000..e7207c3
@@ -7333,11 +7856,35 @@ index 0000000..f544b84
 +	out.Write(make([]byte, 32))
 +	return out.Bytes()
 +}
+diff --git a/engine/core/diskcache/streaming_close_test.go b/engine/core/diskcache/streaming_close_test.go
+index 9f1a38a..7c458c8 100644
+--- a/engine/core/diskcache/streaming_close_test.go
++++ b/engine/core/diskcache/streaming_close_test.go
+@@ -6,7 +6,9 @@ import (
+ 	"io"
+ 	"os"
+ 	"path/filepath"
++	"runtime"
+ 	"sync"
++	"syscall"
+ 	"testing"
+ )
+ 
+@@ -40,7 +42,8 @@ func checkCloseReferences(t *testing.T, sw *StreamingPutWriter, want int32) {
+ 	}
+ 	_, err := sw.file.Stat()
+ 	if want == 0 {
+-		if !errors.Is(err, os.ErrClosed) {
++		closedOnWindows := runtime.GOOS == "windows" && errors.Is(err, syscall.Errno(6))
++		if !errors.Is(err, os.ErrClosed) && !closedOnWindows {
+ 			t.Errorf("last reference did not close descriptor: %v", err)
+ 		}
+ 	} else if err != nil {
 diff --git a/engine/core/drm/adamplay_backend.go b/engine/core/drm/adamplay_backend.go
-index 89bec59..7c46efa 100644
+index 8f37eb8..5d34c70 100644
 --- a/engine/core/drm/adamplay_backend.go
 +++ b/engine/core/drm/adamplay_backend.go
-@@ -100,6 +100,9 @@ type adamplayBackend struct {
+@@ -116,6 +116,9 @@ type adamplayBackend struct {
  }
  
  var errBackendStopped = errors.New("DRM backend is not running")
@@ -7347,7 +7894,7 @@ index 89bec59..7c46efa 100644
  
  // enter registers one call into the C library. gen is the generation the caller's
  // state (key contexts) belongs to, or 0 for calls that carry none. The returned func
-@@ -124,6 +127,44 @@ func (b *adamplayBackend) leave() {
+@@ -140,6 +143,44 @@ func (b *adamplayBackend) leave() {
  	b.mu.Unlock()
  }
  
@@ -7392,7 +7939,7 @@ index 89bec59..7c46efa 100644
  func (b *adamplayBackend) currentGen() uint64 {
  	b.mu.Lock()
  	defer b.mu.Unlock()
-@@ -530,6 +571,9 @@ func (b *adamplayBackend) SetAccountFallback(fn func() AccountInfo) {
+@@ -622,6 +663,9 @@ func (b *adamplayBackend) SetAccountFallback(fn func() AccountInfo) {
  
  // GetAccount returns the account information
  func (b *adamplayBackend) GetAccount(ctx context.Context) (AccountInfo, error) {
@@ -7467,7 +8014,7 @@ index 278a8ef..37d9002 100644
  
  // ErrNotAuthenticated is returned by Decrypt and GetM3U8 when no valid
 diff --git a/engine/core/fairplay/cbcs.go b/engine/core/fairplay/cbcs.go
-index 369489a..c0fbc93 100644
+index 997dd20..f9c75c0 100644
 --- a/engine/core/fairplay/cbcs.go
 +++ b/engine/core/fairplay/cbcs.go
 @@ -8,7 +8,6 @@ import (
@@ -7521,7 +8068,7 @@ index 369489a..c0fbc93 100644
  // recordUse marks the connection as just used after a successful decrypt.
  func (dc *drmConn) recordUse() {
  	dc.lastUsed = time.Now()
-@@ -223,23 +245,20 @@ func CBCSSource(adamID string, dialer CBCSDialer, fileURL string, keyURIs []stri
+@@ -223,14 +245,12 @@ func CBCSSource(adamID string, dialer CBCSDialer, fileURL string, keyURIs []stri
  	}
  }
  
@@ -7541,21 +8088,7 @@ index 369489a..c0fbc93 100644
  }
  
  type cbcsSource struct {
--	adamID       string
--	dialer       CBCSDialer
--	fileURL      string
--	keyURIs      []string
--	durationMs   int    // 0 = leave moov duration unchanged
--	lastArmedKey string // key URI most recently sent via sendKeyHandshake
-+	adamID     string
-+	dialer     CBCSDialer
-+	fileURL    string
-+	keyURIs    []string
-+	durationMs int // 0 = leave moov duration unchanged
- }
- 
- // Stream implements pipeline.Source.  It wraps streamAttempt in a retry loop
-@@ -373,7 +392,6 @@ func (s *cbcsSeekableSource) SourceFrom(startSec float64) (pipeline.Source, floa
+@@ -372,7 +392,6 @@ func (s *cbcsSeekableSource) SourceFrom(startSec float64) (pipeline.Source, floa
  		keyURIs:    keys,
  		durationMs: s.durationMs,
  		startFrag:  startFrag,
@@ -7563,7 +8096,7 @@ index 369489a..c0fbc93 100644
  	}, actualStart
  }
  
-@@ -388,7 +406,6 @@ type cbcsSkipSource struct {
+@@ -387,7 +406,6 @@ type cbcsSkipSource struct {
  	keyURIs    []string
  	durationMs int
  	startFrag  int
@@ -7571,7 +8104,7 @@ index 369489a..c0fbc93 100644
  }
  
  func (s *cbcsSkipSource) Stream(ctx context.Context, w io.Writer) error {
-@@ -536,50 +553,6 @@ func patchAlacFragmentSeq(frag *mp4.Fragment, seqNum int, accumulatedTfdt uint64
+@@ -535,54 +553,6 @@ func patchAlacFragmentSeq(frag *mp4.Fragment, seqNum int, accumulatedTfdt uint64
  	return patchAlacFragment(frag, accumulatedTfdt)
  }
  
@@ -7603,26 +8136,142 @@ index 369489a..c0fbc93 100644
 -// sendFragKey sends the key URI for fragment i to the decryption socket.
 -// Errors are intentionally ignored — key delivery is best-effort and a
 -// failure here manifests as a decrypt error on the next fragment.
--func (s *cbcsSource) sendFragKey(i int, rw *bufio.ReadWriter) {
+-//
+-// armed is the key URI most recently sent on this attempt's connection. It belongs to one attempt, not to the
+-// source: a source is run again for every retry and replay (and by several streams at once), and a key
+-// remembered from an earlier connection would be taken for armed on a fresh one that has no key at all.
+-func (s *cbcsSource) sendFragKey(i int, rw *bufio.ReadWriter, armed *string) {
 -	if i >= len(s.keyURIs) || s.keyURIs[i] == "" {
 -		return
 -	}
 -	keyURI := s.keyURIs[i]
--	if keyURI == s.lastArmedKey {
+-	if keyURI == *armed {
 -		return
 -	}
--	if s.lastArmedKey != "" {
+-	if *armed != "" {
 -		alacstream.SwitchKeys(rw)
 -	}
 -	alacstream.SendString(rw, keyAdamID(s.adamID, s.keyURIs[i]))
 -	alacstream.SendString(rw, keyURI)
--	s.lastArmedKey = keyURI
+-	*armed = keyURI
 -}
 -
  // effectiveKeyURI returns the key in force at fragment i: the last non-empty
  // key URI at or before i ("" when none has been declared yet).
  func effectiveKeyURI(keyURIs []string, i int) string {
-@@ -748,10 +721,6 @@ func (s *cbcsSkipSource) streamAttemptSkip(ctx context.Context, w io.Writer) err
+@@ -670,6 +640,89 @@ func sendKeyHandshake(rw *bufio.ReadWriter, adamID, uri string) error {
+ 	return nil
+ }
+ 
++// cbcsFragRetryBackoffs defines the reconnect backoff schedule when a single
++// fragment's key handshake or FairPlay decrypt fails transiently (for example,
++// an intermittent Apple FPS /getCKC error caught by the DRM exception barrier).
++var cbcsFragRetryBackoffs = []time.Duration{
++	250 * time.Millisecond,
++	750 * time.Millisecond,
++	1500 * time.Millisecond,
++}
++
++// decryptFragmentWithRetry selects keyURI on dc and decrypts frag in-place,
++// reconnecting with bounded backoff on transient DRM errors.
++func decryptFragmentWithRetry(
++	ctx context.Context,
++	dc *drmConn,
++	frag *mp4.Fragment,
++	tracks map[uint32]mp4.DecryptTrackInfo,
++	adamID, keyURI string,
++	fragIdx int,
++	logPrefix string,
++) error {
++	// Snapshot mdat before decryption (in-place) so we can restore on DRM failure.
++	mdatBackup := make([]byte, len(frag.Mdat.Data))
++	copy(mdatBackup, frag.Mdat.Data)
++
++	var lastErr error
++	if err := dc.selectKey(adamID, keyURI); err != nil {
++		lastErr = fmt.Errorf("%s: key at fragment %d: %w", logPrefix, fragIdx, err)
++	} else if err := alacstream.DecryptFragment(frag, tracks, dc.rw); err != nil {
++		lastErr = fmt.Errorf("%s: decrypt fragment %d: %w", logPrefix, fragIdx, err)
++	} else {
++		return nil
++	}
++
++	for attempt, wait := range cbcsFragRetryBackoffs {
++		log.Printf("%s: fragment %d failed (%v), reconnecting DRM socket (retry %d/%d in %v)…",
++			logPrefix, fragIdx, lastErr, attempt+1, len(cbcsFragRetryBackoffs), wait)
++		alacstream.Close(dc.conn)
++
++		// If the context was cancelled (e.g. playback torn down), the pipe
++		// closed because the server goroutine exited — not a transient error.
++		// Calling DialCBCS on a cancelled context would invoke C.drm_lib_open_kd_ctx
++		// against a partially-shutdown DRM backend.
++		if ctx.Err() != nil {
++			return ctx.Err()
++		}
++
++		if wait > 0 {
++			timer := time.NewTimer(wait)
++			select {
++			case <-ctx.Done():
++				timer.Stop()
++				return ctx.Err()
++			case <-timer.C:
++			}
++		}
++
++		conn2, dialErr := dc.dialer.DialCBCS(ctx)
++		if dialErr != nil {
++			lastErr = fmt.Errorf("%s: reconnect after fragment %d: %w", logPrefix, fragIdx, dialErr)
++			continue
++		}
++		dc.conn = conn2
++		dc.rw = bufio.NewReadWriter(bufio.NewReader(conn2), bufio.NewWriter(conn2))
++		dc.armedKey = ""
++		dc.fragsSinceConnect = 0
++		dc.lastUsed = time.Now()
++
++		copy(frag.Mdat.Data, mdatBackup)
++		if err := dc.selectKey(adamID, keyURI); err != nil {
++			lastErr = fmt.Errorf("%s: key after reconnect %d: %w", logPrefix, fragIdx, err)
++			continue
++		}
++		if err := alacstream.DecryptFragment(frag, tracks, dc.rw); err != nil {
++			lastErr = fmt.Errorf("%s: decrypt fragment %d after reconnect: %w", logPrefix, fragIdx, err)
++			continue
++		}
++		log.Printf("%s: fragment %d decrypted after reconnect (retry %d)", logPrefix, fragIdx, attempt+1)
++		return nil
++	}
++
++	return lastErr
++}
++
+ // skipStartFragments reads and discards startFrag fragments, accumulating
+ // the total TFDT delta needed so subsequent fragments have correct timestamps.
+ func skipStartFragments(inBuf *bufio.Reader, startOffset uint64, startFrag int) (accTfdt, finalOffset uint64, err error) {
+@@ -738,11 +791,16 @@ func (s *cbcsSkipSource) streamAttemptSkip(ctx context.Context, w io.Writer) err
+ 	}
+ 
+ 	patchMoovDuration(init, s.durationMs)
+-	if err := init.Encode(outBuf); err != nil {
+-		return fmt.Errorf("cbcs seek: encode init: %w", err)
+-	}
+-	if err := outBuf.Flush(); err != nil {
+-		return fmt.Errorf("cbcs seek: flush init: %w", err)
++	initWritten := false
++	writeInit := func() error {
++		if initWritten {
++			return nil
++		}
++		if err := init.Encode(outBuf); err != nil {
++			return fmt.Errorf("cbcs seek: encode init: %w", err)
++		}
++		initWritten = true
++		return nil
+ 	}
+ 
+ 	// Skip startFrag fragments: read+discard, accumulate tfdt for correct continuation.
+@@ -751,10 +809,6 @@ func (s *cbcsSkipSource) streamAttemptSkip(ctx context.Context, w io.Writer) err
  		return err
  	}
  
@@ -7633,7 +8282,7 @@ index 369489a..c0fbc93 100644
  	for i := s.startFrag; ; i++ {
  		frag, newOffset, err := alacstream.ReadNextFragment(inBuf, offset)
  		if err != nil {
-@@ -765,13 +734,9 @@ func (s *cbcsSkipSource) streamAttemptSkip(ctx context.Context, w io.Writer) err
+@@ -768,44 +822,16 @@ func (s *cbcsSkipSource) streamAttemptSkip(ctx context.Context, w io.Writer) err
  		// Proactive reconnect: refresh the DRM socket before it goes stale. A
  		// fresh connection has no key, so it gets a handshake for the key in
  		// force at i; otherwise only a key change at i is sent.
@@ -7643,28 +8292,65 @@ index 369489a..c0fbc93 100644
 -				return fmt.Errorf("cbcs seek: key after proactive reconnect %d: %w", i, err)
 -			}
 -		} else if err := s.sendSeekFragKey(i, dc.rw); err != nil {
--			return err
 +		dc.refreshIfNeeded()
-+		if err := dc.selectKey(s.adamID, effectiveKeyURI(s.keyURIs, i)); err != nil {
-+			return fmt.Errorf("cbcs seek: key at fragment %d: %w", i, err)
++		if err := decryptFragmentWithRetry(
++			ctx, dc, frag, tracks, s.adamID, effectiveKeyURI(s.keyURIs, i), i, "cbcs seek",
++		); err != nil {
+ 			return err
  		}
- 
- 		mdatBackup := make([]byte, len(frag.Mdat.Data))
-@@ -791,11 +756,12 @@ func (s *cbcsSkipSource) streamAttemptSkip(ctx context.Context, w io.Writer) err
- 			}
- 			dc.conn = conn2
- 			dc.rw = bufio.NewReadWriter(bufio.NewReader(conn2), bufio.NewWriter(conn2))
-+			dc.armedKey = ""
- 			dc.fragsSinceConnect = 0
- 			dc.lastUsed = time.Now()
- 
- 			copy(frag.Mdat.Data, mdatBackup)
+-
+-		mdatBackup := make([]byte, len(frag.Mdat.Data))
+-		copy(mdatBackup, frag.Mdat.Data)
+-
+-		if err := alacstream.DecryptFragment(frag, tracks, dc.rw); err != nil {
+-			log.Printf("cbcs seek: decrypt fragment %d failed (%v), reconnecting DRM socket…", i, err)
+-			alacstream.Close(dc.conn)
+-
+-			if ctx.Err() != nil {
+-				return ctx.Err()
+-			}
+-
+-			conn2, dialErr := s.dialer.DialCBCS(ctx)
+-			if dialErr != nil {
+-				return fmt.Errorf("cbcs seek: reconnect after fragment %d: %w", i, dialErr)
+-			}
+-			dc.conn = conn2
+-			dc.rw = bufio.NewReadWriter(bufio.NewReader(conn2), bufio.NewWriter(conn2))
+-			dc.fragsSinceConnect = 0
+-			dc.lastUsed = time.Now()
+-
+-			copy(frag.Mdat.Data, mdatBackup)
 -			if err := sendKeyHandshake(dc.rw, s.adamID, effectiveKeyURI(s.keyURIs, i)); err != nil {
-+			if err := dc.selectKey(s.adamID, effectiveKeyURI(s.keyURIs, i)); err != nil {
- 				return fmt.Errorf("cbcs seek: key after reconnect %d: %w", i, err)
- 			}
+-				return fmt.Errorf("cbcs seek: key after reconnect %d: %w", i, err)
+-			}
+-
+-			if err2 := alacstream.DecryptFragment(frag, tracks, dc.rw); err2 != nil {
+-				return fmt.Errorf("cbcs seek: decrypt fragment %d after reconnect: %w", i, err2)
+-			}
+-			log.Printf("cbcs seek: fragment %d decrypted after reconnect", i)
++		// Defer flushing init until the first fragment decrypts so an early key
++		// failure still allows outer Stream() retries and a clean HTTP 502.
++		if err := writeInit(); err != nil {
++			return err
+ 		}
+ 		// Patch decode times only after decrypting: growing tfdt changes the moof
+ 		// size, and GetFullSamples locates sample data by the original offsets.
+@@ -822,6 +848,14 @@ func (s *cbcsSkipSource) streamAttemptSkip(ctx context.Context, w io.Writer) err
+ 			tr.RecordPlaybackReady()
+ 		}
+ 	}
++	if !initWritten {
++		if err := writeInit(); err != nil {
++			return err
++		}
++		if err := outBuf.Flush(); err != nil {
++			return fmt.Errorf("cbcs seek: flush init: %w", err)
++		}
++	}
+ 	return nil
+ }
  
-@@ -841,10 +807,6 @@ func (s *cbcsSource) streamAttempt(ctx context.Context, w io.Writer) error {
+@@ -844,10 +878,6 @@ func (s *cbcsSource) streamAttempt(ctx context.Context, w io.Writer) error {
  	if resp.StatusCode != http.StatusOK {
  		return fmt.Errorf("cbcs: download: HTTP %d", resp.StatusCode)
  	}
@@ -7675,7 +8361,33 @@ index 369489a..c0fbc93 100644
  	stalled := newStallDetector(resp.Body, cbcsStallTimeout, cancel)
  
  	tr.RecordCBCSDialStart()
-@@ -896,15 +858,9 @@ func (s *cbcsSource) streamAttempt(ctx context.Context, w io.Writer) error {
+@@ -878,15 +908,19 @@ func (s *cbcsSource) streamAttempt(ctx context.Context, w io.Writer) error {
+ 	}
+ 
+ 	patchMoovDuration(init, s.durationMs)
+-	if err := init.Encode(outBuf); err != nil {
+-		return fmt.Errorf("cbcs: encode init: %w", err)
+-	}
+-	if err := outBuf.Flush(); err != nil {
+-		return fmt.Errorf("cbcs: flush init: %w", err)
++	initWritten := false
++	writeInit := func() error {
++		if initWritten {
++			return nil
++		}
++		if err := init.Encode(outBuf); err != nil {
++			return fmt.Errorf("cbcs: encode init: %w", err)
++		}
++		initWritten = true
++		return nil
+ 	}
+ 
+ 	var accumulatedTfdt uint64
+-	var armedKey string // the key this attempt's connection holds; a new connection holds none
+ 	for i := 0; ; i++ {
+ 		frag, newOffset, err := alacstream.ReadNextFragment(inBuf, offset)
+ 		if err != nil {
+@@ -900,53 +934,16 @@ func (s *cbcsSource) streamAttempt(ctx context.Context, w io.Writer) error {
  		// Proactive reconnect: refresh the DRM socket before it goes stale. A
  		// fresh connection has no key, so it gets a handshake for the key in
  		// force at i; otherwise only a key change at i is sent.
@@ -7685,35 +8397,76 @@ index 369489a..c0fbc93 100644
 -			if err := sendKeyHandshake(dc.rw, s.adamID, newKey); err != nil {
 -				return fmt.Errorf("cbcs: key after proactive reconnect %d: %w", i, err)
 -			}
--			s.lastArmedKey = newKey
+-			armedKey = newKey
 -		} else {
--			s.sendFragKey(i, dc.rw)
+-			s.sendFragKey(i, dc.rw, &armedKey)
 +		dc.refreshIfNeeded()
-+		if err := dc.selectKey(s.adamID, effectiveKeyURI(s.keyURIs, i)); err != nil {
-+			return fmt.Errorf("cbcs: key at fragment %d: %w", i, err)
++		if err := decryptFragmentWithRetry(
++			ctx, dc, frag, tracks, s.adamID, effectiveKeyURI(s.keyURIs, i), i, "cbcs",
++		); err != nil {
++			return err
  		}
- 
- 		// Snapshot mdat before decryption (in-place) so we can restore on DRM socket failure.
-@@ -929,15 +885,15 @@ func (s *cbcsSource) streamAttempt(ctx context.Context, w io.Writer) error {
- 			}
- 			dc.conn = conn2
- 			dc.rw = bufio.NewReadWriter(bufio.NewReader(conn2), bufio.NewWriter(conn2))
-+			dc.armedKey = ""
- 			dc.fragsSinceConnect = 0
- 			dc.lastUsed = time.Now()
- 
- 			copy(frag.Mdat.Data, mdatBackup)
- 			reconnKey := effectiveKeyURI(s.keyURIs, i)
+-
+-		// Snapshot mdat before decryption (in-place) so we can restore on DRM socket failure.
+-		mdatBackup := make([]byte, len(frag.Mdat.Data))
+-		copy(mdatBackup, frag.Mdat.Data)
+-
+-		if err := alacstream.DecryptFragment(frag, tracks, dc.rw); err != nil {
+-			log.Printf("cbcs: decrypt fragment %d failed (%v), reconnecting DRM socket…", i, err)
+-			alacstream.Close(dc.conn)
+-
+-			// If the context was cancelled (e.g. playback torn down), the pipe
+-			// closed because the server goroutine exited — not a transient error.
+-			// Calling DialCBCS on a cancelled context would invoke C.drm_lib_open_kd_ctx
+-			// against a partially-shutdown DRM backend and crash the engine.
+-			if ctx.Err() != nil {
+-				return ctx.Err()
+-			}
+-
+-			conn2, dialErr := s.dialer.DialCBCS(ctx)
+-			if dialErr != nil {
+-				return fmt.Errorf("cbcs: reconnect after fragment %d: %w", i, dialErr)
+-			}
+-			dc.conn = conn2
+-			dc.rw = bufio.NewReadWriter(bufio.NewReader(conn2), bufio.NewWriter(conn2))
+-			dc.fragsSinceConnect = 0
+-			dc.lastUsed = time.Now()
+-
+-			copy(frag.Mdat.Data, mdatBackup)
+-			reconnKey := effectiveKeyURI(s.keyURIs, i)
 -			if err := sendKeyHandshake(dc.rw, s.adamID, reconnKey); err != nil {
-+			if err := dc.selectKey(s.adamID, reconnKey); err != nil {
- 				return fmt.Errorf("cbcs: key after reconnect %d: %w", i, err)
- 			}
--			s.lastArmedKey = reconnKey
+-				return fmt.Errorf("cbcs: key after reconnect %d: %w", i, err)
+-			}
+-			armedKey = reconnKey
+-
+-			if err2 := alacstream.DecryptFragment(frag, tracks, dc.rw); err2 != nil {
+-				return fmt.Errorf("cbcs: decrypt fragment %d after reconnect: %w", i, err2)
+-			}
+-			log.Printf("cbcs: fragment %d decrypted after reconnect", i)
++		// Defer flushing init until fragment 0 decrypts so an early key failure
++		// leaves tw.wrote == 0, enabling outer Stream() retries and HTTP 502.
++		if err := writeInit(); err != nil {
++			return err
+ 		}
+ 		// Patch decode times only after decrypting: growing tfdt changes the moof
+ 		// size, and GetFullSamples locates sample data by the original offsets.
+@@ -963,5 +960,14 @@ func (s *cbcsSource) streamAttempt(ctx context.Context, w io.Writer) error {
+ 		}
+ 	}
  
- 			if err2 := alacstream.DecryptFragment(frag, tracks, dc.rw); err2 != nil {
- 				return fmt.Errorf("cbcs: decrypt fragment %d after reconnect: %w", i, err2)
++	if !initWritten {
++		if err := writeInit(); err != nil {
++			return err
++		}
++		if err := outBuf.Flush(); err != nil {
++			return fmt.Errorf("cbcs: flush init: %w", err)
++		}
++	}
++
+ 	return nil
+ }
 diff --git a/engine/core/fairplay/cbcs_keys_test.go b/engine/core/fairplay/cbcs_keys_test.go
-index 8329a0b..824ccd0 100644
+index 52304e8..85b1189 100644
 --- a/engine/core/fairplay/cbcs_keys_test.go
 +++ b/engine/core/fairplay/cbcs_keys_test.go
 @@ -3,11 +3,27 @@ package fairplay
@@ -7744,7 +8497,7 @@ index 8329a0b..824ccd0 100644
  func TestEffectiveKeyURI(t *testing.T) {
  	keys := []string{cbcsPrefetchKey, "skd://real", "", "", "skd://next", ""}
  	for i, want := range []string{cbcsPrefetchKey, "skd://real", "skd://real", "skd://real", "skd://next", "skd://next"} {
-@@ -46,15 +62,15 @@ func TestSendKeyHandshakeBytes(t *testing.T) {
+@@ -46,16 +62,15 @@ func TestSendKeyHandshakeBytes(t *testing.T) {
  	}
  }
  
@@ -7759,18 +8512,19 @@ index 8329a0b..824ccd0 100644
 +	const adamID = "1440833098"
 +	dc := &drmConn{rw: rw}
  
--	src.sendFragKey(0, rw)
+-	var armed string
+-	src.sendFragKey(0, rw, &armed)
 +	if err := dc.selectKey(adamID, cbcsPrefetchKey); err != nil {
 +		t.Fatal(err)
 +	}
  	rw.Flush()
  	want := append(append([]byte{1, '0'}, byte(len(cbcsPrefetchKey))), cbcsPrefetchKey...)
  	if !bytes.Equal(buf.Bytes(), want) {
-@@ -62,9 +78,11 @@ func TestSendFragKeyStartsWithFragmentZeroKey(t *testing.T) {
+@@ -63,9 +78,11 @@ func TestSendFragKeyStartsWithFragmentZeroKey(t *testing.T) {
  	}
  
  	buf.Reset()
--	src.sendFragKey(1, rw)
+-	src.sendFragKey(1, rw, &armed)
 +	if err := dc.selectKey(adamID, "skd://real"); err != nil {
 +		t.Fatal(err)
 +	}
@@ -7780,7 +8534,7 @@ index 8329a0b..824ccd0 100644
  	// The playlist URI goes out bare, as upstream sends it: no ",<kid>" suffix.
  	wantReal = append(wantReal, byte(len("skd://real")))
  	wantReal = append(wantReal, "skd://real"...)
-@@ -73,16 +91,17 @@ func TestSendFragKeyStartsWithFragmentZeroKey(t *testing.T) {
+@@ -74,16 +91,17 @@ func TestSendFragKeyStartsWithFragmentZeroKey(t *testing.T) {
  	}
  }
  
@@ -7800,8 +8554,25 @@ index 8329a0b..824ccd0 100644
  	if in[3] != "skd://later" {
  		t.Fatal("upstreamKeyURIs must not mutate the playlist's slice")
  	}
+@@ -108,10 +126,12 @@ func TestSendFragKeyArmsEachConnectionAfresh(t *testing.T) {
+ 	src := &cbcsSource{adamID: "1", keyURIs: []string{cbcsPrefetchKey, "skd://real"}}
+ 	for run := range 2 {
+ 		var buf bytes.Buffer
+-		rw := bufio.NewReadWriter(bufio.NewReader(&bytes.Buffer{}), bufio.NewWriter(&buf))
+-		var armed string
+-		src.sendFragKey(0, rw, &armed)
+-		rw.Flush()
++		dc := &drmConn{
++			rw: bufio.NewReadWriter(bufio.NewReader(&bytes.Buffer{}), bufio.NewWriter(&buf)),
++		}
++		if err := dc.selectKey(src.adamID, effectiveKeyURI(src.keyURIs, 0)); err != nil {
++			t.Fatalf("run %d selectKey failed: %v", run, err)
++		}
+ 		if buf.Len() == 0 {
+ 			t.Fatalf("run %d sent no key on its fresh connection", run)
+ 		}
 diff --git a/engine/core/fairplay/cbcs_pipeline_test.go b/engine/core/fairplay/cbcs_pipeline_test.go
-index fb7c495..bbd2cb6 100644
+index fb7c495..2fa0537 100644
 --- a/engine/core/fairplay/cbcs_pipeline_test.go
 +++ b/engine/core/fairplay/cbcs_pipeline_test.go
 @@ -45,6 +45,18 @@ type encryptedTrack struct {
@@ -8050,6 +8821,103 @@ index fb7c495..bbd2cb6 100644
  	}
  }
  
+@@ -342,6 +511,96 @@ func TestCBCSUnknownKeyFailsInsteadOfEmittingCiphertext(t *testing.T) {
+ 	}
+ }
+ 
++// A transient key-open failure (e.g. Apple FPS returning a recoverable SVError)
++// must recover transparently across multiple reconnect retries without failing
++// the audio stream or corrupting any fragment.
++func TestCBCSTransientKeyFailureRecoversAfterRetries(t *testing.T) {
++	origBackoffs := cbcsFragRetryBackoffs
++	cbcsFragRetryBackoffs = []time.Duration{5 * time.Millisecond, 5 * time.Millisecond, 5 * time.Millisecond}
++	defer func() { cbcsFragRetryBackoffs = origBackoffs }()
++
++	tr := buildEncryptedTrack(t, 3)
++	ln, err := net.Listen("tcp", "127.0.0.1:0")
++	if err != nil {
++		t.Fatal(err)
++	}
++	t.Cleanup(func() { ln.Close() })
++
++	var mu sync.Mutex
++	contentKeyAttempts := 0
++	go func() {
++		for {
++			c, err := ln.Accept()
++			if err != nil {
++				return
++			}
++			go func(conn net.Conn) {
++				defer conn.Close()
++				r := bufio.NewReader(conn)
++				for {
++					adam, err := readShort(r)
++					if err != nil || adam == "" {
++						return
++					}
++					uri, err := readShort(r)
++					if err != nil {
++						return
++					}
++					var key []byte
++					if uri == cbcsPrefetchKey {
++						key = prefetchAK
++					} else if uri == testContentKey {
++						mu.Lock()
++						contentKeyAttempts++
++						attempt := contentKeyAttempts
++						mu.Unlock()
++						if attempt <= 2 {
++							return // simulate 2 transient FPS failures before succeeding
++						}
++						key = contentAK
++					} else {
++						return
++					}
++					block, _ := aes.NewCipher(key)
++					for {
++						var sz [4]byte
++						if _, err := io.ReadFull(r, sz[:]); err != nil {
++							return
++						}
++						n := binary.LittleEndian.Uint32(sz[:])
++						if n == 0 {
++							break
++						}
++						buf := make([]byte, n)
++						if _, err := io.ReadFull(r, buf); err != nil {
++							return
++						}
++						cipher.NewCBCDecrypter(block, testIV).CryptBlocks(buf, buf)
++						if _, err := conn.Write(buf); err != nil {
++							return
++						}
++					}
++				}
++			}(c)
++		}
++	}()
++
++	keys := []string{cbcsPrefetchKey, testContentKey, ""}
++	var out bytes.Buffer
++	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
++	defer cancel()
++	if err := CBCSSource(testAdamID, DialerFromAddr(ln.Addr().String()), serveFile(t, tr.file), keys, 0).Stream(ctx, &out); err != nil {
++		t.Fatalf("expected recovery after 2 transient key failures, got %v", err)
++	}
++	mu.Lock()
++	attempts := contentKeyAttempts
++	mu.Unlock()
++	if attempts != 3 {
++		t.Fatalf("content key attempts = %d, want 3", attempts)
++	}
++	checkFragments(t, decodeOutput(t, out.Bytes()), tr.plain, 0)
++}
++
+ // decodeOutputPrefix returns the indexes of the fragments fully present in out.
+ func decodeOutputPrefix(out []byte) []int {
+ 	r := bufio.NewReader(bytes.NewReader(out))
 diff --git a/engine/core/fairplay/ec3_remux.go b/engine/core/fairplay/ec3_remux.go
 new file mode 100644
 index 0000000..29d578a
@@ -8408,10 +9276,10 @@ index 0000000..5ee2534
 +	return out
 +}
 diff --git a/engine/core/hls/hls.go b/engine/core/hls/hls.go
-index f607323..87c50e4 100644
+index 061557c..24618ce 100644
 --- a/engine/core/hls/hls.go
 +++ b/engine/core/hls/hls.go
-@@ -27,8 +27,10 @@ import (
+@@ -28,8 +28,10 @@ import (
  )
  
  var (
@@ -8424,7 +9292,7 @@ index f607323..87c50e4 100644
  )
  
  // ─── Master playlist ──────────────────────────────────────────────────────────
-@@ -41,6 +43,14 @@ type Variant struct {
+@@ -42,6 +44,14 @@ type Variant struct {
  	Codecs           string
  	Resolution       string
  	VideoRange       string
@@ -8439,7 +9307,7 @@ index f607323..87c50e4 100644
  	// HDCPLevel is the HDCP-LEVEL attribute ("TYPE-0", "TYPE-1", "NONE"): the output protection the variant
  	// requires before it may be played. Empty when the playlist does not say.
  	HDCPLevel string
-@@ -192,25 +202,112 @@ func (m *Master) SelectVideoVariantWithCodec(maxHeight int) (variantURL, codecs,
+@@ -197,25 +207,112 @@ func (m *Master) SelectVideoVariantWithCodec(maxHeight int) (variantURL, codecs,
  	return "", "", "", fmt.Errorf("no video variant at or below %dp", maxHeight)
  }
  
@@ -8472,10 +9340,8 @@ index f607323..87c50e4 100644
 +		if !found || betterCodecVariant(v, best) {
 +			best = v
 +			found = true
- 		}
- 	}
--	if best.URL != "" {
--		return best.URL
++		}
++	}
 +	return best, found
 +}
 +
@@ -8499,8 +9365,10 @@ index f607323..87c50e4 100644
 +		if !found || betterCodecVariant(v, best) {
 +			best = v
 +			found = true
-+		}
-+	}
+ 		}
+ 	}
+-	if best.URL != "" {
+-		return best.URL
 +	return best, found
 +}
 +
@@ -8511,7 +9379,8 @@ index f607323..87c50e4 100644
 +	v, ok := m.SelectVariantByCodec(codec)
 +	if !ok {
 +		return ""
-+	}
+ 	}
+-	return fallback.URL
 +	return v.URL
 +}
 +
@@ -8537,8 +9406,7 @@ index f607323..87c50e4 100644
 +		if variantHasCodec(v, codec) {
 +			return true
 +		}
- 	}
--	return fallback.URL
++	}
 +	return false
 +}
 +
@@ -8566,8 +9434,8 @@ index f607323..87c50e4 100644
  }
  
  // Height is the variant's pixel height from RESOLUTION, or from the dimensions in its URL; 0 when neither says.
-@@ -291,6 +388,60 @@ func allowedCPCByURI(master string) map[string]string {
- 	return out
+@@ -351,6 +448,60 @@ func (m *Master) SelectALAC(hiRes bool) (v Variant, ok bool) {
+ 	return best, best.URL != ""
  }
  
 +// audioGroupByURI maps each variant URI in a master playlist to its AUDIO
@@ -8627,20 +9495,27 @@ index f607323..87c50e4 100644
  // CPCSummary shortens an ALLOWED-CPC value for a log line: the key systems by name with their levels, for example
  // "fairplay:Main/AppleMain playready:SL3000".
  func CPCSummary(cpc string) string {
-@@ -882,6 +1033,7 @@ func parseMaster(base *url.URL, rawURL string, body []byte) (*Master, error) {
- 	pl := from.(*m3u8.MasterPlaylist)
+@@ -953,6 +1104,7 @@ func parseMaster(base *url.URL, rawURL string, body []byte) (*Master, error) {
  	m := &Master{baseURL: base}
  	cpc := allowedCPCByURI(string(body))
+ 	formats := audioFormatByGroup(string(body))
 +	audioGroups := audioGroupByURI(string(body))
  
  	for _, v := range pl.Variants {
  		if v == nil {
-@@ -891,15 +1043,21 @@ func parseMaster(base *url.URL, rawURL string, body []byte) (*Master, error) {
+@@ -962,17 +1114,30 @@ func parseMaster(base *url.URL, rawURL string, body []byte) (*Master, error) {
  		if err != nil {
  			continue
  		}
 +		audioGroup := audioGroups[v.URI]
 +		audioRate, audioDepth, audioUnsupported := audioGroupQuality(audioGroup)
++		mediaFmt := formats[v.Audio]
++		if audioRate == 0 && mediaFmt[0] > 0 {
++			audioRate = mediaFmt[0]
++		}
++		if audioDepth == 0 && mediaFmt[1] > 0 {
++			audioDepth = mediaFmt[1]
++		}
  		m.Variants = append(m.Variants, Variant{
 -			URL:              varURL.String(),
 -			Bandwidth:        v.Bandwidth,
@@ -8650,6 +9525,8 @@ index f607323..87c50e4 100644
 -			VideoRange:       v.VideoRange,
 -			HDCPLevel:        v.HDCPLevel,
 -			AllowedCPC:       cpc[v.URI],
+-			SampleRate:       formats[v.Audio][0],
+-			BitDepth:         formats[v.Audio][1],
 +			URL:                     varURL.String(),
 +			Bandwidth:               v.Bandwidth,
 +			AverageBandwidth:        v.AverageBandwidth,
@@ -8662,22 +9539,16 @@ index f607323..87c50e4 100644
 +			AudioQualityUnsupported: audioUnsupported,
 +			HDCPLevel:               v.HDCPLevel,
 +			AllowedCPC:              cpc[v.URI],
++			SampleRate:              mediaFmt[0],
++			BitDepth:                mediaFmt[1],
  		})
  		for _, alt := range v.Alternatives {
  			if alt == nil || alt.URI == "" {
 diff --git a/engine/core/hls/hls_test.go b/engine/core/hls/hls_test.go
-index 7bd06fd..076d3da 100644
+index 1c80570..99a9752 100644
 --- a/engine/core/hls/hls_test.go
 +++ b/engine/core/hls/hls_test.go
-@@ -4,6 +4,7 @@ import (
- 	"context"
- 	"net/http"
- 	"net/http/httptest"
-+	"net/url"
- 	"os"
- 	"path/filepath"
- 	"strings"
-@@ -185,9 +186,120 @@ func TestSelectByCodec_NoMatch(t *testing.T) {
+@@ -186,9 +186,120 @@ func TestSelectByCodec_NoMatch(t *testing.T) {
  		{URL: "a", Bandwidth: 256000, Codecs: "mp4a.40.2"},
  		{URL: "b", Bandwidth: 320000, Codecs: "mp4a.40.2"},
  	}}
@@ -8950,7 +9821,7 @@ index fe6983f..63bbc64 100644
  func TestOpenReportsStreamDuration(t *testing.T) {
  	for _, tc := range []struct {
 diff --git a/engine/core/playback/manager.go b/engine/core/playback/manager.go
-index 16f132b..1acb38a 100644
+index 8107cdf..5806810 100644
 --- a/engine/core/playback/manager.go
 +++ b/engine/core/playback/manager.go
 @@ -47,10 +47,15 @@ type OpenRequest struct {
@@ -8969,7 +9840,7 @@ index 16f132b..1acb38a 100644
  	// Private opens a session owned exclusively by the caller: it never reuses
  	// an existing session, never joins a concurrent Open for the same asset,
  	// and is never indexed for reuse by later Opens. Exports use this so their
-@@ -208,6 +213,17 @@ func (c countingHeaderWriter) SetHeader(k, v string) { c.hw.SetHeader(k, v) }
+@@ -210,6 +215,17 @@ func (c countingHeaderWriter) SetHeader(k, v string) { c.hw.SetHeader(k, v) }
  // Use this when the caller needs to configure the provider before wiring it
  // (e.g. passing a CBCS socket address to apple.NewProviderWithCBCS).
  func NewWithProvider(p media.Provider) *Manager {
@@ -8986,8 +9857,8 @@ index 16f132b..1acb38a 100644
 +func newWithProvider(p media.Provider, reapExpired bool) *Manager {
  	m := &Manager{
  		provider:       p,
- 		sessions:       make(map[string]*Session),
-@@ -216,14 +232,18 @@ func NewWithProvider(p media.Provider) *Manager {
+ 		stopReap:       make(chan struct{}),
+@@ -219,14 +235,18 @@ func NewWithProvider(p media.Provider) *Manager {
  		sessionToAsset: make(map[string]string),
  		inflight:       make(map[string]*openFlight),
  	}
@@ -9008,7 +9879,7 @@ index 16f132b..1acb38a 100644
  	return req.AssetID + ":" + req.Storefront + ":" + flags
  }
  
-@@ -298,6 +318,7 @@ func (m *Manager) openDirect(ctx context.Context, req OpenRequest, assetKey stri
+@@ -301,6 +321,7 @@ func (m *Manager) openDirect(ctx context.Context, req OpenRequest, assetKey stri
  		Lossless:          req.Lossless,
  		HiRes:             req.HiRes,
  		Atmos:             req.Atmos,
@@ -9016,7 +9887,7 @@ index 16f132b..1acb38a 100644
  		Video:             req.Video,
  		MVMaxHeight:       req.MVMaxHeight,
  		MVAudioPriorities: req.MVAudioPriorities,
-@@ -335,15 +356,25 @@ func (m *Manager) openDirect(ctx context.Context, req OpenRequest, assetKey stri
+@@ -338,15 +359,25 @@ func (m *Manager) openDirect(ctx context.Context, req OpenRequest, assetKey stri
  	if err != nil {
  		return nil, err
  	}
@@ -9045,7 +9916,7 @@ index 16f132b..1acb38a 100644
  		log.Printf("[playback] %s: stream is %dms, catalog says %dms: reporting the stream's", req.AssetID, d, sess.DurationMs)
  		sess.DurationMs = d
  	}
-@@ -361,6 +392,9 @@ func (m *Manager) openDirect(ctx context.Context, req OpenRequest, assetKey stri
+@@ -364,6 +395,9 @@ func (m *Manager) openDirect(ctx context.Context, req OpenRequest, assetKey stri
  				sess.BitRate = track.BitRate
  				sess.ChannelCount = track.ChannelCount
  				sess.CodecMIMEType = track.CodecMIMEType
@@ -9055,7 +9926,7 @@ index 16f132b..1acb38a 100644
  				sess.SpatialAudio = track.SpatialAudio
  			}
  			_, sess.Capabilities.Seekable = stream.Source.(pipeline.SeekableSource)
-@@ -378,6 +412,22 @@ func (m *Manager) openDirect(ctx context.Context, req OpenRequest, assetKey stri
+@@ -381,6 +415,22 @@ func (m *Manager) openDirect(ctx context.Context, req OpenRequest, assetKey stri
  	return sess, nil
  }
  
@@ -9079,7 +9950,7 @@ index 16f132b..1acb38a 100644
  // track, each needing its own playlist round-trip, so opening them one after another
  // added a full round-trip to every start. The results are returned in track order;
 diff --git a/engine/core/playback/manager_resume_test.go b/engine/core/playback/manager_resume_test.go
-index 3b589a7..45482af 100644
+index 4f54668..0d5a9c9 100644
 --- a/engine/core/playback/manager_resume_test.go
 +++ b/engine/core/playback/manager_resume_test.go
 @@ -160,6 +160,30 @@ func TestOpen_DifferentCapabilitiesProduceSeparateSessions(t *testing.T) {
@@ -9127,26 +9998,6 @@ index 8814617..a56dea7 100644
  	SpatialAudio  string `json:"spatialAudio,omitempty"` // "binaural" | "binaural-lossless"
  
  	Capabilities struct {
-diff --git a/engine/core/prefetch/prefetch.go b/engine/core/prefetch/prefetch.go
-index 55540ff..d1def05 100644
---- a/engine/core/prefetch/prefetch.go
-+++ b/engine/core/prefetch/prefetch.go
-@@ -860,6 +860,7 @@ func (s *Scheduler) warm(item *workItem) {
- 			Token:      item.token,
- 			MUT:        item.mut,
- 			Lossless:   item.lossless,
-+			HiRes:      true, // the best the track has; a capped request opens its own session
- 			Private:    true,
- 		})
- 		if err != nil {
-@@ -892,6 +893,7 @@ func (s *Scheduler) warm(item *workItem) {
- 				AssetID:    item.track.AssetID,
- 				Storefront: sf,
- 				Lossless:   item.lossless,
-+				HiRes:      true,
- 			},
- 		}
- 		s.mu.Unlock()
 diff --git a/engine/core/vlc/callbacks.go b/engine/core/vlc/callbacks.go
 index 3dfd6ee..5873ae2 100644
 --- a/engine/core/vlc/callbacks.go
@@ -9213,7 +10064,7 @@ index 391e1bd..a077ad1 100644
  
  // Source mirrors the interface in callbacks.go, which the engine's handlers implement.
 diff --git a/engine/core/vlc/sync_stutter_test.go b/engine/core/vlc/sync_stutter_test.go
-index 7e1bcf3..4941722 100644
+index a8e2812..e81311d 100644
 --- a/engine/core/vlc/sync_stutter_test.go
 +++ b/engine/core/vlc/sync_stutter_test.go
 @@ -1,3 +1,5 @@
@@ -9222,42 +10073,8 @@ index 7e1bcf3..4941722 100644
  package vlc
  
  // TestVLCSyncStutter measures whether continuous libvlc_media_player_set_time
-diff --git a/engine/utils/ampapi/token.go b/engine/utils/ampapi/token.go
-index c72b8b1..417940f 100644
---- a/engine/utils/ampapi/token.go
-+++ b/engine/utils/ampapi/token.go
-@@ -21,6 +21,9 @@ func GetToken() (string, error) {
- 		return "", err
- 	}
- 	defer resp.Body.Close()
-+	if resp.StatusCode != http.StatusOK {
-+		return "", fmt.Errorf("token: music.apple.com returned HTTP %d", resp.StatusCode)
-+	}
- 
- 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxTokenPageBytes))
- 	if err != nil {
-@@ -43,6 +46,9 @@ func GetToken() (string, error) {
- 		return "", err
- 	}
- 	defer resp.Body.Close()
-+	if resp.StatusCode != http.StatusOK {
-+		return "", fmt.Errorf("token: web player script returned HTTP %d", resp.StatusCode)
-+	}
- 
- 	body, err = io.ReadAll(io.LimitReader(resp.Body, maxTokenPageBytes))
- 	if err != nil {
-@@ -51,6 +57,9 @@ func GetToken() (string, error) {
- 
- 	regex = regexp.MustCompile(`eyJ[A-Za-z0-9-_=]+\.[A-Za-z0-9-_=]+\.[A-Za-z0-9-_=]+`)
- 	token := regex.FindString(string(body))
-+	if token == "" {
-+		return "", fmt.Errorf("token: developer token not found in web player script")
-+	}
- 
- 	return token, nil
- }
 diff --git a/engine/utils/lyrics/lyrics.go b/engine/utils/lyrics/lyrics.go
-index 80020bf..9afa407 100644
+index 1f1f2c9..b6023b9 100644
 --- a/engine/utils/lyrics/lyrics.go
 +++ b/engine/utils/lyrics/lyrics.go
 @@ -18,6 +18,16 @@ import (

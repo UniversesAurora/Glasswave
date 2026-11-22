@@ -41,3 +41,87 @@ index c1a7c2e..ed3fe21 100755
      echo ""
      echo "=== Building Android x86-64 runtime fixture ==="
      NDK_ROOT="${ANDROID_NDK_ROOT:-$HOME/android-ndk-r26d-windows/android-ndk-r26d}"
+diff --git a/hybris/common/hooks_win32.c b/hybris/common/hooks_win32.c
+index 9d993c8..b9cf51b 100644
+--- a/hybris/common/hooks_win32.c
++++ b/hybris/common/hooks_win32.c
+@@ -56,6 +56,10 @@ static __attribute__((sysv_abi)) int _hybris_win32_pthread_once(pthread_once_t *
+ }
+ 
+ /* ── pthread key ─────────────────────────────────────────────────────────────*/
++/* Bionic never issues pthread_key_t == 0 and guest code (including Bionic's
++ * own startup and libc++) may pass an uninitialized 0 key before creation.
++ * Offset guest keys by +1 so 0 is always invalid, preventing collisions with
++ * winpthreads key 0 (which would otherwise corrupt __cxa_get_globals). */
+ static __attribute__((sysv_abi)) int _hybris_win32_pthread_key_create(pthread_key_t *key,
+                                               void (*destructor)(void *))
+ {
+@@ -65,18 +69,23 @@ static __attribute__((sysv_abi)) int _hybris_win32_pthread_key_create(pthread_ke
+      * argument.  Keep the key usable but do not register an ABI-incompatible
+      * host callback; cleanup is deferred until a callback bridge is available. */
+     (void)destructor;
+-    return pthread_key_create(key, NULL);
++    pthread_key_t host_key = 0;
++    int rc = pthread_key_create(&host_key, NULL);
++    if (rc == 0 && key) *key = host_key + 1;
++    return rc;
+ }
+ 
+ static __attribute__((sysv_abi)) int _hybris_win32_pthread_key_delete(pthread_key_t key)
+ {
+-    return pthread_key_delete(key);
++    if (key == 0) return EINVAL;
++    return pthread_key_delete(key - 1);
+ }
+ 
+ static __attribute__((sysv_abi)) int _hybris_win32_pthread_setspecific(pthread_key_t key,
+                                               const void *value)
+ {
+-    return pthread_setspecific(key, value);
++    if (key == 0) return EINVAL;
++    return pthread_setspecific(key - 1, value);
+ }
+ 
+ /* ── pthread sched ───────────────────────────────────────────────────────────*/
+diff --git a/hybris/common/windows_hook_table.c b/hybris/common/windows_hook_table.c
+index d6a987d..846e887 100644
+--- a/hybris/common/windows_hook_table.c
++++ b/hybris/common/windows_hook_table.c
+@@ -379,7 +379,7 @@ static void *_bionic_thread_entry(void *p){ struct _bionic_thread_tramp *t=(stru
+ static int __attribute__((sysv_abi)) _bionic_pthread_create(void *tid,const void *attr,void *(*fn)(void*),void *arg)
+ { WTRACE("[pthread_create] fn=%p\n",(void*)(uintptr_t)fn); _wtrace_stack("pthread_create", (void*)(uintptr_t)fn, arg); struct _bionic_thread_tramp *t=(struct _bionic_thread_tramp*)malloc(sizeof *t); if(!t) return EAGAIN;
+   t->fn=fn; t->arg=arg; int rc=pthread_create((pthread_t*)tid,(const pthread_attr_t*)attr,_bionic_thread_entry,t); if(rc)free(t); return rc; }
+-static void *__attribute__((sysv_abi)) _bionic_getspecific(pthread_key_t k){return pthread_getspecific(k);}
++static void *__attribute__((sysv_abi)) _bionic_getspecific(pthread_key_t k){return k==0?NULL:pthread_getspecific(k-1);}
+ static int __attribute__((sysv_abi)) _bionic_pthread_kill(pthread_t th,int sig){(void)th;(void)sig;return 0;}
+ static int __attribute__((sysv_abi)) _bionic_pthread_sigmask(int how,const void *set,void *old){(void)how;(void)set;(void)old;return 0;}
+ 
+@@ -795,19 +795,21 @@ static char *__attribute__((sysv_abi)) _sysv_dlerror(void){return android_dlerro
+ static int   __attribute__((sysv_abi)) _sysv_dladdr(const void *a,void *i){return android_dladdr(a,i);}
+ static int   __attribute__((sysv_abi)) _sysv_dl_iterate_phdr(void *cb,void *d){return android_dl_iterate_phdr((int(*)(void*,size_t,void*))cb,d);}
+ 
+-/* ── Android log (liblog.so) — sysv_abi, suppressed ─────────────────────── */
+-static void _alog_emit(const char *tag,const char *msg){
+-    if(!_dbg()) return; char b[1024];
+-    int n=snprintf(b,sizeof b,"[alog] %s: %s\n", tag?tag:"", msg?msg:"");
+-    if(n>0){ if(n>(int)sizeof b)n=sizeof b; DWORD wr; WriteFile(GetStdHandle(STD_ERROR_HANDLE),b,(DWORD)n,&wr,NULL); }
++/* ── Android log (liblog.so) — sysv_abi; always emit ERROR/FATAL (prio >= 6) */
++static void _alog_emit(int prio,const char *tag,const char *msg){
++    if(prio < 6 && !_dbg()) return;
++    char b[1024];
++    const char *lvl = prio >= 7 ? "/F" : (prio == 6 ? "/E" : "");
++    int n=snprintf(b,sizeof b,"[alog%s] %s: %s\n", lvl, tag?tag:"", msg?msg:"");
++    if(n>0){ if(n>(int)sizeof b)n=(int)sizeof b; DWORD wr; WriteFile(GetStdHandle(STD_ERROR_HANDLE),b,(DWORD)n,&wr,NULL); }
+ }
+ static int __attribute__((sysv_abi)) _win32_android_log_vprint(int prio,const char *tag,const char *fmt,sh_va ap){
+-    char b[1024]; (void)prio; sh_vformat(b,sizeof b,fmt,ap); _alog_emit(tag,b); return 0; }
++    char b[1024]; sh_vformat(b,sizeof b,fmt,ap); _alog_emit(prio,tag,b); return 0; }
+ static int __attribute__((sysv_abi)) _win32_android_log_print(int prio,const char *tag,const char *fmt,...){
+     sh_va ap; __builtin_sysv_va_start(ap, fmt); int r=_win32_android_log_vprint(prio,tag,fmt,ap); __builtin_sysv_va_end(ap); return r; }
+ /* __android_log_write(prio, tag, text): text is a literal message, not a fmt. */
+ static int __attribute__((sysv_abi)) _win32_android_log_write(int prio,const char *tag,const char *text){
+-    (void)prio; _alog_emit(tag,text); return 0; }
++    _alog_emit(prio,tag,text); return 0; }
+ static int __attribute__((sysv_abi)) _win32_android_log_buf_print(int buf,int prio,const char *tag,const char *fmt,...){(void)buf;(void)prio;(void)tag;(void)fmt;return 0;}
+ static int __attribute__((sysv_abi)) _win32___android_log_is_loggable(int p,const char *t,int d){(void)p;(void)t;(void)d;return 1;}
+ 

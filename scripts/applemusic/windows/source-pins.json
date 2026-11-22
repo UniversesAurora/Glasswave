@@ -3,12 +3,13 @@
   "adam": {
     "repository": "https://github.com/silentone12725/apple-music-linux.git",
     "branch": "nightly",
-    "commit": "72d835ebf4c73f3b5f8b4e2b2496a2042a4a214c",
+    "commit": "960bd8a354e9370ca8ddad69c484d7cdc41125e0",
     "patch": "scripts/applemusic/glasswave.patch"
   },
   "libhybrisWin": {
     "repository": "https://github.com/silentone12725/libhybris-win.git",
-    "commit": "606bae7cdb49eaf8be79828de6cda0ce9d414295",
+    "branch": "master",
+    "commit": "96125ef983874134deaa1cddd7b763f55f70c1b1",
     "patch": "scripts/applemusic/windows/libhybris-win.patch"
   },
   "buildTools": {
