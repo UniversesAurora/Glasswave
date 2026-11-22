@@ -75,11 +75,12 @@ fold it into `docs/plan/status.md` once it is stale.
 
 - (Resolved 2026-11-22) Startup false `"no picture"` cover log spam on `CacheOnlyScope` misses
   was fixed via `cache::IsCacheOnly()` guarding `LogArtFailure` in `stream/art_extractor.h`.
+- (Resolved 2026-11-22) Extracted `PlaybackScheduler`'s `g_probeEnabled`/`g_probeCurrentIndex`
+  branches into a `PlaybackDriver` seam (`LivePlaybackDriver` vs `ProbePlaybackDriver`), closing
+  item 63 of 63 from `docs/plan/review-2026-11-21.md`.
 - A full LTCG rebuild warns C4702 four times in the SDK's `input_impl.h` (after
   `input_stubs::decode_run_raw`, a throw). Older than the review; pragmas, a per-file
   `/wd4702` and an out-of-line stub did not silence it. Incremental builds do not show it.
-- The scheduler's `g_probeEnabled` branches stay in production code (a seam needs a host with
-  snapshot and restore).
 - Cache formats changed during the review (Apple songs v7, NetEase songs v1, audio source
   memo v2) without converting the dev data; the records refill as they are used. AGENTS.md
   requires converting or removing affected dev data in the same change: do that next time.

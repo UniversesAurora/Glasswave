@@ -2,7 +2,33 @@
 
 Updated: 2026-11-22
 
-## Stable per-account cache scopes, artist-search fallback, mock-test removal & third-party guide (2026-11-22, latest)
+## Apple Music Genres empty-list fix, Preferences Dark Mode & PlaybackDriver seam (2026-11-22, latest)
+
+1. **Apple Music Genres (`流派`) & Composers empty-list root cause fix (`applemusic/stream_provider.*`)**:
+   - `ReadGroupsPage` called `songs.clear()` right before returning `load.songs` to `FinishListPage`,
+     which then overwrote `m_librarySongs = songs` (empty!) and set `m_librarySongsLoaded = true`
+     for the 5-minute `kLibrarySnapshotTtl`. Clicking into any genre (`genre:Anime`, `genre:J-Pop`,
+     `genre:Other`) or revisiting Genres/Composers within 5 minutes read that wiped empty vector
+     and persisted 0-row manifests to disk.
+   - Removed the spurious `songs.clear()` in `ReadGroupsPage` and stopped `FinishListPage` from
+     overwriting `m_librarySongs` (which `RecentLibrarySongs` already updates atomically with the
+     full raw library snapshot), keeping `Catalog::Get().PutAndHint(songs)`. Also filtered
+     locally-removed songs in `EnrichListPage`'s `groupSongs` copy.
+   - Cleared the poisoned 0-row `genre:*`/`genres` list cache entries from `.local/fb2k-dev`.
+2. **Preferences page Dark Mode support (`ui/settings_page.cpp`)**:
+   - Advertised `preferences_state::dark_mode_supported` in `SettingsPage::get_state()`.
+   - Attached `fb2k::CCoreDarkModeHooks` (`AddDialogWithControls`), routed `WM_ERASEBKGND` through
+     `WM_CTLCOLORDLG` so the custom scrollable page window paints foobar2000's native dark dialog
+     background, and synced `SetWindowTheme(m_hwnd, L"DarkMode_Explorer" / L"Explorer")` for the
+     vertical scrollbar.
+3. **`PlaybackScheduler` `PlaybackDriver` seam (`media/playback_scheduler.cpp`)**:
+   - Replaced `g_probeEnabled` and `g_probeCurrentIndex` globals with a clean `PlaybackDriver`
+     interface (`LivePlaybackDriver` default vs `ProbePlaybackDriver` installed only by
+     `PlaybackSchedulerProbeAccess::Install()`), closing the final item (63/63) of
+     `docs/plan/review-2026-11-21.md`.
+- Verification: `pwsh -File scripts/build.ps1` (Release|x64, `0` warnings / `0` errors).
+
+## Stable per-account cache scopes, artist-search fallback, mock-test removal & third-party guide (2026-11-22)
 
 1. **Stable per-account cache scopes (`cache/store.*`, `cache/service.cpp`, both providers)**:
    - Added `account_scopes(provider, account, token)` to SQLite cache index schema v3 (`kIndexSchemaVersion = 3`),
