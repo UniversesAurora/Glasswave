@@ -16,7 +16,9 @@
 #include "ui/main_window.h"
 #include "ui/win32.h"
 
+#include <SDK/coreDarkMode.h>
 #include <commctrl.h>
+#include <uxtheme.h>
 
 // Preferences > Display > Glasswave: Glasswave's own settings and one section per streaming
 // provider, built from settings::Field rows. Plain Win32 controls laid out in code; the page
@@ -254,7 +256,7 @@ public:
     }
 
     t_uint32 get_state() override {
-        t_uint32 state = preferences_state::resettable;
+        t_uint32 state = preferences_state::resettable | preferences_state::dark_mode_supported;
         if (m_changed) state |= preferences_state::changed;
         if (m_restart) state |= preferences_state::needs_restart;
         return state;
@@ -331,11 +333,26 @@ private:
         case WM_CREATE:
             Build();
             Load(false);
+            m_dark.AddDialogWithControls(m_hwnd);
+            ApplyScrollTheme();
             return 0;
         case WM_SIZE: UpdateScrollRange(); return 0;
         case WM_VSCROLL: OnScroll(LOWORD(wp)); return 0;
         case WM_MOUSEWHEEL: ScrollTo(m_scroll - GET_WHEEL_DELTA_WPARAM(wp) * Px(kRowH) * 3 / WHEEL_DELTA); return 0;
-        case WM_CTLCOLORSTATIC:  // labels on the page's own background
+        case WM_ERASEBKGND: {
+            ApplyScrollTheme();
+            HDC hdc = reinterpret_cast<HDC>(wp);
+            HBRUSH brush = reinterpret_cast<HBRUSH>(
+                SendMessageW(m_hwnd, WM_CTLCOLORDLG, wp, reinterpret_cast<LPARAM>(m_hwnd)));
+            if (!brush) brush = GetSysColorBrush(COLOR_WINDOW);
+            RECT rc{};
+            GetClientRect(m_hwnd, &rc);
+            FillRect(hdc, &rc, brush);
+            return 1;
+        }
+        case WM_CTLCOLORDLG:
+            return reinterpret_cast<LRESULT>(GetSysColorBrush(COLOR_WINDOW));
+        case WM_CTLCOLORSTATIC:  // light-mode labels on the page's own background (dark mode hooks run first)
             SetBkMode(reinterpret_cast<HDC>(wp), TRANSPARENT);
             return reinterpret_cast<LRESULT>(GetSysColorBrush(COLOR_WINDOW));
         case WM_COMMAND: OnCommand(HIWORD(wp), reinterpret_cast<HWND>(lp)); return 0;
@@ -520,8 +537,17 @@ private:
         SetScrollPos(m_hwnd, SB_VERT, pos, TRUE);
     }
 
+    void ApplyScrollTheme() {
+        const bool dark = static_cast<bool>(m_dark);
+        if (m_scrollDark && *m_scrollDark == dark) return;
+        m_scrollDark = dark;
+        SetWindowTheme(m_hwnd, dark ? L"DarkMode_Explorer" : L"Explorer", nullptr);
+    }
+
     HWND m_hwnd = nullptr;
     preferences_page_callback::ptr m_callback;
+    fb2k::CCoreDarkModeHooks m_dark;
+    std::optional<bool> m_scrollDark;
     std::vector<Section> m_sections;  // the rows point into these
     std::vector<Row> m_rows;
     HFONT m_bold = nullptr;
