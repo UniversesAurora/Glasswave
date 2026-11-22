@@ -160,7 +160,7 @@ class Provider {
     using HomeDone = std::function<void(Home home, std::wstring error)>;
     struct CatalogSearchSuggestionQuery {
         std::wstring term;
-        std::shared_ptr<std::atomic_bool> cancelled;
+        CancelToken cancelled;
     };
     struct CatalogSearchSuggestionTerm {
         std::wstring searchTerm;
@@ -614,10 +614,10 @@ template <class... Args> struct DoneArgs<std::function<void(Args...)>> {
 template <class Fn> struct GuardState {
     Fn fn;
     std::wstring error;
-    std::shared_ptr<std::atomic_bool> cancelled;
+    CancelToken cancelled;
 
     ~GuardState() {
-        if (!fn || (cancelled && cancelled->load(std::memory_order_acquire))) return;
+        if (!fn || IsCancelled(cancelled)) return;
         try {
             fb2k::inMainThread([fn = std::move(fn), error = std::move(error)]() mutable {
                 DoneArgs<Fn>::Fail(fn, std::move(error));
@@ -629,12 +629,57 @@ template <class Fn> struct GuardState {
 
 } // namespace detail
 
+// Combines a provider lifetime abort_callback with an optional per-request CancelToken into a
+// single abort_callback using Windows thread-pool event waits (zero polling, zero extra threads).
+class CombinedAbort final : public abort_callback {
+  public:
+    CombinedAbort(abort_callback& base, CancelToken token)
+        : m_base(base), m_token(std::move(token)) {
+        if (m_base.is_aborting() || IsCancelled(m_token)) {
+            m_signal.abort();
+            return;
+        }
+        if (!m_token) return;
+        if (const HANDLE baseEvent = m_base.get_abort_event())
+            RegisterWaitForSingleObject(&m_baseWait, baseEvent, &OnSignalled, &m_signal, INFINITE,
+                                        WT_EXECUTEONLYONCE);
+        if (const HANDLE tokenEvent = m_token->Event())
+            RegisterWaitForSingleObject(&m_tokenWait, tokenEvent, &OnSignalled, &m_signal, INFINITE,
+                                        WT_EXECUTEONLYONCE);
+        if (m_base.is_aborting() || IsCancelled(m_token)) m_signal.abort();
+    }
+    CombinedAbort(const CombinedAbort&) = delete;
+    CombinedAbort& operator=(const CombinedAbort&) = delete;
+    ~CombinedAbort() {
+        if (m_tokenWait) UnregisterWaitEx(m_tokenWait, INVALID_HANDLE_VALUE);
+        if (m_baseWait) UnregisterWaitEx(m_baseWait, INVALID_HANDLE_VALUE);
+    }
+
+    bool is_aborting() const override {
+        return m_base.is_aborting() || IsCancelled(m_token) || m_signal.is_aborting();
+    }
+    abort_callback_event get_abort_event() const override {
+        return m_token ? m_signal.get_abort_event() : m_base.get_abort_event();
+    }
+
+  private:
+    static void CALLBACK OnSignalled(PVOID context, BOOLEAN) {
+        static_cast<abort_callback_impl*>(context)->abort();
+    }
+
+    abort_callback& m_base;
+    CancelToken m_token;
+    abort_callback_impl m_signal;
+    HANDLE m_baseWait = nullptr;
+    HANDLE m_tokenWait = nullptr;
+};
+
 // Wraps a completion (any Provider::*Done type: the last parameter is the error text) so it
 // runs exactly once. The wrapper is copyable and shares one state: the first call runs the
 // original, and when the last copy is destroyed without a call (a queued task was dropped at
 // shutdown or on an account change) the original receives kRequestDropped on the main thread,
 // with default-constructed results. A set `cancelled` token waives that last step.
-template <class Fn> Fn GuardDone(Fn done, std::shared_ptr<std::atomic_bool> cancelled = {}) {
+template <class Fn> Fn GuardDone(Fn done, CancelToken cancelled = {}) {
     if (!done) return done;
     auto state = std::make_shared<detail::GuardState<Fn>>();
     state->fn = std::move(done);

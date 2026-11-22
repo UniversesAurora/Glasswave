@@ -302,7 +302,7 @@ class MainWindow : public PageHost, public PlayerHost {
     SearchScope m_searchScope;
     std::unique_ptr<SearchPopup> m_searchPopup;
     std::vector<Suggestion> m_suggestions;
-    std::shared_ptr<std::atomic_bool> m_suggestCancel;
+    stream::CancelToken m_suggestCancel;
     // Each source's answer for the text being suggested for (provider key, or "local").
     std::vector<std::pair<std::wstring, stream::Provider::CatalogSearchSuggestions>> m_suggestAnswers;
     size_t m_suggestPending = 0;

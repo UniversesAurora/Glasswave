@@ -2,14 +2,72 @@
 
 #include "stream/model.h"
 
-#include <cstddef>
+#include <windows.h>
+
 #include <atomic>
-#include <memory>
+#include <cstddef>
 #include <functional>
+#include <memory>
 #include <optional>
 #include <variant>
 
 namespace glasswave::stream {
+
+// Shared cancellation token carrying both a lock-free atomic flag and a lazily created
+// Win32 manual-reset event so transport layers (WinHTTP, etc.) can cancel immediately
+// without polling threads.
+class CancelFlag {
+  public:
+    CancelFlag() = default;
+    CancelFlag(const CancelFlag&) = delete;
+    CancelFlag& operator=(const CancelFlag&) = delete;
+    ~CancelFlag() {
+        if (HANDLE h = m_event.exchange(nullptr, std::memory_order_acq_rel)) CloseHandle(h);
+    }
+
+    bool load(std::memory_order order = std::memory_order_seq_cst) const noexcept {
+        return m_cancelled.load(order);
+    }
+    void store(bool value, std::memory_order order = std::memory_order_seq_cst) noexcept {
+        m_cancelled.store(value, order);
+        if (value) {
+            if (HANDLE h = m_event.load(std::memory_order_acquire)) SetEvent(h);
+        }
+    }
+    bool operator=(bool value) noexcept {
+        store(value);
+        return value;
+    }
+    operator bool() const noexcept { return load(); }
+    HANDLE Event() const noexcept {
+        if (HANDLE h = m_event.load(std::memory_order_acquire)) return h;
+        HANDLE created = CreateEventW(nullptr, TRUE,
+                                      m_cancelled.load(std::memory_order_acquire) ? TRUE : FALSE, nullptr);
+        if (!created) return nullptr;
+        HANDLE expected = nullptr;
+        if (!m_event.compare_exchange_strong(expected, created, std::memory_order_acq_rel,
+                                             std::memory_order_acquire)) {
+            CloseHandle(created);
+            return expected;
+        }
+        if (m_cancelled.load(std::memory_order_acquire)) SetEvent(created);
+        return created;
+    }
+
+  private:
+    std::atomic_bool m_cancelled{false};
+    mutable std::atomic<HANDLE> m_event{nullptr};
+};
+
+using CancelToken = std::shared_ptr<CancelFlag>;
+
+inline CancelToken MakeCancelToken() {
+    return std::make_shared<CancelFlag>();
+}
+
+inline bool IsCancelled(const CancelToken& token) noexcept {
+    return token && token->load(std::memory_order_acquire);
+}
 
 enum class ListKind {
     PlaylistTracks,
@@ -49,7 +107,7 @@ struct ListQuery {
     // nullopt lets the provider choose; search defaults to None.
     std::optional<ListCachePolicy> cache;
     // Transport lifetime is excluded from semantic identity and persistence.
-    std::shared_ptr<std::atomic_bool> cancelled;
+    CancelToken cancelled;
     bool operator==(const ListQuery& other) const {
         return kind == other.kind && id == other.id && section == other.section && shelf == other.shelf &&
                search == other.search && cache == other.cache;

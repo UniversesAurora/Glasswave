@@ -184,7 +184,7 @@ struct EnrichmentWork {
     ListPage page;
     size_t offset = 0, ordinal = 0;
     uint64_t generation = 0;
-    std::shared_ptr<std::atomic_bool> cancelled;
+    CancelToken cancelled;
     bool finished = false;
 };
 
@@ -207,7 +207,7 @@ struct Read : std::enable_shared_from_this<Read> {
     cache::lists::Identity identity;
     ListState state;
     std::vector<std::weak_ptr<Lease>> leases;
-    std::shared_ptr<std::atomic_bool> cancelled;
+    CancelToken cancelled;
     std::optional<ListPage> shadow;
     std::vector<cache::lists::Record> shadowRecords; // the re-read's pages, persisted on publication
     std::set<std::string> cursors;
@@ -742,7 +742,7 @@ void Read::Refresh(bool preserveDemand, bool allowRestoreRetry) {
     if (!NetworkAllowed()) {
         ++request;
         if (cancelled) cancelled->store(true);
-        cancelled = std::make_shared<std::atomic_bool>(false);
+        cancelled = MakeCancelToken();
         enrichmentQueue.clear();
         activeEnrichments = metadataFrontier = 0;
         metadataReadyRanges.clear();
@@ -756,7 +756,7 @@ void Read::Refresh(bool preserveDemand, bool allowRestoreRetry) {
     gated = false;
     ++request;
     if (cancelled) cancelled->store(true);
-    cancelled = std::make_shared<std::atomic_bool>(false);
+    cancelled = MakeCancelToken();
     enrichmentQueue.clear();
     activeEnrichments = metadataFrontier = 0;
     metadataReadyRanges.clear();

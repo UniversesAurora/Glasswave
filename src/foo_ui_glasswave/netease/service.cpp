@@ -58,26 +58,7 @@ std::string Sha256Hex(const std::string& data) {
 }
 
 int PickLoopbackPort() {
-    WSADATA data{};
-    if (WSAStartup(MAKEWORD(2, 2), &data) != 0) return 0;
-    SOCKET socket = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-    if (socket == INVALID_SOCKET) {
-        WSACleanup();
-        return 0;
-    }
-    sockaddr_in address{};
-    address.sin_family = AF_INET;
-    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    address.sin_port = 0;
-    int port = 0;
-    if (bind(socket, reinterpret_cast<sockaddr*>(&address), sizeof(address)) == 0) {
-        int length = sizeof(address);
-        if (getsockname(socket, reinterpret_cast<sockaddr*>(&address), &length) == 0)
-            port = ntohs(address.sin_port);
-    }
-    closesocket(socket);
-    WSACleanup();
-    return port;
+    return net::PickLoopbackPort();
 }
 
 std::vector<wchar_t> EnvironmentBlock(int port) {
@@ -262,7 +243,9 @@ bool ServiceManager::EnsureStarted(abort_callback& abort, std::wstring* error) {
         m_lastError.clear();
         return true;
     }
-    if (m_state == ServiceState::Ready && !m_baseUrl.empty()) return true;
+    if (m_state == ServiceState::Ready && !m_baseUrl.empty() && m_process &&
+        WaitForSingleObject(m_process, 0) == WAIT_TIMEOUT)
+        return true;
     if (!IsInstalled()) {
         SetErrorLocked(L"NetEase service is not installed.");
         if (error) *error = m_lastError;
@@ -292,6 +275,16 @@ bool ServiceManager::StartLocked(abort_callback& abort, std::wstring* error) {
         return false;
     }
 
+    HANDLE job = CreateJobObjectW(nullptr, nullptr);
+    if (job) {
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION info{};
+        info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        if (!SetInformationJobObject(job, JobObjectExtendedLimitInformation, &info, sizeof(info))) {
+            CloseHandle(job);
+            job = nullptr;
+        }
+    }
+
     SECURITY_ATTRIBUTES attributes{sizeof(attributes), nullptr, TRUE};
     HANDLE log = CreateFileW(logPath.c_str(), FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE, &attributes,
                              OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
@@ -300,38 +293,65 @@ bool ServiceManager::StartLocked(abort_callback& abort, std::wstring* error) {
     if (log == INVALID_HANDLE_VALUE) log = nullptr;
     if (nullInput == INVALID_HANDLE_VALUE) nullInput = nullptr;
 
-    STARTUPINFOW startup{};
-    startup.cb = sizeof(startup);
-    if (log || nullInput) {
-        startup.dwFlags = STARTF_USESTDHANDLES;
-        startup.hStdInput = nullInput ? nullInput : GetStdHandle(STD_INPUT_HANDLE);
-        startup.hStdOutput = log ? log : GetStdHandle(STD_OUTPUT_HANDLE);
-        startup.hStdError = log ? log : GetStdHandle(STD_ERROR_HANDLE);
+    std::vector<HANDLE> inherited;
+    if (nullInput) inherited.push_back(nullInput);
+    if (log) inherited.push_back(log);
+    const DWORD attrCount = (inherited.empty() ? 0u : 1u) + (job ? 1u : 0u);
+    std::vector<unsigned char> attrBuffer;
+    LPPROC_THREAD_ATTRIBUTE_LIST attrList = nullptr;
+    if (attrCount > 0) {
+        SIZE_T attrBytes = 0;
+        InitializeProcThreadAttributeList(nullptr, attrCount, 0, &attrBytes);
+        attrBuffer.resize(attrBytes);
+        auto* candidate = reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(attrBuffer.data());
+        if (InitializeProcThreadAttributeList(candidate, attrCount, 0, &attrBytes)) {
+            bool okAttrs = true;
+            if (!inherited.empty())
+                okAttrs = okAttrs && UpdateProcThreadAttribute(candidate, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+                                                               inherited.data(),
+                                                               inherited.size() * sizeof(HANDLE), nullptr, nullptr);
+            if (job) {
+                HANDLE jobs[] = {job};
+                okAttrs = okAttrs && UpdateProcThreadAttribute(candidate, 0, PROC_THREAD_ATTRIBUTE_JOB_LIST, jobs,
+                                                               sizeof(jobs), nullptr, nullptr);
+            }
+            if (okAttrs)
+                attrList = candidate;
+            else
+                DeleteProcThreadAttributeList(candidate);
+        }
     }
+
+    STARTUPINFOEXW startup{};
+    startup.StartupInfo.cb = attrList ? sizeof(STARTUPINFOEXW) : sizeof(STARTUPINFOW);
+    if (log || nullInput) {
+        startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+        startup.StartupInfo.hStdInput = nullInput ? nullInput : GetStdHandle(STD_INPUT_HANDLE);
+        startup.StartupInfo.hStdOutput = log ? log : GetStdHandle(STD_OUTPUT_HANDLE);
+        startup.StartupInfo.hStdError = log ? log : GetStdHandle(STD_ERROR_HANDLE);
+    }
+    startup.lpAttributeList = attrList;
     PROCESS_INFORMATION process{};
     std::wstring command = L"\"" + exe + L"\"";
     std::vector<wchar_t> environment = EnvironmentBlock(port);
-    const BOOL created = CreateProcessW(exe.c_str(), command.data(), nullptr, nullptr, TRUE,
-                                        CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT | CREATE_SUSPENDED,
-                                        environment.data(), workdir.c_str(), &startup, &process);
+    DWORD flags = CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT | CREATE_SUSPENDED;
+    if (attrList) flags |= EXTENDED_STARTUPINFO_PRESENT;
+    const BOOL created = CreateProcessW(exe.c_str(), command.data(), nullptr, nullptr, !inherited.empty(), flags,
+                                        environment.data(), workdir.c_str(), &startup.StartupInfo, &process);
+    if (attrList) DeleteProcThreadAttributeList(attrList);
     if (nullInput) CloseHandle(nullInput);
     if (log) CloseHandle(log);
     if (!created) {
+        if (job) CloseHandle(job);
         SetErrorLocked(L"Cannot start the NetEase service: " + Win32Error(GetLastError()));
         if (error) *error = m_lastError;
         return false;
     }
 
-    HANDLE job = CreateJobObjectW(nullptr, nullptr);
-    if (job) {
-        JOBOBJECT_EXTENDED_LIMIT_INFORMATION info{};
-        info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-        SetInformationJobObject(job, JobObjectExtendedLimitInformation, &info, sizeof(info));
-        if (!AssignProcessToJobObject(job, process.hProcess)) {
-            core::Log(L"service: cannot assign the helper to a job object");
-            CloseHandle(job);
-            job = nullptr;
-        }
+    if (job && !attrList && !AssignProcessToJobObject(job, process.hProcess)) {
+        core::Log(L"service: cannot assign the helper to a job object");
+        CloseHandle(job);
+        job = nullptr;
     }
     if (ResumeThread(process.hThread) == static_cast<DWORD>(-1)) {
         SetErrorLocked(L"Cannot resume the NetEase service: " + Win32Error(GetLastError()));

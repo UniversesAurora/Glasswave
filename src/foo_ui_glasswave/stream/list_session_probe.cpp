@@ -70,13 +70,13 @@ struct RequestRecord {
 
 struct PendingRequest {
     ListPageDone done;
-    std::shared_ptr<std::atomic_bool> cancelled;
+    CancelToken cancelled;
 };
 
 struct PendingEnrichment {
     ListPage primary;
     ListPageDone done;
-    std::shared_ptr<std::atomic_bool> cancelled;
+    CancelToken cancelled;
 };
 
 struct Checks {

@@ -94,7 +94,7 @@ class StreamProvider final : public stream::Provider {
     bool FillSnapshot(cache::provider_snapshot::Snapshot& payload) const;
     void OnSessionChanged();
     void PostListPage(stream::ListPageDone done, stream::ListPage page, std::vector<SongRecord> songs,
-                      std::wstring error, std::shared_ptr<std::atomic_bool> cancelled);
+                      std::wstring error, stream::CancelToken cancelled);
     void FinishListWrite(bool ok, std::wstring error, Done done,
                          std::vector<stream::ListTarget> targets = {});
     void ClearIdSnapshots();

@@ -35,4 +35,10 @@ struct HttpOptions {
 // Blocking WinHTTP request. `abort` is checked between reads.
 HttpResponse SendHttp(std::wstring_view url, const HttpOptions& options, abort_callback& abort);
 
+// Reserves and releases an ephemeral TCP port on 127.0.0.1 for local helper daemons; 0 on failure.
+int PickLoopbackPort();
+
+// Returns `bytes * 2` lowercase hex characters from the OS CSPRNG; empty on failure.
+std::string RandomHex(size_t bytes);
+
 }  // namespace glasswave::net

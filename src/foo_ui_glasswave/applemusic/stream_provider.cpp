@@ -86,8 +86,8 @@ bool IsArtistPlaylistView(std::wstring_view id) {
     return id == L"featured-playlists";
 }
 
-bool ListCancelled(const std::shared_ptr<std::atomic_bool>& cancelled) {
-    return cancelled && cancelled->load(std::memory_order_acquire);
+bool ListCancelled(const stream::CancelToken& cancelled) {
+    return stream::IsCancelled(cancelled);
 }
 
 // The service answered that this request cannot succeed as asked (no such resource, or a
@@ -123,45 +123,6 @@ bool EnrichableList(stream::ListKind kind) {
         return false;
     }
 }
-
-// Combines the provider lifetime abort with a list lease. A polling watcher bridges the
-// lease's atomic token to WinHTTP's event-based cancellation path.
-class ListHydrationAbort final : public abort_callback {
-  public:
-    ListHydrationAbort(abort_callback& providerAbort, std::shared_ptr<std::atomic_bool> cancelled)
-        : providerAbort_(providerAbort), cancelled_(std::move(cancelled)) {
-        if (IsAborting()) {
-            signal_.abort();
-        } else {
-            watcher_ = std::thread([this] {
-                while (!stopping_.load(std::memory_order_acquire)) {
-                    if (IsAborting() || !providerAbort_.sleep_ex(0.025)) {
-                        signal_.abort();
-                        return;
-                    }
-                }
-            });
-        }
-    }
-    ~ListHydrationAbort() {
-        stopping_.store(true, std::memory_order_release);
-        if (watcher_.joinable()) watcher_.join();
-    }
-
-    bool is_aborting() const override { return IsAborting(); }
-    abort_callback_event get_abort_event() const override { return signal_.get_abort_event(); }
-
-  private:
-    bool IsAborting() const {
-        return providerAbort_.is_aborting() || ListCancelled(cancelled_) || signal_.is_aborting();
-    }
-
-    abort_callback& providerAbort_;
-    std::shared_ptr<std::atomic_bool> cancelled_;
-    abort_callback_impl signal_;
-    std::atomic_bool stopping_ = false;
-    std::thread watcher_;
-};
 
 struct PlaylistLoadMetrics {
     long long primaryMs = 0;
@@ -5567,9 +5528,10 @@ void StreamProvider::FetchListPage(const stream::ListQuery& sourceQuery, const s
         kTasks, generation,
         [this, query = std::move(query), cursorState, fingerprint, storefront, generation, preferenceEpoch,
          pageLimit, derivedGroupsPage, done = std::move(done)]() mutable {
-            if (query.cancelled && query.cancelled->load(std::memory_order_acquire)) return;
+            if (ListCancelled(query.cancelled)) return;
             std::wstring error;
-            ListLoad load(query, cursorState, fingerprint, storefront, generation, pageLimit, m_exec.Abort());
+            stream::CombinedAbort abort(m_exec.Abort(), query.cancelled);
+            ListLoad load(query, cursorState, fingerprint, storefront, generation, pageLimit, abort);
             try {
                 ReadListPage(load);
             } catch (const exception_aborted&) {
@@ -5578,7 +5540,7 @@ void StreamProvider::FetchListPage(const stream::ListQuery& sourceQuery, const s
                 error = Wide(exception.what());
             }
 
-            if (query.cancelled && query.cancelled->load(std::memory_order_acquire)) return;
+            if (ListCancelled(query.cancelled)) return;
             m_exec.PostMain(generation, [this, preferenceEpoch, page = std::move(load.page),
                                          songs = std::move(load.songs), trackRows = load.trackRows,
                                          catalogItemRows = load.catalogItemRows, derivedGroupsPage,
@@ -6264,7 +6226,7 @@ bool StreamProvider::EnrichListPage(const stream::ListQuery& query, const stream
                 if (ListCancelled(cancelled)) return;
 
                 try {
-                    ListHydrationAbort abort(m_exec.Abort(), cancelled);
+                    stream::CombinedAbort abort(m_exec.Abort(), cancelled);
                     if (HasSongAlbumHydrationWork(songs)) HydrateSongAlbums(songs, storefront, abort);
                     ResolveSongDisplayNames(songs, generation, abort);
                     ResolveAlbumDisplayNames(albums, generation, abort);
@@ -7395,10 +7357,11 @@ void StreamProvider::FetchCatalogSearchSuggestions(CatalogSearchSuggestionQuery 
                     CatalogSearchSuggestions suggestions;
                     std::wstring error;
                     try {
+                        stream::CombinedAbort abort(m_exec.Abort(), query.cancelled);
                         const std::wstring path =
                             L"/v1/catalog/" + storefront + L"/search/suggestions?term=" + Encode(query.term) +
                             L"&kinds=terms,topResults&types=songs,artists,albums,playlists&l=" + locale;
-                        const Object response = Apple(path, m_exec.Abort());
+                        const Object response = Apple(path, abort);
                         const auto results = json::GetObject(response, L"results");
                         if (!results)
                             throw std::runtime_error("Apple Music returned invalid search suggestions.");

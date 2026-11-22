@@ -1,8 +1,49 @@
 # Status
 
-Updated: 2026-11-22
+Updated: 2026-11-23
 
-## TextPrompt focus restoration & Apple Music playlist creation/mutation consistency (2026-11-22, latest)
+## Full-project audit: data unification, performance fixes & cross-provider generalization (2026-11-23, latest)
+
+1. **Data unification, artwork cascade & F5 refresh fixes (`1afba42`)**:
+   - Unified `ShelfPage` onto `Provider::SectionPlaylists(sectionId)` (the same in-memory
+     snapshot + mutation overlay `NavPane` reads), eliminating the ~1 s sidebar-vs-grid lag,
+     duplicate `/playlists` fetches, and NetEase's empty-Recommended 30-min cache trap.
+   - Fixed Apple Music `NeedsSongAlbumHydration()` which required library-album prefix even when
+     `ParseSong` already resolved a numeric catalog album ID (eliminated 5 redundant
+     `/v1/me/library/songs?ids=` batches per 100-song library page).
+   - Narrowed `ArtCache::InvalidateMissing()` to invalidate only specific missing keys in
+     `cache::Images` instead of the entire kind prefix; skipped cover fetches for coverless
+     playlists in `NavPane` and `PlaylistPage`; added viewport culling to `NavPane::Paint`;
+     switched `OnProviderAccount` to `ArtCache::Forget` and included `ArtKind::Station`.
+   - Overrode `RefreshRequested()` on `PagedPage`, `ArtistPage`, and `AllFavoritesPage` so F5
+     actually refreshes open `ListSession`s; fixed `MarkDiskTargetsStale` for section-scoped
+     `PlaylistShelf` keys.
+2. **Mutation queues, N+1 calls & hot-path fixes (`d8d11ac`)**:
+   - Apple Music: serialized all playlist writes on `kMutations`, dropped eventual-consistency
+     false errors in `AddToPlaylist`/`RemoveFromPlaylist`, stopped `RenamePlaylist` from
+     downloading all tracks, eliminated double `NotifyListChanged`, moved `EnrichArtistCountsAsync`
+     to a dedicated `kBackground` queue, batched `ResolvePlaylistDisplayNames` (25/request),
+     reset `m_librarySongsAt` on album library writes, and turned `ReadAlbumSaved` into `O(log N)`.
+   - NetEase: scoped `ClearIdSnapshots()` to track/favorite mutations only, made
+     `SchedulePlaylistSummaryRefresh` abortable on shutdown, notified library on `SetArtistFollow`,
+     erased deleted playlists from `Catalog`, and fixed `OnNavMove` to skip non-reorderable shelves.
+   - UI: computed `SongTableSource::RowIdentities()` once per capture/restore instead of twice.
+3. **Cross-provider generalization (`e0f3942` + Batch 3B)**:
+   - Added `Provider::Shutdown()` + centralized `ProviderLifetime` `initquit` (tearing down
+     `ListSession`s before providers), capability-gated defaults on `stream::Provider`, default
+     `Provider::RestoreListRecords()`, `ArtistSection::latestRelease`, and removed `PutStations`.
+   - Moved offline downloaded-file playback (`OpenOffline`) into `stream::EncodedInputBase` and
+     unified Apple Music unavailable-track skipping onto `stream::playback_source` (with shared
+     20-track consecutive-skip cap).
+   - Migrated `ui/home_store` onto `cache::Store` keyed by `cache::AccountScope`.
+   - Replaced `ListQuery::cancelled` atomic polling (`ListHydrationAbort` 25 ms watcher thread)
+     with lazy-event `stream::CancelFlag` + thread-pool `stream::CombinedAbort` across both Apple
+     Music and NetEase so WinHTTP cancels immediately with zero polling threads.
+   - Deduplicated `net::PickLoopbackPort()` and `net::RandomHex()` across Apple, NetEase, and
+     aria2, and hardened `netease::ServiceManager` with `PROC_THREAD_ATTRIBUTE_HANDLE_LIST`,
+     atomic `PROC_THREAD_ATTRIBUTE_JOB_LIST`, and dead-process detection in `EnsureStarted`.
+
+## TextPrompt focus restoration & Apple Music playlist creation/mutation consistency (2026-11-22)
 
 1. **Keep main window in foreground when closing `PromptText` (`ui/text_prompt.cpp`)**:
    - Re-enable and activate/foreground `state->owner` (`EnableWindow(owner, TRUE)`,

@@ -104,33 +104,13 @@ bool ValidCatalogId(std::wstring_view id) {
 }
 
 int PickLoopbackPort() {
-    WSADATA data{};
-    if (WSAStartup(MAKEWORD(2, 2), &data) != 0) return 0;
-    SOCKET sock = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-    if (sock == INVALID_SOCKET) {
-        WSACleanup();
-        return 0;
-    }
-    sockaddr_in address{};
-    address.sin_family = AF_INET;
-    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    address.sin_port = 0;
-    int port = 0;
-    if (bind(sock, reinterpret_cast<sockaddr*>(&address), sizeof(address)) == 0) {
-        int length = sizeof(address);
-        if (getsockname(sock, reinterpret_cast<sockaddr*>(&address), &length) == 0)
-            port = ntohs(address.sin_port);
-    }
-    closesocket(sock);
-    WSACleanup();
-    return port;
+    return net::PickLoopbackPort();
 }
 
 std::string RandomTokenHex() {
-    unsigned char bytes[32]{};
-    if (BCryptGenRandom(nullptr, bytes, static_cast<ULONG>(sizeof(bytes)), BCRYPT_USE_SYSTEM_PREFERRED_RNG) < 0)
-        Fail("Cannot generate an Apple Music bridge authorization token.");
-    return core::HexLower(bytes, sizeof(bytes));
+    std::string token = net::RandomHex(32);
+    if (token.empty()) Fail("Cannot generate an Apple Music bridge authorization token.");
+    return token;
 }
 
 BridgeConfig AutoManagedBridge(const std::filesystem::path& appleDir) {

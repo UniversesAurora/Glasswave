@@ -83,8 +83,8 @@ std::wstring ErrorOf(std::wstring error) {
     return error.empty() ? std::wstring(L"The request failed.") : std::move(error);
 }
 
-bool ListCancelled(const std::shared_ptr<std::atomic_bool>& cancelled) {
-    return cancelled && cancelled->load(std::memory_order_acquire);
+bool ListCancelled(const stream::CancelToken& cancelled) {
+    return stream::IsCancelled(cancelled);
 }
 
 bool ToInt(size_t value, int& out, std::wstring& error) {
@@ -548,11 +548,12 @@ void StreamProvider::FetchCatalogSearchSuggestions(CatalogSearchSuggestionQuery 
     m_exec.Post(
         kReadQueue, m_exec.Generation(), [this, query = std::move(query), done = std::move(done)]() mutable {
             if (ListCancelled(query.cancelled) || m_exec.Abort().is_aborting()) return;
+            stream::CombinedAbort abort(m_exec.Abort(), query.cancelled);
             std::wstring error;
             SearchSuggestions found;
-            if (Ncm().Service().EnsureStarted(m_exec.Abort(), &error))
-                Ncm().Api().SearchSuggest(query.term, m_exec.Abort(), found, error);
-            if (m_exec.Abort().is_aborting() || ListCancelled(query.cancelled)) return;
+            if (Ncm().Service().EnsureStarted(abort, &error))
+                Ncm().Api().SearchSuggest(query.term, abort, found, error);
+            if (abort.is_aborting()) return;
             CatalogSearchSuggestions suggestions;
             for (auto& term : found.terms)
                 suggestions.ordered.emplace_back(CatalogSearchSuggestionTerm{term, term});
@@ -1229,7 +1230,7 @@ void StreamProvider::RestoreListRecords(const stream::ListPage& page) {
 
 void StreamProvider::PostListPage(stream::ListPageDone done, stream::ListPage page,
                                   std::vector<SongRecord> songs, std::wstring error,
-                                  std::shared_ptr<std::atomic_bool> cancelled) {
+                                  stream::CancelToken cancelled) {
     if (ListCancelled(cancelled)) return;
     m_exec.PostMain(m_exec.Generation(),
                     [this, done = std::move(done), page = std::move(page), songs = std::move(songs),
@@ -1303,12 +1304,13 @@ void StreamProvider::FetchListPage(const stream::ListQuery& query, const stream:
     m_exec.Post(
         kReadQueue, m_exec.Generation(), [this, query, cursor, limit, done = std::move(done)]() mutable {
             if (ListCancelled(query.cancelled) || m_exec.Abort().is_aborting()) return;
+            stream::CombinedAbort abort(m_exec.Abort(), query.cancelled);
             std::wstring error;
-            if (!Ncm().Service().EnsureStarted(m_exec.Abort(), &error)) {
+            if (!Ncm().Service().EnsureStarted(abort, &error)) {
                 PostListPage(std::move(done), {}, {}, ErrorOf(std::move(error)), query.cancelled);
                 return;
             }
-            if (ListCancelled(query.cancelled)) return;
+            if (abort.is_aborting()) return;
 
             Client& client = Ncm().Api();
             const auto snapshots = m_idSnapshots;
@@ -1336,11 +1338,11 @@ void StreamProvider::FetchListPage(const stream::ListQuery& query, const stream:
                 std::shared_ptr<const IdSnapshotStore::Snapshot> snapshot;
                 if (!snapshots->PageFromIdSnapshot(
                         {accountRevision, IdSnapshotStore::Kind::Playlist, playlistId},
-                        IdSnapshotStore::kPlaylistWording, cursor, limit, client, m_exec.Abort(),
+                        IdSnapshotStore::kPlaylistWording, cursor, limit, client, abort,
                         [&](std::vector<int64_t>& ids, Playlist& info, std::wstring& revision,
                             std::wstring& fetchError) {
                             PlaylistSnapshot fresh;
-                            if (!client.GetPlaylistSnapshot(playlistId, m_exec.Abort(), fresh, fetchError))
+                            if (!client.GetPlaylistSnapshot(playlistId, abort, fresh, fetchError))
                                 return false;
                             revision = IdsRevision(accountRevision, fresh.trackIds, fresh.trackUpdateTime);
                             ids = std::move(fresh.trackIds);
@@ -1366,10 +1368,10 @@ void StreamProvider::FetchListPage(const stream::ListQuery& query, const stream:
                 std::shared_ptr<const IdSnapshotStore::Snapshot> snapshot;
                 snapshots->PageFromIdSnapshot(
                     {accountRevision, IdSnapshotStore::Kind::Favorites, 0},
-                    IdSnapshotStore::kFavoritesWording, cursor, limit, client, m_exec.Abort(),
+                    IdSnapshotStore::kFavoritesWording, cursor, limit, client, abort,
                     [&](std::vector<int64_t>& ids, Playlist&, std::wstring& revision,
                         std::wstring& fetchError) {
-                        if (!client.Likelist(userId, m_exec.Abort(), ids, fetchError)) return false;
+                        if (!client.Likelist(userId, abort, ids, fetchError)) return false;
                         revision = IdsRevision(accountRevision, ids);
                         return true;
                     },
@@ -1382,7 +1384,7 @@ void StreamProvider::FetchListPage(const stream::ListQuery& query, const stream:
                 if (query.id == kDailyList) {
                     info.name = L"每日推荐";
                     info.tagline = L"根据你的音乐口味生成，每天6:00更新";
-                    client.DailySongs(m_exec.Abort(), found, error);
+                    client.DailySongs(abort, found, error);
                 } else if (query.id.starts_with(kStyleList)) {
                     std::vector<std::wstring> parts;
                     std::wstring_view rest = std::wstring_view(query.id).substr(kStyleList.size());
@@ -1393,7 +1395,7 @@ void StreamProvider::FetchListPage(const stream::ListQuery& query, const stream:
                             colon == std::wstring_view::npos ? std::wstring_view() : rest.substr(colon + 1);
                     }
                     info.tagline = L"根据你的音乐口味生成，每天更新";
-                    client.StyleDailySongs(parts[0], parts[1], rest, m_exec.Abort(), found, error);
+                    client.StyleDailySongs(parts[0], parts[1], rest, abort, found, error);
                 } else {
                     error = L"This list is unavailable.";
                     break;
@@ -1411,7 +1413,7 @@ void StreamProvider::FetchListPage(const stream::ListQuery& query, const stream:
                     break;
                 }
                 Album info;
-                if (!client.GetAlbum(albumId, m_exec.Abort(), info, found, error)) break;
+                if (!client.GetAlbum(albumId, abort, info, found, error)) break;
                 hintSongs = ToSongs(found);
                 page.rows = TracksOf(hintSongs);
                 page.album = ToAlbum(info);
@@ -1429,8 +1431,8 @@ void StreamProvider::FetchListPage(const stream::ListQuery& query, const stream:
                 if (!OffsetWindowOf(cursor, limit, window, error)) break;
                 bool more = false;
                 size_t received = 0;
-                if (!client.GetArtistSongsPage(artistId, window.offset, window.count, L"hot", m_exec.Abort(),
-                                               found, &more, error, &received))
+                if (!client.GetArtistSongsPage(artistId, window.offset, window.count, L"hot", abort, found,
+                                               &more, error, &received))
                     break;
                 hintSongs = ToSongs(found);
                 page.rows = TracksOf(hintSongs);
@@ -1448,8 +1450,8 @@ void StreamProvider::FetchListPage(const stream::ListQuery& query, const stream:
                 std::vector<Album> albums;
                 bool more = false;
                 size_t received = 0;
-                if (!client.GetArtistAlbumsPage(artistId, window.offset, window.count, m_exec.Abort(), albums,
-                                                nullptr, &more, error, &received))
+                if (!client.GetArtistAlbumsPage(artistId, window.offset, window.count, abort, albums, nullptr,
+                                                &more, error, &received))
                     break;
                 auto rows = ToAlbums(albums);
                 Catalog::Get().Records().Put(rows);
@@ -1463,8 +1465,8 @@ void StreamProvider::FetchListPage(const stream::ListQuery& query, const stream:
                 std::vector<Album> albums;
                 bool more = false;
                 size_t received = 0;
-                if (!client.GetCollectedAlbumsPage(window.offset, window.count, m_exec.Abort(), albums, more,
-                                                   error, &received))
+                if (!client.GetCollectedAlbumsPage(window.offset, window.count, abort, albums, more, error,
+                                                   &received))
                     break;
                 auto rows = ToAlbums(albums);
                 Catalog::Get().Records().Put(rows);
@@ -1479,7 +1481,7 @@ void StreamProvider::FetchListPage(const stream::ListQuery& query, const stream:
                     break;
                 }
                 std::vector<Artist> artists;
-                if (!client.GetSimilarArtists(artistId, m_exec.Abort(), artists, error)) break;
+                if (!client.GetSimilarArtists(artistId, abort, artists, error)) break;
                 auto rows = AccountArtists(artists);
                 Catalog::Get().Records().Put(rows);
                 page.total = rows.size();
@@ -1492,7 +1494,7 @@ void StreamProvider::FetchListPage(const stream::ListQuery& query, const stream:
                 std::vector<Artist> artists;
                 bool more = false;
                 size_t received = 0;
-                if (!client.GetFollowedArtistsPage(window.offset, window.count, m_exec.Abort(), artists, more,
+                if (!client.GetFollowedArtistsPage(window.offset, window.count, abort, artists, more,
                                                    received, error))
                     break;
                 auto rows = AccountArtists(artists);
@@ -1511,16 +1513,16 @@ void StreamProvider::FetchListPage(const stream::ListQuery& query, const stream:
                 SearchPage searched;
                 bool ok = false;
                 if (query.kind == stream::ListKind::CatalogSearch) {
-                    ok = client.SearchSongsPage(query.search, window.count, window.offset, m_exec.Abort(),
-                                                found, searched, error);
+                    ok = client.SearchSongsPage(query.search, window.count, window.offset, abort, found,
+                                                searched, error);
                     if (ok) {
                         hintSongs = ToSongs(found);
                         page.rows = TracksOf(hintSongs);
                     }
                 } else if (query.kind == stream::ListKind::CatalogSearchAlbums) {
                     std::vector<Album> albums;
-                    ok = client.SearchAlbumsPage(query.search, window.count, window.offset, m_exec.Abort(),
-                                                 albums, searched, error);
+                    ok = client.SearchAlbumsPage(query.search, window.count, window.offset, abort, albums,
+                                                 searched, error);
                     if (ok) {
                         auto rows = ToAlbums(albums);
                         Catalog::Get().Records().Put(rows);
@@ -1528,8 +1530,8 @@ void StreamProvider::FetchListPage(const stream::ListQuery& query, const stream:
                     }
                 } else if (query.kind == stream::ListKind::CatalogSearchArtists) {
                     std::vector<Artist> artists;
-                    ok = client.SearchArtistsPage(query.search, window.count, window.offset, m_exec.Abort(),
-                                                  artists, searched, error);
+                    ok = client.SearchArtistsPage(query.search, window.count, window.offset, abort, artists,
+                                                  searched, error);
                     if (ok) {
                         auto rows = AccountArtists(artists);
                         Catalog::Get().Records().Put(rows);
@@ -1537,7 +1539,7 @@ void StreamProvider::FetchListPage(const stream::ListQuery& query, const stream:
                     }
                 } else if (query.kind == stream::ListKind::CatalogSearchPlaylists) {
                     std::vector<Playlist> playlists;
-                    ok = client.SearchPlaylistsPage(query.search, window.count, window.offset, m_exec.Abort(),
+                    ok = client.SearchPlaylistsPage(query.search, window.count, window.offset, abort,
                                                     playlists, searched, error);
                     if (ok) {
                         auto rows = AccountPlaylists(playlists);
@@ -1546,8 +1548,8 @@ void StreamProvider::FetchListPage(const stream::ListQuery& query, const stream:
                     }
                 } else {
                     std::vector<LyricHit> hits;
-                    ok = client.SearchLyricsPage(query.search, window.count, window.offset, m_exec.Abort(),
-                                                 hits, searched, error);
+                    ok = client.SearchLyricsPage(query.search, window.count, window.offset, abort, hits,
+                                                 searched, error);
                     if (ok) {
                         std::vector<stream::Track> tracks;
                         for (auto& hit : hits) {
@@ -1567,7 +1569,7 @@ void StreamProvider::FetchListPage(const stream::ListQuery& query, const stream:
             case stream::ListKind::CatalogSearchTopResults: {
                 // NetEase's best matches are one short list (an artist, an album) without pages.
                 std::vector<SearchHit> hits;
-                if (!client.SearchBestMatches(query.search, m_exec.Abort(), hits, error)) break;
+                if (!client.SearchBestMatches(query.search, abort, hits, error)) break;
                 std::vector<stream::CatalogSearchItem> items;
                 for (auto& hit : hits) {
                     std::visit(
@@ -1603,7 +1605,7 @@ void StreamProvider::FetchListPage(const stream::ListQuery& query, const stream:
                 break;
             }
 
-            if (m_exec.Abort().is_aborting()) return;
+            if (abort.is_aborting()) return;
             if (cache::AccountRevision("ncm") != accountRevision) {
                 snapshots->Clear();
                 error = L"The NetEase account changed while the list was loading.";

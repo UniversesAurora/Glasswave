@@ -270,7 +270,7 @@ void MainWindow::ListSuggestions() {
 void MainWindow::FetchSuggestions() {
     const std::wstring term = Trimmed(m_search->Typed());
     if (term.empty() || !m_searchScope.Catalog()) return;
-    m_suggestCancel = std::make_shared<std::atomic_bool>(false);
+    m_suggestCancel = stream::MakeCancelToken();
     m_suggestAnswers.clear();
     m_suggestPending = 0;
     const bool local = m_searchScope.kind == SearchScope::Kind::All || m_searchScope.kind == SearchScope::Kind::Local;

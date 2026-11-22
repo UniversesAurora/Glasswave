@@ -62,29 +62,11 @@ std::filesystem::path ExePath() {
 }
 
 std::wstring RandomSecret() {
-    unsigned char bytes[16]{};
-    BCryptGenRandom(nullptr, bytes, sizeof(bytes), BCRYPT_USE_SYSTEM_PREFERRED_RNG);
-    return Wide(core::HexLower(bytes, sizeof(bytes)));
+    return Wide(net::RandomHex(16));
 }
 
 int PickLoopbackPort() {
-    WSADATA data{};
-    if (WSAStartup(MAKEWORD(2, 2), &data) != 0) return 0;
-    SOCKET socket = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-    int port = 0;
-    if (socket != INVALID_SOCKET) {
-        sockaddr_in address{};
-        address.sin_family = AF_INET;
-        address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-        if (bind(socket, reinterpret_cast<sockaddr*>(&address), sizeof(address)) == 0) {
-            int length = sizeof(address);
-            if (getsockname(socket, reinterpret_cast<sockaddr*>(&address), &length) == 0)
-                port = ntohs(address.sin_port);
-        }
-        closesocket(socket);
-    }
-    WSACleanup();
-    return port;
+    return net::PickLoopbackPort();
 }
 
 // Downloads the release, checks it and puts aria2c.exe in place.

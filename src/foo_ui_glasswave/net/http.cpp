@@ -1,8 +1,14 @@
 #include "pch.h"
 #include "net/http.h"
 #include "net/http_request.h"
+#include "core/hex.h"
 
+#include <bcrypt.h>
+#include <winsock2.h>
 #include <winhttp.h>
+
+#pragma comment(lib, "bcrypt.lib")
+#pragma comment(lib, "ws2_32.lib")
 
 #include <cwchar>
 #include <mutex>
@@ -222,6 +228,36 @@ HttpResponse SendHttp(std::wstring_view url, const HttpOptions& options, abort_c
                        std::to_wstring(total) + L" bytes).";
 
     return result;
+}
+
+int PickLoopbackPort() {
+    WSADATA data{};
+    if (WSAStartup(MAKEWORD(2, 2), &data) != 0) return 0;
+    SOCKET sock = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    int port = 0;
+    if (sock != INVALID_SOCKET) {
+        sockaddr_in address{};
+        address.sin_family = AF_INET;
+        address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        address.sin_port = 0;
+        if (bind(sock, reinterpret_cast<sockaddr*>(&address), sizeof(address)) == 0) {
+            int length = sizeof(address);
+            if (getsockname(sock, reinterpret_cast<sockaddr*>(&address), &length) == 0)
+                port = ntohs(address.sin_port);
+        }
+        closesocket(sock);
+    }
+    WSACleanup();
+    return port;
+}
+
+std::string RandomHex(size_t bytes) {
+    if (bytes == 0) return {};
+    std::vector<unsigned char> buffer(bytes);
+    if (BCryptGenRandom(nullptr, buffer.data(), static_cast<ULONG>(buffer.size()),
+                        BCRYPT_USE_SYSTEM_PREFERRED_RNG) < 0)
+        return {};
+    return core::HexLower(buffer.data(), buffer.size());
 }
 
 } // namespace glasswave::net
