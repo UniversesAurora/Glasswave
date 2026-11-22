@@ -102,7 +102,6 @@
     </ClCompile>
     <ClCompile Include="cache\prefetch_host.cpp" />
     <ClCompile Include="cache\audio_probe.cpp" />
-    <ClCompile Include="cache\image_probe.cpp" />
     <ClCompile Include="cache\prefetch_probe.cpp" />
     <ClCompile Include="cache\lists.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
@@ -155,7 +154,6 @@
     </ClCompile>
     <ClCompile Include="applemusic\probe.cpp" />
     <ClCompile Include="applemusic\library_probe.cpp" />
-    <ClCompile Include="applemusic\provider_probe.cpp" />
     <ClCompile Include="gfx\composition_host.cpp" />
     <ClCompile Include="gfx\frame_clock.cpp" />
     <ClCompile Include="gfx\effects.cpp" />
