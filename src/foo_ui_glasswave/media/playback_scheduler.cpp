@@ -24,8 +24,99 @@ namespace {
 std::unique_ptr<class PlaybackScheduler> g_scheduler;
 bool g_schedulerStopped = false;
 bool g_schedulerStarting = false;
-bool g_probeEnabled = false;
-std::optional<std::size_t> g_probeCurrentIndex;
+
+struct StartHooks {
+    std::function<void()> prepareLive;
+    std::function<void()> commitImmediate;
+};
+
+class PlaybackDriver {
+  public:
+    virtual ~PlaybackDriver() = default;
+    virtual std::size_t CurrentQueueIndex(std::size_t count, bool prefer_focus) const = 0;
+    virtual bool ShouldAutoStartPlayNext() const = 0;
+    virtual bool StartOccurrence(std::size_t index, bool paused, const StartHooks& hooks) = 0;
+    virtual void OnCurrentIndexMoved(std::size_t index) = 0;
+    virtual std::optional<std::size_t> SnapshotIndex() const = 0;
+    virtual void RestoreIndex(std::optional<std::size_t> index) = 0;
+};
+
+std::size_t LiveQueueIndex(std::size_t count, bool prefer_focus) {
+    if (!count) return SIZE_MAX;
+    auto manager = playlist_manager::get();
+    const t_size queue = QueuePlaylist(false);
+    t_size playlist = SIZE_MAX, index = SIZE_MAX;
+    if (queue != SIZE_MAX && manager->get_playing_item_location(&playlist, &index) && playlist == queue &&
+        index < count) {
+        return index;
+    }
+    if (prefer_focus && queue != SIZE_MAX) {
+        index = manager->playlist_get_focus_item(queue);
+        if (index < count) return index;
+    }
+    return SIZE_MAX;
+}
+
+class LivePlaybackDriver final : public PlaybackDriver {
+  public:
+    std::size_t CurrentQueueIndex(std::size_t count, bool prefer_focus) const override {
+        return LiveQueueIndex(count, prefer_focus);
+    }
+    bool ShouldAutoStartPlayNext() const override { return !playback_control::get()->is_playing(); }
+    bool StartOccurrence(std::size_t index, bool paused, const StartHooks& hooks) override {
+        const t_size queue = QueuePlaylist(false);
+        if (queue == SIZE_MAX) return false;
+        auto manager = playlist_manager::get();
+        manager->set_active_playlist(queue);
+        manager->set_playing_playlist(queue);
+        manager->playlist_set_focus_item(queue, index);
+        if (hooks.prepareLive) hooks.prepareLive();
+        manager->playlist_execute_default_action(queue, index);
+        if (paused) playback_control::get()->pause(true);
+        return true;
+    }
+    void OnCurrentIndexMoved(std::size_t) override {}
+    std::optional<std::size_t> SnapshotIndex() const override { return std::nullopt; }
+    void RestoreIndex(std::optional<std::size_t>) override {}
+};
+
+class ProbePlaybackDriver final : public PlaybackDriver {
+  public:
+    std::size_t CurrentQueueIndex(std::size_t count, bool prefer_focus) const override {
+        if (!count) return SIZE_MAX;
+        if (m_currentIndex && *m_currentIndex < count) return *m_currentIndex;
+        return LiveQueueIndex(count, prefer_focus);
+    }
+    bool ShouldAutoStartPlayNext() const override { return false; }
+    bool StartOccurrence(std::size_t index, bool, const StartHooks& hooks) override {
+        const t_size queue = QueuePlaylist(false);
+        if (queue == SIZE_MAX) return false;
+        auto manager = playlist_manager::get();
+        manager->set_active_playlist(queue);
+        manager->set_playing_playlist(queue);
+        manager->playlist_set_focus_item(queue, index);
+        m_currentIndex = index;
+        if (hooks.commitImmediate) hooks.commitImmediate();
+        return true;
+    }
+    void OnCurrentIndexMoved(std::size_t index) override {
+        if (index == SIZE_MAX)
+            m_currentIndex.reset();
+        else
+            m_currentIndex = index;
+    }
+    std::optional<std::size_t> SnapshotIndex() const override { return m_currentIndex; }
+    void RestoreIndex(std::optional<std::size_t> index) override { m_currentIndex = index; }
+    void Reset() { m_currentIndex.reset(); }
+    void SetCurrentIndex(std::size_t index) { m_currentIndex = index; }
+
+  private:
+    std::optional<std::size_t> m_currentIndex;
+};
+
+LivePlaybackDriver g_liveDriver;
+ProbePlaybackDriver g_probeDriver;
+PlaybackDriver* g_driver = &g_liveDriver;
 
 bool NameContains(const char* name, const char* text) {
     if (!name || !text) return false;
@@ -49,20 +140,7 @@ bool NameContains(const char* name, const char* text) {
 }
 
 std::size_t CurrentQueueIndex(std::size_t count, bool prefer_focus) {
-    if (!count) return SIZE_MAX;
-    if (g_probeEnabled && g_probeCurrentIndex && *g_probeCurrentIndex < count) return *g_probeCurrentIndex;
-    auto manager = playlist_manager::get();
-    const t_size queue = QueuePlaylist(false);
-    t_size playlist = SIZE_MAX, index = SIZE_MAX;
-    if (queue != SIZE_MAX && manager->get_playing_item_location(&playlist, &index) && playlist == queue &&
-        index < count) {
-        return index;
-    }
-    if (prefer_focus && queue != SIZE_MAX) {
-        index = manager->playlist_get_focus_item(queue);
-        if (index < count) return index;
-    }
-    return SIZE_MAX;
+    return g_driver->CurrentQueueIndex(count, prefer_focus);
 }
 
 std::size_t OrderIndex(const char* name) {
@@ -324,7 +402,7 @@ bool PlaybackScheduler::Impl::InsertNewOccurrences(const metadb_handle_list& ite
     std::vector<t_playback_queue_item> queueBefore = CoreQueueSnapshot();
     const auto checkpointDirtyBefore = checkpointDirty;
     const auto nextOccurrenceBefore = nextOccurrence;
-    const auto probeIndexBefore = g_probeCurrentIndex;
+    const auto driverIndexBefore = g_driver->SnapshotIndex();
     metadb_handle_list playlistBefore;
     playlist_manager::get()->playlist_get_all_items(queue, playlistBefore);
     const t_size focusBefore = playlist_manager::get()->playlist_get_focus_item(queue);
@@ -359,7 +437,7 @@ bool PlaybackScheduler::Impl::InsertNewOccurrences(const metadb_handle_list& ite
         ownedCoreQueue = ownedBefore;
         RebuildCoreQueue(queueBefore);
         checkpointDirty = checkpointDirtyBefore;
-        g_probeCurrentIndex = probeIndexBefore;
+        g_driver->RestoreIndex(driverIndexBefore);
     };
 
     mapGuard = true;
@@ -386,7 +464,7 @@ bool PlaybackScheduler::Impl::InsertNewOccurrences(const metadb_handle_list& ite
         rollback();
         return false;
     }
-    if (playNext && !g_probeEnabled && !playback_control::get()->is_playing()) {
+    if (playNext && g_driver->ShouldAutoStartPlayNext()) {
         StartOccurrence(occurrences.front());
         const auto index = physicalIndex.find(occurrences.front());
         const auto handle = handles.find(occurrences.front());
@@ -473,7 +551,7 @@ bool PlaybackScheduler::Impl::ReorderUpcomingSnapshot(std::uint64_t expectedRevi
     const auto seedBefore = schedule.seed();
     const auto physicalBefore = physical;
     const auto ownedBefore = ownedCoreQueue;
-    const auto probeIndexBefore = g_probeCurrentIndex;
+    const auto driverIndexBefore = g_driver->SnapshotIndex();
     const auto currentOccurrence = schedule.Current();
 
     std::vector<PlaybackOccurrenceId> desiredFuture;
@@ -518,7 +596,7 @@ bool PlaybackScheduler::Impl::ReorderUpcomingSnapshot(std::uint64_t expectedRevi
         ApplyPhysicalOrder(physicalBefore);
         RebuildCoreQueue(queueBefore);
         ownedCoreQueue = ownedBefore;
-        g_probeCurrentIndex = probeIndexBefore;
+        g_driver->RestoreIndex(driverIndexBefore);
     };
 
     // Under shuffle the future is in shuffle order and holds songs physically before the
@@ -579,12 +657,7 @@ bool PlaybackScheduler::Impl::ReorderUpcomingSnapshot(std::uint64_t expectedRevi
         return false;
     }
     ownedCoreQueue = std::move(projectedOwned);
-    if (g_probeEnabled) {
-        if (currentAfter == SIZE_MAX)
-            g_probeCurrentIndex.reset();
-        else
-            g_probeCurrentIndex = currentAfter;
-    }
+    g_driver->OnCurrentIndexMoved(currentAfter);
     checkpointDirty = true;
     SaveCheckpoint();
     RequestListenerNotification();
@@ -740,29 +813,20 @@ bool PlaybackScheduler::Impl::ApplyPhysicalOrder(const std::vector<PlaybackOccur
 bool PlaybackScheduler::Impl::StartOccurrence(PlaybackOccurrenceId occurrence, bool paused) {
     const auto found = physicalIndex.find(occurrence);
     if (found == physicalIndex.end()) return false;
-    if (g_probeEnabled) {
-        const t_size queue = QueuePlaylist(false);
-        if (queue == SIZE_MAX) return false;
-        auto manager = playlist_manager::get();
-        manager->set_active_playlist(queue);
-        manager->set_playing_playlist(queue);
-        manager->playlist_set_focus_item(queue, found->second);
-        g_probeCurrentIndex = found->second;
-        schedule.Started(occurrence, false);
-        ApplyProjection();
-        return true;
-    }
-    const t_size queue = QueuePlaylist(false);
-    if (queue == SIZE_MAX) return false;
-    auto manager = playlist_manager::get();
-    manager->set_active_playlist(queue);
-    manager->set_playing_playlist(queue);
-    manager->playlist_set_focus_item(queue, found->second);
-    exactStart = occurrence;
-    pendingClickStart.reset();
-    manager->playlist_execute_default_action(queue, found->second);
-    if (paused) playback_control::get()->pause(true);
-    return true;
+    return g_driver->StartOccurrence(
+        found->second, paused,
+        {
+            .prepareLive =
+                [this, occurrence] {
+                    exactStart = occurrence;
+                    pendingClickStart.reset();
+                },
+            .commitImmediate =
+                [this, occurrence] {
+                    schedule.Started(occurrence, false);
+                    ApplyProjection();
+                },
+        });
 }
 
 bool PlaybackScheduler::Impl::StartExplicitAt(PlaybackOccurrenceId occurrence) {
@@ -1246,15 +1310,15 @@ void PlaybackScheduler::Impl::InvalidatePosted() {
 bool PlaybackSchedulerProbeAccess::Install() {
     PFC_ASSERT(core_api::is_main_thread());
     PlaybackScheduler::Get();
-    g_probeEnabled = true;
-    g_probeCurrentIndex.reset();
+    g_probeDriver.Reset();
+    g_driver = &g_probeDriver;
     return PlaybackScheduler::Existing() != nullptr;
 }
 
 void PlaybackSchedulerProbeAccess::Uninstall() {
     PFC_ASSERT(core_api::is_main_thread());
-    g_probeEnabled = false;
-    g_probeCurrentIndex.reset();
+    g_driver = &g_liveDriver;
+    g_probeDriver.Reset();
 }
 
 PlaybackSchedulerProbeAccess::HostState PlaybackSchedulerProbeAccess::Capture() {
@@ -1279,7 +1343,7 @@ PlaybackSchedulerProbeAccess::HostState PlaybackSchedulerProbeAccess::Capture() 
     state->checkpointDirty = impl.checkpointDirty;
     state->checkpointValid = impl.checkpointValid;
     state->modelInitialized = impl.modelInitialized;
-    state->probeCurrentIndex = g_probeCurrentIndex;
+    state->probeCurrentIndex = g_driver->SnapshotIndex();
     return {std::move(state)};
 }
 
@@ -1309,7 +1373,7 @@ bool PlaybackSchedulerProbeAccess::Restore(const HostState& state) {
     cfg_checkpoint = saved->cfgCheckpoint.c_str();
     cfg_shuffle = saved->cfgShuffle;
     cfg_repeat = saved->cfgRepeat;
-    g_probeCurrentIndex = saved->probeCurrentIndex;
+    g_driver->RestoreIndex(saved->probeCurrentIndex);
     ++impl.sourceGeneration;
     ++impl.syncGeneration;
     return true;
@@ -1366,7 +1430,7 @@ bool PlaybackSchedulerProbeAccess::AdvanceOccurrence(PlaybackOccurrenceId occurr
     auto& impl = *g_scheduler->m_impl;
     const auto found = impl.physicalIndex.find(occurrence);
     if (found == impl.physicalIndex.end()) return false;
-    g_probeCurrentIndex = found->second;
+    g_probeDriver.SetCurrentIndex(found->second);
     impl.startCommand = from_history ? play_control::track_command_prev : play_control::track_command_next;
     impl.HandleTrackStarted(occurrence);
     impl.startCommand = play_control::track_command_default;
@@ -1379,7 +1443,7 @@ bool PlaybackSchedulerProbeAccess::AdvanceExplicit(PlaybackOccurrenceId occurren
     auto& impl = *g_scheduler->m_impl;
     const auto found = impl.physicalIndex.find(occurrence);
     if (found == impl.physicalIndex.end()) return false;
-    g_probeCurrentIndex = found->second;
+    g_probeDriver.SetCurrentIndex(found->second);
     impl.startCommand = play_control::track_command_default;
     impl.exactStart.reset();
     if (!impl.StartExplicitAt(occurrence)) return false;
