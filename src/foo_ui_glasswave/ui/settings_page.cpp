@@ -172,6 +172,15 @@ std::vector<Section> BuildSections() {
             if (auto* window = MainWindow::Instance()) window->ReapplyLyrics();
         };
         fields.push_back(std::move(swap));
+        Field subHighlight;
+        subHighlight.kind = Field::Kind::Choice;
+        subHighlight.label = L"Secondary lyric line highlight";
+        subHighlight.choices = {L"Off", L"Highlight whole line", L"Follow word-by-word progress"};
+        subHighlight.get = [] { return static_cast<int>(settings::GetSecondaryLyricHighlight()); };
+        subHighlight.set = [](int value) {
+            settings::SetSecondaryLyricHighlight(static_cast<settings::SecondaryLyricHighlight>(value));
+        };
+        fields.push_back(std::move(subHighlight));
         for (auto& field : lyrics::scripts::SettingFields()) fields.push_back(std::move(field));
         sections.push_back({L"Lyrics", std::move(fields)});
     }

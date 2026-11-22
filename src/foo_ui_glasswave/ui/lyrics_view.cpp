@@ -42,6 +42,8 @@ constexpr float kTopFade = 36, kBottomFade = 72;  // DIP
 constexpr float kDim = 0.24f;            // a line that is not active
 constexpr float kDimBrowsing = 0.45f;    // while the user scrolls the lines
 constexpr float kSub = 0.32f;            // translations
+constexpr float kSubBright = 0.85f;      // highlighted secondary line (sung / whole-line)
+constexpr float kSubUnsung = 0.34f;      // unsung part of a secondary line following word progress
 constexpr float kBright = 0.92f;         // sung part of the active line
 constexpr float kUnsung = 0.36f;         // rest of the active line
 constexpr float kUnsynced = 0.85f;       // lyrics without timestamps
@@ -180,7 +182,8 @@ struct LyricsView::Run {
 struct LyricsView::LineView {
     const lyrics::Line* line = nullptr;
     com_ptr<IDWriteTextLayout> main, sub;
-    std::vector<Run> runs;
+    std::vector<Run> runs, subRuns;
+    float subTotalWidth = 0;
     struct WordView {
         int start = 0, end = 0;
         bool emphasize = false, last = false;
@@ -623,9 +626,18 @@ void LyricsView::BuildLine(LineView& v, float width) {
     v.main->GetMetrics(&tm);
     v.mainH = tm.height;
     v.subH = 0;
+    v.subRuns.clear();
+    v.subTotalWidth = 0;
     if (!line.translation.empty()) {
         winrt::check_hresult(f->CreateTextLayout(line.translation.c_str(), static_cast<UINT32>(line.translation.size()),
                                                  subFormat.get(), width, 100000.0f, v.sub.put()));
+        RunCollector subCollector;
+        subCollector.runs = &v.subRuns;
+        v.sub->Draw(nullptr, &subCollector, 0, 0);
+        for (auto& r : v.subRuns) {
+            r.wordX = v.subTotalWidth;
+            v.subTotalWidth += r.width;
+        }
         DWRITE_TEXT_METRICS sm{};
         v.sub->GetMetrics(&sm);
         v.subH = sm.height;
@@ -1000,10 +1012,16 @@ void LyricsView::DrawLiveText(ID2D1DeviceContext* dc, LineView& l, double now) {
     const bool karaoke = !l.line->words.empty();
     const float fade = kFadeWidth * F;
     const float dim = m_dim;
+    double mainTotalW = 0.0, mainFilledW = 0.0;
     for (size_t wi = 0; wi < l.words.size(); ++wi) {
         auto& wv = l.words[wi];
         const float dur = static_cast<float>(std::max(1, wv.end - wv.start));
         const float p = karaoke ? Clamp01((ms - wv.start) / dur) : (l.active ? 1.0f : 0.0f);
+        if (karaoke) {
+            const double wordWeight = wv.width > 0 ? static_cast<double>(wv.width) : 1.0;
+            mainTotalW += wordWeight;
+            mainFilledW += wordWeight * p;
+        }
         float lift = 0, grow = 1, glowA = 0, glowR = 0;
         if (karaoke) {
             if (wv.emphasize) {
@@ -1071,9 +1089,54 @@ void LyricsView::DrawLiveText(ID2D1DeviceContext* dc, LineView& l, double now) {
     }
     dc->SetTransform(blockM);
     if (l.sub) {
-        // Translations stay at the same level whether the line is active or not.
-        dc->DrawTextLayout({0, l.subY}, l.sub.get(),
-                           White(dc, Mix(kSub * dim / kDim, kSub * 0.85f, l.glow)).get());
+        const auto subMode = settings::GetSecondaryLyricHighlight();
+        const float subBaseA = kSub * dim / kDim;
+        if (subMode == settings::SecondaryLyricHighlight::Off) {
+            // Secondary line stays dim whether the line is active or not.
+            dc->DrawTextLayout({0, l.subY}, l.sub.get(),
+                               White(dc, Mix(subBaseA, kSub * 0.85f, l.glow)).get());
+        } else if (subMode == settings::SecondaryLyricHighlight::Line || !karaoke || l.subRuns.empty()) {
+            dc->DrawTextLayout({0, l.subY}, l.sub.get(), White(dc, Mix(subBaseA, kSubBright, l.glow)).get());
+        } else {
+            const float subP = mainTotalW > 0.0 ? Clamp01(static_cast<float>(mainFilledW / mainTotalW))
+                                                : (l.active ? 1.0f : 0.0f);
+            const float subBrightA = Mix(subBaseA, kSubBright, l.glow);
+            const float subDarkA = Mix(subBaseA, kSubUnsung, l.glow);
+            const float subF = F * settings::TranslationSizePercent() / std::max(1, settings::LyricSizePercent());
+            const float subFade = kFadeWidth * subF;
+            const D2D1_MATRIX_3X2_F subM = D2D1::Matrix3x2F::Translation(0, l.subY) * blockM;
+            dc->SetTransform(subM);
+            for (const auto& r : l.subRuns) {
+                const auto run = r.Glyphs();
+                if (subP >= 1.0f || l.glow < 0.01f) {
+                    dc->DrawGlyphRun(r.origin, &run, White(dc, subP >= 1.0f ? subBrightA : subDarkA).get());
+                    continue;
+                }
+                if (subP <= 0.0f) {
+                    dc->DrawGlyphRun(r.origin, &run, White(dc, subDarkA).get());
+                    continue;
+                }
+                const float edge = -subFade / 2 + subP * (l.subTotalWidth + subFade) - r.wordX;
+                if (edge + subFade / 2 <= 0.0f) {
+                    dc->DrawGlyphRun(r.origin, &run, White(dc, subDarkA).get());
+                    continue;
+                }
+                if (edge - subFade / 2 >= r.width) {
+                    dc->DrawGlyphRun(r.origin, &run, White(dc, subBrightA).get());
+                    continue;
+                }
+                const float x0 = r.origin.x + edge - subFade / 2;
+                const float x1 = r.origin.x + edge + subFade / 2;
+                const D2D1_GRADIENT_STOP g[] = {{0, D2D1::ColorF(1, 1, 1, subBrightA)},
+                                                {1, D2D1::ColorF(1, 1, 1, subDarkA)}};
+                com_ptr<ID2D1GradientStopCollection> gs;
+                dc->CreateGradientStopCollection(g, 2, gs.put());
+                com_ptr<ID2D1LinearGradientBrush> brush;
+                dc->CreateLinearGradientBrush({{x0, 0}, {x1, 0}}, gs.get(), brush.put());
+                dc->DrawGlyphRun(r.origin, &run, brush.get());
+            }
+            dc->SetTransform(blockM);
+        }
     }
 }
 

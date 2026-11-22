@@ -90,6 +90,17 @@ bool SwapTranslation();
 bool HideTranslation();
 void SetHideTranslation(bool hide);
 void SetSwapTranslation(bool swap);
+// Highlighting of the secondary (bottom) lyric line (translation, or original when swapped):
+// Off keeps it dim, Line highlights the whole line while active, WordProgress sweeps across
+// the secondary line in sync with the main line on word-timed lyrics (whole line otherwise).
+enum class SecondaryLyricHighlight : int {
+    Off = 0,
+    Line = 1,
+    WordProgress = 2,
+};
+inline constexpr Range kSecondaryLyricHighlight{0, 2, 0};
+SecondaryLyricHighlight GetSecondaryLyricHighlight();
+void SetSecondaryLyricHighlight(SecondaryLyricHighlight mode);
 // Bumped by every change above, so views can tell their layout is out of date.
 int LyricStyleGeneration();
 

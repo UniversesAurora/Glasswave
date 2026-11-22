@@ -43,6 +43,10 @@ cfg_int cfg_songTags({0x370497fa, 0x4228, 0x4d2d, {0x97, 0x04, 0x4b, 0x64, 0x8c,
 // {11CD7F56-CA0D-424C-8AC9-AFACEAC2569F}
 cfg_var_modern::cfg_string cfg_miniPlayerRect({0x11cd7f56, 0xca0d, 0x424c, {0x8a, 0xc9, 0xaf, 0xac, 0xea, 0xc2, 0x56, 0x9f}},
                                               "");
+// {0A8F54B6-7A45-4EBD-B6A3-04FEC2E1D749}
+cfg_int cfg_secondaryLyricHighlight(
+    {0x0a8f54b6, 0x7a45, 0x4ebd, {0xb6, 0xa3, 0x04, 0xfe, 0xc2, 0xe1, 0xd7, 0x49}},
+    kSecondaryLyricHighlight.defaultValue);
 int g_lyricStyle = 0;
 
 int Get(cfg_int& value, const Range& range) {
@@ -91,6 +95,13 @@ void SetLyricsCopyOptions(int flags) { cfg_lyricsCopy.set(flags); }
 bool SwapTranslation() { return cfg_swapTranslation.get() != 0; }
 void SetSwapTranslation(bool swap) {
     cfg_swapTranslation.set(swap ? 1 : 0);
+    ++g_lyricStyle;
+}
+SecondaryLyricHighlight GetSecondaryLyricHighlight() {
+    return static_cast<SecondaryLyricHighlight>(Get(cfg_secondaryLyricHighlight, kSecondaryLyricHighlight));
+}
+void SetSecondaryLyricHighlight(SecondaryLyricHighlight mode) {
+    Set(cfg_secondaryLyricHighlight, kSecondaryLyricHighlight, static_cast<int>(mode));
     ++g_lyricStyle;
 }
 int LyricStyleGeneration() { return g_lyricStyle; }

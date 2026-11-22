@@ -415,6 +415,20 @@ void MainWindow::ShowLyricsMenu(POINT screen) {
     hide.checked = hidden;
     hide.checkbox = true;
     actions.push_back(std::move(hide));
+    const auto subHighlight = settings::GetSecondaryLyricHighlight();
+    std::vector<MenuAction> subHighlightMenu;
+    for (const auto& [mode, label] : {std::pair{settings::SecondaryLyricHighlight::Off, L"Off"},
+                                      std::pair{settings::SecondaryLyricHighlight::Line, L"Highlight whole line"},
+                                      std::pair{settings::SecondaryLyricHighlight::WordProgress,
+                                                L"Follow word-by-word progress"}}) {
+        MenuAction item{Tr(label), [mode, restyle] {
+                            settings::SetSecondaryLyricHighlight(mode);
+                            restyle();
+                        }};
+        item.checked = subHighlight == mode;
+        subHighlightMenu.push_back(std::move(item));
+    }
+    actions.push_back({Tr(L"Secondary lyric line highlight"), nullptr, std::move(subHighlightMenu)});
     if (m_lyricsOpen && owner == m_hwnd) actions.push_back({Tr(L"Close lyrics pane"), [this] { ToggleLyrics(); }});
     ShowActionMenu(owner, screen, actions);
 }
