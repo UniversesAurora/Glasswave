@@ -2,7 +2,54 @@
 
 Updated: 2026-11-22
 
-## Dolby Atmos: remove double attenuation, preserve LFE in 2.0/Headphones & fast EC-3 seek (2026-11-22, latest)
+## Dependency audit/upgrades & cross-provider list-cache optimization (2026-11-22, latest)
+
+1. **Full external dependency & lyric-script audit and upgrades**:
+   - **Cavern** (`third_party/glasswave-cavern/source-pin.json`): upgraded
+     `bbb76e9f85a2b53041297c52257a2f486afd8f26` → `c54117222a83deabf71c3fd162ed71a4b263a55d` (+10
+     commits in `FilterStudio`/`QuickEQ`/`Resample`/`QMath`/`Gain`; none touched
+     `EnhancedAC3Decoder.cs`, `FrameBasedDecoder.cs`, `BlockBuffer.cs`, or `VirtualizerFilter.cs`,
+     so all 4 hunks of `scripts/applemusic/atmos/cavern-buffer-drain.patch` remain required and
+     apply cleanly). Rebuilt and verified via `scripts/applemusic/atmos/build-renderer.ps1` (all 8
+     real-EC-3 probe cases pass with bit-exact SHA-256).
+   - **foobar2000-dev** (`third_party/deps.lock.json`, `third_party/README.md`): upgraded
+     `2.26.2` → `2.26.3` (FFmpeg 9.0.2, zlib 1.4, HE-AAC gapless & Matroska seek fixes; installer
+     Authenticode-verified as `Illustrate Ltd`).
+   - Audited all remaining dependencies and confirmed already up-to-date: `apple-music-linux`
+     (`nightly` @ `960bd8a`, 5 upstream-adopted hunks already dropped in `4e0359d`),
+     `libhybris-win` (`master` @ `96125ef`), `foobar2000-sdk` (`2026-10-01`), `quickjs-ng`
+     (`0.18.0`), `miniz` (`3.1.2`), `NeteaseCloudMusicApiEnhanced/api-enhanced` (`v4.41.1`),
+     `aria2` (`1.37.0`), `ESLyric-LyricsSource` (`ebaf516`), static `eslyric-pkg`, and
+     Glasswave-authored `scripts/lyrics/searcher/lrclib.js`. Reference-only `.local/refs/lyrics/amll`
+     is not built or deployed.
+2. **Cross-provider list-cache invalidation & stale-while-revalidate optimization** (both Apple
+   Music and NetEase Cloud Music):
+   - Added manifest-only `cache::lists::TouchValidated` and `cache::lists::MarkStale` in
+     `cache/lists.{h,cpp}` (zero page chunk rewrites). When background revalidation confirms a
+     cached list is unchanged on page 1, `ListSession` now persists the updated `validatedAt` to
+     disk so freshness survives restarts and warm-session evictions.
+   - Added `stream::ListTarget` and scoped `RevalidateLists(provider, targets)` /
+     `Provider::NotifyListChanged(targets)` across both `applemusic/stream_provider.cpp` and
+     `netease/stream_provider.cpp`: writes now revalidate only the affected list(s) behind their
+     visible cached rows without touching unrelated warm/open lists or immutable catalog lists.
+   - Off-screen mutated lists retain all persisted pages for immediate first paint (zero blank
+     loading), mark their disk manifest stale (`validatedAt = 0`) and track in-memory mutation
+     sequences so the next visit paints cached rows immediately and shadow-revalidates in the
+     background.
+   - Split list freshness windows by kind (`30 min` for mutable user lists, `24 h` for immutable
+     catalog lists: `AlbumTracks`, `ArtistTopTracks`, `ArtistAlbums`, `ArtistPlaylists`,
+     `ArtistSimilarArtists`).
+3. **Suppress false `art: cover download failed: ... no picture` log spam on `CacheOnlyScope` probes**:
+   - Added `cache::IsCacheOnly()` in `cache/images.{h,cpp}` and guarded `LogArtFailure` in
+     `stream/art_extractor.h` so normal cache-only misses before queueing network downloads no
+     longer emit false error lines.
+- Verification: `pwsh -File scripts/test-list-cache.ps1` (`124` checks passed, including new
+  `TestTouchValidatedAndMarkStale`), `pwsh -File scripts/applemusic/atmos/build-renderer.ps1`
+  (all 8 probes passed), `pwsh -File scripts/build.ps1` (Release|x64, 0 warnings / 0 errors).
+  Upgraded `.local/fb2k-dev` to foobar2000 `2.26.3` (preserving `profile/`) and deployed
+  `foo_ui_glasswave.dll` and `glasswave_cavern.dll` via `scripts/run-dev.ps1 -NoLaunch`.
+
+## Dolby Atmos: remove double attenuation, preserve LFE in 2.0/Headphones & fast EC-3 seek (2026-11-22)
 
 1. **Remove redundant `-3 dB` double attenuation and align Cavern speaker setup with Cavernize**:
    - Removed the extra `JocCalibrationGain = 0.707f` multiplier in
