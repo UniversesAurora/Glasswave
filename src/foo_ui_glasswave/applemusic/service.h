@@ -12,7 +12,8 @@ class ServiceManager {
 public:
     static ServiceManager& Get();
     void EnsureStarted(const std::wstring& url, const std::string& token,
-                       const std::filesystem::path& runtime, abort_callback& abort);
+                       const std::filesystem::path& runtimeBin, const std::filesystem::path& runtimeData,
+                       abort_callback& abort);
     // Terminal for this component lifetime. Also cancels a start currently in flight.
     void Stop();
 
@@ -27,7 +28,8 @@ private:
     void* m_job = nullptr;
     std::wstring m_url;
     std::string m_token;
-    std::filesystem::path m_runtime;
+    std::filesystem::path m_runtimeBin;
+    std::filesystem::path m_runtimeData;
     std::filesystem::path m_record;
 };
 

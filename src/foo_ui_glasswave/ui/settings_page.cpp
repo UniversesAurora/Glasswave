@@ -17,6 +17,7 @@
 #include "ui/win32.h"
 
 #include <SDK/coreDarkMode.h>
+#include <ShlObj.h>
 #include <commctrl.h>
 #include <uxtheme.h>
 
@@ -59,6 +60,28 @@ Field Button(std::wstring label, std::function<void(HWND)> press) {
     return f;
 }
 
+std::wstring PickFolder(HWND owner, const std::wstring& title, const std::wstring& initial) {
+    winrt::com_ptr<IFileOpenDialog> dialog;
+    if (FAILED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(dialog.put()))))
+        return {};
+    DWORD options = 0;
+    dialog->GetOptions(&options);
+    dialog->SetOptions(options | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM);
+    dialog->SetTitle(title.c_str());
+    winrt::com_ptr<IShellItem> start;
+    if (!initial.empty() &&
+        SUCCEEDED(SHCreateItemFromParsingName(initial.c_str(), nullptr, IID_PPV_ARGS(start.put()))))
+        dialog->SetFolder(start.get());
+    if (dialog->Show(owner) != S_OK) return {};
+    winrt::com_ptr<IShellItem> chosen;
+    if (FAILED(dialog->GetResult(chosen.put())) || !chosen) return {};
+    wchar_t* path = nullptr;
+    if (FAILED(chosen->GetDisplayName(SIGDN_FILESYSPATH, &path)) || !path) return {};
+    std::wstring result(path);
+    CoTaskMemFree(path);
+    return result;
+}
+
 std::vector<Section> BuildSections() {
     std::vector<Section> sections;
     Field language;
@@ -93,30 +116,58 @@ std::vector<Section> BuildSections() {
           Number(L"Cover loading threads", L"", settings::kCoverThreads, settings::CoverThreads,
                  settings::SetCoverThreads, true),
           Button(L"Reload all covers", [](HWND) { ArtCache::Get().Invalidate(L""); })}});
-    sections.push_back(
-        {L"Shared cache",
-         {Number(L"Song disk cache", L"MiB",
-                 {cache::kAudioMinMiB, cache::kAudioMaxMiB, cache::kAudioDefaultMiB},
-                 cache::AudioLimitMiB, cache::SetAudioLimitMiB),
-          Number(L"Image disk cache", L"MiB",
-                 {cache::kImagesMinMiB, cache::kImagesMaxMiB, cache::kImagesDefaultMiB},
-                 cache::ImageLimitMiB, cache::SetImageLimitMiB),
-          Number(L"List disk cache", L"MiB",
-                 {cache::kListsMinMiB, cache::kListsMaxMiB, cache::kListsDefaultMiB},
-                 cache::ListLimitMiB, cache::SetListLimitMiB),
-          Button(L"Clear song cache", [](HWND) {
-              try { cache::GetStore().Clear(cache::Kind::Audio); } catch (...) {}
-          }),
-          Button(L"Clear image cache", [](HWND) {
-              try { cache::GetStore().Clear(cache::Kind::Image); } catch (...) {}
-              ArtCache::Get().Invalidate(L"");
-          }),
-          Button(L"Clear list cache", [](HWND) {
-              for (auto* provider : stream::Providers())
-                  stream::InvalidateListCache(provider->Key(), true,
-                                              stream::ListCacheInvalidation::PurgePersistent);
-              try { cache::GetStore().Clear(cache::Kind::Data); } catch (...) {}
-          })}});
+    {
+        Field cacheFolder;
+        cacheFolder.kind = Field::Kind::Note;
+        cacheFolder.label = L"Cache folder";
+        cacheFolder.restart = true;
+        cacheFolder.note = [] { return cache::CacheFolder(); };
+        sections.push_back(
+            {L"Shared cache",
+             {std::move(cacheFolder),
+              Button(L"Change cache folder...", [](HWND owner) {
+                  if (const auto chosen = PickFolder(owner, Tr(L"Select cache folder"), cache::CacheFolder());
+                      !chosen.empty()) {
+                      cache::SetCacheFolder(chosen);
+                      MessageBoxW(owner, Tr(L"The new cache folder will take effect after restarting foobar2000.").c_str(),
+                                  Tr(L"Shared cache").c_str(), MB_OK | MB_ICONINFORMATION);
+                  }
+              }),
+              Button(L"Reset cache folder", [](HWND owner) {
+                  if (cache::CustomCacheFolder().empty()) return;
+                  cache::SetCacheFolder(L"");
+                  MessageBoxW(owner, Tr(L"The new cache folder will take effect after restarting foobar2000.").c_str(),
+                              Tr(L"Shared cache").c_str(), MB_OK | MB_ICONINFORMATION);
+              }),
+              Button(L"Open cache folder", [](HWND) {
+                  const std::wstring dir = cache::CacheFolder();
+                  if (dir.empty()) return;
+                  CreateDirectoryW(dir.c_str(), nullptr);
+                  ShellExecuteW(nullptr, L"open", dir.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+              }),
+              Number(L"Song disk cache", L"MiB",
+                     {cache::kAudioMinMiB, cache::kAudioMaxMiB, cache::kAudioDefaultMiB},
+                     cache::AudioLimitMiB, cache::SetAudioLimitMiB),
+              Number(L"Image disk cache", L"MiB",
+                     {cache::kImagesMinMiB, cache::kImagesMaxMiB, cache::kImagesDefaultMiB},
+                     cache::ImageLimitMiB, cache::SetImageLimitMiB),
+              Number(L"List disk cache", L"MiB",
+                     {cache::kListsMinMiB, cache::kListsMaxMiB, cache::kListsDefaultMiB},
+                     cache::ListLimitMiB, cache::SetListLimitMiB),
+              Button(L"Clear song cache", [](HWND) {
+                  try { cache::GetStore().Clear(cache::Kind::Audio); } catch (...) {}
+              }),
+              Button(L"Clear image cache", [](HWND) {
+                  try { cache::GetStore().Clear(cache::Kind::Image); } catch (...) {}
+                  ArtCache::Get().Invalidate(L"");
+              }),
+              Button(L"Clear list cache", [](HWND) {
+                  for (auto* provider : stream::Providers())
+                      stream::InvalidateListCache(provider->Key(), true,
+                                                  stream::ListCacheInvalidation::PurgePersistent);
+                  try { cache::GetStore().Clear(cache::Kind::Data); } catch (...) {}
+              })}});
+    }
     sections.push_back(
         {L"Play history",
          {Number(L"Songs remembered", L"songs", settings::kPlayHistory, settings::PlayHistoryLimit,
@@ -423,11 +474,14 @@ private:
                     row.control = Make(L"BUTTON", Tr(field.label), WS_TABSTOP | BS_PUSHBUTTON, controlX, y,
                                        Px(kControlW), controlH, font);
                     break;
-                case Field::Kind::Note:
-                    row.label = Make(L"STATIC", Tr(field.label), SS_LEFT, x, y + textY, labelW, controlH, font);
+                case Field::Kind::Note: {
+                    std::wstring label = Tr(field.label);
+                    if (field.restart) label += L" " + Tr(L"(after a restart)");
+                    row.label = Make(L"STATIC", label, SS_LEFT, x, y + textY, labelW, controlH, font);
                     row.control = Make(L"STATIC", L"", SS_LEFT | SS_ENDELLIPSIS, controlX, y + textY, Px(kControlW + 80),
                                        controlH, font);
                     break;
+                }
                 }
                 m_rows.push_back(row);
                 y += rowH;

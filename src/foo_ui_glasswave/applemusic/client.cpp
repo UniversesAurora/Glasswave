@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "applemusic/client.h"
+#include "core/hex.h"
 #include "core/text.h"
 #include "core/url.h"
 #include "applemusic/service.h"
@@ -7,10 +8,16 @@
 #include "core/paths.h"
 #include "ui/i18n.h"
 
+#include <bcrypt.h>
+#include <winsock2.h>
+
 #include <atomic>
 #include <filesystem>
 #include <fstream>
 #include <set>
+
+#pragma comment(lib, "bcrypt.lib")
+#pragma comment(lib, "ws2_32.lib")
 
 namespace glasswave::applemusic {
 
@@ -33,7 +40,8 @@ thread_local std::string g_probeTag;
 struct BridgeConfig {
     std::wstring url;
     std::string token;
-    std::filesystem::path runtime;
+    std::filesystem::path runtimeBin;
+    std::filesystem::path runtimeData;
     std::string fixtureTransactionTag;
 };
 
@@ -95,6 +103,69 @@ bool ValidCatalogId(std::wstring_view id) {
     return std::all_of(id.begin(), id.end(), [](wchar_t c) { return c >= L'0' && c <= L'9'; });
 }
 
+int PickLoopbackPort() {
+    WSADATA data{};
+    if (WSAStartup(MAKEWORD(2, 2), &data) != 0) return 0;
+    SOCKET sock = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (sock == INVALID_SOCKET) {
+        WSACleanup();
+        return 0;
+    }
+    sockaddr_in address{};
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    address.sin_port = 0;
+    int port = 0;
+    if (bind(sock, reinterpret_cast<sockaddr*>(&address), sizeof(address)) == 0) {
+        int length = sizeof(address);
+        if (getsockname(sock, reinterpret_cast<sockaddr*>(&address), &length) == 0)
+            port = ntohs(address.sin_port);
+    }
+    closesocket(sock);
+    WSACleanup();
+    return port;
+}
+
+std::string RandomTokenHex() {
+    unsigned char bytes[32]{};
+    if (BCryptGenRandom(nullptr, bytes, static_cast<ULONG>(sizeof(bytes)), BCRYPT_USE_SYSTEM_PREFERRED_RNG) < 0)
+        Fail("Cannot generate an Apple Music bridge authorization token.");
+    return core::HexLower(bytes, sizeof(bytes));
+}
+
+BridgeConfig AutoManagedBridge(const std::filesystem::path& appleDir) {
+    namespace fs = std::filesystem;
+    static std::mutex autoMutex;
+    static std::optional<BridgeConfig> cachedAuto;
+    std::lock_guard lock(autoMutex);
+    if (cachedAuto) return *cachedAuto;
+
+    const fs::path dataDir = (appleDir / L"runtime").lexically_normal();
+    fs::path binDir;
+    std::error_code ec;
+    if (const auto component = core::ComponentRoot(); !component.empty()) {
+        const fs::path candidate = (component / L"applemusic" / L"runtime").lexically_normal();
+        if (fs::is_regular_file(candidate / L"engine.exe", ec) && !ec) binDir = candidate;
+    }
+    if (binDir.empty()) {
+        ec.clear();
+        if (fs::is_regular_file(dataDir / L"engine.exe", ec) && !ec) binDir = dataDir;
+    }
+    if (binDir.empty()) {
+        Fail("The Apple Music runtime is not installed.");
+    }
+    const int port = PickLoopbackPort();
+    if (port <= 0) Fail("Cannot allocate a local port for the Apple Music service.");
+
+    BridgeConfig config;
+    config.url = L"http://127.0.0.1:" + std::to_wstring(port);
+    config.token = RandomTokenHex();
+    config.runtimeBin = std::move(binDir);
+    config.runtimeData = dataDir;
+    cachedAuto = config;
+    return config;
+}
+
 BridgeConfig ReadBridge() {
     const auto dir = core::ProfileDir(L"applemusic");
     if (dir.empty()) Fail("The foobar2000 profile is unavailable.");
@@ -102,6 +173,9 @@ BridgeConfig ReadBridge() {
 
     std::error_code ec;
     const auto status = std::filesystem::symlink_status(path, ec);
+    if (status.type() == std::filesystem::file_type::not_found) {
+        return AutoManagedBridge(dir);
+    }
     if (ec || status.type() != std::filesystem::file_type::regular) {
         Fail("The Apple Music bridge is not configured.");
     }
@@ -156,11 +230,12 @@ BridgeConfig ReadBridge() {
         const auto directory = json::GetString(*managed, L"runtimeDirectory");
         if (directory.empty() || HasControl(directory))
             Fail("The managed Apple Music runtime path is invalid.");
-        config.runtime = directory;
-        if (!config.runtime.is_absolute()) Fail("The managed Apple Music runtime path must be absolute.");
+        config.runtimeBin = directory;
+        config.runtimeData = directory;
+        if (!config.runtimeBin.is_absolute()) Fail("The managed Apple Music runtime path must be absolute.");
     }
     const auto fixtureAsset = json::GetString(*root, L"fixturePlaybackAssetId");
-    if (config.runtime.empty() && json::GetString(*root, L"fixtureAssetId") == L"glasswave-test" &&
+    if (config.runtimeBin.empty() && json::GetString(*root, L"fixtureAssetId") == L"glasswave-test" &&
         (fixtureAsset == L"glasswave-test" || fixtureAsset == L"1237064886")) {
         const auto tag = json::GetString(*root, L"fixtureTransactionTag");
         if (tag.size() == 32 && std::all_of(tag.begin(), tag.end(), [](wchar_t c) {
@@ -350,7 +425,7 @@ std::string BridgeToken() {
 
 std::string BridgeSourceIdentity() {
     const BridgeConfig config = ReadBridge();
-    if (!config.runtime.empty()) return "managed:" + Utf8(config.runtime.lexically_normal().wstring());
+    if (!config.runtimeData.empty()) return "managed:" + Utf8(config.runtimeData.lexically_normal().wstring());
     return "external:" + Utf8(config.url);
 }
 
@@ -372,7 +447,7 @@ Object BridgeRequest(std::wstring_view path, abort_callback& abort, std::wstring
     ValidateApiPath(path);
     const std::wstring verb = Method(method);
     const BridgeConfig config = ReadBridge();
-    ServiceManager::Get().EnsureStarted(config.url, config.token, config.runtime, abort);
+    ServiceManager::Get().EnsureStarted(config.url, config.token, config.runtimeBin, config.runtimeData, abort);
 
     net::JsonCall call;
     call.method = verb;

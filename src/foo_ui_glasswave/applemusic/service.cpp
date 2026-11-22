@@ -32,7 +32,33 @@ struct EnvironmentLess {
     }
 };
 
-std::vector<wchar_t> Environment(const fs::path& runtime, const std::string& token) {
+std::string ForwardSlashesUtf8(const fs::path& path) {
+    std::wstring wide = path.lexically_normal().wstring();
+    for (wchar_t& ch : wide) {
+        if (ch == L'\\') ch = L'/';
+    }
+    return std::string(pfc::stringcvt::string_utf8_from_wide(wide.c_str()).get_ptr());
+}
+
+void EnsureRuntimeConfigYaml(const fs::path& runtimeBin, const fs::path& runtimeData) {
+    const fs::path configPath = runtimeData / L"config.yaml";
+    std::error_code ec;
+    const bool sameDir = runtimeBin.lexically_normal() == runtimeData.lexically_normal();
+    if (sameDir && fs::is_regular_file(configPath, ec) && !ec) return;
+    const std::string content =
+        "drm-binary-path: \"" + ForwardSlashesUtf8(runtimeBin) + "\"\n"
+        "drm-base-dir: \"" + ForwardSlashesUtf8(runtimeData / L"files") + "\"\n"
+        "alac-max: 192000\n"
+        "get-m3u8-mode: hires\n"
+        "get-m3u8-from-device: true\n"
+        "aac-type: aac-lc\n"
+        "exit-on-error: true\n";
+    std::ofstream file(configPath, std::ios::binary | std::ios::trunc);
+    file.write(content.data(), static_cast<std::streamsize>(content.size()));
+    if (!file) Fail("Cannot write the Apple Music runtime configuration.");
+}
+
+std::vector<wchar_t> Environment(const fs::path& runtimeBin, const fs::path& runtimeData, const std::string& token) {
     std::map<std::wstring, std::wstring, EnvironmentLess> vars;
     wchar_t* inherited = GetEnvironmentStringsW();
     if (!inherited) Fail("Cannot prepare the Apple Music service environment.");
@@ -44,11 +70,11 @@ std::vector<wchar_t> Environment(const fs::path& runtime, const std::string& tok
     FreeEnvironmentStringsW(inherited);
     vars[L"GLASSWAVE_HEADLESS"] = L"1";
     vars[L"ADAM_API_TOKEN"] = pfc::stringcvt::string_wide_from_utf8(token.c_str()).get_ptr();
-    vars[L"ADAM_ADAMPLAY_DIR"] = (runtime / L"widevine").wstring();
-    vars[L"APPDATA"] = (runtime / L"config").wstring();
-    vars[L"LOCALAPPDATA"] = (runtime / L"localappdata").wstring();
-    vars[L"TMP"] = vars[L"TEMP"] = (runtime / L"tmp").wstring();
-    vars[L"PATH"] = runtime.wstring() + L";" + vars[L"PATH"];
+    vars[L"ADAM_ADAMPLAY_DIR"] = (runtimeData / L"widevine").wstring();
+    vars[L"APPDATA"] = (runtimeData / L"config").wstring();
+    vars[L"LOCALAPPDATA"] = (runtimeData / L"localappdata").wstring();
+    vars[L"TMP"] = vars[L"TEMP"] = (runtimeData / L"tmp").wstring();
+    vars[L"PATH"] = runtimeBin.wstring() + L";" + vars[L"PATH"];
     std::vector<wchar_t> block;
     for (const auto& [key, value] : vars) {
         const std::wstring entry = key + L"=" + value;
@@ -110,8 +136,9 @@ ServiceManager& ServiceManager::Get() {
 ServiceManager::~ServiceManager() { Stop(); }
 
 void ServiceManager::EnsureStarted(const std::wstring& url, const std::string& token,
-                                   const fs::path& runtime, abort_callback& abort) {
-    if (runtime.empty()) return; // Explicit fixtures and external endpoints are never launched.
+                                   const fs::path& runtimeBin, const fs::path& runtimeData,
+                                   abort_callback& abort) {
+    if (runtimeBin.empty() || runtimeData.empty()) return; // Explicit fixtures and external endpoints are never launched.
     abort.check();
     m_shutdown.check();
     std::unique_lock lock(m_mutex, std::defer_lock);
@@ -124,7 +151,8 @@ void ServiceManager::EnsureStarted(const std::wstring& url, const std::string& t
     }
     abort.check();
     m_shutdown.check();
-    if (m_process && m_url == url && m_token == token && m_runtime == runtime &&
+    if (m_process && m_url == url && m_token == token && m_runtimeBin == runtimeBin &&
+        m_runtimeData == runtimeData &&
         WaitForSingleObject(static_cast<HANDLE>(m_process), 0) == WAIT_TIMEOUT) return;
     StopLocked();
 
@@ -133,19 +161,26 @@ void ServiceManager::EnsureStarted(const std::wstring& url, const std::string& t
     abort.check();
     if (existing.status == 200 && existing.error.empty()) return;
     if (existing.status != 0) Fail("The Apple Music service address is occupied or authorization has changed.");
-    if (!runtime.is_absolute()) Fail("The managed Apple Music runtime path must be absolute.");
-    const auto engine = runtime / L"engine.exe";
-    for (const auto* name : {L"engine.exe", L"config.yaml", L"libdrm_client.dll", L"libhybris-core.dll",
-                             L"hybris-linker/q.so", L"rootfs/system/lib64/libandroidappmusic.so"}) {
+    if (!runtimeBin.is_absolute() || !runtimeData.is_absolute())
+        Fail("The managed Apple Music runtime path must be absolute.");
+    const auto engine = runtimeBin / L"engine.exe";
+    for (const auto* name : {L"engine.exe", L"libdrm_client.dll", L"libhybris-core.dll", L"hybris-linker/q.so"}) {
         std::error_code ec;
-        if (!fs::is_regular_file(runtime / name, ec) || ec)
-            Fail("The native Apple Music runtime is incomplete. Run Apple Music setup again.");
+        if (!fs::is_regular_file(runtimeBin / name, ec) || ec)
+            Fail("The native Apple Music runtime is incomplete. Reinstall Glasswave or run Apple Music setup.");
+    }
+    {
+        std::error_code ec;
+        if (!fs::is_regular_file(runtimeData / L"rootfs/system/lib64/libandroidappmusic.so", ec) || ec)
+            Fail("Apple Music Android libraries are missing. Place the Android .so files in "
+                 "<profile>\\glasswave\\applemusic\\runtime\\rootfs\\system\\lib64\\.");
     }
     std::error_code ec;
     for (const auto* name : {L"logs", L"config", L"localappdata", L"tmp", L"widevine", L"files/mpl_db"}) {
-        fs::create_directories(runtime / name, ec);
+        fs::create_directories(runtimeData / name, ec);
         if (ec) Fail("Cannot prepare the native Apple Music runtime folders.");
     }
+    EnsureRuntimeConfigYaml(runtimeBin, runtimeData);
 
     Handle job(CreateJobObjectW(nullptr, nullptr));
     JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
@@ -153,7 +188,7 @@ void ServiceManager::EnsureStarted(const std::wstring& url, const std::string& t
     if (!job || !SetInformationJobObject(job.get(), JobObjectExtendedLimitInformation, &limits, sizeof(limits)))
         Fail("Cannot create Apple Music service lifetime protection.");
     SECURITY_ATTRIBUTES security{sizeof(security), nullptr, TRUE};
-    Handle log(CreateFileW((runtime / L"logs/component-service.log").c_str(), FILE_APPEND_DATA,
+    Handle log(CreateFileW((runtimeData / L"logs/component-service.log").c_str(), FILE_APPEND_DATA,
                           FILE_SHARE_READ | FILE_SHARE_WRITE, &security, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr));
     Handle input(CreateFileW(L"NUL", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
                             &security, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr));
@@ -186,11 +221,11 @@ void ServiceManager::EnsureStarted(const std::wstring& url, const std::string& t
     startup.lpAttributeList = list;
     const unsigned port = Port(url);
     std::wstring command = L"\"" + engine.wstring() + L"\" --api " + std::to_wstring(port);
-    auto environment = Environment(runtime, token);
+    auto environment = Environment(runtimeBin, runtimeData, token);
     PROCESS_INFORMATION child{};
     const BOOL created = CreateProcessW(engine.c_str(), command.data(), nullptr, nullptr, TRUE,
         CREATE_SUSPENDED | CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT | EXTENDED_STARTUPINFO_PRESENT,
-        environment.data(), runtime.c_str(), &startup.StartupInfo, &child);
+        environment.data(), runtimeData.c_str(), &startup.StartupInfo, &child);
     SecureZeroMemory(environment.data(), environment.size() * sizeof(wchar_t));
     if (!created) Fail("Cannot start the native Apple Music service.");
     Handle process(child.hProcess), thread(child.hThread);
@@ -204,8 +239,9 @@ void ServiceManager::EnsureStarted(const std::wstring& url, const std::string& t
     m_job = job.release();
     m_url = url;
     m_token = token;
-    m_runtime = runtime;
-    m_record = runtime / (L"engine-" + std::to_wstring(port) + L".pid.json");
+    m_runtimeBin = runtimeBin;
+    m_runtimeData = runtimeData;
+    m_record = runtimeData / (L"engine-" + std::to_wstring(port) + L".pid.json");
     try {
         WriteRecord(m_record, static_cast<HANDLE>(m_process), engine, port);
         const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(60);
@@ -244,7 +280,8 @@ void ServiceManager::StopLocked() {
         if (!m_record.empty()) DeleteFileW(m_record.c_str());
     }
     m_record.clear();
-    m_runtime.clear();
+    m_runtimeBin.clear();
+    m_runtimeData.clear();
     m_url.clear();
     if (!m_token.empty()) SecureZeroMemory(m_token.data(), m_token.size());
     m_token.clear();

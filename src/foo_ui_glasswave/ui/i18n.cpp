@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "ui/i18n.h"
+#include "core/paths.h"
 #include "core/text.h"
 #include "stream/provider.h"
 #include "win7/win7_resources.h"
@@ -75,7 +76,13 @@ Catalog& Get() {
         const auto setting = static_cast<Language>(cfg_language.get());
         c.chinese = setting == Language::Chinese ||
                     (setting == Language::Auto && PRIMARYLANGID(GetUserDefaultUILanguage()) == LANG_CHINESE);
-        if (c.chinese) c.table = ReadJson(LangFolder() + L"zh-CN.json");
+        if (c.chinese) {
+            c.table = ReadJson(LangFolder() + L"zh-CN.json");
+            if (c.table.empty()) {
+                const auto component = core::ComponentRoot();
+                if (!component.empty()) c.table = ReadJson((component / L"lang" / L"zh-CN.json").wstring());
+            }
+        }
     }
     return c;
 }

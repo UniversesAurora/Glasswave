@@ -2,6 +2,7 @@
 #include "lyrics/scripts.h"
 #include "core/log.h"
 #include "core/file.h"
+#include "core/paths.h"
 #include "core/text.h"
 #include "lyrics/script_host.h"
 #include "lyrics/native_sources.h"
@@ -26,8 +27,15 @@ using core::Utf8;
 using core::Wide;
 
 std::vector<std::filesystem::path> Roots() {
+    std::vector<std::filesystem::path> roots;
+    if (const auto component = core::ComponentRoot(); !component.empty())
+        roots.push_back(component / L"lyrics" / L"scripts");
     const std::filesystem::path own(Service::CacheFolder());
-    return {own.parent_path().parent_path() / L"eslyric-data" / L"scripts", own / L"scripts"};
+    if (!own.empty()) {
+        roots.push_back(own.parent_path().parent_path() / L"eslyric-data" / L"scripts");
+        roots.push_back(own / L"scripts");
+    }
+    return roots;
 }
 
 struct Catalog {

@@ -3,6 +3,25 @@
 
 namespace glasswave::core {
 
+std::filesystem::path ComponentRoot() {
+    HMODULE self = nullptr;
+    if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                            reinterpret_cast<LPCWSTR>(&ComponentRoot), &self) ||
+        !self)
+        return {};
+    std::wstring buffer(MAX_PATH, L'\0');
+    for (;;) {
+        const DWORD length = GetModuleFileNameW(self, buffer.data(), static_cast<DWORD>(buffer.size()));
+        if (length == 0) return {};
+        if (length < buffer.size()) {
+            buffer.resize(length);
+            return std::filesystem::path(buffer).parent_path();
+        }
+        if (buffer.size() >= 32768) return {};
+        buffer.resize(buffer.size() * 2);
+    }
+}
+
 std::filesystem::path ProfileRoot() {
     pfc::string8 native;
     try {

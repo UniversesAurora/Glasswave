@@ -5,6 +5,9 @@
 
 namespace glasswave::core {
 
+// Directory holding foo_ui_glasswave.dll; empty when unavailable.
+std::filesystem::path ComponentRoot();
+
 // <profile>\glasswave; empty when the profile path is unavailable. Not created.
 std::filesystem::path ProfileRoot();
 
