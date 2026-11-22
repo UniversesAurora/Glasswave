@@ -128,21 +128,19 @@ struct SessionCleanup {
     std::wstring session;
 };
 
-// The bridge keeps downloading the song into its disk cache when a connection drops, and serves a
-// byte range of it once committed; until then it answers a range with 503 and Retry-After.
-cache::audio::Fetcher AppleEncodedFetch(std::string url, std::string token,
-                                        std::shared_ptr<SessionCleanup> cleanup) {
-    net::ResumableSource source;
-    source.label = "Apple Music";
-    source.target.url = std::move(url);
-    source.target.headers.emplace_back("X-Api-Token", std::move(token));
-    if (cleanup && !cleanup->transactionTag.empty())
-        source.target.headers.emplace_back("X-Glasswave-Probe-Transaction", cleanup->transactionTag);
-    // The cleanup rides with the fetcher: the session ends when the transfer is dropped.
-    return [source = std::move(source), cleanup = std::move(cleanup)](cache::audio::Sink& sink,
-                                                                      abort_callback& abort) {
-        net::FetchResumable(source, net::WriteTo(sink), abort);
-    };
+Object OpenPlaybackSession(const std::wstring& assetId, AudioQuality quality, bool preferAtmos,
+                           abort_callback& abort) {
+    Object capabilities;
+    // The owner's quality: AAC, ALAC up to 48 kHz, or the best ALAC the song has.
+    capabilities.Insert(L"lossless", winrt::Windows::Data::Json::JsonValue::CreateBooleanValue(
+                                         quality != AudioQuality::High));
+    capabilities.Insert(L"hiRes", winrt::Windows::Data::Json::JsonValue::CreateBooleanValue(
+                                      quality == AudioQuality::HiResLossless));
+    Object request;
+    request.Insert(L"preferAtmos", winrt::Windows::Data::Json::JsonValue::CreateBooleanValue(preferAtmos));
+    request.Insert(L"assetId", winrt::Windows::Data::Json::JsonValue::CreateStringValue(assetId));
+    request.Insert(L"capabilities", capabilities);
+    return Request(L"/api/v1/playback", abort, L"POST", Utf8(json::Stringify(request)));
 }
 
 std::string AppleExtension(std::wstring_view codec, std::wstring_view declared) {
@@ -221,6 +219,63 @@ struct DeliveredSource {
         return !asset.empty() && ValidCodec() && durationMs > 0;
     }
 };
+
+// The bridge keeps downloading the song into its disk cache when a connection drops, and serves a
+// byte range of it once committed; until then it answers a range with 503 and Retry-After. If the
+// stream fails before any bytes arrive (or the bridge restarted), renew opens a fresh session for
+// the same delivered source.
+cache::audio::Fetcher AppleEncodedFetch(std::string url, std::string token,
+                                        std::shared_ptr<SessionCleanup> cleanup, DeliveredSource expected,
+                                        AudioQuality quality, bool preferAtmos, std::string transactionTag) {
+    auto cleanups = std::make_shared<std::vector<std::shared_ptr<SessionCleanup>>>();
+    if (cleanup) cleanups->push_back(std::move(cleanup));
+
+    net::ResumableSource source;
+    source.label = "Apple Music";
+    source.target.url = std::move(url);
+    source.target.headers.emplace_back("X-Api-Token", std::move(token));
+    if (!transactionTag.empty())
+        source.target.headers.emplace_back("X-Glasswave-Probe-Transaction", transactionTag);
+    source.renew = [cleanups, expected = std::move(expected), quality, preferAtmos,
+                    transactionTag = std::move(transactionTag)](abort_callback& abort) -> net::FetchTarget {
+        const Object session = OpenPlaybackSession(expected.asset, quality, preferAtmos, abort);
+        const std::wstring sessionId = json::GetString(session, L"sessionId");
+        const std::wstring codec = json::GetString(session, L"codec");
+        const std::wstring extension = json::GetString(session, L"extension");
+        const std::wstring spatial = json::GetString(session, L"spatialAudio");
+        const std::wstring mime = json::GetString(session, L"codecMimeType");
+        const int durationMs = json::GetInt(session, L"durationMs");
+        const auto streams = json::GetObject(session, L"streams");
+        const std::wstring audio = streams ? json::GetString(*streams, L"audio") : std::wstring();
+        const std::wstring expectedAudio = L"/api/v1/playback/" + Encode(sessionId) + L"/audio";
+        const std::string sourceVersion = AppleSourceVersion(
+            session, json::GetString(session, L"container"), extension, mime, spatial, durationMs);
+        if (sessionId.empty() || audio != expectedAudio || codec != expected.codec ||
+            sourceVersion != expected.sourceVersion) {
+            throw exception_io_data("Apple Music returned an incompatible replacement session");
+        }
+        const std::wstring bridge = BridgeUrl();
+        const std::string freshToken = BridgeToken();
+        auto freshCleanup = std::make_shared<SessionCleanup>();
+        freshCleanup->bridge = bridge;
+        freshCleanup->token = freshToken;
+        freshCleanup->transactionTag = transactionTag;
+        freshCleanup->session = sessionId;
+        cleanups->push_back(std::move(freshCleanup));
+
+        net::FetchTarget target;
+        target.url = Utf8(bridge + audio + (codec == L"atmos" ? L"?container=ec3" : L""));
+        target.headers.emplace_back("X-Api-Token", freshToken);
+        if (!transactionTag.empty())
+            target.headers.emplace_back("X-Glasswave-Probe-Transaction", transactionTag);
+        return target;
+    };
+    // The cleanups ride with the fetcher: sessions end when the transfer is dropped.
+    return [source = std::move(source), cleanups = std::move(cleanups)](cache::audio::Sink& sink,
+                                                                        abort_callback& abort) {
+        net::FetchResumable(source, net::WriteTo(sink), abort);
+    };
+}
 
 } // namespace
 
@@ -363,18 +418,7 @@ class AppleInput : public stream::EncodedInputBase {
     }
 
     Object OpenPlayback(const std::wstring& assetId, abort_callback& abort) const {
-        Object capabilities;
-        // The owner's quality: AAC, ALAC up to 48 kHz, or the best ALAC the song has.
-        capabilities.Insert(L"lossless", winrt::Windows::Data::Json::JsonValue::CreateBooleanValue(
-                                             m_quality != AudioQuality::High));
-        capabilities.Insert(L"hiRes", winrt::Windows::Data::Json::JsonValue::CreateBooleanValue(
-                                          m_quality == AudioQuality::HiResLossless));
-        Object request;
-        request.Insert(L"preferAtmos",
-                       winrt::Windows::Data::Json::JsonValue::CreateBooleanValue(m_preferAtmos));
-        request.Insert(L"assetId", winrt::Windows::Data::Json::JsonValue::CreateStringValue(assetId));
-        request.Insert(L"capabilities", capabilities);
-        return Request(L"/api/v1/playback", abort, L"POST", Utf8(json::Stringify(request)));
+        return OpenPlaybackSession(assetId, m_quality, m_preferAtmos, abort);
     }
 
     // Opens a playback session with the service and describes what it delivers.
@@ -436,9 +480,9 @@ class AppleInput : public stream::EncodedInputBase {
                                delivered.mime, delivered.spatial, delivered.durationMs);
         m_delivered = delivered;
         stream::EncodedSource source = Describe(delivered);
-        source.fetch =
-            AppleEncodedFetch(Utf8(bridge + audio + (delivered.codec == L"atmos" ? L"?container=ec3" : L"")),
-                              std::move(token), std::move(cleanup));
+        source.fetch = AppleEncodedFetch(
+            Utf8(bridge + audio + (delivered.codec == L"atmos" ? L"?container=ec3" : L"")), std::move(token),
+            std::move(cleanup), delivered, m_quality, m_preferAtmos, m_transactionTag);
         return source;
     }
 

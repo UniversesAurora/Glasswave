@@ -146,9 +146,17 @@ void FetchResumable(const ResumableSource& source, const ByteSink& sink, abort_c
                 throw;
             } catch (...) {
                 // A connection that breaks mid-read is a cut like one that closes early; without
-                // a stated length there is nothing to continue towards. Only the read is a cut:
-                // a failing sink is not retried.
-                if (expected == filesize_invalid) throw;
+                // a stated length there is nothing to continue towards, unless no bytes arrived
+                // yet and the source can open a fresh stream. Only the read is a cut: a failing
+                // sink is not retried.
+                if (expected == filesize_invalid) {
+                    if (received == 0 && source.renew && !renewedSinceProgress) {
+                        renew("the read failed before any bytes arrived");
+                        renewed = true;
+                        break;
+                    }
+                    throw;
+                }
                 break;
             }
             if (!count) break;
