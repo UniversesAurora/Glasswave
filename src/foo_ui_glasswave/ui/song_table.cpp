@@ -818,7 +818,7 @@ std::wstring SongTableSource::Cell(size_t row, size_t column) const {
     if (row >= m_visible.size() || column >= m_fields.size()) return {};
     const SongTableRow& item = m_all[m_visible[row]];
     switch (m_fields[column]) {
-    case kNumber: return std::to_wstring(row + 1);
+    case kNumber: return std::to_wstring(m_visible[row] + 1);
     case kTitle: return item.title;
     case kLength: return item.length;
     case kArtist: return item.artist;

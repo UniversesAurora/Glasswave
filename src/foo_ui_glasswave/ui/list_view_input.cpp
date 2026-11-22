@@ -625,6 +625,7 @@ void ListView::SortBy(size_t src) {
         m_source->Sort(src, true);
     else
         m_source->Sort(SIZE_MAX, false);
+    if (m_source->PersistSort()) SaveColumnLayout();
     Refresh();
     if (onPresentationChanged) onPresentationChanged();
 }
@@ -670,7 +671,9 @@ void ListView::ShowHeaderMenu(HWND owner, POINT pt, size_t displayCol) {
         Store().erase(m_columnKey);
         Persist();
         m_columnKey.clear();
+        if (m_source->PersistSort() && m_source->SortColumn() != SIZE_MAX) m_source->Sort(SIZE_MAX, false);
         Refresh();  // reloads the defaults
+        if (onPresentationChanged) onPresentationChanged();
     } else if (cmd >= kColumn && cmd < kColumn + srcCols.size()) {
         const size_t i = cmd - kColumn;
         if (m_hidden.size() < srcCols.size()) m_hidden.resize(srcCols.size(), 0);

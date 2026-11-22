@@ -83,13 +83,13 @@ ListView::~ListView() {
 
 // ---- Data -----------------------------------------------------------------------------------
 
-void ListView::LoadColumnLayout() {
+bool ListView::LoadColumnLayout() {
     const auto& cols = m_source->Columns();
     std::wstring key;
     if (!m_source->ColumnSetKey().empty()) key = m_source->ColumnSetKey() + L":";
     for (const auto& c : cols) key += c.title + L'|';
     if (AlbumColumn()) key += L"#art";
-    if (key == m_columnKey && m_order.size() == cols.size()) return;
+    if (key == m_columnKey && m_order.size() == cols.size()) return false;
     m_columnKey = key;
     m_order.resize(cols.size());
     for (size_t i = 0; i < cols.size(); ++i) m_order[i] = i;
@@ -97,7 +97,7 @@ void ListView::LoadColumnLayout() {
     m_hidden.resize(cols.size());
     for (size_t i = 0; i < cols.size(); ++i) m_hidden[i] = cols[i].hidden ? 1 : 0;
     auto it = Store().find(key);
-    if (it == Store().end()) return;
+    if (it == Store().end()) return false;
     const SavedLayout& s = it->second;
     std::vector<size_t> sorted = s.order;
     std::sort(sorted.begin(), sorted.end());
@@ -106,72 +106,86 @@ void ListView::LoadColumnLayout() {
     if (valid) m_order = s.order;
     if (s.widths.size() == cols.size()) m_widths = s.widths;
     if (s.hidden.size() == cols.size()) m_hidden = s.hidden;
+    if (m_source->PersistSort() && s.sortColumn < cols.size() && m_source->CanSort(s.sortColumn) &&
+        (m_source->SortColumn() != s.sortColumn || m_source->SortDescending() != s.sortDescending)) {
+        m_source->Sort(s.sortColumn, s.sortDescending);
+        return true;
+    }
+    return false;
 }
 
 void ListView::SaveColumnLayout() const {
     if (m_columnKey.empty()) return;
-    Store()[m_columnKey] = {m_order, m_widths, m_hidden};
+    const bool persistSort = m_source && m_source->PersistSort();
+    const size_t sortCol = persistSort ? m_source->SortColumn() : SIZE_MAX;
+    const bool sortDesc = persistSort && sortCol != SIZE_MAX && m_source->SortDescending();
+    Store()[m_columnKey] = {m_order, m_widths, m_hidden, sortCol, sortDesc};
     Persist();
 }
 
 void ListView::BuildLines() {
-    m_lines.clear();
-    m_lineTop.clear();
-    m_rowLine.clear();
-    m_groupLine.clear();
-    m_mode = Mode::Plain;
-    m_groupArt = false;
-    m_tileGroups = false;
-    if (!m_source) return;
-    if (m_source->Tiles() != media::TileStyle::None) {
-        m_mode = Mode::Tiles;
-        if (const auto* groups = m_source->Groups(); groups && !groups->empty()) {
-            m_tileGroups = true;
+    auto assemble = [this] {
+        m_lines.clear();
+        m_lineTop.clear();
+        m_rowLine.clear();
+        m_groupLine.clear();
+        m_mode = Mode::Plain;
+        m_groupArt = false;
+        m_tileGroups = false;
+        if (!m_source) return;
+        if (m_source->Tiles() != media::TileStyle::None) {
+            m_mode = Mode::Tiles;
+            if (const auto* groups = m_source->Groups(); groups && !groups->empty()) {
+                m_tileGroups = true;
+                m_rowLine.assign(m_source->Count(), 0);
+                for (size_t gi = 0; gi < groups->size(); ++gi) {
+                    const auto& g = (*groups)[gi];
+                    const size_t cols = TileColumnsOf(GroupTiles(gi));
+                    m_groupLine.push_back(m_lines.size());
+                    m_lines.push_back({Line::GroupHeader, SIZE_MAX, gi, 0});
+                    if (g.carousel) {  // a shelf: its rows, the tiles column by column across them
+                        const size_t rows = std::max<size_t>(g.tileLines, 1);
+                        const size_t first = m_lines.size();
+                        for (size_t k = 0; k < std::min(rows, g.count); ++k)
+                            m_lines.push_back({Line::Item, g.first, gi, k});
+                        for (size_t t = g.first; t < g.first + g.count && t < m_rowLine.size(); ++t)
+                            m_rowLine[t] = first + (t - g.first) % rows;
+                        continue;
+                    }
+                    const size_t end = TileGroupEnd(gi);
+                    for (size_t r = g.first, k = 0; r < end; r += cols, ++k) {
+                        m_lines.push_back({Line::Item, r, gi, k});
+                        for (size_t t = r; t < std::min(end, r + cols); ++t) m_rowLine[t] = m_lines.size() - 1;
+                    }
+                    // Rows past the shown ones belong to the group's last line (for scrolling to them).
+                    for (size_t t = end; t < g.first + g.count && t < m_rowLine.size(); ++t)
+                        m_rowLine[t] = m_lines.size() - 1;
+                }
+            }
+        } else if (const auto* groups = m_source->Groups(); groups && !groups->empty()) {
+            m_mode = Mode::Grouped;
+            m_groupArt = m_source->GroupArt();
             m_rowLine.assign(m_source->Count(), 0);
             for (size_t gi = 0; gi < groups->size(); ++gi) {
                 const auto& g = (*groups)[gi];
-                const size_t cols = TileColumnsOf(GroupTiles(gi));
                 m_groupLine.push_back(m_lines.size());
                 m_lines.push_back({Line::GroupHeader, SIZE_MAX, gi, 0});
-                if (g.carousel) {  // a shelf: its rows, the tiles column by column across them
-                    const size_t rows = std::max<size_t>(g.tileLines, 1);
-                    const size_t first = m_lines.size();
-                    for (size_t k = 0; k < std::min(rows, g.count); ++k) m_lines.push_back({Line::Item, g.first, gi, k});
-                    for (size_t t = g.first; t < g.first + g.count && t < m_rowLine.size(); ++t)
-                        m_rowLine[t] = first + (t - g.first) % rows;
-                    continue;
-                }
-                const size_t end = TileGroupEnd(gi);
-                for (size_t r = g.first, k = 0; r < end; r += cols, ++k) {
-                    m_lines.push_back({Line::Item, r, gi, k});
-                    for (size_t t = r; t < std::min(end, r + cols); ++t) m_rowLine[t] = m_lines.size() - 1;
-                }
-                // Rows past the shown ones belong to the group's last line (for scrolling to them).
-                for (size_t t = end; t < g.first + g.count && t < m_rowLine.size(); ++t)
-                    m_rowLine[t] = m_lines.size() - 1;
-            }
-        }
-    } else if (const auto* groups = m_source->Groups(); groups && !groups->empty()) {
-        m_mode = Mode::Grouped;
-        m_groupArt = m_source->GroupArt();
-        m_rowLine.assign(m_source->Count(), 0);
-        for (size_t gi = 0; gi < groups->size(); ++gi) {
-            const auto& g = (*groups)[gi];
-            m_groupLine.push_back(m_lines.size());
-            m_lines.push_back({Line::GroupHeader, SIZE_MAX, gi, 0});
-            // With the album column a group is at least as tall as its cover.
-            const size_t lines = m_groupArt ? std::max(g.count, kGroupMinLines) : g.count;
-            for (size_t k = 0; k < lines; ++k) {
-                if (k < g.count) {
-                    m_rowLine[g.first + k] = m_lines.size();
-                    m_lines.push_back({Line::Item, g.first + k, gi, k});
-                } else {
-                    m_lines.push_back({Line::Filler, SIZE_MAX, gi, k});
+                // With the album column a group is at least as tall as its cover.
+                const size_t lines = m_groupArt ? std::max(g.count, kGroupMinLines) : g.count;
+                for (size_t k = 0; k < lines; ++k) {
+                    if (k < g.count) {
+                        m_rowLine[g.first + k] = m_lines.size();
+                        m_lines.push_back({Line::Item, g.first + k, gi, k});
+                    } else {
+                        m_lines.push_back({Line::Filler, SIZE_MAX, gi, k});
+                    }
                 }
             }
         }
-    }
-    LoadColumnLayout();
+    };
+    assemble();
+    if (!m_source) return;
+    if (LoadColumnLayout()) assemble();
     // The album column stays first and visible.
     if (AlbumColumn() && !m_order.empty() && m_order[0] != 0) {
         m_order.erase(std::find(m_order.begin(), m_order.end(), size_t{0}));
@@ -209,7 +223,10 @@ size_t ListView::TileGroupEnd(size_t group) const {
 }
 
 void ListView::SetSource(media::ListSource* source, bool resetScroll) {
-    if (source != m_source) m_cards->Clear();
+    if (source != m_source) {
+        m_cards->Clear();
+        m_columnKey.clear();
+    }
     m_cardPress = SIZE_MAX;
     m_source = source;
     if (m_source && m_source->CanGroup()) m_source->SetGrouping(cfg_showGroups.get() != 0);

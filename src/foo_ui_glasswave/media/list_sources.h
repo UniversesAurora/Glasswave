@@ -217,6 +217,7 @@ public:
 
     // Sorting by a column (header click / "Sort by"). SortColumn() is SIZE_MAX when unsorted.
     virtual bool CanSort(size_t /*column*/) const { return false; }
+    virtual bool PersistSort() const { return true; }
     virtual void Sort(size_t /*column*/, bool /*descending*/) {}
     virtual size_t SortColumn() const { return SIZE_MAX; }
     virtual bool SortDescending() const { return false; }
@@ -329,6 +330,7 @@ public:
     void SetFilter(std::wstring_view filterLower) override;
     // Sorting reorders the foobar2000 playlist itself (undoable), as WMP 12 does.
     bool CanSort(size_t column) const override;
+    bool PersistSort() const override { return false; }
     void Sort(size_t column, bool descending) override;
     size_t SortColumn() const override { return m_sortColumn; }
     bool SortDescending() const override { return m_sortDescending; }

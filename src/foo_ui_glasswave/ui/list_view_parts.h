@@ -90,6 +90,8 @@ struct SavedLayout {
     std::vector<size_t> order;
     std::vector<float> widths;
     std::vector<uint8_t> hidden;
+    size_t sortColumn = SIZE_MAX;
+    bool sortDescending = false;
 };
 
 inline std::map<std::wstring, SavedLayout>& Store() {
@@ -97,19 +99,35 @@ inline std::map<std::wstring, SavedLayout>& Store() {
     static bool loaded = false;
     if (!loaded) {
         loaded = true;
-        // One line per column set: key \t order (comma separated) \t widths (comma separated)
+        // One line per column set: key \t order \t widths \t hidden \t sortCol:desc
         std::wstringstream in(Wide(cfg_columns.get().c_str()));
         std::wstring line;
         while (std::getline(in, line)) {
             const size_t a = line.find(L'\t'), b = line.find(L'\t', a + 1);
             if (a == std::wstring::npos || b == std::wstring::npos) continue;
-            const size_t c = line.find(L'\t', b + 1);  // hidden flags (optional)
+            const size_t c = line.find(L'\t', b + 1);
+            const size_t d = c == std::wstring::npos ? std::wstring::npos : line.find(L'\t', c + 1);
             SavedLayout s;
-            std::wstringstream o(line.substr(a + 1, b - a - 1)), w(line.substr(b + 1, c == std::wstring::npos ? std::wstring::npos : c - b - 1));
+            std::wstringstream o(line.substr(a + 1, b - a - 1)),
+                w(line.substr(b + 1, c == std::wstring::npos ? std::wstring::npos : c - b - 1));
             for (std::wstring v; std::getline(o, v, L',');) s.order.push_back(static_cast<size_t>(_wtoi(v.c_str())));
             for (std::wstring v; std::getline(w, v, L',');) s.widths.push_back(static_cast<float>(_wtof(v.c_str())));
-            if (c != std::wstring::npos)
-                for (wchar_t ch : line.substr(c + 1)) s.hidden.push_back(ch == L'1' ? 1 : 0);
+            if (c != std::wstring::npos) {
+                const std::wstring hiddenField =
+                    line.substr(c + 1, d == std::wstring::npos ? std::wstring::npos : d - c - 1);
+                for (wchar_t ch : hiddenField) s.hidden.push_back(ch == L'1' ? 1 : 0);
+            }
+            if (d != std::wstring::npos) {
+                const std::wstring sortField = line.substr(d + 1);
+                const size_t colon = sortField.find(L':');
+                if (colon != std::wstring::npos && colon > 0) {
+                    const int col = _wtoi(sortField.substr(0, colon).c_str());
+                    if (col >= 0) {
+                        s.sortColumn = static_cast<size_t>(col);
+                        s.sortDescending = sortField.substr(colon + 1) == L"1";
+                    }
+                }
+            }
             store[line.substr(0, a)] = std::move(s);
         }
     }
@@ -126,6 +144,9 @@ inline void Persist() {
             out += (i ? L"," : L"") + std::to_wstring(static_cast<int>(std::lround(s.widths[i])));
         out += L'\t';
         for (uint8_t h : s.hidden) out += h ? L'1' : L'0';
+        out += L'\t';
+        if (s.sortColumn != SIZE_MAX)
+            out += std::to_wstring(s.sortColumn) + L':' + (s.sortDescending ? L'1' : L'0');
         out += L'\n';
     }
     cfg_columns.set(Utf8(out).c_str());

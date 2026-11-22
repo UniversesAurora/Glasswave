@@ -119,7 +119,7 @@ private:
 
     Hit HitAt(POINT pt) const;
     void BuildLines();
-    void LoadColumnLayout();
+    bool LoadColumnLayout();
     void SaveColumnLayout() const;
     void ShowHeaderMenu(HWND owner, POINT pt, size_t displayCol);
     void SortBy(size_t srcColumn);

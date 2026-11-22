@@ -2,7 +2,27 @@
 
 Updated: 2026-11-22
 
-## Apple Music regional artist names fix & public v0.1.0 release (2026-11-22, latest)
+## Per-view sort persistence, stable `#` row numbers & newest-first Apple Music playlists (2026-11-22, latest)
+
+1. **Remember column sort per view type (`media/list_sources.h`, `ui/list_view*`)**:
+   - Extended `listview::SavedLayout` (`cfg_columns`) with `sortColumn` and `sortDescending`,
+     saved whenever `ListView::SortBy()` changes the sort and restored automatically in
+     `ListView::LoadColumnLayout()` whenever opening any view of the same column-set type or
+     switching view styles (`Details` ↔ `Tiles`). Resetting columns clears the saved sort too.
+   - Added `ListSource::PersistSort()` (default `true`, overridden to `false` on `PlaylistSource`
+     so opening another local foobar2000 playlist never rewrites its playlist order).
+2. **Stable item-bound `#` column (`ui/song_table.cpp`)**:
+   - Changed `SongTableSource::Cell` for `kNumber` from `row + 1` (screen row index) to
+     `m_visible[row] + 1` (1-based original list/album position bound to the track), matching
+     `SortKey(kNumber)` and local `TrackSource`: descending `#` now displays `N..1`, and album/CD
+     track numbers stay attached to their tracks under any sort or filter.
+3. **Newest-first default order for Apple Music library playlists (`applemusic/stream_provider.cpp`)**:
+   - Updated `StreamProvider::ReadPlaylistTracksPage` / `ListLoad::LoadPlaylistTracks` so user
+     library playlists (`p.*`, excluding Favorite Songs which Apple already returns newest-first
+     and catalog editorial/chart playlists `pl.*`) load all pages and reverse to newest-to-oldest
+     order by default (consistent with Favorite Songs and cached cleanly in the shared list cache).
+
+## Apple Music regional artist names fix & public v0.1.0 release (2026-11-22)
 
 1. **Apple Music regional artist names in Artists list & artist page header (`applemusic/stream_provider.cpp`, `ui/remote_pages_artists.cpp`)**:
    - `CatalogIdForArtist(id)` only checked the in-memory `m_artistCatalogIds` map and missed
