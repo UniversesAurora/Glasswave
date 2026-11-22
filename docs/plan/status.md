@@ -2,7 +2,62 @@
 
 Updated: 2026-11-22
 
-## Pane ghosting root cause & Home motion-cover teardown crash (2026-11-22, latest)
+## Radio mode: Next guard, fixed order across History/Up Next, immediate lookahead & restart fidelity (2026-11-22, latest)
+
+1. **Prevent advancing past the end of loaded radio tracks & grey out Next**:
+   - Added `media::radio::CanGoNext()`, `GoNext()`, and `GoPrevious()` tracking both the committed
+     queue slot and any in-flight `opening` target so rapid consecutive clicks immediately reach
+     the last loaded track and stop there instead of running off the end of the playlist and
+     stopping playback.
+   - Wired `CanGoNext()` into the MainWindow, PlayerWindow (WMC + WMP + fallback), and Taskbar
+     thumbbar Next buttons so Next greys out whenever the current/opening song is the last loaded
+     radio track and brightens automatically as soon as `TopUp()` appends more tracks.
+   - Added a `radio::Active()` end-of-queue guard in `PlaybackScheduler::Impl::HandleNavigationStart`
+     and `radio::DislikeCurrent` so external/hotkey Next or disliking the last loaded track also
+     never stops playback.
+2. **Fixed linear radio order across Up Next, History, and rapid clicks**:
+   - Added `media::radio::PlayHistoryTrack(track)` and wired `MainWindow`'s `queue.onPlayHistory`
+     so clicking a History song from the active station jumps directly to its exact slot in the
+     fixed radio playlist without duplicating or reordering items.
+   - In `PlaybackScheduler::Impl::HandleTrackStarted`, pure linear mode (`!shuffle && !HasPriority()
+     && repeat != All`) now commits via `StartExplicitAt(occurrence)` so rapid double-Next /
+     double-Prev clicks while a remote track is opening never leave skipped tracks stranded behind
+     the current row or reorder the physical playlist.
+3. **Eliminate song-open serialization of radio lookahead loading**:
+   - Previously `radio.cpp` only ran `TopUp()` from `PlaybackScheduler`'s post-`on_playback_new_track`
+     listener, delaying both queuing buffered `pending` tracks and sending `FetchStationTracks`
+     until the current song finished opening (2–4 s on Apple Music).
+   - `radio::PlayIndex` and `Playback::on_playback_starting` now run `TopUp()` immediately on track
+     start (in parallel with opening the new song), prefetch when `pending.size() < kAhead + 1`,
+     retry shortly if `SessionRestoring()` is active on start-up, and `MainWindow::RefreshPaneQueue`
+     refreshes an active `StartingPreview` via `PreviewStartingAt` when radio appends new rows
+     mid-open.
+   - Checked both providers: Apple Music `FetchStationTracks` runs on `m_exec`'s 3-worker `kTasks`
+     pool directly against `amp-api.music.apple.com` (independent of `engine.exe` audio open);
+     NetEase `FetchStationTracks` runs on its single `kReadQueue` worker (independent of audio
+     decode threads, though serialized behind other NetEase metadata reads).
+4. **Fix restart/restore ordering & Previous jumping to song #0**:
+   - `PlaybackScheduler::Impl::HandleTrackStarted` now saves `cfg_checkpoint` on every track change
+     (previously only on `explicitStart`).
+   - `PlaybackSchedule::Restore` now puts `[0..current-1]` into `m_history` and `[current+1..end]`
+     into `m_ordinaryFuture` when `!m_shuffle`; `EnsureModel` and `Synchronize` realign stale
+     linear checkpoints via `StartExplicit` instead of `RestoreCurrent` (which had left `m_history`
+     pointing at index `0`).
+   - `radio::Restore()` now recovers `playing` from `PlaybackScheduler::CurrentQueuePosition()` /
+     playing location / focus item, aligns the linear schedule (`AlignLinearCurrent`), and calls
+     `TopUp()` immediately.
+- Verification: `tests/playback_schedule_tests.cpp` (`123723` checks passed, including new
+  `CheckLinearRestoreKeepsHistoryAndFuture`); `scripts/build.ps1` (Release|x64) built with 0
+  warnings / 0 errors; deployed via `scripts/run-dev.ps1 -NoLaunch`.
+- Owner checks:
+  - In radio mode, click Next rapidly to the last loaded track: confirm Next greys out, playback
+    does not stop, and Next brightens again once new tracks arrive.
+  - Click the 2nd song in Up Next or a played radio song in History, then step Previous/Next and
+    confirm the fixed radio order never shifts or duplicates.
+  - Quit and restart during a radio session and verify the station identity, song order, and
+    Previous/Next stepping all stay intact.
+
+## Pane ghosting root cause & Home motion-cover teardown crash (2026-11-22)
 
 1. **Pane / lyrics / queue recycled-atlas ghosting (captured live via `/glasswave:visuals`)**:
    - Live capture on a scrolling queue row showed visual `0.0.21.0.4.0.3.11.1` (`880x112` px)
