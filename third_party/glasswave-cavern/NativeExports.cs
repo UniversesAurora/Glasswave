@@ -2,6 +2,7 @@ using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using Cavern;
 using Cavern.Channels;
+using Cavern.Filters;
 using Cavern.Format.Decoders;
 using Cavern.Format.Renderers;
 using Cavern.Format.Utilities;
@@ -152,10 +153,11 @@ internal struct GwAtmosInfo {
 
 internal sealed unsafe class RendererSession : IDisposable {
     private const int MaxBufferedFrames = 48000 * 30;
-    private const float JocCalibrationGain = .707f;
     private const float HeadphoneHeadroomGain = .50118723f; // -6 dB
+    private const float InvSqrt2 = 0.70710678f; // -3.01 dB (ITU-R BS.775 / Dolby Lo/Ro)
     private readonly OutputMode outputMode;
     private readonly OutputLayout outputLayout;
+    private readonly OutputLayout renderLayout;
     private readonly int updateFrames;
     private readonly PullStream input;
     private readonly Thread worker;
@@ -170,6 +172,7 @@ internal sealed unsafe class RendererSession : IDisposable {
     private bool disposed;
     private int outputChannels;
     private VirtualChannel[]? headphoneFilters;
+    private Normalizer? postLimiter;
 
     public RendererSession(OutputMode mode, OutputLayout layout, int updateFrames,
                            nint userData, nint readFunction) {
@@ -177,6 +180,12 @@ internal sealed unsafe class RendererSession : IDisposable {
             throw new ArgumentOutOfRangeException(nameof(updateFrames));
         outputMode = mode;
         outputLayout = layout;
+        // Cavern drops LFE sources when the speaker layout has no LFE channel. Render Stereo2_0
+        // through Cavern's 5.1 layout so LFE, center and surrounds stay intact, then apply the
+        // standard ITU-R BS.775 / Dolby Lo/Ro stereo downmix.
+        renderLayout = mode == OutputMode.Speakers && layout == OutputLayout.Stereo2_0
+                           ? OutputLayout.Speakers5_1
+                           : layout;
         this.updateFrames = updateFrames;
         input = new PullStream(userData, readFunction);
         worker = new Thread(Worker) {
@@ -255,13 +264,15 @@ internal sealed unsafe class RendererSession : IDisposable {
         Listener? listener = null;
         try {
             BlockBuffer<byte> blocks =
-                BlockBuffer<byte>.CreateForConstantPacketSize(input, 4096);
-            var decoder = new EnhancedAC3Decoder(blocks);
+                BlockBuffer<byte>.CreateForConstantPacketSize(input, 8192);
             if (outputMode == OutputMode.Headphones)
                 headphoneFilters = VirtualizerFilter.CreateDefaultFilters();
 
-            using (ListenerAdmission.Enter(outputMode, outputLayout, decoder.SampleRate,
-                                           headphoneFilters)) {
+            EnhancedAC3Decoder decoder;
+            using (ListenerAdmission.EnterLock()) {
+                decoder = new EnhancedAC3Decoder(blocks);
+                ListenerAdmission.Configure(outputMode, renderLayout, decoder.SampleRate,
+                                            headphoneFilters);
                 renderer = new EnhancedAC3Renderer(decoder);
                 if (!renderer.HasObjects)
                     throw new InvalidDataException("The EC-3 stream contains no JOC objects.");
@@ -270,12 +281,16 @@ internal sealed unsafe class RendererSession : IDisposable {
                     SampleRate = decoder.SampleRate,
                     UpdateRate = updateFrames,
                     AudioQuality = QualityModes.Perfect,
-                    Volume = JocCalibrationGain *
-                             (outputMode == OutputMode.Headphones
-                                  ? HeadphoneHeadroomGain
-                                  : 1f)
+                    LFESeparation = true,
+                    DirectLFE = true,
+                    Volume = outputMode == OutputMode.Headphones ? HeadphoneHeadroomGain : 1f
                 };
                 listener.AttachSources(renderer.Objects);
+                if (outputMode == OutputMode.Headphones || renderLayout != outputLayout) {
+                    postLimiter = new Normalizer(true) {
+                        decayFactor = 10f * updateFrames / decoder.SampleRate
+                    };
+                }
 
                 ReferenceChannel[] outputLayoutChannels = LayoutReferences(outputLayout);
                 outputChannels = outputLayoutChannels.Length;
@@ -305,7 +320,7 @@ internal sealed unsafe class RendererSession : IDisposable {
                 long decodedFrames;
                 int frameSize;
                 bool traceTail = false;
-                using (ListenerAdmission.Enter(outputMode, outputLayout, decoder.SampleRate,
+                using (ListenerAdmission.Enter(outputMode, renderLayout, decoder.SampleRate,
                                                headphoneFilters)) {
                     rendered = listener.Render();
                     renderedChannels = Listener.Channels.Length;
@@ -316,7 +331,12 @@ internal sealed unsafe class RendererSession : IDisposable {
                 }
                 if (rendered == null || rendered.Length != updateFrames * renderedChannels)
                     throw new InvalidDataException("Cavern returned an invalid render block.");
-                if (renderedChannels != outputChannels) {
+                if (outputMode == OutputMode.Speakers && renderLayout == OutputLayout.Speakers5_1 &&
+                    outputLayout == OutputLayout.Stereo2_0) {
+                    if (renderedChannels != 6)
+                        throw new InvalidDataException("Cavern changed the 5.1 downmix layout.");
+                    rendered = Downmix51ToStereoLoRo(rendered, updateFrames);
+                } else if (renderedChannels != outputChannels) {
                     if (outputChannels != 2)
                         throw new InvalidDataException("Cavern changed an unsupported speaker layout.");
                     var stereo = new float[updateFrames * 2];
@@ -326,6 +346,7 @@ internal sealed unsafe class RendererSession : IDisposable {
                     }
                     rendered = stereo;
                 }
+                if (postLimiter != null) postLimiter.Process(rendered);
                 if (finished) {
                     long available = checked(decodedFrames * frameSize - producedFrames);
                     int validFrames = (int)Math.Clamp(available, 0, updateFrames);
@@ -383,6 +404,20 @@ internal sealed unsafe class RendererSession : IDisposable {
         }
     }
 
+    private static float[] Downmix51ToStereoLoRo(float[] source, int frames) {
+        // Standard ITU-R BS.775-3 / Dolby Lo/Ro constant-power downmix from ref510
+        // (0=FL, 1=FR, 2=FC, 3=LFE, 4=SL, 5=SR) to stereo (FL, FR).
+        var stereo = new float[frames * 2];
+        for (int frame = 0; frame < frames; ++frame) {
+            int src = frame * 6;
+            int dst = frame * 2;
+            float shared = (source[src + 2] + source[src + 3]) * InvSqrt2;
+            stereo[dst] = source[src + 0] + shared + source[src + 4] * InvSqrt2;
+            stereo[dst + 1] = source[src + 1] + shared + source[src + 5] * InvSqrt2;
+        }
+        return stereo;
+    }
+
     internal static ReferenceChannel[] LayoutReferences(OutputLayout layout) => layout switch {
         OutputLayout.Stereo2_0 => ChannelPrototype.ref200,
         OutputLayout.Speakers5_1 => ChannelPrototype.ref510,
@@ -401,22 +436,34 @@ internal sealed unsafe class RendererSession : IDisposable {
 internal static class ListenerAdmission {
     private static readonly object gate = new();
 
+    public static Lease EnterLock() {
+        // Cavern keeps its active SourceRenderer, output layout, and IMDCT FFT caches in static
+        // fields. Sessions own their Listener, sources, and queues, so decoder initialization and
+        // render calls must be process-serialized under one lock.
+        Monitor.Enter(gate);
+        return new Lease();
+    }
+
+    public static void Configure(OutputMode mode, OutputLayout layout, int sampleRate,
+                                 VirtualChannel[]? headphoneFilters = null) {
+        Listener.HeadphoneVirtualizer = mode == OutputMode.Headphones;
+        Listener.EnvironmentType = Environments.Home;
+        if (mode == OutputMode.Headphones) {
+            VirtualizerFilter.Override(
+                headphoneFilters ?? throw new InvalidOperationException(
+                    "A headphone context requires an independent HRIR filter set."),
+                sampleRate);
+        } else {
+            Listener.ReplaceChannels(ChannelPrototype.ToLayoutAlternative(
+                RendererSession.LayoutReferences(layout)));
+        }
+    }
+
     public static Lease Enter(OutputMode mode, OutputLayout layout, int sampleRate,
                               VirtualChannel[]? headphoneFilters = null) {
-        // Cavern keeps its active SourceRenderer and output layout in static fields. Sessions
-        // own their Listener, sources, and queues, but the render call must be process-serialized.
         Monitor.Enter(gate);
         try {
-            Listener.HeadphoneVirtualizer = mode == OutputMode.Headphones;
-            if (mode == OutputMode.Headphones) {
-                VirtualizerFilter.Override(
-                    headphoneFilters ?? throw new InvalidOperationException(
-                        "A headphone context requires an independent HRIR filter set."),
-                    sampleRate);
-            }
-            Listener.EnvironmentType = Environments.Home;
-            Listener.ReplaceChannels(ChannelPrototype.ToLayout(
-                RendererSession.LayoutReferences(layout)));
+            Configure(mode, layout, sampleRate, headphoneFilters);
             return new Lease();
         } catch {
             Monitor.Exit(gate);

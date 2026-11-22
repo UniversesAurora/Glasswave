@@ -170,10 +170,18 @@ class EncodedInputBase : public input_stubs {
     void ReopenCompleted(double seconds, abort_callback& abort);
     void SeekAtmos(double seconds, abort_callback& abort);
 
+    struct AtmosFrameEntry {
+        uint64_t byteOffset = 0;
+        uint64_t sampleOffset = 0;
+        uint32_t sampleCount = 0;
+    };
+
     std::unique_ptr<stream::atmos::Renderer> m_atmos;
     stream::atmos::RenderInfo m_atmosInfo;
     stream::atmos::OutputTarget m_atmosTarget = stream::atmos::OutputTarget::StereoSpeakers;
     std::vector<audio_sample> m_atmosBuffer;
+    std::vector<AtmosFrameEntry> m_atmosFrames;
+    bool m_atmosFramesIndexed = false;
 };
 
 } // namespace glasswave::stream

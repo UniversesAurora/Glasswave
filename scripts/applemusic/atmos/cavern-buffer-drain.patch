@@ -1,5 +1,41 @@
+diff --git a/Cavern.Format/Decoders/EnhancedAC3Decoder.cs b/Cavern.Format/Decoders/EnhancedAC3Decoder.cs
+index 8dc96f9..da97387 100644
+--- a/Cavern.Format/Decoders/EnhancedAC3Decoder.cs
++++ b/Cavern.Format/Decoders/EnhancedAC3Decoder.cs
+@@ -24,6 +24,11 @@ namespace Cavern.Format.Decoders {
+         /// </summary>
+         public bool Finished { get; private set; }
+ 
++        /// <summary>
++        /// Number of complete PCM frames produced by this decoder.
++        /// </summary>
++        public long DecodedFrames { get; private set; }
++
+         /// <summary>
+         /// Samples in each decoded frame.
+         /// </summary>
+@@ -96,8 +101,9 @@ namespace Cavern.Format.Decoders {
+             long frameStart = reader.LastFetchStart;
+             do {
+                 if (Finished) {
+-                    outCache.Clear();
+-                    return outCache;
++                    // A zero-filled fixed-size frame would make a streaming consumer
++                    // render silence forever. Signal EOF with an empty fetch instead.
++                    return Array.Empty<float>();
+                 }
+ 
+                 EnhancedAC3Body body = bodies[header.SubstreamID];
+@@ -130,6 +136,7 @@ namespace Cavern.Format.Decoders {
+ 
+             ChannelCount = outputs.Count;
+             SampleRate = header.SampleRate;
++            ++DecodedFrames;
+             return outCache;
+         }
+ 
 diff --git a/Cavern.Format/Decoders/FrameBasedDecoder.cs b/Cavern.Format/Decoders/FrameBasedDecoder.cs
-index a16d396..137e52f 100644
+index a16d396..42a01fe 100644
 --- a/Cavern.Format/Decoders/FrameBasedDecoder.cs
 +++ b/Cavern.Format/Decoders/FrameBasedDecoder.cs
 @@ -14,6 +14,16 @@ namespace Cavern.Format.Decoders {
@@ -31,7 +67,7 @@ index a16d396..137e52f 100644
          }
  
 diff --git a/Cavern.Format/Utilities/BlockBuffer.cs b/Cavern.Format/Utilities/BlockBuffer.cs
-index 565bac0..b9f32b4 100644
+index 565bac0..a3a2bbb 100644
 --- a/Cavern.Format/Utilities/BlockBuffer.cs
 +++ b/Cavern.Format/Utilities/BlockBuffer.cs
 @@ -11,6 +11,11 @@ namespace Cavern.Format.Utilities {
@@ -94,42 +130,8 @@ index 565bac0..b9f32b4 100644
              LastFetchStart = 0;
              lastFetchPosition = 1;
              return LastFetch != null ? LastFetch[0] : default;
-diff --git a/Cavern.Format/Decoders/EnhancedAC3Decoder.cs b/Cavern.Format/Decoders/EnhancedAC3Decoder.cs
---- a/Cavern.Format/Decoders/EnhancedAC3Decoder.cs
-+++ b/Cavern.Format/Decoders/EnhancedAC3Decoder.cs
-@@ -24,6 +24,11 @@ namespace Cavern.Format.Decoders {
-         /// </summary>
-         public bool Finished { get; private set; }
- 
-+        /// <summary>
-+        /// Number of complete PCM frames produced by this decoder.
-+        /// </summary>
-+        public long DecodedFrames { get; private set; }
-+
-         /// <summary>
-         /// Samples in each decoded frame.
-         /// </summary>
-@@ -96,8 +101,9 @@ namespace Cavern.Format.Decoders {
-             long frameStart = reader.LastFetchStart;
-             do {
-                 if (Finished) {
--                    outCache.Clear();
--                    return outCache;
-+                    // A zero-filled fixed-size frame would make a streaming consumer
-+                    // render silence forever. Signal EOF with an empty fetch instead.
-+                    return Array.Empty<float>();
-                 }
- 
-                 EnhancedAC3Body body = bodies[header.SubstreamID];
-@@ -130,6 +136,7 @@ namespace Cavern.Format.Decoders {
- 
-             ChannelCount = outputs.Count;
-             SampleRate = header.SampleRate;
-+            ++DecodedFrames;
-             return outCache;
-         }
- 
 diff --git a/Cavern/Virtualizer/VirtualizerFilter.cs b/Cavern/Virtualizer/VirtualizerFilter.cs
+index a4a64ee..c35346e 100644
 --- a/Cavern/Virtualizer/VirtualizerFilter.cs
 +++ b/Cavern/Virtualizer/VirtualizerFilter.cs
 @@ -74,6 +74,11 @@ namespace Cavern.Virtualizer {
@@ -144,3 +146,89 @@ diff --git a/Cavern/Virtualizer/VirtualizerFilter.cs b/Cavern/Virtualizer/Virtua
          /// <summary>
          /// Apply a new set of HRIR filters. The reference distance of the sound sources from the subject will be 1 meter.
          /// </summary>
+@@ -128,11 +133,14 @@ namespace Cavern.Virtualizer {
+         /// Set up virtual channel set for the virtualization filters.
+         /// </summary>
+         public void SetLayout() {
++            int spatialCount = SpatialChannels.Length;
++            int totalChannels = spatialCount + 1;
+             bool setAgain = centerDelay == null;
+-            if (Listener.Channels.Length == SpatialChannels.Length) {
+-                for (int channel = 0; channel < SpatialChannels.Length; channel++) {
++            if (Listener.Channels.Length == totalChannels && Listener.Channels[spatialCount].LFE) {
++                for (int channel = 0; channel < spatialCount; channel++) {
+                     if (Listener.Channels[channel].X != SpatialChannels[channel].x ||
+-                        Listener.Channels[channel].Y != SpatialChannels[channel].y) {
++                        Listener.Channels[channel].Y != SpatialChannels[channel].y ||
++                        Listener.Channels[channel].LFE) {
+                         setAgain = true;
+                         break;
+                     }
+@@ -144,9 +152,9 @@ namespace Cavern.Virtualizer {
+                 return;
+             }
+ 
+-            centerDelay = new Delay(.0075f, FilterSampleRate);
+-            Channel[] newChannels = new Channel[SpatialChannels.Length];
+-            for (int channel = 0; channel < SpatialChannels.Length; channel++) {
++            centerDelay ??= new Delay(.0075f, FilterSampleRate);
++            Channel[] newChannels = new Channel[totalChannels];
++            for (int channel = 0; channel < spatialCount; channel++) {
+                 newChannels[channel] = new Channel(SpatialChannels[channel].x, SpatialChannels[channel].y);
+                 if (SpatialChannels[channel].x == 0) {
+                     if (SpatialChannels[channel].y == 0) {
+@@ -158,14 +166,17 @@ namespace Cavern.Virtualizer {
+                     }
+                 }
+             }
++            newChannels[spatialCount] = new Channel(0, 0, true);
+             Listener.ReplaceChannels(newChannels);
+-            originalSplit = new float[SpatialChannels.Length][];
+-            leftSplit = new float[SpatialChannels.Length][];
+-            rightSplit = new float[SpatialChannels.Length][];
+-            for (int channel = 0; channel < SpatialChannels.Length; channel++) {
+-                rightSplit[channel] = Array.Empty<float>();
++            if (originalSplit == null || originalSplit.Length != totalChannels) {
++                originalSplit = new float[totalChannels][];
++                leftSplit = new float[spatialCount][];
++                rightSplit = new float[spatialCount][];
++                for (int channel = 0; channel < spatialCount; channel++) {
++                    rightSplit[channel] = Array.Empty<float>();
++                }
++                originalSplit[0] = Array.Empty<float>();
+             }
+-            originalSplit[0] = Array.Empty<float>();
+         }
+ 
+         /// <summary>
+@@ -201,12 +212,13 @@ namespace Cavern.Virtualizer {
+                     WaveformUtils.Mix(delayedCenter, originalSplit[right]);
+                 }
+             }
+-            processor.ForUnchecked(0, channels);
++            int spatialCount = SpatialChannels.Length;
++            processor.ForUnchecked(0, spatialCount);
+ 
+             // Stereo downmix
+             output.Clear();
+             for (int channel = 0; channel < channels; channel++) {
+-                if (spatialChannels[channel].active) {
++                if (channel < spatialCount && spatialChannels[channel].active) {
+                     float[] original = originalSplit[channel],
+                         leftSamples = leftSplit[channel],
+                         rightSamples = rightSplit[channel];
+@@ -215,6 +227,14 @@ namespace Cavern.Virtualizer {
+                         output[sample * channels] += leftSamples[sample] + unspatialized;
+                         output[sample * channels + 1] += rightSamples[sample] + unspatialized;
+                     }
++                } else if (Listener.Channels[channel].LFE) {
++                    const float invSqrt2 = 0.70710678f;
++                    float[] lfe = originalSplit[channel];
++                    for (int sample = 0; sample < blockSize; sample++) {
++                        float bass = lfe[sample] * invSqrt2;
++                        output[sample * channels] += bass;
++                        output[sample * channels + 1] += bass;
++                    }
+                 } else {
+                     WaveformUtils.Mix(originalSplit[channel], output, channel, channels, 1);
+                 }

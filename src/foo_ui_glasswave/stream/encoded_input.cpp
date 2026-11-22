@@ -3,6 +3,8 @@
 
 #include "stream/playback_source.h"
 
+#include <algorithm>
+#include <array>
 #include <cmath>
 
 namespace glasswave::stream {
@@ -36,6 +38,54 @@ cache::audio::Fetcher ResumableFetcher(net::ResumableSource source) {
 namespace {
 std::string Message(std::string_view label, std::string_view text) {
     return "The " + std::string(label) + " " + std::string(text);
+}
+
+// Scans elementary E-AC-3 syncframe headers (ETSI TS 102 366) to build a sample-to-byte seek table.
+template <class Entry>
+bool IndexEc3Frames(file& source, uint64_t fileSize, std::vector<Entry>& out, abort_callback& abort) {
+    constexpr std::array<uint32_t, 4> kBlocksPerFrame = {1, 2, 3, 6};
+    constexpr size_t kChunkBytes = 65536;
+    std::vector<uint8_t> chunk(kChunkBytes);
+
+    uint64_t bufStart = 0;
+    size_t bufLen = 0;
+    uint64_t offset = 0;
+    uint64_t totalSamples = 0;
+    out.clear();
+
+    while (offset < fileSize) {
+        if (fileSize - offset < 6) return false;
+        if (offset < bufStart || offset + 6 > bufStart + bufLen) {
+            abort.check();
+            if (bufLen == 0 || offset != bufStart + bufLen) source.seek(offset, abort);
+            const size_t wanted = static_cast<size_t>(std::min<uint64_t>(kChunkBytes, fileSize - offset));
+            const size_t got = source.read(chunk.data(), wanted, abort);
+            if (got < 6) return false;
+            bufStart = offset;
+            bufLen = got;
+        }
+        const uint8_t* h = chunk.data() + static_cast<size_t>(offset - bufStart);
+        if (h[0] != 0x0B || h[1] != 0x77) return false;
+        const uint32_t bsid = (h[5] >> 3) & 0x1Fu;
+        if (bsid <= 10 || bsid > 16) return false;
+        const uint32_t strmtyp = (h[2] >> 6) & 0x03u;
+        if (strmtyp == 3) return false;
+        const uint32_t substreamId = (h[2] >> 3) & 0x07u;
+        const uint32_t frmsiz = (static_cast<uint32_t>(h[2] & 0x07u) << 8) | h[3];
+        const uint32_t byteLength = (frmsiz + 1u) * 2u;
+        if (byteLength < 6 || byteLength > fileSize - offset) return false;
+        const uint32_t fscod = (h[4] >> 6) & 0x03u;
+        if (fscod == 3) return false;
+        const uint32_t numblkscod = (h[4] >> 4) & 0x03u;
+        const uint32_t frameSamples = kBlocksPerFrame[numblkscod] * 256u;
+
+        if (strmtyp != 1 && substreamId == 0) {
+            out.push_back(Entry{offset, totalSamples, frameSamples});
+            totalSamples += frameSamples;
+        }
+        offset += byteLength;
+    }
+    return offset == fileSize && !out.empty();
 }
 } // namespace
 
@@ -224,8 +274,9 @@ void EncodedInputBase::ReopenCompleted(double seconds, abort_callback& abort) {
     m_report = true;
 }
 
-// The renderer cannot seek: a new one decodes and discards up to the position, which needs the
-// whole song.
+// Seeks by jumping directly to an indexed E-AC-3 syncframe a few frames before the target
+// sample (for MDCT/QMF/OAMD/HRIR warm-up) and discarding only the short pre-roll window.
+// Falls back to decoding from byte 0 if the stream cannot be indexed.
 void EncodedInputBase::SeekAtmos(double seconds, abort_callback& abort) {
     if (!std::isfinite(seconds) || seconds < 0 || seconds > m_durationSeconds + kFullSongToleranceSeconds)
         throw exception_io_seek_out_of_range();
@@ -240,12 +291,39 @@ void EncodedInputBase::SeekAtmos(double seconds, abort_callback& abort) {
         m_source->reopen(abort);
         completed = m_source;
     }
+
+    const uint64_t targetSample =
+        static_cast<uint64_t>(std::llround(seconds * static_cast<double>(m_atmosInfo.sampleRate)));
+    if (targetSample > 0 && !m_atmosFramesIndexed) {
+        m_atmosFrames.clear();
+        const t_filesize fileSize = completed->get_size(abort);
+        if (fileSize != filesize_invalid && fileSize >= 6) {
+            if (!IndexEc3Frames(*completed, static_cast<uint64_t>(fileSize), m_atmosFrames, abort))
+                m_atmosFrames.clear();
+        }
+        m_atmosFramesIndexed = true;
+    }
+
+    constexpr size_t kPrerollFrames = 4;
+    uint64_t seekByteOffset = 0;
+    uint64_t remaining = targetSample;
+    if (targetSample > 0 && !m_atmosFrames.empty()) {
+        const auto it = std::upper_bound(
+            m_atmosFrames.begin(), m_atmosFrames.end(), targetSample,
+            [](uint64_t sample, const AtmosFrameEntry& entry) { return sample < entry.sampleOffset; });
+        const size_t targetIdx =
+            it == m_atmosFrames.begin() ? 0 : static_cast<size_t>((it - m_atmosFrames.begin()) - 1);
+        const size_t startIdx = targetIdx > kPrerollFrames ? targetIdx - kPrerollFrames : 0;
+        seekByteOffset = m_atmosFrames[startIdx].byteOffset;
+        remaining = targetSample - m_atmosFrames[startIdx].sampleOffset;
+    }
+    completed->seek(seekByteOffset, abort);
+
     auto replacement = std::make_unique<stream::atmos::Renderer>(completed, m_atmosTarget);
     const auto info = replacement->WaitForInfo(abort);
     if (!info.hasJocObjects || info.sampleRate != m_atmosInfo.sampleRate ||
         info.channels != m_atmosInfo.channels || info.channelMask != m_atmosInfo.channelMask)
         throw exception_io_data("The Atmos renderer changed format during seeking");
-    uint64_t remaining = static_cast<uint64_t>(std::llround(seconds * info.sampleRate));
     std::vector<audio_sample> scratch(atmos::kFramesPerRead * info.channels);
     while (remaining) {
         abort.check();
@@ -254,6 +332,8 @@ void EncodedInputBase::SeekAtmos(double seconds, abort_callback& abort) {
         if (!received) throw exception_io_seek_out_of_range();
         remaining -= received;
     }
+    m_source = std::move(completed);
+    m_flight.reset();
     m_atmos = std::move(replacement);
     m_atmosInfo = info;
     m_positionSeconds = seconds;
@@ -342,6 +422,8 @@ void EncodedInputBase::ReleaseDecoder() noexcept {
     m_decoder.release();
     m_atmos.reset();
     m_atmosBuffer.clear();
+    m_atmosFrames.clear();
+    m_atmosFramesIndexed = false;
     m_source.release();
     m_flight.reset();
     m_cacheKey = {};
