@@ -229,6 +229,10 @@ void EncodedInputBase::ReopenCompleted(double seconds, abort_callback& abort) {
 void EncodedInputBase::SeekAtmos(double seconds, abort_callback& abort) {
     if (!std::isfinite(seconds) || seconds < 0 || seconds > m_durationSeconds + kFullSongToleranceSeconds)
         throw exception_io_seek_out_of_range();
+    // The renderer being replaced decodes ahead on its own thread from the same source: it stops
+    // before the source is rewound, or both pull from one file and the replacement reads a torn
+    // stream. A failed seek then leaves no output, and the song ends.
+    m_atmos.reset();
     file::ptr completed;
     if (m_flight) {
         completed = m_flight->Completed(abort);
