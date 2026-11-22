@@ -23,9 +23,8 @@ Providers now register an accessor and are made on the first `stream::Providers(
 - Tests now passing: ListSession, PlaybackScheduler, lyrics, list cache, provider snapshot and
   the Apple Music provider baseline (its mock lacked the scratch playlist's tracks route and a
   catalog song lookup).
-- Open: the Apple Music `catalog-regression` scenario still describes the artist sections from
-  before 6c4c58c (featured albums; no latest release or similar artists): the mock's section
-  views and the script's request counts need redoing. Older than this review.
+- The Apple Music `catalog-regression` scenario still describes the artist sections from before
+  6c4c58c. The owner does not want the mock-service tests run or maintained (2026-11-22).
 
 ## Songs read when asked for: missing, or without their links (2026-11-22, latest)
 
