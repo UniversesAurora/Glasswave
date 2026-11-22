@@ -2088,13 +2088,6 @@ const bool g_registered = [] {
     return true;
 }();
 
-class StreamProviderInit : public initquit {
-  public:
-    void on_init() override { StreamProvider::Get().Start(); }
-    void on_quit() override { StreamProvider::Get().Shutdown(); }
-};
-FB2K_SERVICE_FACTORY(StreamProviderInit);
-
 } // namespace
 
 StreamProvider& StreamProvider::Get() {
@@ -2653,7 +2646,7 @@ std::vector<stream::ArtistSection> StreamProvider::ArtistSections(const stream::
     using Kind = stream::ArtistSectionRowKind;
     // Apple Music's own artist page, in its order (featured albums repeat the full albums).
     return {
-        {L"latest-release", L"Latest release", Kind::Albums},
+        {L"latest-release", L"Latest release", Kind::Albums, false, true},
         // An artist only in the library (uploaded songs) has no ranking: its songs are just
         // "Songs" (owner, 2026-11-20: they stood under 热门歌曲).
         {L"top-songs", ArtistTracksLabel(artist), Kind::Tracks},
@@ -4847,10 +4840,6 @@ std::optional<stream::Station> HomeStationOf(const Object& item) {
 }
 
 } // namespace
-
-void StreamProvider::PutStations(const std::vector<stream::Station>& stations) {
-    for (const auto& station : stations) Catalog::Get().Put(station);
-}
 
 void StreamProvider::FetchHome(HomeDone done) {
     done = stream::GuardDone(std::move(done));
@@ -7379,11 +7368,6 @@ void StreamProvider::DeletePlaylist(const stream::Id& playlist, Done done) {
                     if (done) done({});
                 });
         });
-}
-
-void StreamProvider::ReorderPlaylists(std::vector<stream::Id> playlists, Done done) {
-    (void)playlists;
-    if (done) done(L"Reordering Apple Music playlists is not supported by the documented API.");
 }
 
 void StreamProvider::FetchCatalogSearchSuggestions(CatalogSearchSuggestionQuery query,

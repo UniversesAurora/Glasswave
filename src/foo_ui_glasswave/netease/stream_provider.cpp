@@ -198,13 +198,6 @@ const bool g_registered = [] {
     return true;
 }();
 
-class StreamProviderInit : public initquit {
-  public:
-    void on_init() override { StreamProvider::Get().Start(); }
-    void on_quit() override { StreamProvider::Get().Shutdown(); }
-};
-FB2K_SERVICE_FACTORY(StreamProviderInit);
-
 } // namespace
 
 // Full ID lists are immutable generations shared by every page of one cursor. The LRU is
@@ -1229,22 +1222,9 @@ void StreamProvider::ReadSongs(std::vector<Id> ids) {
 }
 
 void StreamProvider::RestoreListRecords(const stream::ListPage& page) {
-    stream::Catalog& records = Catalog::Get().Records();
-    if (const auto trackRows = std::get_if<std::vector<stream::Track>>(&page.rows)) {
+    if (const auto trackRows = std::get_if<std::vector<stream::Track>>(&page.rows))
         Catalog::Get().RestoreAndHint(*trackRows);
-    } else if (const auto playlistRows = std::get_if<std::vector<stream::Playlist>>(&page.rows)) {
-        for (const auto& playlist : *playlistRows)
-            records.Restore(playlist);
-    } else if (const auto albumRows = std::get_if<std::vector<stream::Album>>(&page.rows)) {
-        for (const auto& album : *albumRows)
-            records.Restore(album);
-    } else if (const auto artistRows = std::get_if<std::vector<stream::Artist>>(&page.rows)) {
-        for (const auto& artist : *artistRows)
-            records.Restore(artist);
-    }
-    if (page.playlist) records.Restore(*page.playlist);
-    if (page.album) records.Restore(*page.album);
-    if (page.artist) records.Restore(*page.artist);
+    Provider::RestoreListRecords(page);
 }
 
 void StreamProvider::PostListPage(stream::ListPageDone done, stream::ListPage page,

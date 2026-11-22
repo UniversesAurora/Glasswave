@@ -27,25 +27,6 @@ namespace {
 namespace json = core::json;
 namespace atmos = stream::atmos;
 
-// Songs skipped as unavailable since a song last played. A run that meets one of them again,
-// or grows long, fails as before, so repeat modes and lists of nothing else cannot spin.
-std::mutex g_skipMutex;
-std::vector<stream::Id> g_skipRun;
-constexpr size_t kSkipRunLimit = 20;
-
-bool AdmitSkip(const stream::Id& id) {
-    std::lock_guard lock(g_skipMutex);
-    if (g_skipRun.size() >= kSkipRunLimit || std::find(g_skipRun.begin(), g_skipRun.end(), id) != g_skipRun.end())
-        return false;
-    g_skipRun.push_back(id);
-    return true;
-}
-
-void EndSkipRun() {
-    std::lock_guard lock(g_skipMutex);
-    g_skipRun.clear();
-}
-
 using core::Utf8;
 using core::Wide;
 
@@ -320,6 +301,7 @@ class AppleInput : public stream::EncodedInputBase {
     void PublishInfo(file_info& out, abort_callback& abort) override { get_info(out, abort); }
 
     std::string BeginOpen(abort_callback&) override {
+        m_epoch = stream::SourcePlaybackEpoch();
         m_song = Catalog::Get().FindSongRaw(m_id);
         m_asset = m_id;
         if (m_song && !m_song->catalogId.empty()) m_asset = m_song->catalogId;
@@ -354,7 +336,8 @@ class AppleInput : public stream::EncodedInputBase {
             // on to the next one without an error every time it comes round.
             // Not from a prefetch thread: that is no playback, and must not spend the skip budget
             // of the real one (a refused prefetch fails and is tried again when it plays).
-            if (error.refused() && !cache::audio::IsPrefetchThread() && AdmitSkip(m_id)) {
+            if (error.refused() && !cache::audio::IsPrefetchThread() &&
+                stream::SkipUnavailableSource(m_epoch, m_path, Wide(error.what()), m_flags, abort)) {
                 playback_log::Skipped(m_id, error.what());
                 return std::nullopt;
             }
@@ -377,10 +360,7 @@ class AppleInput : public stream::EncodedInputBase {
             });
     }
 
-    void OnReady() override {
-        if (!cache::audio::IsPrefetchThread()) EndSkipRun();
-        playback_log::Ready(m_id, m_positionSeconds);
-    }
+    void OnReady() override { playback_log::Ready(m_id, m_positionSeconds); }
     void OnComplete() override { playback_log::Complete(m_id, m_positionSeconds); }
     void ApplyDynamicMetadata(file_info& out) override { ApplyMetadata(out); }
 
@@ -510,6 +490,7 @@ class AppleInput : public stream::EncodedInputBase {
     }
 
     stream::Id m_id;
+    uint64_t m_epoch = 0;
     // What this opening read at its start (BeginOpen) and the session said.
     std::optional<Song> m_song;
     stream::Id m_asset;

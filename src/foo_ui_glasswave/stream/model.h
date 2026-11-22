@@ -182,6 +182,9 @@ struct ArtistSection {
     // Albums of every kind in one list: the page groups them by Album::type (albums, singles
     // and EPs, live albums, compilations) and shows the newest as the latest release.
     bool mixedAlbums = false;
+    // True when this section already provides the artist's latest release (so a mixed-albums
+    // section does not synthesize a second one).
+    bool latestRelease = false;
     bool operator==(const ArtistSection&) const = default;
 };
 

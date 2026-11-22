@@ -51,10 +51,22 @@ public:
         std::lock_guard lock(m_mutex);
         ++m_epoch;
         m_unavailable.clear();
+        m_consecutiveSkips = 0;
     }
-    void MarkUnavailable(uint64_t epoch, std::string_view path) {
+    void NotePlaybackStarted() {
         std::lock_guard lock(m_mutex);
-        if (epoch == m_epoch) m_unavailable.emplace(path);
+        m_consecutiveSkips = 0;
+    }
+    // Records `path` as unavailable during `epoch`. Returns false if the consecutive-skip cap
+    // has been reached (so repeat modes or lists of nothing but unavailable tracks cannot spin).
+    bool MarkUnavailable(uint64_t epoch, std::string_view path, size_t maxConsecutiveSkips = 20) {
+        std::lock_guard lock(m_mutex);
+        if (epoch != m_epoch) return false;
+        if (m_unavailable.find(path) != m_unavailable.end() || m_consecutiveSkips >= maxConsecutiveSkips)
+            return false;
+        m_unavailable.emplace(path);
+        ++m_consecutiveSkips;
+        return true;
     }
     bool CanPlay(std::string_view path) const {
         std::lock_guard lock(m_mutex);
@@ -64,11 +76,13 @@ public:
 private:
     mutable std::mutex m_mutex;
     uint64_t m_epoch = 0;
+    size_t m_consecutiveSkips = 0;
     std::set<std::string, std::less<>> m_unavailable;
 };
 
 uint64_t SourcePlaybackEpoch();
 void ResetSourceAvailability();
+void NotePlaybackStarted();
 bool CanPlaySource(std::string_view path);
 // Called by provider inputs before opening a CDN URL. True signals an expected skip
 // during realtime playback. Conversion/scanning still reports the unavailable source.

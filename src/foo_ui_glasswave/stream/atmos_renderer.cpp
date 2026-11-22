@@ -118,7 +118,7 @@ NativeTarget MapTarget(OutputTarget target) {
     case OutputTarget::Speakers7_1:
         return {0, 2};
     }
-    throw exception_io_data("Unsupported Apple Music Atmos output target.");
+    throw exception_io_data("Unsupported Atmos output target.");
 }
 
 } // namespace
@@ -167,7 +167,7 @@ class Renderer::Impl {
                 stored = error;
             }
             if (stored) std::rethrow_exception(stored);
-            throw exception_io_data("The Apple Music Atmos renderer failed.");
+            throw exception_io_data("The Atmos renderer failed.");
         }
     };
 
@@ -195,7 +195,7 @@ class Renderer::Impl {
                     nativeInfo.pcmFormat != kFloat32Pcm || !nativeInfo.channels || !nativeInfo.sampleRate ||
                     nativeInfo.outputMode != m_target.mode || nativeInfo.layout != m_target.layout ||
                     !(nativeInfo.flags & 1))
-                    throw exception_io_data("Invalid Apple Music Atmos renderer format.");
+                    throw exception_io_data("Invalid Atmos renderer format.");
                 RenderInfo result;
                 result.sampleRate = nativeInfo.sampleRate;
                 result.channels = nativeInfo.channels;

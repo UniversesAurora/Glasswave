@@ -86,7 +86,7 @@ void ArtistOverviewSource::Rebuild() {
     m_groupInfo.clear();
     m_entries.clear();
     const bool ownLatest = std::any_of(m_sections.begin(), m_sections.end(),
-                                       [](const stream::ArtistSection& s) { return s.id == L"latest-release"; });
+                                       [](const stream::ArtistSection& s) { return s.latestRelease; });
     const auto addGroup = [&](std::wstring key, std::wstring label, size_t section) {
         m_groupInfo.push_back({std::move(key), std::move(label), section, 0});
         return m_groupInfo.size() - 1;

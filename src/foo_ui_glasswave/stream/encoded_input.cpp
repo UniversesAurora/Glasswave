@@ -1,6 +1,9 @@
 #include "pch.h"
 #include "stream/encoded_input.h"
 
+#include "core/log.h"
+#include "core/text.h"
+#include "download/downloads.h"
 #include "stream/playback_source.h"
 
 #include <algorithm>
@@ -91,8 +94,22 @@ bool IndexEc3Frames(file& source, uint64_t fileSize, std::vector<Entry>& out, ab
 
 // ---- opening ----------------------------------------------------------------------------
 
-bool EncodedInputBase::OpenOffline(unsigned, abort_callback&) {
-    return false;
+bool EncodedInputBase::OpenOffline(unsigned flags, abort_callback& abort) {
+    const std::wstring id = core::Wide(SongIdentity());
+    const auto local = download::LocalFile(core::Wide(ProviderKey()), id);
+    if (!local) return false;
+    if (cache::audio::IsPrefetchThread()) return true; // nothing to fetch ahead
+    const std::string location = "file://" + core::Utf8(*local);
+    input_entry::g_open_for_decoding(m_decoder, nullptr, location.c_str(), abort, true);
+    m_decoder->initialize(0, flags, abort);
+    file_info_impl actual;
+    m_decoder->get_info(0, actual, abort);
+    m_decodePath = location;
+    m_positionSeconds = 0;
+    m_durationSeconds = actual.get_length();
+    core::Log(L"input: song " + id + L" from its downloaded file");
+    MarkReady();
+    return true;
 }
 
 void EncodedInputBase::decode_initialize(unsigned flags, abort_callback& abort) {
@@ -201,6 +218,7 @@ void EncodedInputBase::Validate(const EncodedSource& source, file_info& actual) 
 }
 
 void EncodedInputBase::MarkReady() {
+    if (!cache::audio::IsPrefetchThread()) NotePlaybackStarted();
     m_report = true;
     OnReady();
 }

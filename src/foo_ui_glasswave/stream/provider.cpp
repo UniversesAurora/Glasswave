@@ -443,6 +443,37 @@ void Provider::NotifyListChanged(std::vector<ListTarget> targets) {
     RevalidateLists(Key(), std::move(targets));
 }
 
+void Provider::RestoreListRecords(const ListPage& page) {
+    Catalog* records = Records();
+    if (!records) return;
+    const auto restoreOne = [records](const auto& row) {
+        using Row = std::decay_t<decltype(row)>;
+        if constexpr (std::is_same_v<Row, Track>)
+            records->Restore(TrackRecord{row, {}});
+        else if constexpr (std::is_same_v<Row, Playlist> || std::is_same_v<Row, Album> ||
+                           std::is_same_v<Row, Artist>)
+            records->Restore(row);
+    };
+    std::visit(
+        [&restoreOne](const auto& rows) {
+            using Rows = std::decay_t<decltype(rows)>;
+            if constexpr (std::is_same_v<Rows, std::vector<Track>> ||
+                          std::is_same_v<Rows, std::vector<Playlist>> ||
+                          std::is_same_v<Rows, std::vector<Album>> ||
+                          std::is_same_v<Rows, std::vector<Artist>>) {
+                for (const auto& row : rows)
+                    restoreOne(row);
+            } else if constexpr (std::is_same_v<Rows, std::vector<CatalogSearchItem>>) {
+                for (const auto& item : rows)
+                    std::visit(restoreOne, item);
+            }
+        },
+        page.rows);
+    if (page.playlist) records->Restore(*page.playlist);
+    if (page.album) records->Restore(*page.album);
+    if (page.artist) records->Restore(*page.artist);
+}
+
 ListCachePolicy Provider::ListPolicy(const ListQuery& query) const {
     if (query.cache) return *query.cache;
     if (IsCatalogSearch(query.kind)) return ListCachePolicy::None;
@@ -467,6 +498,26 @@ void StartProviders() {
     for (Provider* provider : Providers())
         provider->Start();
 }
+
+void ShutdownProviders() {
+    const auto& list = Providers();
+    for (auto it = list.rbegin(); it != list.rend(); ++it)
+        (*it)->Shutdown();
+}
+
+namespace {
+class ProviderLifetime : public initquit {
+  public:
+    void on_init() override { StartProviders(); }
+    void on_quit() override {
+        // Tear down ListSessions before shutting down provider executors so no lease callback
+        // races with provider teardown.
+        ShutdownListSessions();
+        ShutdownProviders();
+    }
+};
+FB2K_SERVICE_FACTORY(ProviderLifetime);
+} // namespace
 
 void Register(Provider& (*instance)(), int order) {
     Registrations().push_back({instance, order});

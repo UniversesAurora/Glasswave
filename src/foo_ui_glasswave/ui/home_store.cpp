@@ -1,13 +1,14 @@
 #include "pch.h"
 #include "ui/home_store.h"
 
-#include "core/paths.h"
+#include "cache/store.h"
+#include "core/text.h"
+#include "stream/catalog.h"
 #include "ui/text.h"
 
 #include <winrt/Windows.Data.Json.h>
 #include <winrt/Windows.Foundation.Collections.h>
 
-#include <filesystem>
 #include <fstream>
 
 namespace glasswave::ui::home_store {
@@ -20,11 +21,14 @@ using winrt::Windows::Data::Json::JsonValue;
 
 // 2: a song's badges; 4: stations among a row's items; 5: rows of cards; 6: a card's link
 constexpr int kFormat = 6;
+constexpr char kHomeSchema[] = "application/vnd.glasswave.home+json";
 
-std::filesystem::path FileOf(const stream::Provider& provider) {
-    const auto dir = core::ProfileDir(L"home");
-    if (dir.empty()) return {};
-    return dir / (std::wstring(provider.Key()) + L".json");
+std::optional<cache::Key> KeyOf(const stream::Provider& provider) {
+    const std::string providerKey = core::Utf8(provider.Key());
+    if (providerKey.empty()) return std::nullopt;
+    const std::string scope = cache::AccountScope(providerKey);
+    if (scope.empty()) return std::nullopt;
+    return cache::Key{cache::Kind::Data, providerKey, scope, "home", std::to_string(kFormat)};
 }
 
 // ---- writing ----
@@ -254,7 +258,9 @@ void Restore(stream::Provider& provider, const stream::Home& home) {
         for (const auto& item : shelf.items) add(item);
     }
     for (const auto* page : {&tracks, &albums, &playlists, &artists}) provider.RestoreListRecords(*page);
-    provider.PutStations(stations);
+    if (stream::Catalog* records = provider.Records()) {
+        for (const auto& station : stations) records->Put(station);
+    }
 }
 
 } // namespace
@@ -289,17 +295,21 @@ std::optional<stream::HomeCard> CardOf(const JsonObject& c) {
 }
 
 std::optional<stream::Home> Load(stream::Provider& provider) {
-    const auto file = FileOf(provider);
-    if (file.empty()) return std::nullopt;
-    std::ifstream input(file, std::ios::binary);
-    if (!input) return std::nullopt;
-    const std::string bytes((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+    const auto key = KeyOf(provider);
+    if (!key) return std::nullopt;
+    std::string bytes;
+    try {
+        const auto record = cache::GetStore().Lookup(*key);
+        if (!record || record->Info().contentType != kHomeSchema) return std::nullopt;
+        std::ifstream input(record->Path(), std::ios::binary);
+        if (!input) return std::nullopt;
+        bytes.assign((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+    } catch (...) {
+        return std::nullopt;
+    }
     JsonObject o{nullptr};
     if (!JsonObject::TryParse(winrt::to_hstring(bytes), o) || !o) return std::nullopt;
     if (Number(o, L"format") != kFormat) return std::nullopt;
-    // Another account's home page is not shown (the name is known early from the session).
-    const std::wstring account = Text(o, L"account"), current = provider.AccountName();
-    if (!account.empty() && !current.empty() && account != current) return std::nullopt;
     stream::Home home;
     home.cardsTitle = Text(o, L"cardsTitle");
     for (const auto& c : Objects(o, L"cards"))
@@ -319,22 +329,29 @@ std::optional<stream::Home> Load(stream::Provider& provider) {
 }
 
 void Save(const stream::Provider& provider, const stream::Home& home) {
-    const auto file = FileOf(provider);
-    if (file.empty()) return;
+    const auto key = KeyOf(provider);
+    if (!key) return;
+    const uint64_t revision = cache::AccountRevision(key->provider);
     const std::string text = winrt::to_string(HomeJson(home, provider.AccountName()).Stringify());
-    fb2k::splitTask([file, text] {
-        std::error_code error;
-        std::filesystem::create_directories(file.parent_path(), error);
-        // Written beside it and moved over it, so a crash never leaves half a file.
-        auto temporary = file;
-        temporary += L".tmp";
-        {
-            std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
-            if (!output) return;
-            output.write(text.data(), static_cast<std::streamsize>(text.size()));
-            if (!output) return;
+    fb2k::splitTask([key = *key, revision, text] {
+        try {
+            if (cache::AccountRevision(key.provider) != revision ||
+                cache::AccountScope(key.provider) != key.scope)
+                return;
+            auto writer = cache::GetStore().Begin(key);
+            if (!writer) return;
+            {
+                std::ofstream output(writer->Path(), std::ios::binary | std::ios::trunc);
+                if (!output) return;
+                output.write(text.data(), static_cast<std::streamsize>(text.size()));
+                if (!output) return;
+            }
+            cache::Metadata meta;
+            meta.contentType = kHomeSchema;
+            meta.validatedAt = cache::Store::Now();
+            writer->Commit(std::move(meta));
+        } catch (...) {
         }
-        std::filesystem::rename(temporary, file, error);
     });
 }
 

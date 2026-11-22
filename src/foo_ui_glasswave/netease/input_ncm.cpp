@@ -153,24 +153,6 @@ class NcmInput : public stream::EncodedInputBase {
     bool SongKnown() const override { return Catalog::Get().FindSong(IdText(m_id)).has_value(); }
     void PublishInfo(file_info& out, abort_callback& abort) override { get_info(out, abort); }
 
-    // A downloaded song plays from its file while the file exists (download::Service).
-    bool OpenOffline(unsigned flags, abort_callback& abort) override {
-        const auto local = download::LocalFile(L"ncm", std::to_wstring(m_id));
-        if (!local) return false;
-        if (cache::audio::IsPrefetchThread()) return true; // nothing to fetch ahead
-        const std::string location = "file://" + Utf8(*local);
-        input_entry::g_open_for_decoding(m_decoder, nullptr, location.c_str(), abort, true);
-        m_decoder->initialize(0, flags, abort);
-        file_info_impl actual;
-        m_decoder->get_info(0, actual, abort);
-        m_decodePath = location;
-        m_positionSeconds = 0;
-        m_durationSeconds = actual.get_length();
-        core::Log(L"input: song " + std::to_wstring(m_id) + L" from its downloaded file");
-        MarkReady();
-        return true;
-    }
-
     std::string BeginOpen(abort_callback&) override {
         m_epoch = stream::SourcePlaybackEpoch();
         core::Log(L"input: decoding song " + std::to_wstring(m_id));

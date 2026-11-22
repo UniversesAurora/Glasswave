@@ -18,7 +18,7 @@ class StreamProvider final : public stream::Provider {
     static StreamProvider& Get();
 
     void Start() override;
-    void Shutdown(); // stops the session and its helper
+    void Shutdown() override; // stops the session and its helper
 
     std::wstring_view Key() const override { return L"ncm"; }
     std::wstring Name() const override { return L"NetEase Cloud Music"; }

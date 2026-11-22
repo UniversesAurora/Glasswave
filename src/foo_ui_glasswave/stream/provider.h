@@ -177,8 +177,10 @@ class Provider {
     virtual ~Provider() = default;
 
     // Starts the provider's session (main thread, idempotent). Called before the UI reads
-    // anything from it and at foobar2000 start-up, whichever comes first.
+    // anything from it and at foobar2000 start-up, whichever comes first. Shutdown runs once
+    // on exit after ListSessions have been torn down.
     virtual void Start() = 0;
+    virtual void Shutdown() {}
 
     // Stable short key used in saved views, cache keys and play history.
     virtual std::wstring_view Key() const = 0;
@@ -332,10 +334,16 @@ class Provider {
     // A song being favorited or unfavorited reads as its new state from the click on, until
     // the service has answered; a refused change reads as the service's state again.
     bool IsFavorite(const Id& track) const;
-    virtual std::vector<Playlist> Playlists(Shelf shelf) const = 0;
-    virtual std::optional<Shelf> ShelfOf(const Id& playlist) const = 0;
-    virtual std::vector<Artist> FollowedArtists() const = 0;
-    virtual std::vector<Album> SavedAlbums() const = 0;
+    virtual std::vector<Playlist> Playlists(Shelf shelf) const {
+        (void)shelf;
+        return {};
+    }
+    virtual std::optional<Shelf> ShelfOf(const Id& playlist) const {
+        (void)playlist;
+        return std::nullopt;
+    }
+    virtual std::vector<Artist> FollowedArtists() const { return {}; }
+    virtual std::vector<Album> SavedAlbums() const { return {}; }
     virtual std::optional<Playlist> FindPlaylist(const Id& playlist) const {
         const Catalog* records = Records();
         return records ? records->FindPlaylist(playlist) : std::nullopt;
@@ -349,7 +357,10 @@ class Provider {
     // Every list (tracks, playlists, albums, artists, groups, search results) is read through
     // FetchListPage; the records below are single objects.
     virtual void FetchArtist(const Id& artist, ArtistDone done) = 0;
-    virtual void FetchArtistBio(const Id& artist, TextDone done) = 0;
+    virtual void FetchArtistBio(const Id& artist, TextDone done) {
+        (void)artist;
+        if (done) done({}, {});
+    }
     // Everything the service knows of one song (Capability::SongDetails); main thread.
     virtual void FetchSongDetails(const Id& /*track*/, SongDetailsDone done) {
         if (done) done({}, L"This source has no song details.");
@@ -428,14 +439,13 @@ class Provider {
         return {};
     }
     // Rehydrate metadata required by TrackItem/FindTrack and artwork on a disk cache hit.
-    virtual void RestoreListRecords(const ListPage& page) { (void)page; }
+    // Default restores records directly into Records().
+    virtual void RestoreListRecords(const ListPage& page);
     // Apply any fresher in-memory localized display metadata onto a cached list page.
     virtual bool RefreshCachedDisplay(ListPage& page) const {
         (void)page;
         return false;
     }
-    // Stations a page shows (a home row), so their covers resolve (ArtKind::Station).
-    virtual void PutStations(const std::vector<Station>& stations) { (void)stations; }
 
     // ---- writes (the snapshot is updated before `done` runs) ------------------------
     // Shows the new state at once (listeners hear OnFavoritesChanged) and completes in the
@@ -449,13 +459,31 @@ class Provider {
     // Capability::SaveSongs: the songs themselves, not their albums.
     void SetSongsSaved(std::vector<Id> tracks, bool saved, Done done = {});
     void SetPlaylistSaved(const Id& playlist, bool saved, Done done = {});
-    virtual void AddToPlaylist(const Id& playlist, std::vector<Id> tracks, Done done = {}) = 0;
-    virtual void RemoveFromPlaylist(const Id& playlist, std::vector<Id> tracks, Done done = {}) = 0;
-    virtual void CreatePlaylist(std::wstring name, CreatedDone done) = 0;
-    virtual void RenamePlaylist(const Id& playlist, std::wstring name, Done done = {}) = 0;
-    virtual void DeletePlaylist(const Id& playlist, Done done = {}) = 0;
+    virtual void AddToPlaylist(const Id& playlist, std::vector<Id> tracks, Done done = {}) {
+        (void)playlist, (void)tracks;
+        if (done) done(L"Adding songs to playlists is not supported by this source.");
+    }
+    virtual void RemoveFromPlaylist(const Id& playlist, std::vector<Id> tracks, Done done = {}) {
+        (void)playlist, (void)tracks;
+        if (done) done(L"Removing songs from playlists is not supported by this source.");
+    }
+    virtual void CreatePlaylist(std::wstring name, CreatedDone done) {
+        (void)name;
+        if (done) done({}, L"Creating playlists is not supported by this source.");
+    }
+    virtual void RenamePlaylist(const Id& playlist, std::wstring name, Done done = {}) {
+        (void)playlist, (void)name;
+        if (done) done(L"Renaming playlists is not supported by this source.");
+    }
+    virtual void DeletePlaylist(const Id& playlist, Done done = {}) {
+        (void)playlist;
+        if (done) done(L"Deleting playlists is not supported by this source.");
+    }
     // The user's own and saved playlists in their new order (own first).
-    virtual void ReorderPlaylists(std::vector<Id> playlists, Done done = {}) = 0;
+    virtual void ReorderPlaylists(std::vector<Id> playlists, Done done = {}) {
+        (void)playlists;
+        if (done) done(L"Reordering playlists is not supported by this source.");
+    }
 
     void AddListener(Listener* listener);
     void RemoveListener(Listener* listener);
@@ -470,8 +498,14 @@ class Provider {
     void NotifyDisplayChanged();
 
     // The service's own favorite state and its write; `done` may run on any thread.
-    virtual bool ReadFavorite(const Id& track) const = 0;
-    virtual void WriteFavorite(const Id& track, bool favorite, Done done) = 0;
+    virtual bool ReadFavorite(const Id& track) const {
+        (void)track;
+        return false;
+    }
+    virtual void WriteFavorite(const Id& track, bool favorite, Done done) {
+        (void)track, (void)favorite;
+        if (done) done(L"Favorites are not supported by this source.");
+    }
 
     // The source's own answers for the library state queries, asked when no change of the
     // user's is pending. Read* answer from the snapshot, never from the network.
@@ -486,11 +520,20 @@ class Provider {
     // down, the account changed) must still run with an error (GuardDone), so a change it was
     // carrying is taken back. Only a library read confirms the change (ConfirmLibraryEdits), never
     // the write itself: a read that began earlier can still land after the write's answer.
-    virtual void WriteFollowed(const Id& artist, bool follow, Done done) = 0;
-    virtual void WriteAlbumSaved(const Id& album, bool saved, Done done) = 0;
+    virtual void WriteFollowed(const Id& artist, bool follow, Done done) {
+        (void)artist, (void)follow;
+        if (done) done(L"Following artists is not supported by this source.");
+    }
+    virtual void WriteAlbumSaved(const Id& album, bool saved, Done done) {
+        (void)album, (void)saved;
+        if (done) done(L"Saving albums is not supported by this source.");
+    }
     // Capability::SaveSongs. Default: an error.
     virtual void WriteSongsSaved(std::vector<Id> tracks, bool saved, Done done);
-    virtual void WritePlaylistSaved(const Id& playlist, bool saved, Done done) = 0;
+    virtual void WritePlaylistSaved(const Id& playlist, bool saved, Done done) {
+        (void)playlist, (void)saved;
+        if (done) done(L"Saving playlists is not supported by this source.");
+    }
 
     // A change the service has acknowledged keeps showing as the user made it until the source's
     // own state shows it too. A source takes the mark when a library read begins (before its first
@@ -612,7 +655,8 @@ template <class Fn> Fn GuardDone(Fn done, std::shared_ptr<std::atomic_bool> canc
 // the component has loaded, since its members (an executor's abort callback) need foobar2000's
 // services, which do not exist while the DLL initializes. Any thread.
 const std::vector<Provider*>& Providers();
-void StartProviders(); // Start() on every provider
+void StartProviders();
+void ShutdownProviders(); // Start() on every provider
 void Register(Provider& (*instance)(), int order);
 Provider* FindProvider(std::wstring_view key);
 // The provider an item belongs to, or nullptr for local files.

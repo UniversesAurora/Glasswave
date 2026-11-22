@@ -59,13 +59,15 @@ uint64_t SourcePlaybackEpoch() { return g_availability.Epoch(); }
 
 void ResetSourceAvailability() { g_availability.Reset(); }
 
+void NotePlaybackStarted() { g_availability.NotePlaybackStarted(); }
+
 bool CanPlaySource(std::string_view path) { return g_availability.CanPlay(path); }
 
 bool SkipUnavailableSource(uint64_t epoch, std::string_view path, std::wstring_view reason,
                            unsigned flags, abort_callback& abort) {
     abort.check();
     if ((flags & input_flag_playback) == 0 || (flags & input_flag_testing_integrity) != 0) return false;
-    g_availability.MarkUnavailable(epoch, path);
+    if (!g_availability.MarkUnavailable(epoch, path)) return false;
     const std::string location(path);
     const auto message = pfc::stringcvt::string_utf8_from_wide(reason.data(), reason.size());
     console::print("Glasswave: skipped unavailable stream ", location.c_str(), " (", message.get_ptr(), ")");

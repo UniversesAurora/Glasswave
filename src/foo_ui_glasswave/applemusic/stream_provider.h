@@ -25,7 +25,7 @@ class StreamProvider final : public stream::Provider {
     static StreamProvider& Get();
 
     void Start() override;
-    void Shutdown();
+    void Shutdown() override;
 
     std::wstring_view Key() const override { return L"apple"; }
     std::wstring Name() const override { return L"Apple Music"; }
@@ -81,7 +81,6 @@ class StreamProvider final : public stream::Provider {
     bool NeedsAccount(const stream::ListQuery& query) const override;
     std::string ListCacheContext(const stream::ListQuery& query) const override;
     void RestoreListRecords(const stream::ListPage& page) override;
-    void PutStations(const std::vector<stream::Station>& stations) override;
 
     // These write routes mirror the private Apple Music current-web contract. They are not
     // a documented stable API and have not been exercised against a real account here.
@@ -96,7 +95,6 @@ class StreamProvider final : public stream::Provider {
     void CreatePlaylist(std::wstring name, CreatedDone done) override;
     void RenamePlaylist(const stream::Id& playlist, std::wstring name, Done done = {}) override;
     void DeletePlaylist(const stream::Id& playlist, Done done = {}) override;
-    void ReorderPlaylists(std::vector<stream::Id> playlists, Done done = {}) override;
 
     void FetchCatalogSearchSuggestions(CatalogSearchSuggestionQuery query,
                                        CatalogSearchSuggestionsDone done) override;
