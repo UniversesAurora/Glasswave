@@ -1345,6 +1345,10 @@ void StoreAlbumDisplayNames(AppleMusicDisplayRegion region, uint64_t displayEpoc
             names.artists.push_back(std::move(artist));
         }
     }
+    if (!localized.id.empty() && localized.id != source.id) {
+        DisplayMetadata::Get().PutAlbumFor(region, sourceStorefront, localized.id, names, true,
+                                           displayEpoch);
+    }
     DisplayMetadata::Get().PutAlbumFor(region, sourceStorefront, source.id, std::move(names), true,
                                        displayEpoch);
 }
@@ -2942,12 +2946,7 @@ void StreamProvider::ResolveSongDisplayNames(std::vector<Song>& songs, uint64_t 
             DisplayMetadata::Get().IsSongComplete(region, sourceStorefront, song.track.id))
             continue;
         const stream::Id metadataId = !song.reportingId.empty() ? song.reportingId : song.catalogId;
-        if (metadataId.empty()) {
-            if (canCommit())
-                DisplayMetadata::Get().PutSongFor(region, sourceStorefront, song.track.id, {}, true,
-                                                  displayEpoch);
-            continue;
-        }
+        if (metadataId.empty()) continue;
         pending.push_back({&song, metadataId});
     }
 
@@ -3015,11 +3014,7 @@ void StreamProvider::ResolveAlbumDisplayNames(std::vector<stream::Album>& albums
         if (album.id.empty() || DisplayMetadata::Get().IsAlbumComplete(region, sourceStorefront, album.id))
             continue;
         const stream::Id catalogId = CatalogIdForAlbum(album.id);
-        if (catalogId.empty()) {
-            if (canCommit())
-                DisplayMetadata::Get().PutAlbumFor(region, sourceStorefront, album.id, {}, true,
-                                                   displayEpoch);
-        } else {
+        if (!catalogId.empty()) {
             pending.push_back({&album, catalogId});
         }
     }
@@ -3164,11 +3159,7 @@ void StreamProvider::ResolvePlaylistDisplayNames(std::vector<stream::Playlist>& 
             DisplayMetadata::Get().IsPlaylistComplete(region, sourceStorefront, playlist.id))
             continue;
         const stream::Id catalogId = CatalogIdForPlaylist(playlist.id);
-        if (catalogId.empty()) {
-            if (canCommit())
-                DisplayMetadata::Get().PutPlaylistFor(region, sourceStorefront, playlist.id, {}, true,
-                                                      displayEpoch);
-        } else {
+        if (!catalogId.empty()) {
             pending.push_back({&playlist, catalogId});
         }
     }
@@ -3195,6 +3186,10 @@ void StreamProvider::ResolvePlaylistDisplayNames(std::vector<stream::Playlist>& 
                 names.name = localized->name;
                 names.description = localized->description;
                 names.coverUrl = localized->coverUrl;
+                if (!localized->id.empty() && localized->id != item.source->id) {
+                    DisplayMetadata::Get().PutPlaylistFor(region, sourceStorefront, localized->id, names,
+                                                          true, displayEpoch);
+                }
                 DisplayMetadata::Get().PutPlaylistFor(region, sourceStorefront, item.source->id,
                                                       std::move(names), true, displayEpoch);
             }
@@ -5007,6 +5002,16 @@ std::string StreamProvider::ListCacheContext(const stream::ListQuery& query) con
     return AppleListCacheContext();
 }
 
+bool StreamProvider::RefreshCachedDisplay(stream::ListPage& page) const {
+    if (!RegionalDisplayEnabled()) return false;
+    stream::ListPage updated = page;
+    ApplyPageDisplayNames(updated, true);
+    const bool changed = updated.rows != page.rows || updated.playlist != page.playlist ||
+                         updated.album != page.album || updated.artist != page.artist;
+    if (changed) page = std::move(updated);
+    return changed;
+}
+
 void StreamProvider::RestoreListRecords(const stream::ListPage& page) {
     // Whatever the names, a restored song's album is known again: its cover is named by the
     // album, as when the list was read (see Catalog::SongAlbum).
@@ -5232,36 +5237,13 @@ struct StreamProvider::ListLoad {
         return objects;
     }
 
-    void LoadPlaylistTracks(const stream::Id& playlist, bool library, bool newestFirst = false) {
+    void LoadPlaylistTracks(const stream::Id& playlist, bool library) {
         trackRows = true;
         const std::wstring tracksPath = PlaylistTracksPath(playlist, storefront, library);
         std::vector<Object> objects;
         if (library) page.playlist = Catalog::Get().FindPlaylistRaw(playlist);
         if (page.playlist && page.playlist->trackCount >= 0)
             page.total = static_cast<size_t>(page.playlist->trackCount);
-        if (library && newestFirst) {
-            if (!cursor.path.empty()) return;
-            std::set<std::wstring> seen;
-            std::wstring next = RelationshipPagePath(tracksPath, true, 100);
-            for (size_t pages = 0; !next.empty(); ++pages) {
-                if (pages >= kProviderCollectionPageLimit)
-                    throw std::runtime_error("Apple Music returned too many pages.");
-                if (!seen.emplace(next).second || ListPathOnly(next) != tracksPath)
-                    throw std::runtime_error("Apple Music playlist pagination changed the API path.");
-                const Object response = Apple(next, abort);
-                const auto batch = ObjectsOf(response);
-                if (objects.size() + batch.size() > kProviderCollectionItemLimit)
-                    throw std::runtime_error("Apple Music returned too many items.");
-                objects.insert(objects.end(), batch.begin(), batch.end());
-                const std::wstring rawNext = json::GetString(response, L"next");
-                next = rawNext.empty() ? std::wstring()
-                                       : RelationshipPagePath(NormalizeListNext(tracksPath, rawNext), true, 100);
-            }
-            songs = ParseSongs(objects);
-            std::reverse(songs.begin(), songs.end());
-            page.total = songs.size();
-            return;
-        }
         // Apple's library playlist detail endpoint rejects projected relationship
         // queries in practice, so the tracks collection itself is page one.
         // The catalog answers a resource request that carries "limit" with 400 ("Limit may
@@ -5546,7 +5528,7 @@ void StreamProvider::ReadListPage(ListLoad& load) {
 void StreamProvider::ReadPlaylistTracksPage(ListLoad& load) {
     if (load.query.id.empty()) throw std::runtime_error("The playlist list has no id.");
     const bool library = IsLibraryId(load.query.id) && load.query.id[0] == L'p';
-    load.LoadPlaylistTracks(load.query.id, library, library && !IsFavoritePlaylist(load.query.id));
+    load.LoadPlaylistTracks(load.query.id, library);
 }
 
 void StreamProvider::ReadAlbumTracksPage(ListLoad& load) {

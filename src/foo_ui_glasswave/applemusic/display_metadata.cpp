@@ -285,6 +285,10 @@ void DisplayMetadata::PutSongFor(AppleMusicDisplayRegion region, std::wstring_vi
     std::lock_guard lock(m_mutex);
     if (expectedEpoch != kAnyEpoch && m_epoch != expectedEpoch) return;
     auto& entry = m_songs[Key(*target, L"song", sourceStorefront, id)];
+    if (!complete && entry.complete) {
+        entry.used = ++m_clock;
+        return;
+    }
     if (!names.title.empty()) entry.names.title = std::move(names.title);
     if (!names.album.empty()) entry.names.album = std::move(names.album);
     if (!names.albumId.empty()) entry.names.albumId = std::move(names.albumId);
@@ -327,6 +331,10 @@ void DisplayMetadata::PutAlbumFor(AppleMusicDisplayRegion region, std::wstring_v
     std::lock_guard lock(m_mutex);
     if (expectedEpoch != kAnyEpoch && m_epoch != expectedEpoch) return;
     auto& entry = m_albums[Key(*target, L"album", sourceStorefront, id)];
+    if (!complete && entry.complete) {
+        entry.used = ++m_clock;
+        return;
+    }
     if (!names.name.empty()) entry.names.name = std::move(names.name);
     if (!names.description.empty()) entry.names.description = std::move(names.description);
     if (!names.coverUrl.empty()) entry.names.coverUrl = std::move(names.coverUrl);
@@ -365,6 +373,10 @@ void DisplayMetadata::PutArtistFor(AppleMusicDisplayRegion region, std::wstring_
     std::lock_guard lock(m_mutex);
     if (expectedEpoch != kAnyEpoch && m_epoch != expectedEpoch) return;
     auto& entry = m_artists[Key(*target, L"artist", sourceStorefront, id)];
+    if (!complete && entry.complete) {
+        entry.used = ++m_clock;
+        return;
+    }
     if (!names.name.empty()) entry.names.name = std::move(names.name);
     if (!names.bio.empty()) entry.names.bio = std::move(names.bio);
     if (!names.avatarUrl.empty()) entry.names.avatarUrl = std::move(names.avatarUrl);
@@ -399,6 +411,10 @@ void DisplayMetadata::PutPlaylistFor(AppleMusicDisplayRegion region, std::wstrin
     std::lock_guard lock(m_mutex);
     if (expectedEpoch != kAnyEpoch && m_epoch != expectedEpoch) return;
     auto& entry = m_playlists[Key(*target, L"playlist", sourceStorefront, id)];
+    if (!complete && entry.complete) {
+        entry.used = ++m_clock;
+        return;
+    }
     if (!names.name.empty()) entry.names.name = std::move(names.name);
     if (!names.description.empty()) entry.names.description = std::move(names.description);
     if (!names.coverUrl.empty()) entry.names.coverUrl = std::move(names.coverUrl);

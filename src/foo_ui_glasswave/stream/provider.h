@@ -429,6 +429,11 @@ class Provider {
     }
     // Rehydrate metadata required by TrackItem/FindTrack and artwork on a disk cache hit.
     virtual void RestoreListRecords(const ListPage& page) { (void)page; }
+    // Apply any fresher in-memory localized display metadata onto a cached list page.
+    virtual bool RefreshCachedDisplay(ListPage& page) const {
+        (void)page;
+        return false;
+    }
     // Stations a page shows (a home row), so their covers resolve (ArtKind::Station).
     virtual void PutStations(const std::vector<Station>& stations) { (void)stations; }
 

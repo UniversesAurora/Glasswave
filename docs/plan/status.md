@@ -16,11 +16,18 @@ Updated: 2026-11-22
      `m_visible[row] + 1` (1-based original list/album position bound to the track), matching
      `SortKey(kNumber)` and local `TrackSource`: descending `#` now displays `N..1`, and album/CD
      track numbers stay attached to their tracks under any sort or filter.
-3. **Newest-first default order for Apple Music library playlists (`applemusic/stream_provider.cpp`)**:
-   - Updated `StreamProvider::ReadPlaylistTracksPage` / `ListLoad::LoadPlaylistTracks` so user
-     library playlists (`p.*`, excluding Favorite Songs which Apple already returns newest-first
-     and catalog editorial/chart playlists `pl.*`) load all pages and reverse to newest-to-oldest
-     order by default (consistent with Favorite Songs and cached cleanly in the shared list cache).
+3. **Native paged order for Apple Music library playlists & full regional display metadata audit (`applemusic/display_metadata.cpp`, `applemusic/stream_provider.*`, `stream/provider.h`, `stream/list_session.cpp`)**:
+   - Reverted Apple Music library playlists (`p.*`) back to native paged API order so large
+     playlists keep single-page incremental loading by default (users can sort `#` descending
+     once and rely on per-view sort persistence).
+   - Hardened all four `DisplayMetadata::Put*For` methods so incomplete (`complete = false`)
+     cache warm hints never overwrite authoritative (`complete = true`) regional entries.
+   - Removed empty `complete = true` poisoning when `metadataId` / `catalogId` is not yet known
+     in `ResolveSongDisplayNames`, `ResolveAlbumDisplayNames`, and `ResolvePlaylistDisplayNames`,
+     and stored localized album/playlist names under both library and catalog IDs.
+   - Added `stream::Provider::RefreshCachedDisplay(ListPage&)` (applying known regional display
+     names in memory) and invoked it on `ListSession` disk restore, `SameLeadingPage` shadow
+     short-circuit, and in-memory session reuse.
 
 ## Apple Music regional artist names fix & public v0.1.0 release (2026-11-22)
 

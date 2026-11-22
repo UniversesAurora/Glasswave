@@ -567,6 +567,7 @@ void Read::LoadCache() {
                           : std::wstring(L" miss")));
         if (cached && cached->page.rows.index() == self->state.page.rows.index()) {
             self->provider.RestoreListRecords(cached->page);
+            self->provider.RefreshCachedDisplay(cached->page);
             self->state.page = std::move(cached->page);
             self->state.appendOffset = 0;
             ++self->state.dataVersion;
@@ -923,6 +924,7 @@ void Read::Received(uint64_t id, ListPage page, std::wstring error) {
         if (page.playlist) state.page.playlist = std::move(page.playlist);
         if (page.album) state.page.album = std::move(page.album);
         if (page.artist) state.page.artist = std::move(page.artist);
+        if (provider.RefreshCachedDisplay(state.page)) ++state.dataVersion;
         shadow.reset();
         shadowRecords.clear();
         if (writeGeneration != 0) generation = writeGeneration;
@@ -1151,6 +1153,8 @@ std::shared_ptr<ListSession> ListSession::Open(Provider& provider, ListQuery que
     if (!read || !read->valid)
         read = std::make_shared<Read>(provider, std::move(query), policy, std::move(logicalKey),
                                       std::move(cacheContext), key);
+    else if (provider.RefreshCachedDisplay(read->state.page))
+        ++read->state.dataVersion;
     auto impl = std::make_shared<Impl>();
     impl->read = read;
     impl->lease = std::make_shared<Lease>(Lease{std::move(changed), mode, false});

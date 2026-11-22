@@ -103,6 +103,7 @@ class StreamProvider final : public stream::Provider {
     std::vector<stream::NavigationSection> Sections() const override;
 
     void OnLanguageChanged() override;
+    bool RefreshCachedDisplay(stream::ListPage& page) const override;
 
   private:
     StreamProvider();
