@@ -6,7 +6,7 @@ Cavern adapter described below is tracked separately from fetched upstream code.
 | Dependency | Version | Destination | License |
 | --- | --- | --- | --- |
 | foobar2000 SDK | 2026-10-01 | `third_party/foobar2000-sdk` | BSD-style (pfc/libPPUI zlib-style) |
-| foobar2000 (dev instance) | 2.26.2 x64 | `.local/fb2k-dev` | freeware, local testing only |
+| foobar2000 (dev instance) | 2.26.3 x64 | `.local/fb2k-dev` | freeware, local testing only |
 | quickjs-ng amalgamation | 0.18.0 | `third_party/quickjs-ng` | MIT |
 | miniz amalgamation | 3.1.2 | `third_party/miniz` | MIT |
 

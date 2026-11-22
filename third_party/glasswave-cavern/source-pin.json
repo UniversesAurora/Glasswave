@@ -1,7 +1,7 @@
 {
   "repository": "https://github.com/VoidXH/Cavern.git",
-  "commit": "bbb76e9f85a2b53041297c52257a2f486afd8f26",
-  "license": "https://github.com/VoidXH/Cavern/blob/bbb76e9f85a2b53041297c52257a2f486afd8f26/LICENSE.md",
+  "commit": "c54117222a83deabf71c3fd162ed71a4b263a55d",
+  "license": "https://github.com/VoidXH/Cavern/blob/c54117222a83deabf71c3fd162ed71a4b263a55d/LICENSE.md",
   "adapterPatch": "scripts/applemusic/atmos/cavern-buffer-drain.patch",
   "dotnetSdk": "8.0.426",
   "ilCompiler": "8.0.33",
