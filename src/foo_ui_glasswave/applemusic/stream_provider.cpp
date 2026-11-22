@@ -5461,12 +5461,12 @@ void StreamProvider::FetchListPage(const stream::ListQuery& sourceQuery, const s
             }
 
             if (query.cancelled && query.cancelled->load(std::memory_order_acquire)) return;
-            m_exec.PostMain(generation, [this, generation, preferenceEpoch, page = std::move(load.page),
+            m_exec.PostMain(generation, [this, preferenceEpoch, page = std::move(load.page),
                                          songs = std::move(load.songs), trackRows = load.trackRows,
                                          catalogItemRows = load.catalogItemRows, derivedGroupsPage,
                                          error = std::move(error), done = std::move(done)]() mutable {
-                FinishListPage(generation, preferenceEpoch, std::move(page), std::move(songs), trackRows,
-                               catalogItemRows, derivedGroupsPage, std::move(error), std::move(done));
+                FinishListPage(preferenceEpoch, std::move(page), std::move(songs), trackRows, catalogItemRows,
+                               derivedGroupsPage, std::move(error), std::move(done));
             });
         });
 }
@@ -5910,7 +5910,6 @@ void StreamProvider::ReadGroupsPage(ListLoad& load) {
     auto groups = DerivedGroups(songs, songs, genres);
     page.total = groups.size();
     page.rows = std::move(groups);
-    songs.clear();
 }
 
 void StreamProvider::ReadCatalogSearchPage(ListLoad& load) {
@@ -5960,9 +5959,9 @@ void StreamProvider::ReadCatalogSearchPage(ListLoad& load) {
 
 // The main-thread end of a list page read: the records join the catalog, the rows are shown in
 // the display region and the page says whether metadata still has to arrive.
-void StreamProvider::FinishListPage(uint64_t generation, uint64_t preferenceEpoch, stream::ListPage page,
-                                    std::vector<Song> songs, bool trackRows, bool catalogItemRows,
-                                    bool derivedGroupsPage, std::wstring error, stream::ListPageDone done) {
+void StreamProvider::FinishListPage(uint64_t preferenceEpoch, stream::ListPage page, std::vector<Song> songs,
+                                    bool trackRows, bool catalogItemRows, bool derivedGroupsPage,
+                                    std::wstring error, stream::ListPageDone done) {
     bool mixedNeedsHydration = false;
     if (error.empty() && trackRows) {
         songs = MergeSongRecordsWithCatalog(std::move(songs), true);
@@ -5971,14 +5970,10 @@ void StreamProvider::FinishListPage(uint64_t generation, uint64_t preferenceEpoc
         Catalog::Get().PutAndHint(songs, false);
         page.rows = DisplayTracks(songs);
     }
-    if (error.empty() && derivedGroupsPage) {
+    if (error.empty() && derivedGroupsPage && !songs.empty()) {
+        // RecentLibrarySongs already populated m_librarySongs with the raw library snapshot;
+        // only hint the catalog here without clobbering m_librarySongs.
         Catalog::Get().PutAndHint(songs);
-        std::lock_guard lock(m_mutex);
-        if (generation == m_exec.Generation()) {
-            m_librarySongs = songs;
-            m_librarySongsLoaded = true;
-            m_librarySongsAt = std::chrono::steady_clock::now();
-        }
     }
     if (error.empty() && catalogItemRows) {
         auto* items = std::get_if<std::vector<stream::CatalogSearchItem>>(&page.rows);
@@ -6112,6 +6107,7 @@ bool StreamProvider::EnrichListPage(const stream::ListQuery& query, const stream
         derivedGenres = query.section == kGenresSection;
         std::lock_guard lock(m_mutex);
         groupSongs = m_librarySongs;
+        std::erase_if(groupSongs, [this](const Song& song) { return SongRemovedHereLocked(song); });
     }
     if (page.playlist) playlists.push_back(*page.playlist);
     if (page.album) albums.push_back(*page.album);

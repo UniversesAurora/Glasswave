@@ -245,9 +245,9 @@ class StreamProvider final : public stream::Provider {
     ArtistSource ResolveArtistSource(const stream::Id& artist, abort_callback& abort) const;
     std::optional<Object> ReadArtistView(ListLoad& load, const stream::Id& catalogId,
                                          const std::wstring& request);
-    void FinishListPage(uint64_t generation, uint64_t preferenceEpoch, stream::ListPage page,
-                        std::vector<Song> songs, bool trackRows, bool catalogItemRows, bool derivedGroupsPage,
-                        std::wstring error, stream::ListPageDone done);
+    void FinishListPage(uint64_t preferenceEpoch, stream::ListPage page, std::vector<Song> songs,
+                        bool trackRows, bool catalogItemRows, bool derivedGroupsPage, std::wstring error,
+                        stream::ListPageDone done);
 
     mutable std::mutex m_mutex;
     std::condition_variable m_artistVerificationCondition;
