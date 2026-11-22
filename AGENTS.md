@@ -14,6 +14,8 @@ foobar2000's; we only build the UI. Read before changing anything substantial:
 3. [docs/adr/](docs/adr) — decisions already made; do not re-litigate without a new ADR
 4. [docs/design/visual-spec.md](docs/design/visual-spec.md) — measured Win7 values
 5. [docs/plan/status.md](docs/plan/status.md) — where things stand, what is next
+6. [docs/agent/handoff.md](docs/agent/handoff.md) — the owner's working rules and the state
+   left by the previous agent (read this first when you are new to the project)
 
 ## Non-negotiables
 
