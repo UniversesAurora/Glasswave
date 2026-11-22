@@ -119,28 +119,57 @@ void MainWindow::RefreshPaneQueue(bool playbackChanged) {
         titleformat_compiler::get()->compile_safe(s_artist, "[%artist%]");
     }
     auto pm = playlist_manager::get();
+    auto& scheduler = media::PlaybackScheduler::Get();
+    const uint64_t currentRevision = scheduler.ScheduleRevision();
+    metadb_handle_ptr now;
+    const bool loaded = playback_control::get()->get_now_playing(now);
+    if (m_paneStartingPreview &&
+        (m_paneStartingPreview->scheduleRevision != currentRevision ||
+         (loaded && now == m_paneStartingPreview->track && scheduler.CurrentTrack() == now))) {
+        m_paneStartingPreview.reset();
+    }
+
+    const bool previewing = m_paneStartingPreview.has_value();
+    if (!previewing) {
+        if (loaded && m_panePreviewedTrack.is_valid() && m_panePreviewedTrack == now) {
+            m_panePreviewedTrack.release();
+            playbackChanged = false;
+        } else if (loaded && now != m_panePreviewedTrack) {
+            m_panePreviewedTrack.release();
+        }
+    }
+
     std::vector<QueueView::Row> upNext;
     m_paneUpcoming.clear();
-    m_paneScheduleRevision = media::PlaybackScheduler::Get().ScheduleRevision();
+    m_paneScheduleRevision = currentRevision;
     const t_size queue = media::QueuePlaylist(false);
+    size_t repeatCycle = 0;
     if (queue != SIZE_MAX) {
-        t_size playing = SIZE_MAX, index = SIZE_MAX;
-        const bool fromQueue = pm->get_playing_item_location(&playing, &index) && playing == queue;
         const t_size count = pm->playlist_get_item_count(queue);
-        if (!fromQueue) index = playback_control::get()->is_playing() ? SIZE_MAX : m_panePlayingIndex;
-        if (index >= count) index = SIZE_MAX;
+        t_size index = SIZE_MAX;
         metadb_handle_ptr cursor;
-        if (index != SIZE_MAX) cursor = pm->playlist_get_item_handle(queue, index);
-        if (!fromQueue && cursor != m_panePlayingTrack) {
-            // A stopped cursor must not survive replacing or removing its old item.
-            index = SIZE_MAX;
-            cursor.release();
+        if (previewing) {
+            index = m_paneStartingPreview->playingIndex < count ? m_paneStartingPreview->playingIndex : SIZE_MAX;
+            cursor = m_paneStartingPreview->track;
+        } else {
+            t_size playing = SIZE_MAX;
+            const bool fromQueue = pm->get_playing_item_location(&playing, &index) && playing == queue;
+            if (!fromQueue) index = playback_control::get()->is_playing() ? SIZE_MAX : m_panePlayingIndex;
+            if (index >= count) index = SIZE_MAX;
+            if (index != SIZE_MAX) cursor = pm->playlist_get_item_handle(queue, index);
+            if (!fromQueue && cursor != m_panePlayingTrack) {
+                // A stopped cursor must not survive replacing or removing its old item.
+                index = SIZE_MAX;
+                cursor.release();
+            }
         }
         playbackChanged |= index != m_panePlayingIndex;
         m_panePlayingIndex = index;
         m_panePlayingTrack = cursor;
+        const auto upcoming = previewing ? m_paneStartingPreview->upcoming : scheduler.DisplayUpcomingSnapshot();
+        repeatCycle = previewing ? m_paneStartingPreview->repeatCycle : scheduler.RepeatCycleSize();
         std::unordered_set<size_t> shownPhysical;
-        for (const auto& next : media::PlaybackScheduler::Get().DisplayUpcomingSnapshot()) {
+        for (const auto& next : upcoming) {
             if (!next.handle.is_valid()) continue;
             if (next.source == media::ScheduledUpcomingSource::Playlist && next.playlistIndex >= count)
                 continue;
@@ -151,6 +180,7 @@ void MainWindow::RefreshPaneQueue(bool playbackChanged) {
             row.title = Wide(text);
             row.handle->format_title(nullptr, text, s_artist, nullptr);
             row.artist = Wide(text);
+            TrackText(row.handle, row.title, row.artist);
             row.badges = stream::TrackBadges(row.handle);
             row.playlistIndex = next.playlistIndex < count && shownPhysical.insert(next.playlistIndex).second
                                     ? next.playlistIndex
@@ -160,8 +190,6 @@ void MainWindow::RefreshPaneQueue(bool playbackChanged) {
         }
     }
     std::vector<QueueView::Row> history;
-    metadb_handle_ptr now;
-    const bool loaded = playback_control::get()->get_now_playing(now);
     auto records = media::PlayStats::Get().Recent(50);
     for (auto it = records.rbegin(); it != records.rend(); ++it) { // oldest first
         QueueView::Row row;
@@ -177,12 +205,34 @@ void MainWindow::RefreshPaneQueue(bool playbackChanged) {
         row.badges = stream::TrackBadges(row.handle);
         history.push_back(std::move(row));
     }
-    // The newest record is the song playing now: it is the card, not history.
-    if (loaded && !history.empty() && history.back().handle == now) history.pop_back();
+    if (previewing) {
+        const auto& startingTrack = m_paneStartingPreview->track;
+        const auto& previousTrack = m_paneStartingPreview->previousTrack;
+        // The song now opening moves onto the top card, not history.
+        std::erase_if(history, [&](const QueueView::Row& r) { return r.handle == startingTrack; });
+        // The song leaving the card moves immediately to the bottom of history (just above the card).
+        if (previousTrack.is_valid() && previousTrack != startingTrack) {
+            std::erase_if(history, [&](const QueueView::Row& r) { return r.handle == previousTrack; });
+            QueueView::Row prevRow;
+            prevRow.handle = previousTrack;
+            pfc::string8 text;
+            previousTrack->format_title(nullptr, text, s_title, nullptr);
+            prevRow.title = Wide(text);
+            previousTrack->format_title(nullptr, text, s_artist, nullptr);
+            prevRow.artist = Wide(text);
+            TrackText(previousTrack, prevRow.title, prevRow.artist);
+            prevRow.badges = stream::TrackBadges(previousTrack);
+            history.push_back(std::move(prevRow));
+        }
+        m_panePreviewedTrack = startingTrack;
+    } else {
+        // The newest record is the song playing now: it is the card, not history.
+        if (loaded && !history.empty() && history.back().handle == now) history.pop_back();
+    }
     m_pane->Queue().SetHistory(std::move(history));
     m_pane->Queue().SetUpNext(std::move(upNext), playbackChanged);
     m_pane->Queue().SetShuffleRepeat(m_shuffle, static_cast<int>(m_repeat), media::radio::Active());
-    m_pane->Queue().SetRepeatCycle(media::PlaybackScheduler::Get().RepeatCycleSize());
+    m_pane->Queue().SetRepeatCycle(repeatCycle);
 }
 
 void MainWindow::ConnectPaneQueue() {
@@ -200,6 +250,8 @@ void MainWindow::ConnectPaneQueue() {
             if (at >= queued.get_count()) return;
             const auto target = queued[at];
             if (target.m_playlist != SIZE_MAX && target.m_item != SIZE_MAX) {
+                if (target.m_playlist == media::QueuePlaylist(false))
+                    media::PlaybackScheduler::Get().ExpectExactStart(target.m_item);
                 pm->set_playing_playlist(target.m_playlist);
                 pm->playlist_execute_default_action(target.m_playlist, target.m_item);
             } else if (target.m_handle.is_valid()) {
@@ -213,6 +265,7 @@ void MainWindow::ConnectPaneQueue() {
         }
         const t_size p = media::QueuePlaylist(false);
         if (p == SIZE_MAX || index >= pm->playlist_get_item_count(p)) return;
+        media::PlaybackScheduler::Get().ExpectExactStart(index);
         pm->set_playing_playlist(p);
         pm->playlist_execute_default_action(p, index);
     };

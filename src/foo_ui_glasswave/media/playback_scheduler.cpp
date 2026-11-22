@@ -752,6 +752,7 @@ bool PlaybackScheduler::Impl::StartOccurrence(PlaybackOccurrenceId occurrence, b
     manager->set_playing_playlist(queue);
     manager->playlist_set_focus_item(queue, found->second);
     exactStart = occurrence;
+    pendingClickStart.reset();
     manager->playlist_execute_default_action(queue, found->second);
     if (paused) playback_control::get()->pause(true);
     return true;
@@ -865,6 +866,7 @@ void PlaybackScheduler::Impl::HandleTrackStarted(PlaybackOccurrenceId occurrence
     }
     navigationTarget.reset();
     exactStart.reset();
+    pendingClickStart.reset();
     failureBurst = 0;
     ApplyProjection();
     if (explicitStart) SaveCheckpoint();
@@ -881,6 +883,7 @@ void PlaybackScheduler::Impl::HandleStop(play_control::t_stop_reason reason) {
         reason == play_control::stop_reason_shutting_down) {
         return;
     }
+    pendingClickStart.reset();
 
     if (navigationTarget) {
         const auto target = *navigationTarget;
@@ -1218,6 +1221,7 @@ void PlaybackScheduler::Impl::InvalidatePosted() {
     reorderDirty = false;
     navigationTarget.reset();
     exactStart.reset();
+    pendingClickStart.reset();
 }
 
 bool PlaybackSchedulerProbeAccess::Install() {
@@ -1478,6 +1482,16 @@ std::optional<std::size_t> PlaybackScheduler::ScheduledNextIndex() {
     return m_impl->ScheduledNextIndex();
 }
 
+metadb_handle_ptr PlaybackScheduler::CurrentTrack() const {
+    PFC_ASSERT(core_api::is_main_thread());
+    const auto& impl = *m_impl;
+    if (!impl.modelInitialized) return {};
+    const auto cur = impl.schedule.Current();
+    if (!cur) return {};
+    const auto found = impl.handles.find(*cur);
+    return found == impl.handles.end() ? metadb_handle_ptr() : found->second;
+}
+
 metadb_handle_ptr PlaybackScheduler::StartingTrack(play_control::t_track_command command) {
     PFC_ASSERT(core_api::is_main_thread());
     auto& impl = *m_impl;
@@ -1488,10 +1502,126 @@ metadb_handle_ptr PlaybackScheduler::StartingTrack(play_control::t_track_command
     else if (command == play_control::track_command_prev)
         target = impl.schedule.Previous();
     else
-        target = impl.exactStart;
+        target = impl.exactStart ? impl.exactStart : impl.pendingClickStart;
     if (!target) return {};
     const auto found = impl.handles.find(*target);
     return found == impl.handles.end() ? metadb_handle_ptr() : found->second;
+}
+
+void PlaybackScheduler::ExpectExactStart(std::size_t playlistIndex) {
+    PFC_ASSERT(core_api::is_main_thread());
+    auto& impl = *m_impl;
+    if (!impl.modelInitialized || playlistIndex >= impl.physical.size()) {
+        impl.pendingClickStart.reset();
+        return;
+    }
+    impl.pendingClickStart = impl.physical[playlistIndex];
+}
+
+std::optional<StartingPreview> PlaybackScheduler::PreviewStarting(play_control::t_track_command command) {
+    PFC_ASSERT(core_api::is_main_thread());
+    auto& impl = *m_impl;
+    if (!impl.modelInitialized) return std::nullopt;
+
+    const auto queue = CoreQueueSnapshot();
+    const t_size queuePlaylist = QueuePlaylist(false);
+    auto owned = BucketQueueItems(impl.ownedCoreQueue);
+
+    std::optional<PlaybackOccurrenceId> target;
+    std::size_t consumedQueueIndex = SIZE_MAX;
+    metadb_handle_ptr targetHandle;
+
+    if (command == play_control::track_command_next || command == play_control::track_command_rand) {
+        if (!queue.empty()) {
+            const auto& head = queue.front();
+            auto ownedCheck = owned;
+            const bool isOwned = TakeMatchingQueueItem(ownedCheck, head);
+            if (!isOwned) {
+                consumedQueueIndex = 0;
+                targetHandle = head.m_handle;
+            }
+        }
+        if (!targetHandle.is_valid()) target = impl.schedule.ManualNext();
+    } else if (command == play_control::track_command_prev) {
+        target = impl.schedule.Previous();
+    } else {
+        target = impl.exactStart ? impl.exactStart : impl.pendingClickStart;
+    }
+
+    if (target) {
+        const auto found = impl.handles.find(*target);
+        if (found != impl.handles.end()) targetHandle = found->second;
+    }
+    if (!targetHandle.is_valid()) return std::nullopt;
+
+    StartingPreview result;
+    result.track = targetHandle;
+    result.scheduleRevision = impl.schedule.revision();
+
+    // Capture the song leaving the card so History can show it immediately.
+    metadb_handle_ptr now;
+    if (playback_control::get()->get_now_playing(now) && now.is_valid() && now != targetHandle) {
+        result.previousTrack = now;
+    } else if (const auto cur = impl.schedule.Current(); cur && (!target || *cur != *target)) {
+        if (const auto found = impl.handles.find(*cur); found != impl.handles.end() && found->second != targetHandle)
+            result.previousTrack = found->second;
+    }
+
+    PlaybackSchedule preview = impl.schedule;
+    if (target) {
+        const auto current = impl.schedule.Current();
+        const auto targetAt = impl.physicalIndex.find(*target);
+        if (targetAt != impl.physicalIndex.end()) result.playingIndex = targetAt->second;
+
+        if (!current || *current != *target) {
+            const auto expectedNext = impl.schedule.ManualNext();
+            const bool fromHistory = command == play_control::track_command_prev;
+            const bool explicitStart = (impl.exactStart && *impl.exactStart == *target) ||
+                                       (impl.pendingClickStart && *impl.pendingClickStart == *target) ||
+                                       command == play_control::track_command_play ||
+                                       ((command == play_control::track_command_default ||
+                                         command == play_control::track_command_settrack) &&
+                                        (!expectedNext || *expectedNext != *target));
+            if (explicitStart && targetAt != impl.physicalIndex.end()) {
+                preview.StartExplicit(std::span<const PlaybackOccurrenceId>(impl.physical), targetAt->second);
+            } else {
+                preview.Started(*target, fromHistory);
+            }
+        }
+
+        // If the starting target sits in the explicit SDK core queue, omit that consumed entry.
+        if (targetAt != impl.physicalIndex.end() && !queue.empty()) {
+            for (std::size_t i = 0; i < queue.size(); ++i) {
+                if (queue[i].m_playlist == queuePlaylist && queue[i].m_item == targetAt->second &&
+                    queue[i].m_handle == targetHandle) {
+                    consumedQueueIndex = i;
+                    break;
+                }
+            }
+        }
+    }
+
+    const auto upcoming = preview.DisplayUpcoming();
+    result.repeatCycle = preview.RepeatCycleSize();
+    result.upcoming.reserve(queue.size() + upcoming.size());
+    std::unordered_set<std::size_t> coveredPhysical;
+    for (std::size_t i = 0; i < queue.size(); ++i) {
+        const auto& item = queue[i];
+        const bool isOwned = TakeMatchingQueueItem(owned, item);
+        if (i == consumedQueueIndex) continue;
+        result.upcoming.push_back(
+            {ScheduledUpcomingSource::CoreQueue, i, isOwned ? item.m_item : SIZE_MAX, item.m_handle});
+        if (item.m_playlist == queuePlaylist && item.m_item < impl.physical.size())
+            coveredPhysical.insert(item.m_item);
+    }
+    for (const auto occurrence : upcoming) {
+        const auto index = impl.physicalIndex.find(occurrence);
+        const auto handle = impl.handles.find(occurrence);
+        if (index != impl.physicalIndex.end() && !coveredPhysical.contains(index->second))
+            result.upcoming.push_back({ScheduledUpcomingSource::Playlist, SIZE_MAX, index->second,
+                                       handle == impl.handles.end() ? metadb_handle_ptr() : handle->second});
+    }
+    return result;
 }
 
 std::uint64_t PlaybackScheduler::ScheduleRevision() const {

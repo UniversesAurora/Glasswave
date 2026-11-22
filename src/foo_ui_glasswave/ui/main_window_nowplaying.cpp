@@ -664,6 +664,7 @@ void MainWindow::ApplyShownTrack(const HeldTrack& track, winrt::com_ptr<IWICBitm
     m_art = std::move(art);
     m_lyricsArt = m_art;
     if (m_pane) m_pane->SetTrack(m_trackTitle, m_trackArtist, m_lyricsArt);
+    if (m_paneStartingPreview && m_paneStartingPreview->track == track.track) RefreshPaneQueue(true);
     const std::optional<uint32_t> tint = CoverTint(m_art.get());
     if (m_pane) m_pane->SetCoverTint(tint);
     if (tint && tint != m_windowCoverRgb) {
@@ -681,10 +682,12 @@ void MainWindow::ApplyShownTrack(const HeldTrack& track, winrt::com_ptr<IWICBitm
 }
 
 // Playback is starting towards a song (Next, Previous, a list started): it shows now, while its
-// audio is still being opened.
+// audio is still being opened, and the queue / history sidebar moves with it immediately.
 void MainWindow::PreviewStartingTrack(play_control::t_track_command command) {
     auto* scheduler = media::PlaybackScheduler::Existing();
-    const metadb_handle_ptr track = scheduler ? scheduler->StartingTrack(command) : metadb_handle_ptr();
+    auto preview = scheduler ? scheduler->PreviewStarting(command) : std::nullopt;
+    const metadb_handle_ptr track =
+        preview ? preview->track : (scheduler ? scheduler->StartingTrack(command) : metadb_handle_ptr());
     if (!track.is_valid()) return;
     static titleformat_object::ptr s_title, s_artist;
     if (!s_title) {
@@ -697,6 +700,7 @@ void MainWindow::PreviewStartingTrack(play_control::t_track_command command) {
     std::wstring t = Wide(title), a = Wide(artist);
     TrackText(track, t, a);
     if (lyrics::Service::TrackIdentity(track) != m_artTrackIdentity) m_startingFrom = m_artTrackIdentity;
+    m_paneStartingPreview = std::move(preview);
     ShowTrack(track, std::move(t), std::move(a), true);
 }
 
@@ -706,6 +710,8 @@ void MainWindow::ClearShownTrack() {
     KillTimer(m_hwnd, kArtHoldTimer);
     m_held = {};
     m_startingFrom.clear();
+    m_paneStartingPreview.reset();
+    m_panePreviewedTrack.release();
     ResetLyrics();
     m_trackTitle.clear();
     m_trackArtist.clear();

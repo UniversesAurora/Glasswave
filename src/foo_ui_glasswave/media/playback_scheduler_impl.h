@@ -263,6 +263,7 @@ struct PlaybackScheduler::Impl {
     bool startPaused = false;
     std::optional<PlaybackOccurrenceId> navigationTarget;
     std::optional<PlaybackOccurrenceId> exactStart;
+    std::optional<PlaybackOccurrenceId> pendingClickStart;
     unsigned failureBurst = 0;
 };
 

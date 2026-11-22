@@ -26,6 +26,17 @@ struct ScheduledUpcomingEntry {
     metadb_handle_ptr handle;             // Preserves duplicate row identity for UI rendering.
 };
 
+// Non-mutating projection of the queue as soon as playback starts towards a track (while its
+// stream is still opening), so the Up Next and History lists move with the top card at once.
+struct StartingPreview {
+    metadb_handle_ptr track;
+    metadb_handle_ptr previousTrack;
+    std::size_t playingIndex = SIZE_MAX;
+    std::vector<ScheduledUpcomingEntry> upcoming;
+    std::size_t repeatCycle = 0;
+    std::uint64_t scheduleRevision = 0;
+};
+
 class PlaybackSchedulerProbeAccess final {
   public:
     struct HostState {
@@ -93,9 +104,16 @@ class PlaybackScheduler final {
     // queue first; ScheduleRevision changes when either side changes.
     std::optional<std::size_t> ScheduledNextIndex();
     std::uint64_t ScheduleRevision() const;
+    // The track currently committed as playing in the schedule, or null when none.
+    metadb_handle_ptr CurrentTrack() const;
     // The song playback is starting towards (on_playback_starting): the next or previous one for
     // Next / Previous, the one asked for when a list starts; null when unknown.
     metadb_handle_ptr StartingTrack(play_control::t_track_command command);
+    // Records an imminent direct activation of a queue playlist row (e.g. clicking an Up Next row)
+    // so StartingTrack / PreviewStarting know the target before the core finishes opening it.
+    void ExpectExactStart(std::size_t playlistIndex);
+    // Non-mutating preview of the queue and upcoming rows for an imminent track start.
+    std::optional<StartingPreview> PreviewStarting(play_control::t_track_command command);
     // Stable feed token for a list currently projected into Now Playing.
     std::uint64_t ContentGeneration() const;
 

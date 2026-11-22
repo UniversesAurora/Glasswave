@@ -393,6 +393,8 @@ class MainWindow : public PageHost, public PlayerHost {
     void ConnectPaneQueue();
     size_t m_panePlayingIndex = SIZE_MAX; // retain the queue cursor when playback stops
     metadb_handle_ptr m_panePlayingTrack;
+    metadb_handle_ptr m_panePreviewedTrack; // track whose queue transition already animated during load
+    std::optional<media::StartingPreview> m_paneStartingPreview;
     uint64_t m_paneScheduleRevision = 0;
     uint64_t m_scheduleListener = 0;
     core::Signal<>::Connection m_deviceReplaced;
