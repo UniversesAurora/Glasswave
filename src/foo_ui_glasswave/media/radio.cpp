@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "core/tsv.h"
+#include "media/playback_scheduler.h"
 #include "media/radio.h"
 #include "core/signal.h"
 #include "core/text.h"
@@ -9,6 +10,7 @@
 #include "core/log.h"
 
 #include <deque>
+#include <optional>
 
 namespace glasswave::media::radio {
 
@@ -25,12 +27,14 @@ struct State {
     uint64_t generation = 0; // the queue's content generation when they were put there
     std::deque<stream::Track> pending; // sent by the service, not queued yet
     bool fetching = false;
-    bool stalled = false;  // the queue ran out while the service was asked
+    bool retryQueued = false;
+    bool stalled = false; // the queue ran out while the service was asked
     int failures = 0;
     // The station's own account of its songs: what it queued, in order, and which of them plays.
     // The queue's places cannot tell: repeating one song puts the songs still to come before it.
     std::vector<metadb_handle_ptr> queued;
     size_t playing = 0;
+    std::optional<size_t> opening; // target index while an async open is in flight
 };
 
 State g_state;
@@ -90,12 +94,28 @@ metadb_handle_list Items(stream::Provider& provider, const std::vector<stream::T
 }
 
 void Fetch();
+bool PlayIndex(size_t index);
 
-// Which of the station's songs plays: the nearest one to the last known that is the song now
-// playing (a song can come twice; Previous goes back, Next on).
-void FollowPlaying() {
+// Which of the station's songs plays: prefer the scheduler's exact physical queue index (so
+// repeated songs and restored sessions always land on the exact slot), falling back to the
+// playing playlist index or nearest handle match.
+void SyncPlaying() {
+    if (g_state.queued.empty()) return;
+    if (auto* scheduler = PlaybackScheduler::Existing()) {
+        if (const auto pos = scheduler->CurrentQueuePosition(); pos && *pos < g_state.queued.size()) {
+            g_state.playing = *pos;
+            return;
+        }
+    }
+    const t_size queue = QueuePlaylist(false);
+    t_size pl = SIZE_MAX, idx = SIZE_MAX;
+    if (queue != SIZE_MAX && playlist_manager::get()->get_playing_item_location(&pl, &idx) && pl == queue &&
+        idx < g_state.queued.size()) {
+        g_state.playing = idx;
+        return;
+    }
     metadb_handle_ptr now;
-    if (!playback_control::get()->get_now_playing(now) || g_state.queued.empty()) return;
+    if (!playback_control::get()->get_now_playing(now)) return;
     const size_t from = std::min(g_state.playing, g_state.queued.size() - 1);
     for (size_t d = 0; d < g_state.queued.size(); ++d) {
         if (from + d < g_state.queued.size() && g_state.queued[from + d] == now) {
@@ -109,18 +129,26 @@ void FollowPlaying() {
     }
 }
 
-// The station's songs queued after the playing one.
+size_t EffectiveIndex() {
+    if (g_state.queued.empty()) return 0;
+    if (g_state.opening && *g_state.opening < g_state.queued.size()) return *g_state.opening;
+    SyncPlaying();
+    return std::min(g_state.playing, g_state.queued.size() - 1);
+}
+
+// The station's songs queued after the current (or currently opening) one.
 size_t QueuedAhead() {
-    FollowPlaying();
-    return g_state.queued.empty() ? 0 : g_state.queued.size() - 1 - std::min(g_state.playing, g_state.queued.size() - 1);
+    if (g_state.queued.empty()) return 0;
+    const size_t cur = EffectiveIndex();
+    return g_state.queued.size() - 1 - cur;
 }
 
 // Keeps kAhead songs queued after the playing one, and asks for more before they run out.
 void TopUp() {
     if (!Current()) return;
     // Nothing plays (a restored station before Play): nothing to keep ahead of, unless the queue
-    // ran out under a playing station.
-    if (!g_state.stalled && !playback_control::get()->is_playing()) return;
+    // ran out under a playing station or a track is currently opening.
+    if (!g_state.stalled && !g_state.opening && !playback_control::get()->is_playing()) return;
     const size_t ahead = QueuedAhead();
     metadb_handle_list add;
     while (ahead + add.get_count() < kAhead && !g_state.pending.empty()) {
@@ -128,6 +156,7 @@ void TopUp() {
         g_state.pending.pop_front();
     }
     if (add.get_count()) {
+        const size_t firstAdded = g_state.queued.size();
         core::Log(L"radio: " + std::to_wstring(add.get_count()) + L" more queued, " +
                   std::to_wstring(g_state.pending.size()) + L" waiting");
         for (size_t i = 0; i < add.get_count(); ++i) g_state.queued.push_back(add[i]);
@@ -137,9 +166,10 @@ void TopUp() {
             End();
             return;
         }
-        if (std::exchange(g_state.stalled, false)) playback_control::get()->start(playback_control::track_command_next);
+        if (std::exchange(g_state.stalled, false)) PlayIndex(firstAdded);
+        Notify();
     }
-    if (g_state.pending.size() < kAhead && !g_state.fetching && g_state.failures < kMaxFailures) Fetch();
+    if (g_state.pending.size() < kAhead + 1 && !g_state.fetching && g_state.failures < kMaxFailures) Fetch();
 }
 
 void Fetch() {
@@ -149,34 +179,91 @@ void Fetch() {
         if (serial != g_serial) return;
         g_state.fetching = false;
         if (tracks.empty()) {
-            // A source still restoring its session (start-up) has not refused: asked again later.
-            if (!g_state.provider->SessionRestoring() && g_state.provider->SignedIn()) ++g_state.failures;
+            // A source still restoring its session (start-up) has not refused: retry shortly so
+            // a restored station at its last loaded song does not stay greyed out until EOF.
+            if (g_state.provider->SessionRestoring()) {
+                if (!g_state.retryQueued) {
+                    g_state.retryQueued = true;
+                    fb2k::splitTask([serial] {
+                        Sleep(1500);
+                        fb2k::inMainThread([serial] {
+                            if (serial != g_serial || !g_state.active) return;
+                            g_state.retryQueued = false;
+                            if (!g_state.fetching) TopUp();
+                        });
+                    });
+                }
+                return;
+            }
+            if (g_state.provider->SignedIn()) ++g_state.failures;
             if (!error.empty()) console::print(("Glasswave radio: " + Utf8(error)).c_str());
             if (g_state.failures >= kMaxFailures) { // the songs queued play on as an ordinary list
                 core::Log(L"radio: " + g_state.name + L" sends nothing; the queue goes on as a list");
                 End();
             }
-            return; // asked again when the next song starts
+            return;
         }
         g_state.failures = 0;
         for (auto& track : tracks) g_state.pending.push_back(std::move(track));
         TopUp();
+        Notify();
     });
+}
+
+bool PlayIndex(size_t index) {
+    if (!Current() || index >= g_state.queued.size()) return false;
+    auto pm = playlist_manager::get();
+    const t_size queue = QueuePlaylist(false);
+    if (queue == SIZE_MAX || index >= pm->playlist_get_item_count(queue)) return false;
+    g_state.opening = index;
+    // Queue buffered lookahead tracks and start fetching more *before* activating the track,
+    // so Up Next and any network prefetch run immediately in parallel with the song opening.
+    TopUp();
+    if (!g_state.active) return false;
+    PlaybackScheduler::Get().ExpectExactStart(index);
+    pm->set_playing_playlist(queue);
+    pm->playlist_execute_default_action(queue, index);
+    Notify();
+    return true;
 }
 
 class Playback : public play_callback_static {
   public:
-    unsigned get_flags() override { return flag_on_playback_stop; }
-    void on_playback_new_track(metadb_handle_ptr) override {}
+    unsigned get_flags() override {
+        return flag_on_playback_starting | flag_on_playback_new_track | flag_on_playback_stop;
+    }
+    void on_playback_starting(play_control::t_track_command command, bool) override {
+        if (!Current()) return;
+        if (!g_state.opening) {
+            if (const auto target = PlaybackScheduler::Get().PendingStartIndex(command);
+                target && *target < g_state.queued.size()) {
+                g_state.opening = *target;
+            }
+        }
+        TopUp();
+        Notify();
+    }
+    void on_playback_new_track(metadb_handle_ptr) override {
+        if (!Current()) return;
+        g_state.opening.reset();
+        SyncPlaying();
+        TopUp();
+        Notify();
+    }
     void on_playback_stop(play_control::t_stop_reason reason) override {
-        if (reason != play_control::stop_reason_eof) return;
+        if (reason == play_control::stop_reason_starting_another) return;
+        g_state.opening.reset();
+        if (reason != play_control::stop_reason_eof) {
+            if (g_state.active) Notify();
+            return;
+        }
         fb2k::inMainThread([] {
             if (!Current()) return;
             g_state.stalled = true; // the songs arriving start playing again
             TopUp();
+            Notify();
         });
     }
-    void on_playback_starting(play_control::t_track_command, bool) override {}
     void on_playback_seek(double) override {}
     void on_playback_pause(bool) override {}
     void on_playback_edited(metadb_handle_ptr) override {}
@@ -213,14 +300,27 @@ void Restore() {
     g_state.station = Wide(fields[1]);
     g_state.name = Wide(fields[2]);
     for (size_t i = 0; i < items.get_count(); ++i) g_state.queued.push_back(items[i]);
-    g_state.playing = g_state.queued.size() - 1; // where it stopped is found as it plays
+    g_state.playing = g_state.queued.size() - 1;
+    if (const auto pos = PlaybackScheduler::Get().CurrentQueuePosition(); pos && *pos < g_state.queued.size()) {
+        g_state.playing = *pos;
+    } else {
+        t_size pl = SIZE_MAX, idx = SIZE_MAX;
+        auto pm = playlist_manager::get();
+        if (pm->get_playing_item_location(&pl, &idx) && pl == queue && idx < g_state.queued.size()) {
+            g_state.playing = idx;
+        } else if (const t_size focus = pm->playlist_get_focus_item(queue); focus < g_state.queued.size()) {
+            g_state.playing = focus;
+        }
+    }
+    PlaybackScheduler::Get().AlignLinearCurrent(g_state.playing);
     g_state.generation = QueueContentGeneration();
     g_state.active = true;
     ++g_serial;
     core::Log(L"radio: " + g_state.name + L" restored with " + std::to_wstring(items.get_count()) +
-              L" songs");
+              L" songs (at #" + std::to_wstring(g_state.playing) + L")");
     ListenToSchedule();
     Notify();
+    TopUp();
 }
 
 class RestoreAtStart : public initquit {
@@ -310,12 +410,53 @@ std::wstring Name() { return Active() ? g_state.name : std::wstring(); }
 
 bool CanDislike() { return Active() && g_state.provider->CanDislike(g_state.station); }
 
-// Previous goes back through what the station played, never before its first song: there is
-// nothing before it (no station's "back" from there is something the queue could play).
+// Previous goes back through what the station played, never before its first song.
 bool CanGoBack() {
     if (!Active()) return true;
-    FollowPlaying();
-    return g_state.playing > 0;
+    return EffectiveIndex() > 0;
+}
+
+// Next is enabled only when another song is already loaded after the current (or opening) one.
+bool CanGoNext() {
+    if (!Active()) return true;
+    return !g_state.queued.empty() && EffectiveIndex() + 1 < g_state.queued.size();
+}
+
+bool GoNext() {
+    if (!Current()) return false;
+    const size_t cur = EffectiveIndex();
+    if (cur + 1 >= g_state.queued.size()) {
+        TopUp();
+        Notify();
+        return true;
+    }
+    PlayIndex(cur + 1);
+    return true;
+}
+
+bool GoPrevious() {
+    if (!Current()) return false;
+    const size_t cur = EffectiveIndex();
+    if (cur == 0) {
+        Notify();
+        return true;
+    }
+    PlayIndex(cur - 1);
+    return true;
+}
+
+bool PlayHistoryTrack(const metadb_handle_ptr& track) {
+    if (!Current() || !track.is_valid() || g_state.queued.empty()) return false;
+    const size_t cur = EffectiveIndex();
+    // Search backward from the current position first so jumping to a played history song
+    // lands on its exact earlier slot in the station's fixed order.
+    for (size_t i = cur + 1; i-- > 0;) {
+        if (g_state.queued[i] == track) return PlayIndex(i);
+    }
+    for (size_t i = cur + 1; i < g_state.queued.size(); ++i) {
+        if (g_state.queued[i] == track) return PlayIndex(i);
+    }
+    return false;
 }
 
 void DislikeCurrent() {
@@ -327,7 +468,14 @@ void DislikeCurrent() {
     g_state.provider->DislikeStationTrack(g_state.station, track, [](std::wstring error) {
         if (!error.empty()) console::print(("Glasswave radio: " + Utf8(error)).c_str());
     });
-    playback_control::get()->start(playback_control::track_command_next);
+    const size_t cur = EffectiveIndex();
+    if (cur + 1 < g_state.queued.size()) {
+        PlayIndex(cur + 1);
+    } else {
+        g_state.stalled = true;
+        TopUp();
+        Notify();
+    }
 }
 
 int Subscribe(std::function<void()> callback) {

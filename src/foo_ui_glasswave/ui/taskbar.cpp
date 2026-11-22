@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "ui/taskbar.h"
+#include "media/radio.h"
 #include "win7/win7_resources.h"
 #include "gfx/composition_host.h"
 #include "media/transport.h"
@@ -204,6 +205,10 @@ void Taskbar::SetPlayState(bool playing, bool paused) {
     UpdateButtons();
 }
 
+void Taskbar::RefreshButtons() {
+    UpdateButtons();
+}
+
 void Taskbar::SetFavorite(bool favorite) {
     if (favorite == m_favorite) return;
     m_favorite = favorite;
@@ -247,15 +252,17 @@ void Taskbar::UpdateButtons() {
     if (!m_added || !m_list) return;
     THUMBBUTTON b[4]{};
     const bool showPause = m_playing && !m_paused;
+    const bool prevOk = m_playing && media::radio::CanGoBack();
+    const bool nextOk = m_playing && media::radio::CanGoNext();
     const bool star = m_starFull >= 0 && m_starOutline >= 0;
     const struct {
         UINT id;
         int image;
         const wchar_t* tip;
         bool enabled;
-    } spec[] = {{kPrev, kGlyphPrev + (m_playing ? 0 : 1), L"Previous", m_playing},
+    } spec[] = {{kPrev, kGlyphPrev + (prevOk ? 0 : 1), L"Previous", prevOk},
                 {kPlayPause, showPause ? kGlyphPause : kGlyphPlay, showPause ? L"Pause" : L"Play", true},
-                {kNext, kGlyphNext + (m_playing ? 0 : 1), L"Next", m_playing},
+                {kNext, kGlyphNext + (nextOk ? 0 : 1), L"Next", nextOk},
                 {kFavorite, m_favorite ? m_starFull : m_starOutline,
                  m_favorite ? L"Remove from Favorites" : L"Add to Favorites", m_playing}};
     const int count = star ? 4 : 3;

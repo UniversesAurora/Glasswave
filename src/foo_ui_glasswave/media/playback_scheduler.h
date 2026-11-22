@@ -106,14 +106,25 @@ class PlaybackScheduler final {
     std::uint64_t ScheduleRevision() const;
     // The track currently committed as playing in the schedule, or null when none.
     metadb_handle_ptr CurrentTrack() const;
+    // Physical index of the schedule's current track in Now Playing, or nullopt when none.
+    std::optional<std::size_t> CurrentQueuePosition() const;
+    // Aligns a linear (non-shuffled, no priority blocks) schedule to `playlistIndex` without
+    // reordering rows so history is [0..index-1] and future is [index+1..end].
+    bool AlignLinearCurrent(std::size_t playlistIndex);
     // The song playback is starting towards (on_playback_starting): the next or previous one for
     // Next / Previous, the one asked for when a list starts; null when unknown.
     metadb_handle_ptr StartingTrack(play_control::t_track_command command);
+    // Physical queue playlist index playback is starting towards, or nullopt when unknown.
+    std::optional<std::size_t> PendingStartIndex(play_control::t_track_command command);
     // Records an imminent direct activation of a queue playlist row (e.g. clicking an Up Next row)
     // so StartingTrack / PreviewStarting know the target before the core finishes opening it.
     void ExpectExactStart(std::size_t playlistIndex);
     // Non-mutating preview of the queue and upcoming rows for an imminent track start.
     std::optional<StartingPreview> PreviewStarting(play_control::t_track_command command);
+    // Non-mutating preview anchored at a specific physical queue index (used when radio appends
+    // songs while a track is still opening).
+    std::optional<StartingPreview> PreviewStartingAt(std::size_t playlistIndex,
+                                                     const metadb_handle_ptr& previousTrack = {});
     // Stable feed token for a list currently projected into Now Playing.
     std::uint64_t ContentGeneration() const;
 

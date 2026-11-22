@@ -20,9 +20,18 @@ void Play(stream::Provider& provider, const stream::Id& station, std::wstring na
 bool Active();
 std::wstring Name();
 bool CanDislike(); // the station playing takes "recommend less"
-// Previous does something: always off a station; on one, unless its first song plays and the
-// station does not go back from there (Provider::StationBacksAtStart).
+// Previous does something: always off a station; on one, unless its first song plays.
 bool CanGoBack();
+// Next does something: always off a station; on one, only when another song is already queued
+// after the current (or currently opening) song.
+bool CanGoNext();
+// Step forward / backward along the station's fixed queue order; returns true when handled by
+// an active station (even at the ends, where playback stays on the current song).
+bool GoNext();
+bool GoPrevious();
+// If `track` belongs to the active station's fixed queue, jump to its exact slot without
+// duplicating or reordering the queue; returns false when the track is not in the station.
+bool PlayHistoryTrack(const metadb_handle_ptr& track);
 void DislikeCurrent();
 // Called (main thread) when a station starts or ends, and as its songs move on.
 int Subscribe(std::function<void()> callback);

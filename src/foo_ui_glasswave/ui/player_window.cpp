@@ -347,7 +347,7 @@ void PlayerWindow::RadioChanged() {
     m_host.PlayerMode(shuffle, repeat);
     m_shuffle = shuffle;
     m_repeat = repeat;
-    for (int id : {kPrev, kShuffle, kRepeat, kMenuShuffle, kMenuRepeat})
+    for (int id : {kPrev, kNext, kShuffle, kRepeat, kMenuShuffle, kMenuRepeat})
         if (auto* w = WidgetById(id)) w->Invalidate();
 }
 

@@ -123,10 +123,21 @@ void MainWindow::RefreshPaneQueue(bool playbackChanged) {
     const uint64_t currentRevision = scheduler.ScheduleRevision();
     metadb_handle_ptr now;
     const bool loaded = playback_control::get()->get_now_playing(now);
-    if (m_paneStartingPreview &&
-        (m_paneStartingPreview->scheduleRevision != currentRevision ||
-         (loaded && now == m_paneStartingPreview->track && scheduler.CurrentTrack() == now))) {
-        m_paneStartingPreview.reset();
+    if (m_paneStartingPreview) {
+        if (loaded && now == m_paneStartingPreview->track && scheduler.CurrentTrack() == now) {
+            m_paneStartingPreview.reset();
+        } else if (m_paneStartingPreview->scheduleRevision != currentRevision) {
+            // If radio or another source appended upcoming rows while this track is still opening,
+            // refresh the preview against the updated schedule instead of jumping back to the old track.
+            auto refreshed = m_paneStartingPreview->playingIndex != SIZE_MAX
+                                 ? scheduler.PreviewStartingAt(m_paneStartingPreview->playingIndex,
+                                                               m_paneStartingPreview->previousTrack)
+                                 : std::nullopt;
+            if (refreshed && refreshed->track == m_paneStartingPreview->track)
+                m_paneStartingPreview = std::move(refreshed);
+            else
+                m_paneStartingPreview.reset();
+        }
     }
 
     const bool previewing = m_paneStartingPreview.has_value();
@@ -270,6 +281,7 @@ void MainWindow::ConnectPaneQueue() {
         pm->playlist_execute_default_action(p, index);
     };
     queue.onPlayHistory = [](const metadb_handle_ptr& track) {
+        if (media::radio::Active() && media::radio::PlayHistoryTrack(track)) return;
         // History activation uses the same priority insertion as every other Play Next action.
         metadb_handle_list items;
         items.add_item(track);

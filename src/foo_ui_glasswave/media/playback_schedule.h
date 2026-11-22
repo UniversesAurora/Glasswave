@@ -132,6 +132,7 @@ class PlaybackSchedule final {
     std::vector<PlaybackOccurrenceId> AllOccurrenceIds() const;
     std::vector<PlaybackOccurrenceId> CanonicalOrder() const;
     std::vector<PlaybackOccurrenceId> History() const;
+    bool HasPriority() const noexcept { return !m_priorityBlocks.empty(); }
 
     std::uint64_t revision() const { return m_revision; }
     std::uint64_t seed() const { return m_seed; }

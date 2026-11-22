@@ -102,8 +102,15 @@ void PlaybackSchedule::Restore(std::span<const PlaybackOccurrenceId> canonical_o
     if (!physical_order.empty() && current_position != SIZE_MAX) {
         current_position = std::min(current_position, physical_order.size() - 1);
         m_current = physical_order[current_position];
-        for (std::size_t i = 0; i < physical_order.size(); ++i)
-            if (i != current_position) m_ordinaryFuture.push_back(physical_order[i]);
+        if (m_shuffle) {
+            for (std::size_t i = 0; i < physical_order.size(); ++i)
+                if (i != current_position) m_ordinaryFuture.push_back(physical_order[i]);
+        } else {
+            for (std::size_t i = 0; i < current_position; ++i)
+                PushHistory(physical_order[i]);
+            for (std::size_t i = current_position + 1; i < physical_order.size(); ++i)
+                m_ordinaryFuture.push_back(physical_order[i]);
+        }
     }
     BumpRevision();
 }

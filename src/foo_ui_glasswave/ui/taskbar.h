@@ -16,6 +16,7 @@ public:
     // Feed every window message; true when it was a taskbar message we handled.
     bool OnMessage(UINT msg, WPARAM wp, LPARAM lp);
     void SetPlayState(bool playing, bool paused);
+    void RefreshButtons();
     // Favorite button: a gold star when the playing song is in Favorites, else its outline.
     void SetFavorite(bool favorite);
     std::function<void()> onFavorite;

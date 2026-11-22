@@ -895,16 +895,17 @@ void MainWindow::CreateWidgets() {
         ->onClick = [] { media::transport::Previous(); };
     add(kNext,
         [this](auto* dc, D2D1_SIZE_F s, Layer l) {
+            const bool enabled = m_playing && media::radio::CanGoNext();
             if (m_win7Art)
-                wt::ClusterButton(dc, ClusterRegion(m_layout.next), wt::Button::Next, l, m_playing);
+                wt::ClusterButton(dc, ClusterRegion(m_layout.next), wt::Button::Next, l, enabled);
             else
-                paint::Segment(dc, s, false, l, TransportGlyph::Next, true);
+                paint::Segment(dc, s, false, l, TransportGlyph::Next, enabled);
         },
         {})
         ->onClick = [] { media::transport::Next(); };
-    for (int id : {kStop, kNext})
-        WidgetById(id)->enabled = [this] { return m_playing; };
+    WidgetById(kStop)->enabled = [this] { return m_playing; };
     WidgetById(kPrev)->enabled = [this] { return m_playing && media::radio::CanGoBack(); };
+    WidgetById(kNext)->enabled = [this] { return m_playing && media::radio::CanGoNext(); };
 
     Widget::Options orb;
     orb.circular = true;
@@ -2041,8 +2042,9 @@ void MainWindow::OnRadioChanged() {
         }
         SchedulePaneQueueRefresh();
     }
-    for (int id : {kShuffle, kRepeat, kPrev})
+    for (int id : {kShuffle, kRepeat, kPrev, kNext})
         if (auto* w = WidgetById(id)) w->Invalidate();
+    if (m_taskbar) m_taskbar->RefreshButtons();
     if (m_player) m_player->RadioChanged();
 }
 

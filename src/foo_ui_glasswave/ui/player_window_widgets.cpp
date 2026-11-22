@@ -370,17 +370,19 @@ void PlayerWindow::CreateWidgets() {
         ->onClick = [] { media::transport::Previous(); };
     add(kNext, m_barLayer,
         [this](auto* dc, D2D1_SIZE_F s, Layer l) {
+            const bool enabled = m_playing && media::radio::CanGoNext();
             if (Wmc())
-                DrawControl(dc, s, L"NEXT", l, m_playing);
+                DrawControl(dc, s, L"NEXT", l, enabled);
             else if (m_wmp)
-                wt::ClusterButton(dc, ClusterRegion(m_layout.next), wt::Button::Next, l, m_playing);
+                wt::ClusterButton(dc, ClusterRegion(m_layout.next), wt::Button::Next, l, enabled);
             else
-                paint::Segment(dc, s, false, l, TransportGlyph::Next, true);
+                paint::Segment(dc, s, false, l, TransportGlyph::Next, enabled);
         },
         {})
         ->onClick = [] { media::transport::Next(); };
-    for (int id : {kStop, kNext}) WidgetById(id)->enabled = [this] { return m_playing; };
+    WidgetById(kStop)->enabled = [this] { return m_playing; };
     WidgetById(kPrev)->enabled = [this] { return m_playing && media::radio::CanGoBack(); };
+    WidgetById(kNext)->enabled = [this] { return m_playing && media::radio::CanGoNext(); };
 
     Widget::Options orb;
     orb.circular = true;

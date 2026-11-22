@@ -25,10 +25,18 @@ void Stop() {
 }
 
 void Previous() {
+    if (radio::Active()) {
+        radio::GoPrevious();
+        return;
+    }
     playback_control::get()->previous();
 }
 
 void Next() {
+    if (radio::Active()) {
+        radio::GoNext();
+        return;
+    }
     playback_control::get()->next();
 }
 

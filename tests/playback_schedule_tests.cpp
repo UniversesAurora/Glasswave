@@ -694,6 +694,20 @@ void CheckBatchAddAndRemovePerformance() {
     Check(schedule.AllOccurrenceIds().size() == 150000, "Batch removal lost the wrong occurrence count");
 }
 
+void CheckLinearRestoreKeepsHistoryAndFuture() {
+    PlaybackSchedule restored(0x904);
+    Check(restored.SetMode(false, PlaybackRepeatMode::Off), "Linear mode was rejected");
+    const std::vector<Id> items{10, 20, 30, 40, 50};
+    restored.Restore(Span(items), Span(items), 3, 0x904);
+    Check(restored.Current() == 40, "Linear restore selected the wrong current track");
+    Check(restored.History() == std::vector<Id>({10, 20, 30}),
+          "Linear restore did not place earlier tracks into history");
+    Check(restored.FutureOrder() == std::vector<Id>({50}),
+          "Linear restore did not keep only later tracks in future");
+    Check(restored.Previous() == 30, "Previous after linear restore did not step to the immediate predecessor");
+    Check(restored.Next() == 50, "Next after linear restore did not step to the immediate successor");
+}
+
 } // namespace
 
 int main() {
@@ -705,6 +719,7 @@ int main() {
     CheckManualReorder();
     CheckManualOverrideUpdatesCanonicalOrder();
     CheckRestoredCanonicalOrder();
+    CheckLinearRestoreKeepsHistoryAndFuture();
     CheckStreamingSourceAppend();
     CheckScheduleRoleRoundTrip();
     CheckNavigationAndFailure();

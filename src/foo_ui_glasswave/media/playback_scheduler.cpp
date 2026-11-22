@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "media/playback_scheduler_impl.h"
+#include "media/radio.h"
 
 namespace glasswave::media {
 
@@ -168,6 +169,12 @@ void PlaybackScheduler::Impl::EnsureModel() {
         const std::size_t at = current == SIZE_MAX ? 0 : current;
         schedule.Restore(std::span<const PlaybackOccurrenceId>(canonical),
                          std::span<const PlaybackOccurrenceId>(ordered), at, NextSeed());
+    } else if (current != SIZE_MAX && current < physical.size() && !schedule.shuffle_enabled() &&
+               !schedule.HasPriority() && schedule.Current() != physical[current]) {
+        // Keep history and future aligned around foobar2000's actual resumed row when a
+        // linear/radio checkpoint was behind the last played track.
+        if (schedule.StartExplicit(std::span<const PlaybackOccurrenceId>(physical), current))
+            checkpointDirty = true;
     }
     modelInitialized = true;
     if (loaded) ApplyProjection();
@@ -811,10 +818,13 @@ void PlaybackScheduler::Impl::HandleNavigationStart(play_control::t_track_comman
     const auto target =
         command == play_control::track_command_prev ? schedule.Previous() : schedule.ManualNext();
     if (!current) return;
-    // Previous with nothing before: the song starts over instead of the core stopping (owner,
-    // 2026-11-20: quick presses past a station's first song left nothing playing).
+    // Previous with nothing before, or Next at the end of a radio station's currently loaded
+    // queue: keep the current song instead of the core stopping playback.
     if (!target) {
-        if (command == play_control::track_command_prev) navigationTarget = current;
+        if (command == play_control::track_command_prev ||
+            (command == play_control::track_command_next && radio::Active())) {
+            navigationTarget = current;
+        }
         return;
     }
     if (command == play_control::track_command_rand) {
@@ -852,7 +862,9 @@ void PlaybackScheduler::Impl::HandleTrackStarted(PlaybackOccurrenceId occurrence
     EnsureModel();
     const auto current = schedule.Current();
     const auto expectedNext = schedule.ManualNext();
-    const bool explicitStart = (exactStart && *exactStart == occurrence) ||
+    const bool linearFixed = !schedule.shuffle_enabled() && !schedule.HasPriority() &&
+                             schedule.repeat_mode() != PlaybackRepeatMode::All;
+    const bool explicitStart = linearFixed || (exactStart && *exactStart == occurrence) ||
                                startCommand == play_control::track_command_play ||
                                ((startCommand == play_control::track_command_default ||
                                  startCommand == play_control::track_command_settrack) &&
@@ -869,7 +881,8 @@ void PlaybackScheduler::Impl::HandleTrackStarted(PlaybackOccurrenceId occurrence
     pendingClickStart.reset();
     failureBurst = 0;
     ApplyProjection();
-    if (explicitStart) SaveCheckpoint();
+    checkpointDirty = true;
+    SaveCheckpoint();
     startCommand = play_control::track_command_default;
     startPaused = false;
 }
@@ -1110,7 +1123,13 @@ void PlaybackScheduler::Impl::Synchronize() {
     const std::size_t current = CurrentQueueIndex(physical.size(), true);
     const std::optional<PlaybackOccurrenceId> currentOccurrence =
         current == SIZE_MAX ? std::nullopt : std::optional<PlaybackOccurrenceId>(physical[current]);
-    schedule.RestoreCurrent(currentOccurrence);
+    if (currentOccurrence && schedule.Current() != currentOccurrence && !schedule.shuffle_enabled() &&
+        !schedule.HasPriority() && current < physical.size()) {
+        if (schedule.StartExplicit(std::span<const PlaybackOccurrenceId>(physical), current))
+            checkpointDirty = true;
+    } else {
+        schedule.RestoreCurrent(currentOccurrence);
+    }
 
     if (reorderDirty) {
         schedule.AdoptPhysicalOrder(std::span<const PlaybackOccurrenceId>(physical), current);
@@ -1492,6 +1511,35 @@ metadb_handle_ptr PlaybackScheduler::CurrentTrack() const {
     return found == impl.handles.end() ? metadb_handle_ptr() : found->second;
 }
 
+std::optional<std::size_t> PlaybackScheduler::CurrentQueuePosition() const {
+    PFC_ASSERT(core_api::is_main_thread());
+    const auto& impl = *m_impl;
+    if (!impl.modelInitialized) return std::nullopt;
+    const auto cur = impl.schedule.Current();
+    if (!cur) return std::nullopt;
+    const auto found = impl.physicalIndex.find(*cur);
+    return found == impl.physicalIndex.end() ? std::nullopt : std::optional<std::size_t>(found->second);
+}
+
+bool PlaybackScheduler::AlignLinearCurrent(std::size_t playlistIndex) {
+    PFC_ASSERT(core_api::is_main_thread());
+    auto& impl = *m_impl;
+    impl.EnsureSidecar();
+    impl.EnsureModel();
+    if (!impl.modelInitialized || playlistIndex >= impl.physical.size() || impl.schedule.shuffle_enabled() ||
+        impl.schedule.HasPriority()) {
+        return false;
+    }
+    if (impl.schedule.Current() == impl.physical[playlistIndex]) return true;
+    if (!impl.schedule.StartExplicit(std::span<const PlaybackOccurrenceId>(impl.physical), playlistIndex))
+        return false;
+    impl.checkpointDirty = true;
+    impl.ApplyProjection();
+    impl.SaveCheckpoint();
+    impl.RequestListenerNotification();
+    return true;
+}
+
 metadb_handle_ptr PlaybackScheduler::StartingTrack(play_control::t_track_command command) {
     PFC_ASSERT(core_api::is_main_thread());
     auto& impl = *m_impl;
@@ -1506,6 +1554,22 @@ metadb_handle_ptr PlaybackScheduler::StartingTrack(play_control::t_track_command
     if (!target) return {};
     const auto found = impl.handles.find(*target);
     return found == impl.handles.end() ? metadb_handle_ptr() : found->second;
+}
+
+std::optional<std::size_t> PlaybackScheduler::PendingStartIndex(play_control::t_track_command command) {
+    PFC_ASSERT(core_api::is_main_thread());
+    auto& impl = *m_impl;
+    if (!impl.modelInitialized) return std::nullopt;
+    std::optional<PlaybackOccurrenceId> target;
+    if (command == play_control::track_command_next || command == play_control::track_command_rand)
+        target = impl.schedule.ManualNext();
+    else if (command == play_control::track_command_prev)
+        target = impl.schedule.Previous();
+    else
+        target = impl.exactStart ? impl.exactStart : impl.pendingClickStart;
+    if (!target) return std::nullopt;
+    const auto found = impl.physicalIndex.find(*target);
+    return found == impl.physicalIndex.end() ? std::nullopt : std::optional<std::size_t>(found->second);
 }
 
 void PlaybackScheduler::ExpectExactStart(std::size_t playlistIndex) {
@@ -1609,6 +1673,50 @@ std::optional<StartingPreview> PlaybackScheduler::PreviewStarting(play_control::
         const auto& item = queue[i];
         const bool isOwned = TakeMatchingQueueItem(owned, item);
         if (i == consumedQueueIndex) continue;
+        result.upcoming.push_back(
+            {ScheduledUpcomingSource::CoreQueue, i, isOwned ? item.m_item : SIZE_MAX, item.m_handle});
+        if (item.m_playlist == queuePlaylist && item.m_item < impl.physical.size())
+            coveredPhysical.insert(item.m_item);
+    }
+    for (const auto occurrence : upcoming) {
+        const auto index = impl.physicalIndex.find(occurrence);
+        const auto handle = impl.handles.find(occurrence);
+        if (index != impl.physicalIndex.end() && !coveredPhysical.contains(index->second))
+            result.upcoming.push_back({ScheduledUpcomingSource::Playlist, SIZE_MAX, index->second,
+                                       handle == impl.handles.end() ? metadb_handle_ptr() : handle->second});
+    }
+    return result;
+}
+
+std::optional<StartingPreview> PlaybackScheduler::PreviewStartingAt(std::size_t playlistIndex,
+                                                                    const metadb_handle_ptr& previousTrack) {
+    PFC_ASSERT(core_api::is_main_thread());
+    auto& impl = *m_impl;
+    if (!impl.modelInitialized || playlistIndex >= impl.physical.size()) return std::nullopt;
+    const auto target = impl.physical[playlistIndex];
+    const auto handleFound = impl.handles.find(target);
+    if (handleFound == impl.handles.end() || !handleFound->second.is_valid()) return std::nullopt;
+
+    StartingPreview result;
+    result.track = handleFound->second;
+    result.previousTrack = previousTrack;
+    result.playingIndex = playlistIndex;
+    result.scheduleRevision = impl.schedule.revision();
+
+    PlaybackSchedule preview = impl.schedule;
+    preview.StartExplicit(std::span<const PlaybackOccurrenceId>(impl.physical), playlistIndex);
+    const auto queue = CoreQueueSnapshot();
+    const t_size queuePlaylist = QueuePlaylist(false);
+    auto owned = BucketQueueItems(impl.ownedCoreQueue);
+    const auto upcoming = preview.DisplayUpcoming();
+    result.repeatCycle = preview.RepeatCycleSize();
+    result.upcoming.reserve(queue.size() + upcoming.size());
+    std::unordered_set<std::size_t> coveredPhysical;
+    for (std::size_t i = 0; i < queue.size(); ++i) {
+        const auto& item = queue[i];
+        const bool isOwned = TakeMatchingQueueItem(owned, item);
+        if (item.m_playlist == queuePlaylist && item.m_item == playlistIndex && item.m_handle == result.track)
+            continue;
         result.upcoming.push_back(
             {ScheduledUpcomingSource::CoreQueue, i, isOwned ? item.m_item : SIZE_MAX, item.m_handle});
         if (item.m_playlist == queuePlaylist && item.m_item < impl.physical.size())
