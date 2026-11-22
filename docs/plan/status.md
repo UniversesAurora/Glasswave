@@ -2,7 +2,47 @@
 
 Updated: 2026-11-22
 
-## Immediate queue/history transitions while loading & secondary lyric line highlight (2026-11-22, latest)
+## Pane ghosting root cause & Home motion-cover teardown crash (2026-11-22, latest)
+
+1. **Pane / lyrics / queue recycled-atlas ghosting (captured live via `/glasswave:visuals`)**:
+   - Live capture on a scrolling queue row showed visual `0.0.21.0.4.0.3.11.1` (`880x112` px)
+     displaying recycled DirectComposition atlas pixels from a previously freed `m_historyTitle`
+     (`880x96` px) plus the top 16 px of another row's cover, with zero `surface:` draw errors
+     logged.
+   - Across all four recorded ghosting reports (`LyricsView` 2026-11-12, `NowPlayingPane` header
+     2026-11-14 and 2026-11-20, and `QueueView` row 2026-11-22), the **only** three surfaces that
+     ever exhibited recycled-atlas ghosts were the exact three callers of the 4-argument
+     `CompositionHost::Draw(surface, scale, ID2D1DeviceContext* dc, paint)` path, which requested
+     `BeginDraw(__uuidof(IDXGISurface))` and drew via a separate caller-owned `ID2D1DeviceContext`
+     (while `target`/`dxgi` stayed alive across `EndDraw`) on the same `ID2D1Device`-backed
+     `CompositionGraphicsDevice` whose other surfaces drew via `BeginDraw(__uuidof(ID2D1DeviceContext))`.
+   - Removed the 4-argument `IDXGISurface` `Draw` overload in `gfx/composition_host.*` and
+     released the `BeginDraw` `ID2D1DeviceContext` explicitly before `interop->EndDraw()`.
+   - Moved `NowPlayingPane::PaintHeader`, `QueueView::DrawRow`, and `LyricsView::DrawLineImage`
+     onto the single `BeginDraw(__uuidof(ID2D1DeviceContext))` path. `LyricsView` keeps `m_dc`
+     strictly for recording off-surface `ID2D1CommandList` word-glow primitives (cleared on device
+     replacement) and applies `GaussianBlur`/`Opacity` effects on the `BeginDraw` context.
+   - Attached newly created `QueueView` and `LyricsView` row/line surface brushes only after
+     `host.Draw` succeeds so an undrawn surface is never bound to a visual, and skipped painting
+     `NowPlayingPane` parts while hidden (`ReturnPane` stale mini-player bounds).
+2. **Crash in `CardLayer::StopVideo` (`failure_00000031.txt`)**:
+   - Scrolling motion-cover cards off-screen called `card.player.Close()` while `card.video` still
+     held the `MediaPlayerSurface` brush, `card.playerSurface` was still open, `PositionChanged` /
+     `MediaFailed` worker callbacks were still subscribed, and playback/HLS source had not been
+     stopped (`MFMediaEngine` access violation writing `0x24` inside `RtlEnterCriticalSection`).
+   - Updated `CardLayer::StopVideo` (`ui/card_layer.cpp`) to tear down in reverse dependency order:
+     detach `card.video.Brush(nullptr)`, revoke event tokens, `Pause()` + `Source(nullptr)`,
+     `MediaPlayerSurface::Close()`, `MediaSource::Close()`, then `MediaPlayer::Close()`.
+- Verification: D3D11 + D2D1 debug-layer standalone check passed with 0 messages for
+  `ID2D1CommandList` + `GaussianBlur` + `Opacity` on `BeginDraw(ID2D1DeviceContext)`;
+  `scripts/build.ps1` (Release|x64) built with 0 warnings / 0 errors; deployed via
+  `scripts/run-dev.ps1 -NoLaunch`.
+- Owner checks:
+  - Scroll through long History / Up Next lists, lyrics, and open/close the mini/full-screen player
+    and confirm recycled-atlas ghosts no longer appear.
+  - Scroll quickly up and down on Home with motion covers enabled and confirm no crash on teardown.
+
+## Immediate queue/history transitions while loading & secondary lyric line highlight (2026-11-22)
 
 1. **Queue / Up Next / History sidebar moves immediately on track switch**:
    - Added non-mutating `PlaybackScheduler::PreviewStarting(command)` and `ExpectExactStart(index)`
