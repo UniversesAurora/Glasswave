@@ -78,32 +78,75 @@ cfg_var_modern::cfg_int cfg_viewRemoteArtist(
 
 } // namespace
 
-std::vector<MenuAction> MainWindow::BuildArtistLinks(metadb_handle_list_cref items) {
+std::vector<MenuAction> MainWindow::BuildArtistLinks(metadb_handle_list_cref items,
+                                                     bool allowSearchFallback) {
     std::vector<MenuAction> links;
     if (items.get_count() == 0 || !items[0].is_valid()) return links;
     const metadb_handle_ptr& first = items[0];
+    const auto hasLabel = [&links](const std::wstring& label) {
+        return std::any_of(links.begin(), links.end(),
+                           [&label](const MenuAction& link) { return link.label == label; });
+    };
+    const auto addSearch = [this, &links, &hasLabel](const std::wstring& name) {
+        if (name.empty() || hasLabel(name)) return;
+        links.push_back({name, [this, name] { Search(name); }});
+    };
+    const auto forEachName = [](const std::wstring& joined, auto&& visit) {
+        size_t pos = 0;
+        while (pos <= joined.size()) {
+            const size_t end = joined.find(L"; ", pos);
+            std::wstring name =
+                joined.substr(pos, end == std::wstring::npos ? std::wstring::npos : end - pos);
+            const size_t begin = name.find_first_not_of(L" \t");
+            const size_t last = name.find_last_not_of(L" \t");
+            name = begin == std::wstring::npos ? std::wstring() : name.substr(begin, last - begin + 1);
+            if (!name.empty()) visit(name);
+            if (end == std::wstring::npos) break;
+            pos = end + 2;
+        }
+    };
+    const auto addMetadataSearchFallback = [&first, &forEachName, &addSearch]() {
+        metadb_info_container::ptr info;
+        if (!first->get_info_ref(info) || !info.is_valid()) return;
+        const file_info& fi = info->info();
+        const t_size count = fi.meta_get_count_by_name("ARTIST");
+        for (t_size i = 0; i < count; ++i) {
+            const char* raw = fi.meta_get("ARTIST", i);
+            if (!raw || !*raw) continue;
+            forEachName(core::Wide(raw), addSearch);
+        }
+    };
 
     if (auto* provider = stream::ProviderOf(first)) {
         const auto track = provider->FindTrack(provider->TrackId(first));
-        if (!track) return links;
-        const stream::Id sectionId = m_view.provider == provider->Key() ? m_view.sectionId : stream::Id{};
-        std::vector<stream::Id> seen;
-        for (const auto& artist : track->artists) {
-            if (artist.id.empty() || artist.name.empty()) continue;
-            if (std::find(seen.begin(), seen.end(), artist.id) != seen.end()) continue;
-            seen.push_back(artist.id);
-            links.push_back({artist.name, [this, provider, artist, sectionId] {
-                                 Open(ArtistView(*provider, artist.id, artist.name, sectionId));
-                             }});
+        if (track) {
+            const stream::Id sectionId = m_view.provider == provider->Key() ? m_view.sectionId : stream::Id{};
+            std::vector<stream::Id> seen;
+            for (const auto& artist : track->artists) {
+                if (artist.name.empty()) continue;
+                if (!artist.id.empty()) {
+                    if (std::find(seen.begin(), seen.end(), artist.id) != seen.end()) continue;
+                    seen.push_back(artist.id);
+                    links.push_back({artist.name, [this, provider, artist, sectionId] {
+                                         Open(ArtistView(*provider, artist.id, artist.name, sectionId));
+                                     }});
+                } else if (allowSearchFallback) {
+                    addSearch(artist.name);
+                }
+            }
         }
+        if (links.empty() && allowSearchFallback) addMetadataSearchFallback();
         return links;
     }
 
     const media::Track* track = m_library.FindTrack(first);
-    if (!track) return links;
-    auto add = [this, &links](media::GroupKind kind, const std::wstring& key, const std::wstring& label) {
-        for (const auto& link : links)
-            if (link.label == label) return;
+    if (!track) {
+        if (allowSearchFallback) addMetadataSearchFallback();
+        return links;
+    }
+    auto add = [this, &links, &hasLabel](media::GroupKind kind, const std::wstring& key,
+                                         const std::wstring& label) {
+        if (hasLabel(label)) return;
         links.push_back({label, [this, kind, key, label] {
                              View view;
                              view.library = View::Library::Local;
@@ -114,22 +157,18 @@ std::vector<MenuAction> MainWindow::BuildArtistLinks(metadb_handle_list_cref ite
                              Open(view);
                          }});
     };
-    size_t pos = 0;
-    while (pos <= track->artist.size()) {
-        const size_t end = track->artist.find(L"; ", pos);
-        std::wstring name =
-            track->artist.substr(pos, end == std::wstring::npos ? std::wstring::npos : end - pos);
-        const size_t begin = name.find_first_not_of(L" \t");
-        const size_t last = name.find_last_not_of(L" \t");
-        name = begin == std::wstring::npos ? std::wstring() : name.substr(begin, last - begin + 1);
-        if (!name.empty() && m_library.FindGroup(media::GroupKind::ContributingArtist, name))
+    forEachName(track->artist, [&](const std::wstring& name) {
+        if (m_library.FindGroup(media::GroupKind::ContributingArtist, name))
             add(media::GroupKind::ContributingArtist, name, name);
-        if (end == std::wstring::npos) break;
-        pos = end + 2;
+        else if (allowSearchFallback)
+            addSearch(name);
+    });
+    if (links.empty() && !track->albumArtist.empty()) {
+        if (m_library.FindGroup(media::GroupKind::Artist, track->albumArtist))
+            add(media::GroupKind::Artist, track->albumArtist, track->albumArtist);
+        else if (allowSearchFallback)
+            addSearch(track->albumArtist);
     }
-    if (links.empty() && !track->albumArtist.empty() &&
-        m_library.FindGroup(media::GroupKind::Artist, track->albumArtist))
-        add(media::GroupKind::Artist, track->albumArtist, track->albumArtist);
     return links;
 }
 

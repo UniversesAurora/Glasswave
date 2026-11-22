@@ -265,8 +265,9 @@ class MainWindow : public PageHost, public PlayerHost {
     void StartScrollAnimation();
     void StartScrollRepeat();
     void ShowPageContextMenu(POINT screen); // actions for the page itself (no selected item)
-    // Context-menu "Go to artist" destinations for the first item (provider or local).
-    std::vector<MenuAction> BuildArtistLinks(metadb_handle_list_cref items);
+    // "Go to artist" destinations for the first item (provider or local). When
+    // `allowSearchFallback` is true, artists without a known page id fall back to catalog search.
+    std::vector<MenuAction> BuildArtistLinks(metadb_handle_list_cref items, bool allowSearchFallback = false);
     std::vector<MenuAction> BuildContextActions(metadb_handle_list_cref items);
     void RemoveFromNowPlaying(); // the selected rows of the queue
     void ClearNowPlaying();
@@ -412,8 +413,8 @@ class MainWindow : public PageHost, public PlayerHost {
     winrt::Windows::UI::Composition::SpriteVisual m_time{nullptr}, m_streamVisual{nullptr};
     service_ptr m_outputCallback;
     void RepaintStreamInfo();
-    // The part of the now playing block under `pt`. The artist counts only when it leads
-    // somewhere (BuildArtistLinks): a song whose artists are not known by id is plain text.
+    // The part of the now playing block under `pt`. The artist opens its page when known by id,
+    // or falls back to searching by artist name (BuildArtistLinks(..., true)).
     int NowPlayingPartAt(POINT pt);
     // Whether the playing song's artist opens anything; asked once per hover and song, as the
     // record may be completed meanwhile (stream::Catalog::Want).

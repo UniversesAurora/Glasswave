@@ -504,7 +504,7 @@ bool MainWindow::NowPlayingArtistLinks() {
         metadb_handle_ptr now;
         metadb_handle_list items;
         if (playback_control::get()->get_now_playing(now)) items.add_item(now);
-        m_npArtistLinks = !BuildArtistLinks(items).empty();
+        m_npArtistLinks = !BuildArtistLinks(items, true).empty();
     }
     return *m_npArtistLinks;
 }
@@ -528,12 +528,12 @@ void MainWindow::OnNowPlayingClick(int part) {
     case 1:
         JumpToPlaying();
         break;
-    case 2: { // the playing song's artist: its provider's artist page or the local group
+    case 2: { // the playing song's artist: its provider's artist page, local group, or search
         metadb_handle_ptr now;
         if (!playback_control::get()->get_now_playing(now)) break;
         metadb_handle_list items;
         items.add_item(now);
-        auto links = BuildArtistLinks(items);
+        auto links = BuildArtistLinks(items, true);
         if (links.size() == 1) {
             links.front().run();
         } else if (links.size() > 1) {
