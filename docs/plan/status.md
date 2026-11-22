@@ -2,7 +2,46 @@
 
 Updated: 2026-11-22
 
-## Phases 5 and 6 of the review's work list (2026-11-22, latest)
+## The component did not load (2026-11-22, latest)
+
+Since fe11a3a (the shared executor, Phase 1-4) foobar2000 fell back to its default UI:
+LoadLibrary failed with ERROR_DLL_INIT_FAILED. Every provider was made by a global initializer,
+and the executor's `abort_callback_impl` asks foobar2000 for a service that does not exist while
+the DLL initializes. Found by bisecting a load check (`NativeLibrary.Load` after `shared.dll`).
+Providers now register an accessor and are made on the first `stream::Providers()`.
+
+- Bisecting across checkouts needs the incremental LTCG files (`build/obj/.../*.ipdb`,
+  `*.iobj`) removed per step, or the build fails with C1354 (corrupt ipdb).
+- A full LTCG build reports C4702 four times in the SDK's `input_impl.h` (the wrapper after
+  `input_stubs::decode_run_raw`, a throw). Older than this review; incremental builds hide it.
+  Neither `#pragma warning`, a per-file `/wd4702` nor an out-of-line stub silences it.
+- The list cache and provider snapshot unit tests had rotted before the review (schema 4, a
+  positional `stream::Playlist`); fixed and passing. Lyrics tests pass.
+- Open: while the component failed, foobar2000 switched to its default UI; its next start asks
+  "New user interface module(s) found" in a modal dialog, which holds start-up. The owner
+  picks Glasswave once; then the probe tests (Apple provider, ListSession, PlaybackScheduler)
+  are run again. They timed out behind that dialog.
+
+## Songs read when asked for: missing, or without their links (2026-11-22, latest)
+
+An Apple Music station's song (POST /v1/me/stations/next-tracks) is stored without its album
+and artists, so its artist could not be opened from the now playing bar or its menu (owner,
+2026-11-22). Only list pages completed such rows, and only Apple read songs it did not know.
+
+- `stream::Catalog` reads through: `Want` asks for a song missing or `LacksLinks` (album, an
+  artist's id); asks gather until the main thread is free and go to the reader the provider
+  starts with itself (`StartReading` / `StopReading`); a song is asked again only after two
+  minutes, never once a read answered for it (`Settle`). `Provider::FindTrack` asks by default.
+- Apple: its own unknown-song queue is gone; `ReadSongs` reads by library or catalog id with
+  the page enrichment's batches (`ReadSongsByIds`), joined with the record
+  (`JoinWithRecord`). The song page writes its answer back too.
+- NetEase: `ReadSongs` reads with `/song/detail`; its input asks for unknown songs, which
+  before kept their stand-in title until a list showed them.
+- The now playing artist is underlined and clickable only when it leads somewhere.
+- Owner checks: start an Apple Music station, then open the playing song's artist from the
+  now playing bar and from its menu; a NetEase queue restored after a restart shows titles.
+
+## Phases 5 and 6 of the review's work list (2026-11-22)
 
 All remaining Phase 5 (UI) and Phase 6 (media, lyrics, CD) items have landed; see
 docs/plan/review-2026-11-21.md for where each now lives. In short:
@@ -26,8 +65,8 @@ docs/plan/review-2026-11-21.md for where each now lives. In short:
 - Lyrics: `Start` and `Lookup` share `Known`, `PersistAutomatic` and `PersistNotFound`.
 - Open: the scheduler's probe seam (`g_probeEnabled`): still not cheap (the probe's simulated
   playing row takes part in rollbacks).
-- Built once at the end, Release x64, warning-free after four fix-up commits. No tests run;
-  nothing run in foobar2000. Owner checks: see the list below.
+- Built once at the end, Release x64, warning-free after four fix-up commits, together with
+  the read-through work above. Owner checks: see the list below.
 
 Owner checks in the running app (visuals should be pixel-identical; behaviour changes noted):
 library list rating / favourite / download cells and the remove-download prompt; both windows'
