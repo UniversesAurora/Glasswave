@@ -55,10 +55,15 @@ void SnapshotSaver::Reset() {
 // Held by a queued write: when the write has run, and also when the executor dropped it unrun
 // (a generation bump that is not a Reset, such as a language change), the saver is free for the
 // next one. A change that arrived meanwhile queues that next write.
+// Made in place and never copied: a copy's end would release the saver early.
 struct SnapshotSaver::Flight {
+    Flight(SnapshotSaver& saver, uint64_t epoch) : saver(saver), epoch(epoch) {}
+    Flight(const Flight&) = delete;
+    Flight& operator=(const Flight&) = delete;
+    ~Flight() { saver.Release(epoch); }
+
     SnapshotSaver& saver;
     uint64_t epoch;
-    ~Flight() { saver.Release(epoch); }
 };
 
 void SnapshotSaver::Queue() {
@@ -71,7 +76,7 @@ void SnapshotSaver::Queue() {
         if (m_posted) return;
         m_posted = true;
         m_dirty = false;
-        flight = std::make_shared<Flight>(Flight{*this, m_epoch});
+        flight = std::make_shared<Flight>(*this, m_epoch);
         generation = m_executor.Generation();
     }
     auto draft = std::make_shared<Draft>();
