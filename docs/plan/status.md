@@ -16,7 +16,12 @@ Updated: 2026-11-22
      `/v1/me/library/playlists` endpoint takes several seconds to reflect the change.
    - `CreatePlaylist` now parses the returned `201 Created` playlist object, overlays it in
      `RawPlaylists(Shelf::Created)`, `ShelfOf`, `ReadPlaylistsPage`, and `Catalog`, reconciles
-     it on subsequent refreshes, and opens the new playlist immediately.
+     it on subsequent refreshes (keeping `m_createdPlaylistMutations` across `ClearLibraryLocked`
+     just like `m_albumMutations`/`m_playlistMutations` so a lagging refresh cannot wipe it),
+     and opens the new playlist immediately.
+   - `CompleteRefresh` now invalidates cached `ListKind::Playlists` views whenever a startup or
+     background refresh detects created/saved playlist changes, keeping the playlist grid page
+     in sync with the sidebar.
    - `LoadPlaylistTracks` now handles Apple Music's HTTP 404 (`No related resources found for
      tracks`) on page 1 of an empty library playlist by verifying/using the playlist record and
      returning an empty 0-track page cleanly.

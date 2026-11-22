@@ -2132,6 +2132,7 @@ void StreamProvider::ResetSessionLocked(bool authPending) {
     m_appliedLibraryMutationSequence = 0;
     m_albumMutations.clear();
     m_playlistMutations.clear();
+    m_createdPlaylistMutations.clear();
     m_artistPreferenceMutations.clear();
     ++m_artistPreferenceEpoch;
     m_artistPreferenceSequence = 0;
@@ -2156,7 +2157,6 @@ void StreamProvider::ClearLibraryLocked() {
     m_editablePlaylists.clear();
     m_renameablePlaylists.clear();
     m_deletablePlaylists.clear();
-    m_createdPlaylistMutations.clear();
     m_favoritePlaylistId.clear();
     m_favoriteBindingState = FavoriteBindingState::Unknown;
     m_favoriteBindingReadInFlight = false;
@@ -3273,6 +3273,7 @@ void StreamProvider::SignIn(HWND owner) {
             m_appliedLibraryMutationSequence = 0;
             m_albumMutations.clear();
             m_playlistMutations.clear();
+            m_createdPlaylistMutations.clear();
             m_artistPreferenceMutations.clear();
             ++m_artistPreferenceEpoch;
             m_artistPreferenceSequence = 0;
@@ -3545,6 +3546,7 @@ uint64_t StreamProvider::ApplyVerifiedAccount(uint64_t generation, uint64_t refr
             m_snapshots.Reset();
             m_albumMutations.clear();
             m_playlistMutations.clear();
+            m_createdPlaylistMutations.clear();
             currentGeneration = m_exec.Bump();
             m_refreshGeneration = currentGeneration;
             ClearLibraryLocked();
@@ -3644,6 +3646,7 @@ void StreamProvider::CompleteRefresh(uint64_t generation, Snapshot snapshot, std
             m_snapshots.Reset();
             m_albumMutations.clear();
             m_playlistMutations.clear();
+            m_createdPlaylistMutations.clear();
             m_exec.Bump();
             m_artistVerificationCondition.notify_all();
         }
@@ -3669,6 +3672,15 @@ void StreamProvider::CompleteRefresh(uint64_t generation, Snapshot snapshot, std
         const bool previousFavoritesLoaded = m_favoriteSongsLoaded;
         const std::set<stream::Id> previousFavoriteIds = m_favoriteIds;
         std::vector<Song> previousFavoriteSongs = m_favoriteSongs;
+        auto playlistSignature = [](const std::vector<stream::Playlist>& playlists) {
+            std::vector<std::pair<stream::Id, std::wstring>> out;
+            out.reserve(playlists.size());
+            for (const auto& item : playlists)
+                out.emplace_back(item.id, item.name);
+            return out;
+        };
+        const auto previousCreated = playlistSignature(m_createdPlaylists);
+        const auto previousSaved = playlistSignature(m_savedPlaylists);
         if (!preserveLibrary) {
             m_account = snapshot.account;
             DisplayMetadata::Get().SetSourceStorefront(snapshot.account.signedIn ? snapshot.account.storefront
@@ -3849,6 +3861,16 @@ void StreamProvider::CompleteRefresh(uint64_t generation, Snapshot snapshot, std
                     m_renameablePlaylists.emplace(id);
                     m_deletablePlaylists.emplace(id);
                 }
+            }
+            if (!accountChanged && (!previousCreated.empty() || !previousSaved.empty()) &&
+                (previousCreated != playlistSignature(m_createdPlaylists) ||
+                 previousSaved != playlistSignature(m_savedPlaylists))) {
+                const bool alreadyQueued = std::any_of(
+                    invalidationTargets.begin(), invalidationTargets.end(), [](const stream::ListTarget& target) {
+                        return target.kind == stream::ListKind::Playlists && target.id.empty() &&
+                               target.section.empty();
+                    });
+                if (!alreadyQueued) invalidationTargets.push_back({stream::ListKind::Playlists, {}, {}});
             }
         }
         favoritesChanged =
