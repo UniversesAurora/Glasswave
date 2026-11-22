@@ -17,10 +17,15 @@ Providers now register an accessor and are made on the first `stream::Providers(
   Neither `#pragma warning`, a per-file `/wd4702` nor an out-of-line stub silences it.
 - The list cache and provider snapshot unit tests had rotted before the review (schema 4, a
   positional `stream::Playlist`); fixed and passing. Lyrics tests pass.
-- Open: while the component failed, foobar2000 switched to its default UI; its next start asks
-  "New user interface module(s) found" in a modal dialog, which holds start-up. The owner
-  picks Glasswave once; then the probe tests (Apple provider, ListSession, PlaybackScheduler)
-  are run again. They timed out behind that dialog.
+- Once loaded, foobar2000 closed at start: `SnapshotSaver::Queue` copied its `Flight` guard
+  into `make_shared`, and the temporary's end re-locked the saver's mutex (an exception out of
+  a destructor). The guard is made in place and cannot be copied.
+- Tests now passing: ListSession, PlaybackScheduler, lyrics, list cache, provider snapshot and
+  the Apple Music provider baseline (its mock lacked the scratch playlist's tracks route and a
+  catalog song lookup).
+- Open: the Apple Music `catalog-regression` scenario still describes the artist sections from
+  before 6c4c58c (featured albums; no latest release or similar artists): the mock's section
+  views and the script's request counts need redoing. Older than this review.
 
 ## Songs read when asked for: missing, or without their links (2026-11-22, latest)
 
