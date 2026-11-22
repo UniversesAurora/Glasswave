@@ -1606,15 +1606,17 @@ void RunCatalogRegression(const std::shared_ptr<State>& state) {
         if (!provider) return;
 
         const auto sections = provider->ArtistSections(kCatalogArtistAll);
+        // Apple Music's own artist page, in its order (StreamProvider::ArtistSections).
         const std::vector<std::pair<std::wstring, stream::ArtistSectionRowKind>> expected = {
+            {L"latest-release", stream::ArtistSectionRowKind::Albums},
             {L"top-songs", stream::ArtistSectionRowKind::Tracks},
-            {L"featured-albums", stream::ArtistSectionRowKind::Albums},
             {L"full-albums", stream::ArtistSectionRowKind::Albums},
             {L"singles", stream::ArtistSectionRowKind::Albums},
             {L"live-albums", stream::ArtistSectionRowKind::Albums},
-            {L"appears-on-albums", stream::ArtistSectionRowKind::Albums},
             {L"compilation-albums", stream::ArtistSectionRowKind::Albums},
+            {L"appears-on-albums", stream::ArtistSectionRowKind::Albums},
             {L"featured-playlists", stream::ArtistSectionRowKind::Playlists},
+            {L"similar-artists", stream::ArtistSectionRowKind::Artists},
         };
         if (sections.size() != expected.size())
             return Fail(state, L"catalog_artist_sections", L"section_count_mismatch");
@@ -1623,7 +1625,8 @@ void RunCatalogRegression(const std::shared_ptr<State>& state) {
             if (sections[index].id != expected[index].first ||
                 sections[index].rowKind != expected[index].second || query.section != sections[index].id ||
                 query.id != kCatalogArtistAll ||
-                provider->ListPolicy(query) != stream::ListCachePolicy::Memory) {
+                // On disk: an artist's lists show at once on the next visit (owner, 2026-11-14).
+                provider->ListPolicy(query) != stream::ListCachePolicy::Persistent) {
                 return Fail(state, L"catalog_artist_sections", L"section_descriptor_mismatch");
             }
             auto explicitMemory = query;

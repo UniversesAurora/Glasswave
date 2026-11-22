@@ -2097,6 +2097,15 @@ async function dispatchApple(method, rawPath, body) {
             }, `regional ${region} song request did not match`);
             return [200, { data: [regionalLocalizedSong(region)] }];
         }
+        // The catalog reads songs it is asked for and lacks, or holds without their album and
+        // artists (stream::Catalog::Want): the dev profile's queues and playlists name songs this
+        // mock does not know. Like Apple, an id that is not in the catalog is left out.
+        if (path === '/v1/catalog/US/songs' && params.has('ids')) {
+            const ids = (params.get('ids') ?? '').split(',').filter(Boolean);
+            catalog.songReads = (catalog.songReads ?? 0) + 1;
+            saveState();
+            return [200, { data: ids.includes(songCatalog) ? [song(false)] : [] }];
+        }
         if (path === '/v1/catalog/jp/artists' || path === '/v1/catalog/cn/artists') {
             const japan = path.includes('/jp/');
             const region = japan ? 'jp' : 'cn';
@@ -2314,6 +2323,9 @@ async function dispatchApple(method, rawPath, body) {
                 : [404, {}];
         if (path === `/v1/me/library/playlists/${playlistScratch}`)
             return scratch ? [200, { data: [scratchPlaylist()] }] : [404, {}];
+        // The provider reads a playlist's songs from its tracks relationship (FetchListPage).
+        if (path === `/v1/me/library/playlists/${playlistScratch}/tracks`)
+            return scratch ? [200, { data: scratch.tracks.map(() => song()), next: null }] : [404, {}];
         if (path === `/v1/me/library/artists/${favoriteArtistLibrary}`) {
             if (params.get('include') !== 'catalog' || params.get('platform') !== 'web') {
                 mockError('favorite artist detail request did not match');
