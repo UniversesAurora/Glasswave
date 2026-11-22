@@ -441,11 +441,14 @@ void StreamProvider::Start() {
     Ncm().SetLikesCallback([this] { NotifyFavoritesChanged(); });
     if (m_signedIn) LoadBootstrapSnapshot();
     if (m_signedIn) Ncm().RefreshAccount({});
+    // Songs asked for before the provider started (a queue restored at start-up) waited for it.
+    Catalog::Get().Records().StartReading([this](std::vector<Id> ids) { ReadSongs(std::move(ids)); });
 }
 
 void StreamProvider::Shutdown() {
     const auto finalSnapshot = m_snapshots.Prepare();
 
+    Catalog::Get().Records().StopReading();
     m_exec.Shutdown();
     Catalog::Get().FlushPendingSave();
     ClearIdSnapshots();
@@ -1194,9 +1197,34 @@ void StreamProvider::FetchSongDetails(const Id& track, SongDetailsDone done) {
                         [done = std::move(done), details = std::move(details), songs = ToSongs(songs),
                          error = ErrorOf(std::move(error))]() mutable {
                             if (!songs.empty()) Catalog::Get().PutAndHint(songs);
-                            if (!details.track.id.empty()) error.clear();
+                            if (!details.track.id.empty()) {
+                                Catalog::Get().Records().Settle({details.track.id}); // read whole
+                                error.clear();
+                            }
                             if (done) done(std::move(details), std::move(error));
                         });
+    });
+}
+
+void StreamProvider::ReadSongs(std::vector<Id> ids) {
+    if (!m_exec.Running()) return;
+    m_exec.Post(kReadQueue, m_exec.Generation(), [this, ids = std::move(ids)] {
+        std::vector<int64_t> numbers;
+        numbers.reserve(ids.size());
+        for (const auto& id : ids)
+            if (const int64_t number = Num(id)) numbers.push_back(number);
+        std::vector<Song> songs;
+        std::wstring error;
+        // A failed read settles nothing: the songs are asked for again after the catalog's pause.
+        if (!Ncm().Service().EnsureStarted(m_exec.Abort(), &error) ||
+            !SongDetailsInBatches(Ncm().Api(), Unique(numbers), m_exec.Abort(), songs, error))
+            return;
+        if (m_exec.Abort().is_aborting()) return;
+        // /song/detail answers with the whole song, as the song page stores it.
+        m_exec.PostMain(m_exec.Generation(), [ids, songs = ToSongs(songs)] {
+            if (!songs.empty()) Catalog::Get().PutAndHint(songs);
+            Catalog::Get().Records().Settle(ids);
+        });
     });
 }
 

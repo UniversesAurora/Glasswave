@@ -104,6 +104,7 @@ class NcmInput : public stream::EncodedInputBase {
     void get_info(file_info& info, abort_callback& abort) {
         const auto song = Catalog::Get().FindSong(IdText(m_id));
         if (!song) {
+            Catalog::Get().Records().Want(IdText(m_id)); // read in the background
             // A downloaded song the catalog has not seen this run: its file's tags.
             if (const auto local = download::LocalFile(L"ncm", std::to_wstring(m_id))) {
                 try {
@@ -128,6 +129,8 @@ class NcmInput : public stream::EncodedInputBase {
             return;
         }
         m_reportWhenKnown = false;
+        // A summary's song arrives without its album or artist ids: read them while it plays.
+        if (stream::LacksLinks(song->track)) Catalog::Get().Records().Want(IdText(m_id));
         Catalog::Get().Records().WriteTags(song->track, info); // names, length, quality
         TechInfo(info, abort);
     }

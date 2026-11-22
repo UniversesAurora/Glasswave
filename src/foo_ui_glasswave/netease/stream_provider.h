@@ -97,6 +97,10 @@ class StreamProvider final : public stream::Provider {
                       std::wstring error, std::shared_ptr<std::atomic_bool> cancelled);
     void FinishListWrite(bool ok, std::wstring error, Done done);
     void ClearIdSnapshots();
+    // The catalog's reader (stream::Catalog::StartReading): songs asked for that it lacks or
+    // holds without their album or artist ids, read in one batch and published to foobar2000's
+    // metadata. Main thread.
+    void ReadSongs(std::vector<stream::Id> ids);
 
     bool m_signedIn = false;
     stream::AccountGate m_gate;
