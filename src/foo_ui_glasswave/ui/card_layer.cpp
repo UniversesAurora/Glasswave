@@ -242,6 +242,8 @@ struct CardLayer::Card {
 
     playback::MediaPlayer player{nullptr};
     playback::MediaPlayerSurface playerSurface{nullptr};
+    winrt::Windows::Media::Core::MediaSource mediaSource{nullptr};
+    winrt::event_token positionToken{}, failedToken{};
     bool variantAsked = false;
     std::wstring variant; // the rendition to play; empty: not known yet (or none)
     bool videoShown = false;
@@ -733,13 +735,16 @@ void CardLayer::UpdateVideo(Card& card) {
     try {
         const auto& comp = gfx::CompositionHost::Get().Compositor();
         playback::MediaPlayer player;
+        card.player = player;
         // Never the system's media controls or media keys: those belong to foobar2000.
         player.CommandManager().IsEnabled(false);
         player.IsMuted(true);
         player.IsLoopingEnabled(true);
         player.AutoPlay(true);
-        player.Source(winrt::Windows::Media::Core::MediaSource::CreateFromUri(
-            winrt::Windows::Foundation::Uri(card.variant)));
+        auto source =
+            winrt::Windows::Media::Core::MediaSource::CreateFromUri(winrt::Windows::Foundation::Uri(card.variant));
+        player.Source(source);
+        card.mediaSource = source;
         card.playerSurface = player.GetSurface(comp);
         player.SetSurfaceSize({static_cast<float>(Px(kCard.width)), static_cast<float>(Px(kCard.height))});
         auto frames = comp.CreateSurfaceBrush(card.playerSurface.CompositionSurface());
@@ -753,43 +758,75 @@ void CardLayer::UpdateVideo(Card& card) {
         card.videoShown = false;
         // Shown once the video moves: when it has just opened, its surface may hold no frame yet
         // (leftover pixels), which fading in showed for a moment.
-        player.PlaybackSession().PositionChanged([alive = std::weak_ptr<int>(m_alive), this, key = card.info.key,
-                                                  moved = std::make_shared<std::atomic_bool>(false)](
-                                                     const playback::MediaPlaybackSession& session, auto&&) {
-            if (session.Position().count() <= 0 || moved->exchange(true)) return; // once
-            fb2k::inMainThread([alive, this, key] {
-                if (alive.expired()) return;
-                const auto it = m_cards.find(key);
-                if (it == m_cards.end() || !it->second->player || it->second->videoShown) return;
-                Card& c = *it->second;
-                c.videoShown = true;
-                gfx::CompositionHost::Get().AnimateOpacity(c.video, 1.0f, kVideoFadeMs);
+        card.positionToken =
+            player.PlaybackSession().PositionChanged([alive = std::weak_ptr<int>(m_alive), this, key = card.info.key,
+                                                      moved = std::make_shared<std::atomic_bool>(false)](
+                                                         const playback::MediaPlaybackSession& session, auto&&) {
+                if (session.Position().count() <= 0 || moved->exchange(true)) return; // once
+                fb2k::inMainThread([alive, this, key] {
+                    if (alive.expired()) return;
+                    const auto it = m_cards.find(key);
+                    if (it == m_cards.end() || !it->second->player || it->second->videoShown) return;
+                    Card& c = *it->second;
+                    c.videoShown = true;
+                    gfx::CompositionHost::Get().AnimateOpacity(c.video, 1.0f, kVideoFadeMs);
+                });
             });
-        });
-        player.MediaFailed([key = card.info.key](auto&&, const playback::MediaPlayerFailedEventArgs& args) {
-            core::Log(L"home: motion cover of " + key + L" failed: " + std::wstring(args.ErrorMessage()) +
-                      L" (" + std::to_wstring(static_cast<int>(args.Error())) + L")");
-        });
-        card.player = player;
+        card.failedToken =
+            player.MediaFailed([key = card.info.key](auto&&, const playback::MediaPlayerFailedEventArgs& args) {
+                core::Log(L"home: motion cover of " + key + L" failed: " + std::wstring(args.ErrorMessage()) +
+                          L" (" + std::to_wstring(static_cast<int>(args.Error())) + L")");
+            });
     } catch (const winrt::hresult_error&) {
-        card.player = nullptr;
-        card.playerSurface = nullptr;
+        StopVideo(card);
         card.variant.clear(); // keep the picture
     }
 }
 
 void CardLayer::StopVideo(Card& card) {
-    if (!card.player) return;
-    try {
-        card.player.Close();
-    } catch (const winrt::hresult_error&) {
+    // Detach the compositor brush, revoke worker callbacks, stop playback, and close
+    // surface/source before MediaPlayer::Close so MFMediaEngine does not race teardown.
+    if (card.video) {
+        card.video.Brush(nullptr);
+        card.video.StopAnimation(L"Opacity");
+        card.video.Opacity(0);
     }
-    card.player = nullptr;
-    card.playerSurface = nullptr;
-    card.video.Brush(nullptr);
-    card.video.StopAnimation(L"Opacity");
-    card.video.Opacity(0);
     card.videoShown = false;
+    auto player = std::exchange(card.player, nullptr);
+    auto surface = std::exchange(card.playerSurface, nullptr);
+    auto source = std::exchange(card.mediaSource, nullptr);
+    const auto posToken = std::exchange(card.positionToken, {});
+    const auto failToken = std::exchange(card.failedToken, {});
+    if (player) {
+        try {
+            if (posToken) player.PlaybackSession().PositionChanged(posToken);
+            if (failToken) player.MediaFailed(failToken);
+            player.Pause();
+            player.Source(nullptr);
+        } catch (const winrt::hresult_error&) {
+        }
+    }
+    if (surface) {
+        try {
+            surface.Close();
+        } catch (const winrt::hresult_error&) {
+        }
+        surface = nullptr;
+    }
+    if (source) {
+        try {
+            source.Close();
+        } catch (const winrt::hresult_error&) {
+        }
+        source = nullptr;
+    }
+    if (player) {
+        try {
+            player.Close();
+        } catch (const winrt::hresult_error&) {
+        }
+        player = nullptr;
+    }
 }
 
 } // namespace glasswave::ui
