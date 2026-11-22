@@ -43,6 +43,11 @@ class AllFavoritesPage final : public Page {
                 feed.session->RequestNext();
     }
 
+    void RefreshRequested() override {
+        for (auto& feed : m_feeds)
+            if (feed.session) feed.session->Refresh();
+    }
+
     void OnPresentationChanged() override {
         if (!m_source) return;
         m_allMode = m_source->NeedsCompleteList();

@@ -58,8 +58,10 @@ class PlaylistPage final : public TrackPagedPage {
             d.facts = PlaylistFacts(*m_info);
             d.brief = m_info->description;
         }
-        d.artKey = m_provider.ArtKey(stream::ArtKind::Playlist, m_view.remoteId);
-        d.artItem = m_provider.ArtItem(stream::ArtKind::Playlist, m_view.remoteId);
+        if (!m_info || !m_info->coverUrl.empty()) {
+            d.artKey = m_provider.ArtKey(stream::ArtKind::Playlist, m_view.remoteId);
+            d.artItem = m_provider.ArtItem(stream::ArtKind::Playlist, m_view.remoteId);
+        }
         d.action = DetailInfo::Action::Play;
         d.actionLabel = Tr(L"Play");
         if (!Own() && m_provider.AccountVerified() && m_provider.Can(stream::Capability::SavePlaylists)) {
@@ -402,35 +404,49 @@ class GroupTracksPage final : public TrackPagedPage {
                          L"No songs found.") {}
 };
 
-class ShelfPage final : public PagedPage {
+// Shares the provider's in-memory section playlist snapshot with NavPane so sidebar and
+// playlist tiles update in the same frame without duplicate /playlists fetches.
+class ShelfPage final : public RemotePage {
   public:
     ShelfPage(PageHost& host, stream::Provider& provider, View view)
-        : PagedPage(host, provider, view, PlaylistsQuery(view.shelf, view.sectionId)) {}
+        : RemotePage(host, provider, std::move(view)) {}
 
     bool CanRefresh() const override { return m_view.shelf != Shelf::Recommended; } // a daily set
 
-  protected:
-    std::unique_ptr<media::ListSource> BuildSource() override {
-        return Grid(CurrentRows<stream::Playlist>());
+    std::unique_ptr<media::ListSource> Start(bool) override {
+        auto source = Grid(CurrentPlaylists());
+        m_source = source.get();
+        UpdateLoadingText();
+        return source;
     }
 
-    void ApplyPageState() override {
-        if (auto* source = dynamic_cast<PlaylistGridSource*>(m_source)) {
-            source->ReplacePlaylists(CurrentRows<stream::Playlist>());
-        }
-    }
-
-    void AddPageSpecificActions(std::vector<MenuAction>& actions) override {
+    void AddPageActions(std::vector<MenuAction>& actions) override {
         if (m_view.shelf == Shelf::Created && m_provider.Can(stream::Capability::CreatePlaylists))
             actions.push_back(NewPlaylistAction(m_host, m_provider));
     }
 
     void OnLibraryChanged() override {
-        if (m_view.shelf == Shelf::Recommended) return;
-        PagedPage::OnLibraryChanged();
+        if (!m_source) return;
+        m_host.BeforeListChange();
+        m_source->ReplacePlaylists(CurrentPlaylists());
+        UpdateLoadingText();
+        m_host.ListChanged();
+        m_host.ChromeChanged();
     }
 
   private:
+    std::vector<stream::Playlist> CurrentPlaylists() const {
+        if (!m_view.sectionId.empty()) return m_provider.SectionPlaylists(m_view.sectionId);
+        return m_provider.Playlists(m_view.shelf);
+    }
+
+    void UpdateLoadingText() {
+        if (!m_source) return;
+        const bool loading =
+            m_source->Count() == 0 && (m_provider.SessionRestoring() || !m_provider.AccountVerified());
+        m_source->SetLoadingText(LoadingStatus(loading, {}));
+    }
+
     std::unique_ptr<PlaylistGridSource> Grid(std::vector<stream::Playlist> playlists) {
         const Shelf shelf = m_view.shelf;
         return std::make_unique<PlaylistGridSource>(
@@ -453,6 +469,8 @@ class ShelfPage final : public PagedPage {
                                    }
                                }));
     }
+
+    PlaylistGridSource* m_source = nullptr;
 };
 
 } // namespace

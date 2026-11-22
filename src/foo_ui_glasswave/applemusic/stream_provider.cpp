@@ -1007,8 +1007,10 @@ void MergeHydratedSong(Song& target, const Song& hydrated) {
 }
 
 bool NeedsSongAlbumHydration(const Song& song) {
-    const bool hasLibraryAlbum = IsLibraryId(song.track.albumId) && song.track.albumId[0] == L'l';
-    const bool hasAlbumId = !song.track.albumId.empty() && (song.libraryId.empty() || hasLibraryAlbum);
+    // ParseSong already prefers catalogAlbumId (numeric) in song.track.albumId and keeps the
+    // library album id in song.libraryAlbumId; only rows genuinely missing an album or artist id
+    // need hydration.
+    const bool hasAlbumId = !song.track.albumId.empty();
     const bool hasArtistIds = !song.track.artists.empty() &&
                               std::all_of(song.track.artists.begin(), song.track.artists.end(),
                                           [](const stream::ArtistRef& artist) { return !artist.id.empty(); });
@@ -5986,7 +5988,7 @@ void StreamProvider::ReadPlaylistsPage(ListLoad& load) {
         auto& playlists = std::get<std::vector<stream::Playlist>>(page.rows);
         std::lock_guard lock(m_mutex);
         ApplyCreatedPlaylistMutationsLocked(playlists, cursorState.path.empty());
-    } else if (cursorState.path.empty() && query.shelf == stream::Shelf::Saved) {
+    } else if (query.shelf == stream::Shelf::Saved) {
         auto& playlists = std::get<std::vector<stream::Playlist>>(page.rows);
         std::lock_guard lock(m_mutex);
         ApplyCreatedPlaylistMutationsLocked(playlists, false);
@@ -5998,13 +6000,16 @@ void StreamProvider::ReadPlaylistsPage(ListLoad& load) {
                                            entry.second.catalogId == item.id);
                                });
         });
-        for (const auto& [key, mutation] : m_playlistMutations) {
-            if (!mutation.saved || mutation.playlist.id.empty()) continue;
-            const bool present =
-                std::any_of(playlists.begin(), playlists.end(), [&](const stream::Playlist& item) {
-                    return item.id == key || item.id == mutation.catalogId || item.id == mutation.libraryId;
-                });
-            if (!present) playlists.push_back(mutation.playlist);
+        if (cursorState.path.empty()) {
+            for (const auto& [key, mutation] : m_playlistMutations) {
+                if (!mutation.saved || mutation.playlist.id.empty()) continue;
+                const bool present =
+                    std::any_of(playlists.begin(), playlists.end(), [&](const stream::Playlist& item) {
+                        return item.id == key || item.id == mutation.catalogId ||
+                               item.id == mutation.libraryId;
+                    });
+                if (!present) playlists.push_back(mutation.playlist);
+            }
         }
     }
     load.SetNext(response, expected, load.LimitAndQueryBinder(parameters), objects.size());

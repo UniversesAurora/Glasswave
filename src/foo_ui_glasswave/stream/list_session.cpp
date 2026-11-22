@@ -449,6 +449,14 @@ void MarkDiskTargetsStale(std::wstring_view provider, const std::vector<ListTarg
                 q.shelf = shelf;
                 markQuery(q);
             }
+            for (const auto& section : source->Sections()) {
+                if (section.kind != SectionKind::PlaylistShelf) continue;
+                ListQuery q;
+                q.kind = ListKind::Playlists;
+                q.shelf = section.shelf;
+                q.section = section.id;
+                markQuery(q);
+            }
             break;
         }
         case ListKind::SectionTracks:

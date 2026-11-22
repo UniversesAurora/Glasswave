@@ -391,6 +391,12 @@ class ArtistPage final : public AlbumBrowsePage {
         if (Expanded()) AlbumBrowsePage::NearEnd();
     }
 
+    void RefreshRequested() override {
+        AlbumBrowsePage::RefreshRequested();
+        for (const auto& session : m_sectionSessions)
+            if (session) session->Refresh();
+    }
+
     std::wstring StatusText() const override {
         if (Expanded()) return AlbumBrowsePage::StatusText();
         bool any = false;

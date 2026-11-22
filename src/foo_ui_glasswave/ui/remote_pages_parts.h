@@ -789,6 +789,10 @@ class PagedPage : public RemotePage {
             m_session->RequestNext();
     }
 
+    void RefreshRequested() override {
+        if (m_session) m_session->Refresh();
+    }
+
     void OnPresentationChanged() override {
         if (!m_session) return;
         m_allMode = m_host.Source() && m_host.Source()->NeedsCompleteList();

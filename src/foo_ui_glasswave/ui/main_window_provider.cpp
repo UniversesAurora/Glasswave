@@ -11,8 +11,9 @@ void MainWindow::OnProviderAccount(stream::Provider& provider) {
     const stream::Id providerKey{provider.Key()};
     InvalidateRemotePageCache(providerKey);
     for (stream::ArtKind kind :
-         {stream::ArtKind::Track, stream::ArtKind::Album, stream::ArtKind::Artist, stream::ArtKind::Playlist})
-        ArtCache::Get().Invalidate(provider.ArtKeyPrefix(kind));
+         {stream::ArtKind::Track, stream::ArtKind::Album, stream::ArtKind::Artist, stream::ArtKind::Playlist,
+          stream::ArtKind::Station})
+        ArtCache::Get().Forget(provider.ArtKeyPrefix(kind));
     RefreshProviderSections();
     UpdateFavoriteState();
     const bool currentProvider = m_view.IsRemote() && m_view.provider == providerKey;
@@ -78,7 +79,8 @@ void MainWindow::OnProviderAccountObserved(stream::Provider& provider) {
 void MainWindow::OnProviderLibrary(stream::Provider& provider) {
     // Background count updates repeat this event; retry only art that never loaded.
     for (stream::ArtKind kind :
-         {stream::ArtKind::Track, stream::ArtKind::Album, stream::ArtKind::Artist, stream::ArtKind::Playlist})
+         {stream::ArtKind::Track, stream::ArtKind::Album, stream::ArtKind::Artist, stream::ArtKind::Playlist,
+          stream::ArtKind::Station})
         ArtCache::Get().InvalidateMissing(provider.ArtKeyPrefix(kind));
     RefreshProviderSections();
     metadb_handle_ptr now;

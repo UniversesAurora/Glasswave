@@ -415,6 +415,7 @@ void NavPane::Rebuild() {
                 child.sectionKind = navigation.kind;
                 child.sectionShelf = navigation.shelf;
                 child.reorderChildren = navigation.reorderChildren;
+                child.hasCover = !playlist.coverUrl.empty();
                 m_items.push_back(std::move(child));
             }
         }
@@ -431,7 +432,10 @@ void NavPane::SetProviders(std::vector<ProviderSection> sections) {
     // rows would differ.
     auto sameRows = [](const std::vector<stream::Playlist>& a, const std::vector<stream::Playlist>& b) {
         return std::equal(a.begin(), a.end(), b.begin(), b.end(),
-                          [](const stream::Playlist& x, const stream::Playlist& y) { return x.id == y.id && x.name == y.name; });
+                          [](const stream::Playlist& x, const stream::Playlist& y) {
+                              return x.id == y.id && x.name == y.name &&
+                                     x.coverUrl.empty() == y.coverUrl.empty();
+                          });
     };
     auto sameSections = [](const std::vector<stream::NavigationSection>& a,
                            const std::vector<stream::NavigationSection>& b) {
@@ -738,7 +742,7 @@ void NavPane::Paint() {
                                     ? CategoryIcon(media::GroupKind::Composer) // WMP's composer icon
                                     : 0;
             bool drewCover = false;
-            if (it.target == Target::RemotePlaylist && !it.remoteId.empty()) {
+            if (it.target == Target::RemotePlaylist && !it.remoteId.empty() && it.hasCover) {
                 const auto track = it.provider->ArtItem(stream::ArtKind::Playlist, it.remoteId);
                 const std::wstring key = it.provider->ArtKey(stream::ArtKind::Playlist, it.remoteId);
                 winrt::com_ptr<IWICBitmapSource> cover;
@@ -767,7 +771,8 @@ void NavPane::Paint() {
             dc->DrawTextLayout({x + 26, y}, layout.get(), ink.get());
         };
         float y = 6;
-        for (size_t i = m_top; i < m_items.size(); ++i, y += rowH) {
+        const float maxY = h / s;
+        for (size_t i = m_top; i < m_items.size() && y < maxY; ++i, y += rowH) {
             const Item& it = m_items[i];
             const bool selected =
                 it.target == m_selTarget &&

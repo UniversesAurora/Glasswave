@@ -306,9 +306,10 @@ void ArtCache::Forget(std::wstring_view prefix) {
 }
 
 void ArtCache::InvalidateMissing(std::wstring_view prefix) {
-    bool changed = false;
+    std::vector<std::wstring> invalidatedKeys;
     for (auto& [sourceKey, source] : m_sources) {
         if (!HasPrefix(sourceKey, prefix)) continue;
+        bool sourceChanged = false;
         for (auto& [sizePx, entry] : source.sizes) {
             (void)sizePx;
             if (entry.state != State::Missing || entry.stale || entry.reloading) continue;
@@ -316,11 +317,15 @@ void ArtCache::InvalidateMissing(std::wstring_view prefix) {
             entry.failures = 0;
             entry.epoch = ++m_epoch;
             ++entry.content;
-            changed = true;
+            sourceChanged = true;
         }
+        if (sourceChanged) invalidatedKeys.push_back(sourceKey);
     }
-    if (!changed) return;
-    cache::Images::Get().Invalidate(Utf8(prefix));
+    if (invalidatedKeys.empty()) return;
+    // Invalidate only the specific missing keys on disk so valid cached covers under `prefix`
+    // stay fresh instead of being forced into conditional HTTP revalidation.
+    for (const auto& key : invalidatedKeys)
+        cache::Images::Get().Invalidate(Utf8(key));
     Notify();
 }
 

@@ -52,6 +52,7 @@ public:
         stream::GroupFacet sectionFacet = stream::GroupFacet::Genre;
         stream::Shelf sectionShelf = stream::Shelf::Created;
         bool reorderChildren = false;
+        bool hasCover = false;
     };
 
     explicit NavPane(const winrt::Windows::UI::Composition::ContainerVisual& parent);

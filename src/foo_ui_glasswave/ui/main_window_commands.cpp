@@ -479,6 +479,7 @@ void MainWindow::ShowRemoteNavMenu(const NavPane::Item& item, POINT screen) {
                                    RefreshProviderLibrary(*item.provider);
                                    m_forcePageRefresh = true;
                                    OnNavItem(item);
+                                   if (m_page && m_page->CanRefresh()) m_page->RefreshRequested();
                                }});
         break;
     }
@@ -489,10 +490,15 @@ void MainWindow::RefreshCurrentPage() {
     if (!CanRefreshPage()) return;
     m_page->RefreshRequested();
     // Only the refreshed source's pictures are revalidated (RefreshProviderLibrary).
-    if (auto* provider = ViewProvider())
+    if (auto* provider = ViewProvider()) {
         RefreshProviderLibrary(*provider);
-    else
+    } else if (m_view.kind == View::Kind::AllFavorites) {
+        for (auto* p : stream::Providers())
+            if (p->AccountVerified() && p->Can(stream::Capability::ReadFavorites))
+                RefreshProviderLibrary(*p);
+    } else {
         ArtCache::Get().Invalidate(L"");
+    }
     m_forcePageRefresh = true;
     Navigate(m_view, false);
     if (m_list) m_list->Refresh();
