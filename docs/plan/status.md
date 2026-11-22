@@ -2,6 +2,65 @@
 
 Updated: 2026-11-22
 
+## Apple Music runtime update, intermittent FairPlay crash & seek duration mismatch (2026-11-22, latest)
+
+Diagnosed and fixed two Apple Music playback errors reported during live playback:
+
+1. **Intermittent `"Network error"` mid-open** (e.g. `1735849272`): an intermittent Apple FPS
+   `/getCKC` failure caused `SVFootHillSessionCtrl::getPersistentKey` in `libandroidappmusic.so`
+   to throw `SVError(-26)` (`Invalid CKC error.`). Because the Windows host `try/catch` in
+   `drm/native/guard.cpp` cannot unwind Android ELF DWARF frames, the uncaught exception called
+   Bionic `abort()` and killed `engine.exe` mid-stream.
+2. **Seek failure `"completed source is shorter than the song"`** (e.g. `1868880976`): Apple
+   updated the song's master from `160.000s` (cached on disk on 2026-11-11 as `1868880976-alac.m4a`)
+   to `163.655s`. Glasswave's own cache detected the new duration, but Adam's `diskCache` keyed
+   catalog ALAC entries only by `assetId + codec` and served the stale 160.000s file.
+
+Changes:
+
+- Updated pinned upstream dependencies (`scripts/applemusic/windows/source-pins.json`):
+  - `apple-music-linux` `nightly`: `72d835e` -> `960bd8a` (dropped now-redundant Glasswave hunks
+    for `drm_lib.c`/`drm_lib.h`, `ampapi/token.go`, `prefetch.go`, `handlers_vlc.go`, and the old
+    `cappedLossless` workaround).
+  - `libhybris-win` `master`: `606bae7` -> `96125ef` (commits guest thread stacks and fixes ELF
+    header discovery in the TLS rewriter).
+- **Guest ELF C++ exception barrier (`libdrm_guard.so`)**: built from our own `drm/stubs/drm_guard.cpp`
+  (zero Apple `.so` binaries modified) and linked against `DT_NEEDED libc++_shared.so`. Wired into
+  `drm/drm_hybris.c` and `drm/native/hybris_stubs.c` for FairPlay/auth/request calls (including
+  `getPersistentKey`, `decryptContext`, `requestLease`, `resetAllContexts`), plus initialized
+  `SVFootHillPContext` and null-checked `URLRequest` responses in `drm/native/main.c`.
+- **`libhybris-win` fixes (`scripts/applemusic/windows/libhybris-win.patch`)**:
+  - Offset guest `pthread_key_t` by `+1` so uninitialized guest key `0` calls cannot collide with
+    `winpthreads` key `0` and corrupt `libc++_shared.so`'s `__cxa_get_globals`.
+  - Always emit `ANDROID_LOG_ERROR`/`ANDROID_LOG_FATAL` (`prio >= 6`) to stderr so Apple's
+    FairPlay error diagnostics are preserved in the bridge log.
+- **Adam Go engine resilience (`scripts/applemusic/glasswave.patch`)**:
+  - `engine/core/fairplay/cbcs.go`: bounded backoff reconnect retries (`250ms`/`750ms`/`1500ms`)
+    for fragment key/decrypt errors and deferred `init` flush until the first fragment decrypts.
+  - `engine/cmd/handlers_playback.go`: propagate ALAC/AAC streaming cache errors cleanly (HTTP 502
+    before first byte, `http.ErrAbortHandler` on mid-stream failure under `net/http.Server`), and
+    include sample rate, bit depth, and duration in headless `diskCache` qualifiers
+    (`sessionCacheQualifier`) so remastered/updated tracks never collide with stale cached files.
+  - `engine/core/diskcache/streaming_close_test.go`: accept Windows `ERROR_INVALID_HANDLE` on
+    closed-handle `Stat()`.
+- **Glasswave client (`net/resumable_fetch.cpp`, `applemusic/input_applemusic.cpp`)**:
+  - Allow `FetchResumable` to renew once when a chunked stream fails before any bytes arrive;
+    wire `AppleEncodedFetch`'s `source.renew` to reopen a matching playback session (restarting the
+    bridge via `EnsureStarted` if needed).
+- Verification:
+  - Isolated Windows runtime build (`scripts/applemusic/windows/build.ps1 -RefreshStage`) green,
+    including all 8 Go test packages (`-tags 'adamplay_backend glasswave'`) with new unit tests for
+    CBCS transient key retries, streaming error propagation, and remastered cache qualifiers.
+  - Live proof test loading `libhybris-core.dll` + `q.so` + `libdrm_guard.so` confirmed guest
+    `std::exception` (`Invalid CKC error.`) and unknown C++ throws unwind cleanly, run guest RAII
+    destructors, and return error codes without aborting.
+  - Promoted runtime started cleanly (`libdrm_guard.so` loaded, FairPlay prefetch warmed), and a
+    live stream check of `1868880976` returned `163.655000s` (`18,549,912` bytes) instead of the
+    stale `160.000s` file.
+  - `scripts/build.ps1` (Release|x64) built with 0 warnings / 0 errors.
+- Owner checks: play and seek `1868880976` (聖心少女) and normal Apple Music tracks in
+  `.local/fb2k-dev`, and confirm no seek mismatch or unexpected mid-open network errors recur.
+
 ## The component did not load (2026-11-22, latest)
 
 Since fe11a3a (the shared executor, Phase 1-4) foobar2000 fell back to its default UI:
