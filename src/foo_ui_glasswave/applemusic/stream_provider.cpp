@@ -2074,7 +2074,7 @@ bool SameArtworkBase(std::wstring_view a, std::wstring_view b) {
 }
 
 const bool g_registered = [] {
-    stream::Register(StreamProvider::Get(), 10);
+    stream::Register([]() -> stream::Provider& { return StreamProvider::Get(); }, 10);
     return true;
 }();
 

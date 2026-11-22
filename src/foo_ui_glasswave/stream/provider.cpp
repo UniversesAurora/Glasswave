@@ -8,14 +8,14 @@ namespace glasswave::stream {
 
 namespace {
 
-std::vector<Provider*>& Registry() {
-    static std::vector<Provider*> providers;
-    return providers;
-}
+struct Registration {
+    Provider& (*instance)() = nullptr;
+    int order = 0;
+};
 
-std::map<const Provider*, int>& RegistryOrder() {
-    static std::map<const Provider*, int> orders;
-    return orders;
+std::vector<Registration>& Registrations() {
+    static std::vector<Registration> registrations;
+    return registrations;
 }
 
 const wchar_t* KindName(ArtKind kind) {
@@ -447,32 +447,30 @@ ListCachePolicy Provider::ListPolicy(const ListQuery& query) const {
 }
 
 const std::vector<Provider*>& Providers() {
-    return Registry();
+    static const std::vector<Provider*> providers = [] {
+        auto registrations = Registrations();
+        std::stable_sort(registrations.begin(), registrations.end(),
+                         [](const Registration& a, const Registration& b) { return a.order < b.order; });
+        std::vector<Provider*> made;
+        made.reserve(registrations.size());
+        for (const auto& registration : registrations)
+            made.push_back(&registration.instance());
+        return made;
+    }();
+    return providers;
 }
 
 void StartProviders() {
-    for (Provider* provider : Registry())
+    for (Provider* provider : Providers())
         provider->Start();
 }
 
-void Register(Provider& provider, int order) {
-    auto& providers = Registry();
-    auto& orders = RegistryOrder();
-    if (std::find(providers.begin(), providers.end(), &provider) != providers.end()) return;
-    orders[&provider] = order;
-    const auto at = std::upper_bound(providers.begin(), providers.end(), order,
-                                     [&orders](int value, const Provider* p) { return value < orders.at(p); });
-    providers.insert(at, &provider);
-}
-
-void Unregister(Provider& provider) {
-    auto& providers = Registry();
-    providers.erase(std::remove(providers.begin(), providers.end(), &provider), providers.end());
-    RegistryOrder().erase(&provider);
+void Register(Provider& (*instance)(), int order) {
+    Registrations().push_back({instance, order});
 }
 
 Provider* FindProvider(std::wstring_view key) {
-    for (Provider* provider : Registry())
+    for (Provider* provider : Providers())
         if (provider->Key() == key) return provider;
     return nullptr;
 }
@@ -486,7 +484,7 @@ std::vector<std::wstring> TrackBadges(const metadb_handle_ptr& item) {
 
 Provider* ProviderOf(const metadb_handle_ptr& item) {
     if (!item.is_valid()) return nullptr;
-    for (Provider* provider : Registry())
+    for (Provider* provider : Providers())
         if (provider->Owns(item)) return provider;
     return nullptr;
 }
