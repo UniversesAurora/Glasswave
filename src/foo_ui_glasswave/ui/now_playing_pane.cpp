@@ -75,9 +75,7 @@ NowPlayingPane::NowPlayingPane(const wuc::ContainerVisual& parent)
     : m_root(MakeRoot(parent)), m_lyrics(m_root), m_queue(m_root) {
     auto& host = gfx::CompositionHost::Get();
     const auto& comp = host.Compositor();
-    m_dc = host.CreateDeviceContext();
     m_deviceReplaced = host.OnDeviceReplaced([this] {
-        m_dc = gfx::CompositionHost::Get().CreateDeviceContext();
         // The header and the switch are painted again by the next Tick.
         m_painted = {};
         m_paintedScale = 0;
@@ -211,7 +209,7 @@ void NowPlayingPane::SetBounds(const RECT& px, float scale) {
     m_queue.SetBounds(QueueRect(), scale);
     // Against what was really painted, not against the last bounds: a pane returned from the
     // player kept the player's header and switch when only the position looked new.
-    if (PartsStale())
+    if (m_visible && PartsStale())
         LayoutParts();
     else if (positionChanged)
         LayoutGeometry();
@@ -272,8 +270,7 @@ bool NowPlayingPane::PaintHeader() {
     const int h = static_cast<int>(std::lround(pane::kHeaderHeight * m_scale));
     m_header.Size(float2{static_cast<float>(w), static_cast<float>(h)});
     auto surface = host.CreateSurface(w, h);
-    m_dc->SetDpi(96.0f * m_scale, 96.0f * m_scale);
-    const bool drawn = host.Draw(surface, m_scale, m_dc.get(), [&](ID2D1DeviceContext* dc) {
+    const bool drawn = host.Draw(surface, m_scale, [&](ID2D1DeviceContext* dc) {
         com_ptr<ID2D1Bitmap> cover;
         if (m_art) dc->CreateBitmapFromWicBitmap(m_art.get(), nullptr, cover.put());
         pane::DrawHeader(dc, w / m_scale, cover.get(), m_title, m_artist);

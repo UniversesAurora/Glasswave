@@ -108,8 +108,7 @@ class NowPlayingPane {
     // Each segment's icon and label twice: white on the track, dark on the thumb.
     std::array<winrt::Windows::UI::Composition::SpriteVisual, 2> m_segLight{nullptr, nullptr},
         m_segDark{nullptr, nullptr};
-    winrt::com_ptr<ID2D1DeviceContext> m_dc;
-    core::Signal<>::Connection m_deviceReplaced; // the context belongs to the rendering device
+    core::Signal<>::Connection m_deviceReplaced;
     LyricsView m_lyrics;
     QueueView m_queue;
     RECT m_bounds{};

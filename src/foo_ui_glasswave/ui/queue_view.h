@@ -111,8 +111,7 @@ class QueueView {
     // content cannot see what lies behind the pane.
     pane::CapsuleGlass m_shuffleGlass, m_repeatGlass;
     pane::PlateGlass m_plateGlass;
-    winrt::com_ptr<ID2D1DeviceContext> m_dc;
-    core::Signal<>::Connection m_deviceReplaced; // the context belongs to the rendering device
+    core::Signal<>::Connection m_deviceReplaced;
     RECT m_bounds{};
     float m_scale = 1.0f;
     bool m_visible = false;

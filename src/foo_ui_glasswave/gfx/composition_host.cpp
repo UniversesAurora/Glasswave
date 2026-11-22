@@ -220,6 +220,7 @@ bool CompositionHost::ClearAfterFailure(const wuc::CompositionDrawingSurface& su
     dc->PushAxisAlignedClip(SurfaceDrawClip(offset, pixels.width, pixels.height, 1.0f), D2D1_ANTIALIAS_MODE_ALIASED);
     dc->Clear(D2D1::ColorF(0, 0, 0, 0));
     dc->PopAxisAlignedClip();
+    dc = nullptr;
     return SUCCEEDED(interop->EndDraw());
 }
 
@@ -292,7 +293,10 @@ bool CompositionHost::Draw(const wuc::CompositionDrawingSurface& surface, float 
     }
     ++m_drawDepth;
     auto depth = detail::ScopeExit([&] { --m_drawDepth; });
-    auto endSurface = detail::ScopeExit([&] { interop->EndDraw(); });
+    auto endSurface = detail::ScopeExit([&] {
+        dc = nullptr;
+        interop->EndDraw();
+    });
     const float dpi = 96.0f * scale;
     dc->SetDpi(dpi, dpi);
     dc->SetTransform(D2D1::Matrix3x2F::Identity());
@@ -305,6 +309,7 @@ bool CompositionHost::Draw(const wuc::CompositionDrawingSurface& surface, float 
     paint(dc.get());
     dc->PopAxisAlignedClip();
     popClip.Dismiss();
+    dc = nullptr;
     endSurface.Dismiss();
     // D2D reports here what went wrong in the paint (an unbalanced push / pop, a lost
     // target...), and then none of it - not even the clear - reached the surface.
@@ -322,70 +327,6 @@ winrt::com_ptr<ID2D1DeviceContext> CompositionHost::CreateDeviceContext() {
     winrt::com_ptr<ID2D1DeviceContext> dc;
     winrt::check_hresult(m_d2dDevice->CreateDeviceContext(D2D1_DEVICE_CONTEXT_OPTIONS_NONE, dc.put()));
     return dc;
-}
-
-bool CompositionHost::Draw(const wuc::CompositionDrawingSurface& surface, float scale, ID2D1DeviceContext* dc,
-                           const std::function<void(ID2D1DeviceContext*)>& paint) {
-    auto interop = surface.as<abi_comp::ICompositionDrawingSurfaceInterop>();
-    const SurfacePixels pixels = SurfacePixelsFor(surface);
-    if (!OnUiThread(pixels.width, pixels.height)) return false;
-    if (m_drawDepth > 0) ReportFailure("draw nested in another draw", E_ILLEGAL_METHOD_CALL, pixels.width, pixels.height);
-    const RECT updateRect = pixels.UpdateRect();
-    winrt::com_ptr<IDXGISurface> dxgi;
-    POINT offset{};
-    HRESULT hr = interop->BeginDraw(&updateRect, __uuidof(IDXGISurface), dxgi.put_void(), &offset);
-    if (FAILED(hr)) {
-        ReportFailure("BeginDraw (own context)", hr, pixels.width, pixels.height);
-        QueueUnclean(surface);
-        return false;
-    }
-    ++m_drawDepth;
-    auto depth = detail::ScopeExit([&] { --m_drawDepth; });
-    bool cleared = false; // the surface was ended and cleared after a failure
-    auto endSurface = detail::ScopeExit([&] {
-        if (!cleared) interop->EndDraw();
-    });
-    const float dpi = 96.0f * scale;
-    const D2D1_BITMAP_PROPERTIES1 props = D2D1::BitmapProperties1(
-        D2D1_BITMAP_OPTIONS_TARGET | D2D1_BITMAP_OPTIONS_CANNOT_DRAW,
-        D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED), dpi, dpi);
-    winrt::com_ptr<ID2D1Bitmap1> target;
-    hr = dc->CreateBitmapFromDxgiSurface(dxgi.get(), &props, target.put());
-    if (FAILED(hr)) {
-        ReportFailure("target (own context)", hr, pixels.width, pixels.height);
-        interop->EndDraw();
-        cleared = true;
-        if (!ClearAfterFailure(surface)) QueueUnclean(surface);
-        return false;
-    }
-    dc->SetTarget(target.get());
-    auto unbindTarget = detail::ScopeExit([&] { dc->SetTarget(nullptr); });
-    dc->SetDpi(dpi, dpi);
-    dc->BeginDraw();
-    auto endDraw = detail::ScopeExit([&] { dc->EndDraw(); });
-    dc->SetTransform(D2D1::Matrix3x2F::Identity());
-    dc->PushAxisAlignedClip(SurfaceDrawClip(offset, pixels.width, pixels.height, scale),
-                            D2D1_ANTIALIAS_MODE_ALIASED);
-    auto popClip = detail::ScopeExit([&] { dc->PopAxisAlignedClip(); });
-    dc->SetTransform(D2D1::Matrix3x2F::Translation(offset.x / scale, offset.y / scale));
-    dc->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
-    dc->Clear(D2D1::ColorF(0, 0, 0, 0));
-    paint(dc);
-    dc->PopAxisAlignedClip();
-    popClip.Dismiss();
-    hr = dc->EndDraw(); // what went wrong in the paint; then none of it reached the surface
-    endDraw.Dismiss();
-    dc->SetTarget(nullptr);
-    unbindTarget.Dismiss();
-    endSurface.Dismiss();
-    const HRESULT ended = interop->EndDraw();
-    if (FAILED(hr) || FAILED(ended)) {
-        ReportFailure("draw (own context)", FAILED(hr) ? hr : ended, pixels.width, pixels.height);
-        if (!ClearAfterFailure(surface)) QueueUnclean(surface);
-        return false;
-    }
-    Drew(surface);
-    return true;
 }
 
 wuc::SpriteVisual CompositionHost::CreatePaintedVisual(int widthPx, int heightPx, float scale,

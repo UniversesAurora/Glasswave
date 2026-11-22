@@ -190,7 +190,6 @@ struct LyricsView::LineView {
         float width = 0;               // sum of its runs
         D2D1_RECT_F box{};             // union of its runs, relative to the text origin
         com_ptr<ID2D1CommandList> glow;  // the word in white, blurred into its glow
-        com_ptr<ID2D1Effect> glowBlur, glowOpacity;
     };
     std::vector<WordView> words;
     float mainH = 0, subH = 0, height = 0;
@@ -286,6 +285,8 @@ LyricsView::LyricsView(const wuc::ContainerVisual& parent) {
     m_dc = host.CreateDeviceContext();
     m_deviceReplaced = host.OnDeviceReplaced([this] {
         m_dc = gfx::CompositionHost::Get().CreateDeviceContext();
+        for (auto& l : m_lines)
+            for (auto& wv : l->words) wv.glow = nullptr;
         if (!m_visible) return; // the next showing lays out and draws everything again
         SetVisible(false);
         SetVisible(true);
@@ -954,12 +955,6 @@ void LyricsView::PrepareGlow(LineView& l) {
         g->Close();
         m_dc->SetTarget(nullptr);
         wv.glow = g;
-        m_dc->CreateEffect(CLSID_D2D1GaussianBlur, wv.glowBlur.put());
-        m_dc->CreateEffect(CLSID_D2D1Opacity, wv.glowOpacity.put());
-        if (wv.glowBlur && wv.glowOpacity) {
-            wv.glowBlur->SetInput(0, g.get());
-            wv.glowOpacity->SetInputEffect(0, wv.glowBlur.get());
-        }
     }
 }
 
@@ -971,20 +966,10 @@ void LyricsView::DrawLineImage(LineView& l, double now, bool live) {
     const float textH = l.mainH + (l.sub ? kSubGap * F + l.subH : 0);
     const int w = static_cast<int>(std::ceil((m_layoutWidth + 2 * pad) * m_scale));
     const int h = static_cast<int>(std::ceil((textH + 2 * pad) * m_scale));
-    if (!l.surface) {
-        l.surface = host.CreateSurface(w, h);
-        l.surfaceBrush = host.Compositor().CreateSurfaceBrush(l.surface);
-        l.surfaceBrush.Stretch(wuc::CompositionStretch::None);
-        l.surfaceBrush.HorizontalAlignmentRatio(0);
-        l.surfaceBrush.VerticalAlignmentRatio(0);
-        l.view.content.Size(float2{static_cast<float>(w), static_cast<float>(h)});
-        l.view.content.Brush(l.surfaceBrush);
-        l.blurred = false;
-        l.shownBlur = -1;
-    }
+    const bool freshSurface = !l.surface;
+    if (freshSurface) l.surface = host.CreateSurface(w, h);
     if (live) PrepareGlow(l);
-    m_dc->SetDpi(96.0f * m_scale, 96.0f * m_scale);
-    const bool drawn = host.Draw(l.surface, m_scale, m_dc.get(), [&](ID2D1DeviceContext* dc) {
+    const bool drawn = host.Draw(l.surface, m_scale, [&](ID2D1DeviceContext* dc) {
         D2D1_MATRIX_3X2_F base;
         dc->GetTransform(&base);
         dc->SetTransform(D2D1::Matrix3x2F::Translation(pad, pad) * base);
@@ -996,10 +981,29 @@ void LyricsView::DrawLineImage(LineView& l, double now, bool live) {
             if (l.sub) dc->DrawTextLayout({0, l.subY}, l.sub.get(), White(dc, 0.75f * kSub / kDim).get());
         }
     });
-    // Not drawn (the host clears the surface): try again next frame rather than keep nothing.
-    l.image = drawn ? (live ? 1 : 0) : -1;
+    if (!drawn) {
+        if (freshSurface) {
+            l.view.content.Brush(nullptr);
+            l.surface = nullptr;
+            l.surfaceBrush = nullptr;
+        }
+        l.image = -1;
+        l.imageGlow = l.glow;
+        StartFrames();
+        return;
+    }
+    if (freshSurface) {
+        l.surfaceBrush = host.Compositor().CreateSurfaceBrush(l.surface);
+        l.surfaceBrush.Stretch(wuc::CompositionStretch::None);
+        l.surfaceBrush.HorizontalAlignmentRatio(0);
+        l.surfaceBrush.VerticalAlignmentRatio(0);
+        l.view.content.Size(float2{static_cast<float>(w), static_cast<float>(h)});
+        l.view.content.Brush(l.surfaceBrush);
+        l.blurred = false;
+        l.shownBlur = -1;
+    }
+    l.image = live ? 1 : 0;
     l.imageGlow = l.glow;
-    if (!drawn) StartFrames();
 }
 
 // Glyph runs with per-word fill, float and emphasis; the transform maps the text origin.
@@ -1055,13 +1059,19 @@ void LyricsView::DrawLiveText(ID2D1DeviceContext* dc, LineView& l, double now) {
         const D2D1_POINT_2F center{(wv.box.left + wv.box.right) / 2, wv.box.bottom};
         const D2D1_MATRIX_3X2_F wordM =
             D2D1::Matrix3x2F::Scale(grow, grow, center) * D2D1::Matrix3x2F::Translation(0, lift) * lineM;
-        if (glowA > 0.01f && wv.glowBlur && wv.glowOpacity) {
-            wv.glowBlur->SetValue(D2D1_GAUSSIANBLUR_PROP_STANDARD_DEVIATION, std::max(0.5f, glowR / 2));
-            wv.glowOpacity->SetValue(D2D1_OPACITY_PROP_OPACITY, Clamp01(glowA));
-            dc->SetTransform(wordM);
-            com_ptr<ID2D1Image> out;
-            wv.glowOpacity->GetOutput(out.put());
-            dc->DrawImage(out.get(), D2D1_INTERPOLATION_MODE_LINEAR, D2D1_COMPOSITE_MODE_PLUS);
+        if (glowA > 0.01f && wv.glow) {
+            com_ptr<ID2D1Effect> glowBlur, glowOpacity;
+            if (SUCCEEDED(dc->CreateEffect(CLSID_D2D1GaussianBlur, glowBlur.put())) &&
+                SUCCEEDED(dc->CreateEffect(CLSID_D2D1Opacity, glowOpacity.put()))) {
+                glowBlur->SetInput(0, wv.glow.get());
+                glowBlur->SetValue(D2D1_GAUSSIANBLUR_PROP_STANDARD_DEVIATION, std::max(0.5f, glowR / 2));
+                glowOpacity->SetInputEffect(0, glowBlur.get());
+                glowOpacity->SetValue(D2D1_OPACITY_PROP_OPACITY, Clamp01(glowA));
+                dc->SetTransform(wordM);
+                com_ptr<ID2D1Image> out;
+                glowOpacity->GetOutput(out.put());
+                dc->DrawImage(out.get(), D2D1_INTERPOLATION_MODE_LINEAR, D2D1_COMPOSITE_MODE_PLUS);
+            }
         }
         dc->SetTransform(wordM);
         const float brightA = Mix(dim, kBright, l.glow), darkA = Mix(dim, kUnsung, l.glow);

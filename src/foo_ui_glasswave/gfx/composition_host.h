@@ -161,12 +161,9 @@ public:
     bool Draw(const wuc::CompositionDrawingSurface& surface, float scale,
               const std::function<void(ID2D1DeviceContext*)>& paint);
 
-    // A device context of our own on the composition D2D device. Effects and command lists
-    // created with it stay usable across frames, which per-frame animated views need.
+    // A scratch device context on the composition D2D device for recording off-surface
+    // command lists (never bound directly to composition surfaces).
     winrt::com_ptr<ID2D1DeviceContext> CreateDeviceContext();
-    // Like Draw, painting through `dc` (from CreateDeviceContext).
-    bool Draw(const wuc::CompositionDrawingSurface& surface, float scale, ID2D1DeviceContext* dc,
-              const std::function<void(ID2D1DeviceContext*)>& paint);
 
     // Convenience: a SpriteVisual whose brush is a freshly painted surface of the same size.
     wuc::SpriteVisual CreatePaintedVisual(int widthPx, int heightPx, float scale,

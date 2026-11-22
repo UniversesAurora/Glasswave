@@ -80,9 +80,7 @@ struct QueueView::RowView {
 QueueView::QueueView(const wuc::ContainerVisual& parent) {
     auto& host = gfx::CompositionHost::Get();
     const auto& comp = host.Compositor();
-    m_dc = host.CreateDeviceContext();
     m_deviceReplaced = host.OnDeviceReplaced([this] {
-        m_dc = gfx::CompositionHost::Get().CreateDeviceContext();
         if (!m_visible) return; // the next showing lays out and draws everything again
         SetVisible(false);
         SetVisible(true);
@@ -468,22 +466,14 @@ void QueueView::DrawRow(RowView& r) {
     const float W = (m_bounds.right - m_bounds.left) / m_scale;
     const int w = std::max(1, static_cast<int>(std::ceil(W * m_scale))),
               h = static_cast<int>(std::ceil(kRowH * m_scale));
-    if (!r.surface) {
-        r.surface = host.CreateSurface(w, h);
-        auto brush = host.Compositor().CreateSurfaceBrush(r.surface);
-        brush.Stretch(wuc::CompositionStretch::None);
-        brush.HorizontalAlignmentRatio(0);
-        brush.VerticalAlignmentRatio(0);
-        r.view.content.Brush(brush);
-        r.view.content.Size(float2{static_cast<float>(w), static_cast<float>(h)});
-    }
+    const bool freshSurface = !r.surface;
+    if (freshSurface) r.surface = host.CreateSurface(w, h);
     com_ptr<IWICBitmapSource> art;
     const auto state =
         r.data.handle.is_valid()
             ? ArtCache::Get().Find(r.data.handle, static_cast<int>(std::ceil(kRowCover * m_scale)), &art)
             : ArtCache::State::Missing;
-    m_dc->SetDpi(96.0f * m_scale, 96.0f * m_scale);
-    const bool drawn = host.Draw(r.surface, m_scale, m_dc.get(), [&](ID2D1DeviceContext* dc) {
+    const bool drawn = host.Draw(r.surface, m_scale, [&](ID2D1DeviceContext* dc) {
         com_ptr<ID2D1Bitmap> bitmap;
         if (art) dc->CreateBitmapFromWicBitmap(art.get(), nullptr, bitmap.put());
         const float cy = kRowH / 2;
@@ -514,8 +504,24 @@ void QueueView::DrawRow(RowView& r) {
                 dc->DrawLine({x0, cy + k * 5.0f}, {x0 + kHandleW, cy + k * 5.0f}, ink.get(), 1.4f);
         }
     });
-    r.drawn = drawn; // not drawn: the host clears it, and the row is drawn again
-    r.coverDrawn = drawn && state != ArtCache::State::Pending;
+    if (!drawn) {
+        if (freshSurface) {
+            r.view.content.Brush(nullptr);
+            r.surface = nullptr;
+        }
+        r.drawn = r.coverDrawn = false;
+        return;
+    }
+    if (freshSurface) {
+        auto brush = host.Compositor().CreateSurfaceBrush(r.surface);
+        brush.Stretch(wuc::CompositionStretch::None);
+        brush.HorizontalAlignmentRatio(0);
+        brush.VerticalAlignmentRatio(0);
+        r.view.content.Brush(brush);
+        r.view.content.Size(float2{static_cast<float>(w), static_cast<float>(h)});
+    }
+    r.drawn = true;
+    r.coverDrawn = state != ArtCache::State::Pending;
 }
 
 void QueueView::DrawChrome() {
