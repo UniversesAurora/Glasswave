@@ -543,8 +543,9 @@ std::wstring SongTableSource::FocusIdentity() const {
 
 SongTableSource::PresentationState SongTableSource::CapturePresentation() const {
     PresentationState state;
-    state.focus = FocusIdentity();
     const auto identities = RowIdentities();
+    if (m_focus < m_visible.size() && m_visible[m_focus] < identities.size())
+        state.focus = identities[m_visible[m_focus]];
     for (size_t index = 0; index < m_selection.Size() && index < identities.size(); ++index)
         if (m_selection.Item(index)) state.selected.push_back(identities[index]);
     return state;
@@ -564,7 +565,15 @@ void SongTableSource::RestorePresentation(const PresentationState& state) {
     m_selection.Reset(m_all.size());
     for (size_t index = 0; index < identities.size(); ++index)
         if (selected.count(identities[index])) m_selection.SetItem(index, true);
-    m_focus = FindVisibleByIdentity(state.focus);
+    m_focus = SIZE_MAX;
+    if (!state.focus.empty()) {
+        for (size_t row = 0; row < m_visible.size(); ++row) {
+            if (identities[m_visible[row]] == state.focus) {
+                m_focus = row;
+                break;
+            }
+        }
+    }
 }
 
 void SongTableSource::ApplySort() {

@@ -1076,7 +1076,8 @@ void MainWindow::OnNavMove(const NavPane::Item& dragged, const NavPane::Item& ta
     std::set<stream::Id> seenSections;
     bool moved = false;
     for (const auto& section : provider.Sections()) {
-        if (section.kind != stream::SectionKind::PlaylistShelf || !seenSections.emplace(section.id).second)
+        if (section.kind != stream::SectionKind::PlaylistShelf || !section.reorderChildren ||
+            !seenSections.emplace(section.id).second)
             continue;
         auto playlists = provider.SectionPlaylists(section.id);
         if (section.id == dragged.sectionId) {

@@ -344,8 +344,7 @@ void Session::ApplyPlaylistOrder(const std::vector<int64_t>& ids) {
 
 void Session::SchedulePlaylistSummaryRefresh(int64_t playlistId) {
     m_tasks.Post([this, playlistId] {
-        if (m_stopping) return;
-        std::this_thread::sleep_for(std::chrono::milliseconds(700));
+        if (m_stopping || !m_abort.sleep_ex(0.7)) return;
         if (m_stopping) return;
         abort_callback& abort = m_abort;
         Playlist info;
@@ -659,6 +658,7 @@ void Session::SetArtistFollow(int64_t artistId, bool follow, DoneCallback done) 
         PostMain([done = std::move(done), ok, error] {
             if (done) done(ok, ok ? std::wstring() : ErrorOf(error));
         });
+        if (ok) NotifyLibraryChanged();
     });
 }
 
@@ -909,17 +909,20 @@ void Session::DeletePlaylist(int64_t playlistId, DoneCallback done) {
         bool ok = false;
         if (m_service.EnsureStarted(abort, &error)) ok = m_client.DeletePlaylist(playlistId, abort, error);
         if (ok) {
-            std::lock_guard lock(m_mutex);
             const stream::Id id = IdText(playlistId);
-            auto remove = [&id](std::vector<stream::Playlist>& list) {
-                list.erase(
-                    std::remove_if(list.begin(), list.end(),
-                                   [&id](const stream::Playlist& playlist) { return playlist.id == id; }),
-                    list.end());
-            };
-            remove(m_createdPlaylists);
-            remove(m_collectedPlaylists);
-            remove(m_recommendedPlaylists);
+            {
+                std::lock_guard lock(m_mutex);
+                auto remove = [&id](std::vector<stream::Playlist>& list) {
+                    list.erase(
+                        std::remove_if(list.begin(), list.end(),
+                                       [&id](const stream::Playlist& playlist) { return playlist.id == id; }),
+                        list.end());
+                };
+                remove(m_createdPlaylists);
+                remove(m_collectedPlaylists);
+                remove(m_recommendedPlaylists);
+            }
+            Catalog::Get().Records().ErasePlaylist(id);
         }
         PostMain([done = std::move(done), ok, error] {
             if (done) done(ok, ok ? std::wstring() : ErrorOf(error));

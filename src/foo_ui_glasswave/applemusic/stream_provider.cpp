@@ -2317,7 +2317,7 @@ void StreamProvider::Start() {
         std::lock_guard lock(m_mutex);
         if (m_started) return;
         m_started = true;
-        generation = m_exec.Start({3, 1, 2, 1});
+        generation = m_exec.Start({3, 1, 2, 1, 1});
         m_locale = CurrentLocale();
         ResetSessionLocked(true);
     }
@@ -3167,43 +3167,56 @@ void StreamProvider::ResolvePlaylistDisplayNames(std::vector<stream::Playlist>& 
         }
     }
 
-    for (const Pending& item : pending) {
+    for (size_t first = 0; first < pending.size(); first += kDisplayMetadataBatch) {
         abort.check();
         if (!canCommit()) return;
+        const size_t last = std::min(pending.size(), first + kDisplayMetadataBatch);
+        std::wstring joined;
+        for (size_t i = first; i < last; ++i) {
+            if (!joined.empty()) joined += L',';
+            joined += pending[i].catalogId;
+        }
         try {
-            const Object response = Apple(L"/v1/catalog/" + target->storefront + L"/playlists/" +
-                                              Encode(item.catalogId) + L"?platform=web&l=" + target->locale,
+            const Object response = Apple(L"/v1/catalog/" + target->storefront + L"/playlists?ids=" +
+                                              Encode(joined) + L"&platform=web&l=" + target->locale,
                                           abort);
             if (!canCommit()) return;
-            std::optional<stream::Playlist> localized;
+            std::unordered_map<stream::Id, stream::Playlist> localizedById;
             if (const auto data = json::GetArray(response, L"data")) {
-                const auto objects = json::Objects(*data);
-                if (!objects.empty() && json::GetString(objects.front(), L"id") == item.catalogId)
-                    localized = ParsePlaylist(objects.front());
-            }
-            if (!localized) {
-                DisplayMetadata::Get().PutPlaylistFor(region, sourceStorefront, item.source->id, {}, true,
-                                                      displayEpoch);
-            } else {
-                PlaylistDisplayNames names;
-                names.name = localized->name;
-                names.description = localized->description;
-                names.coverUrl = localized->coverUrl;
-                if (!localized->id.empty() && localized->id != item.source->id) {
-                    DisplayMetadata::Get().PutPlaylistFor(region, sourceStorefront, localized->id, names,
-                                                          true, displayEpoch);
+                for (const auto& obj : json::Objects(*data)) {
+                    if (auto parsed = ParsePlaylist(obj); parsed && !parsed->id.empty())
+                        localizedById.emplace(parsed->id, std::move(*parsed));
                 }
-                DisplayMetadata::Get().PutPlaylistFor(region, sourceStorefront, item.source->id,
-                                                      std::move(names), true, displayEpoch);
+            }
+            for (size_t i = first; i < last; ++i) {
+                const Pending& item = pending[i];
+                const auto found = localizedById.find(item.catalogId);
+                if (found == localizedById.end()) {
+                    DisplayMetadata::Get().PutPlaylistFor(region, sourceStorefront, item.source->id, {}, true,
+                                                          displayEpoch);
+                } else {
+                    PlaylistDisplayNames names;
+                    names.name = found->second.name;
+                    names.description = found->second.description;
+                    names.coverUrl = found->second.coverUrl;
+                    if (!found->second.id.empty() && found->second.id != item.source->id) {
+                        DisplayMetadata::Get().PutPlaylistFor(region, sourceStorefront, found->second.id, names,
+                                                              true, displayEpoch);
+                    }
+                    DisplayMetadata::Get().PutPlaylistFor(region, sourceStorefront, item.source->id,
+                                                          std::move(names), true, displayEpoch);
+                }
             }
         } catch (const exception_aborted&) {
             throw;
         } catch (const std::exception& exception) {
             core::Log(L"Apple Music regional playlist names failed: " +
                       Wide(std::string_view(exception.what())));
-            if (DefiniteNotFound(exception) && canCommit())
-                DisplayMetadata::Get().PutPlaylistFor(region, sourceStorefront, item.source->id, {}, true,
-                                                      displayEpoch);
+            if (DefiniteNotFound(exception) && canCommit()) {
+                for (size_t i = first; i < last; ++i)
+                    DisplayMetadata::Get().PutPlaylistFor(region, sourceStorefront, pending[i].source->id, {},
+                                                          true, displayEpoch);
+            }
         } catch (...) {
             core::Log(L"Apple Music regional playlist names failed.");
         }
@@ -4231,17 +4244,12 @@ std::vector<stream::Album> StreamProvider::SavedAlbums() const {
 bool StreamProvider::ReadAlbumSaved(const stream::Id& album) const {
     const stream::Id canonical = CatalogIdForAlbum(album);
     const stream::Id key = canonical.empty() ? album : canonical;
-    std::vector<stream::Album> saved;
-    {
-        std::lock_guard lock(m_mutex);
-        const auto mutation = m_albumMutations.find(key);
-        if (mutation != m_albumMutations.end()) return mutation->second.saved;
-        saved = m_savedAlbums;
-    }
-    return std::any_of(saved.begin(), saved.end(), [&](const stream::Album& item) {
-        const stream::Id itemCatalog = CatalogIdForAlbum(item.id);
-        return item.id == album || (!itemCatalog.empty() && itemCatalog == key);
-    });
+    std::lock_guard lock(m_mutex);
+    if (const auto mutation = m_albumMutations.find(key); mutation != m_albumMutations.end())
+        return mutation->second.saved;
+    if (m_savedAlbumIds.count(album) != 0 || m_savedAlbumIds.count(key) != 0) return true;
+    const auto lib = m_albumLibraryIds.find(key);
+    return lib != m_albumLibraryIds.end() && m_savedAlbumIds.count(lib->second) != 0;
 }
 
 std::optional<bool> StreamProvider::ReadPlaylistSavedState(const stream::Id& playlist) const {
@@ -4251,6 +4259,9 @@ std::optional<bool> StreamProvider::ReadPlaylistSavedState(const stream::Id& pla
 
 std::optional<bool> StreamProvider::PlaylistSavedStateLocked(const stream::Id& playlist) const {
     if (!m_gate.verified || !m_account.signedIn) return std::nullopt;
+    if (const auto createdMut = m_createdPlaylistMutations.find(playlist);
+        createdMut != m_createdPlaylistMutations.end() && createdMut->second.deleted)
+        return false;
     const auto mutation =
         std::find_if(m_playlistMutations.begin(), m_playlistMutations.end(), [&playlist](const auto& entry) {
             return entry.first == playlist || entry.second.catalogId == playlist ||
@@ -4265,6 +4276,11 @@ std::optional<bool> StreamProvider::PlaylistSavedStateLocked(const stream::Id& p
     else {
         const auto mapped = m_playlistLibraryIds.find(playlist);
         if (mapped != m_playlistLibraryIds.end()) libraryId = mapped->second;
+    }
+    if (!libraryId.empty()) {
+        if (const auto createdMut = m_createdPlaylistMutations.find(libraryId);
+            createdMut != m_createdPlaylistMutations.end() && createdMut->second.deleted)
+            return false;
     }
     return std::any_of(m_savedPlaylists.begin(), m_savedPlaylists.end(),
                        [&playlist, &libraryId](const stream::Playlist& item) {
@@ -6770,6 +6786,10 @@ void StreamProvider::WriteLibraryItem(bool album, const stream::Id& id, bool sav
                     return;
                 }
                 if (album) {
+                    {
+                        std::lock_guard lock(m_mutex);
+                        m_librarySongsAt = {};
+                    }
                     if (!catalogId.empty() && !libraryId.empty())
                         Catalog::Get().PutAlbumLibraryId(catalogId, libraryId);
                 } else {
@@ -6802,7 +6822,7 @@ void StreamProvider::WriteLibraryItem(bool album, const stream::Id& id, bool sav
                 NotifyListChanged(targets);
                 NotifyLibraryChanged();
                 if (done) done({});
-                RefreshLibraryAfterMutation({}, std::move(targets));
+                RefreshLibraryAfterMutation({});
             });
         });
 }
@@ -6908,7 +6928,7 @@ void StreamProvider::EnrichArtistCountsAsync(uint64_t generation) {
     }
 
     const std::wstring storefront = Storefront();
-    m_exec.Post(kEnrich, generation, [this, generation, storefront, artists = std::move(artists)]() mutable {
+    m_exec.Post(kBackground, generation, [this, generation, storefront, artists = std::move(artists)]() mutable {
         std::unordered_map<stream::Id, int> counts;
         std::unordered_map<stream::Id, int> remembered = LoadArtistCounts();
         // The first count of a recount period dates the record, so the whole set ages together.
@@ -7006,14 +7026,13 @@ void StreamProvider::AddToPlaylist(const stream::Id& playlist, std::vector<strea
     uint64_t generation = 0;
     const std::wstring storefront = Storefront();
     const stream::Id knownLibrary = KnownLibraryId(false, playlist);
-    const std::set<stream::Id> requested(tracks.begin(), tracks.end());
     {
         std::lock_guard lock(m_mutex);
         generation = m_exec.Generation();
     }
     m_exec.Post(
-        kTasks, generation,
-        [this, generation, playlist, tracks = std::move(tracks), requested, storefront, knownLibrary,
+        kMutations, generation,
+        [this, generation, playlist, tracks = std::move(tracks), storefront, knownLibrary,
          done = std::move(done)]() mutable {
             std::wstring error;
             stream::Id libraryId = knownLibrary;
@@ -7034,33 +7053,21 @@ void StreamProvider::AddToPlaylist(const stream::Id& playlist, std::vector<strea
             } catch (const std::exception& exception) {
                 error = Wide(exception.what());
             }
-            m_exec.PostMain(generation, [this, libraryId, requested, done = std::move(done),
+            m_exec.PostMain(generation, [this, libraryId, done = std::move(done),
                                          error = std::move(error)]() mutable {
                 if (error.empty()) {
-                    RefreshKnownPlaylist(
-                        libraryId,
-                        [this, libraryId, requested,
-                         done = std::move(done)](std::wstring refreshError) mutable {
-                            if (refreshError.empty()) {
-                                const auto tracks = CachedPlaylist(libraryId);
-                                if (!tracks) {
-                                    refreshError = L"Apple Music did not return the refreshed playlist.";
-                                } else {
-                                    for (const auto& wanted : requested) {
-                                        if (std::none_of(tracks->begin(), tracks->end(),
-                                                         [&wanted](const stream::Track& track) {
-                                                             return track.id == wanted;
-                                                         })) {
-                                            refreshError = L"Apple Music did not confirm the appended song.";
-                                            break;
-                                        }
-                                    }
-                                }
-                            }
-                            if (done) done(std::move(refreshError));
-                        },
-                        true);
-                    return;
+                    // Apple Music's playlist tracks endpoint is eventually consistent; accept the
+                    // 2xx POST immediately and let ListSession / background detail refresh catch up.
+                    {
+                        std::lock_guard lock(m_mutex);
+                        ++m_playlistDetailEpoch;
+                        m_playlistTracks.erase(libraryId);
+                        m_playlistSongs.erase(libraryId);
+                    }
+                    NotifyListChanged({{stream::ListKind::PlaylistTracks, libraryId, {}},
+                                       {stream::ListKind::Playlists, {}, {}}});
+                    NotifyLibraryChanged();
+                    RefreshKnownPlaylist(libraryId, {}, false);
                 }
                 if (done) done(std::move(error));
             });
@@ -7082,14 +7089,13 @@ void StreamProvider::RemoveFromPlaylist(const stream::Id& playlist, std::vector<
     uint64_t generation = 0;
     const std::wstring storefront = Storefront();
     const stream::Id knownLibrary = KnownLibraryId(false, playlist);
-    const std::set<stream::Id> requestedTracks(tracks.begin(), tracks.end());
     {
         std::lock_guard lock(m_mutex);
         generation = m_exec.Generation();
     }
     m_exec.Post(
-        kTasks, generation,
-        [this, generation, playlist, tracks = std::move(tracks), requestedTracks, storefront, knownLibrary,
+        kMutations, generation,
+        [this, generation, playlist, tracks = std::move(tracks), storefront, knownLibrary,
          done = std::move(done)]() mutable {
             stream::Id libraryId = knownLibrary;
             std::wstring error;
@@ -7130,36 +7136,23 @@ void StreamProvider::RemoveFromPlaylist(const stream::Id& playlist, std::vector<
             } catch (const std::exception& exception) {
                 error = Wide(exception.what());
             }
-            m_exec.PostMain(generation, [this, libraryId, requestedTracks, mutationAttempted,
-                                         done = std::move(done), error = std::move(error)]() mutable {
+            m_exec.PostMain(generation, [this, libraryId, mutationAttempted, done = std::move(done),
+                                         error = std::move(error)]() mutable {
                 if (!mutationAttempted) {
                     if (done) done(std::move(error));
                     return;
                 }
-                RefreshKnownPlaylist(
-                    libraryId,
-                    [this, libraryId, requestedTracks, done = std::move(done),
-                     mutationError = std::move(error)](std::wstring refreshError) mutable {
-                        if (refreshError.empty() && mutationError.empty()) {
-                            const auto remaining = CachedPlaylist(libraryId);
-                            if (!remaining) {
-                                refreshError = L"Apple Music did not return the refreshed playlist.";
-                            } else {
-                                for (const auto& wanted : requestedTracks) {
-                                    if (std::any_of(remaining->begin(), remaining->end(),
-                                                    [&wanted](const stream::Track& track) {
-                                                        return track.id == wanted;
-                                                    })) {
-                                        refreshError = L"Apple Music did not confirm the removed song.";
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-                        if (done)
-                            done(refreshError.empty() ? std::move(mutationError) : std::move(refreshError));
-                    },
-                    true);
+                {
+                    std::lock_guard lock(m_mutex);
+                    ++m_playlistDetailEpoch;
+                    m_playlistTracks.erase(libraryId);
+                    m_playlistSongs.erase(libraryId);
+                }
+                NotifyListChanged({{stream::ListKind::PlaylistTracks, libraryId, {}},
+                                   {stream::ListKind::Playlists, {}, {}}});
+                NotifyLibraryChanged();
+                RefreshKnownPlaylist(libraryId, {}, false);
+                if (done) done(std::move(error));
             });
         });
 }
@@ -7181,7 +7174,7 @@ void StreamProvider::CreatePlaylist(std::wstring name, CreatedDone done) {
         generation = m_exec.Generation();
     }
     m_exec.Post(
-        kTasks, generation, [this, generation, name = std::move(name), done = std::move(done)]() mutable {
+        kMutations, generation, [this, generation, name = std::move(name), done = std::move(done)]() mutable {
             stream::Id id;
             stream::Playlist created;
             std::wstring error;
@@ -7230,7 +7223,7 @@ void StreamProvider::CreatePlaylist(std::wstring name, CreatedDone done) {
                     Catalog::Get().Put(created);
                     NotifyListChanged({{stream::ListKind::Playlists, {}, {}}});
                     NotifyLibraryChanged();
-                    RefreshLibraryAfterMutation({}, {{stream::ListKind::Playlists, {}, {}}});
+                    RefreshLibraryAfterMutation({});
                     if (done) done(id, {});
                 });
         });
@@ -7255,7 +7248,7 @@ void StreamProvider::RenamePlaylist(const stream::Id& playlist, std::wstring nam
         generation = m_exec.Generation();
     }
     m_exec.Post(
-        kTasks, generation,
+        kMutations, generation,
         [this, generation, playlist, name = std::move(name), storefront, knownLibrary,
          done = std::move(done)]() mutable {
             stream::Id libraryId = knownLibrary;
@@ -7315,7 +7308,6 @@ void StreamProvider::RenamePlaylist(const stream::Id& playlist, std::wstring nam
                 NotifyListChanged({{stream::ListKind::PlaylistTracks, libraryId, {}},
                                    {stream::ListKind::Playlists, {}, {}}});
                 NotifyLibraryChanged();
-                RefreshKnownPlaylist(libraryId, {}, true);
                 if (done) done({});
             });
         });
@@ -7336,7 +7328,7 @@ void StreamProvider::DeletePlaylist(const stream::Id& playlist, Done done) {
         generation = m_exec.Generation();
     }
     m_exec.Post(
-        kTasks, generation,
+        kMutations, generation,
         [this, generation, playlist, storefront, knownLibrary, done = std::move(done)]() mutable {
             stream::Id libraryId = knownLibrary;
             std::wstring error;
@@ -7369,6 +7361,9 @@ void StreamProvider::DeletePlaylist(const stream::Id& playlist, Done done) {
                         m_editablePlaylists.erase(libraryId);
                         m_renameablePlaylists.erase(libraryId);
                         m_deletablePlaylists.erase(libraryId);
+                        std::erase_if(m_savedPlaylists, [&libraryId](const stream::Playlist& item) {
+                            return item.id == libraryId;
+                        });
                         auto& entry = m_createdPlaylistMutations[libraryId];
                         entry.playlist = {};
                         entry.epoch = ++m_libraryMutationEpoch;
@@ -7380,9 +7375,7 @@ void StreamProvider::DeletePlaylist(const stream::Id& playlist, Done done) {
                     NotifyListChanged({{stream::ListKind::PlaylistTracks, libraryId, {}},
                                        {stream::ListKind::Playlists, {}, {}}});
                     NotifyLibraryChanged();
-                    RefreshLibraryAfterMutation(
-                        {}, {{stream::ListKind::PlaylistTracks, libraryId, {}},
-                             {stream::ListKind::Playlists, {}, {}}});
+                    RefreshLibraryAfterMutation({});
                     if (done) done({});
                 });
         });

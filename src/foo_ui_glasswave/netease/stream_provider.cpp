@@ -1269,7 +1269,11 @@ void StreamProvider::ClearIdSnapshots() {
 void StreamProvider::FinishListWrite(bool ok, std::wstring error, Done done,
                                      std::vector<stream::ListTarget> targets) {
     if (ok) {
-        ClearIdSnapshots();
+        // Only evict track-ID snapshots when a playlist's tracks or favorites actually changed.
+        const bool touchesTrackSnapshots = std::any_of(targets.begin(), targets.end(), [](const stream::ListTarget& t) {
+            return t.kind == stream::ListKind::PlaylistTracks || t.kind == stream::ListKind::Favorites;
+        });
+        if (touchesTrackSnapshots) ClearIdSnapshots();
         NotifyListChanged(std::move(targets));
     }
     if (done) done(ok ? std::wstring() : ErrorOf(std::move(error)));
