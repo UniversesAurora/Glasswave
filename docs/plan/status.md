@@ -2,6 +2,38 @@
 
 Updated: 2026-11-22
 
+## Immediate queue/history transitions while loading & secondary lyric line highlight (2026-11-22, latest)
+
+1. **Queue / Up Next / History sidebar moves immediately on track switch**:
+   - Added non-mutating `PlaybackScheduler::PreviewStarting(command)` and `ExpectExactStart(index)`
+     (`media/playback_scheduler.h`, `media/playback_scheduler.cpp`) that project `DisplayUpcoming()`
+     and `RepeatCycleSize()` on a local `PlaybackSchedule` copy as soon as `on_playback_starting`
+     fires (Next, Previous, Random, clicking an Up Next row, or starting a list).
+   - Wired `MainWindow::PreviewStartingTrack` / `ApplyShownTrack` / `RefreshPaneQueue`
+     (`ui/main_window_nowplaying.cpp`, `ui/main_window_pane.cpp`) so Up Next and History animate on
+     the exact same frame the top card updates — without waiting for the new track's stream to open
+     and without double-animating once `on_playback_new_track` commits.
+2. **Secondary (bottom) lyric line highlight setting**:
+   - Added `settings::SecondaryLyricHighlight` (`Off` / `Line` / `WordProgress`, default `Off`) in
+     `app/settings.h` / `app/settings.cpp`, exposed in Preferences > Display > Glasswave > Lyrics
+     (`ui/settings_page.cpp`), in the Lyrics pane context menu (`ui/main_window_pane.cpp`), and
+     localized in `lang/zh-CN.json`.
+   - Updated `LyricsView` (`ui/lyrics_view.cpp`) to collect DirectWrite glyph runs for `l.sub`
+     (whichever text sits on the bottom line, respecting Swap original and translation) and render:
+     - `Off`: existing dim secondary line.
+     - `Line`: smooth whole-line brighten (`kSubBright`) while the line is active.
+     - `WordProgress`: soft-edged left-to-right sweep across single or wrapped secondary lines in
+       lockstep with the main line's width-weighted word progress (falling back to whole-line
+       highlight on line-timed lyrics).
+- Verification: `scripts/build.ps1` (Release|x64) built with 0 warnings / 0 errors; `lang/zh-CN.json`
+  validated; deployed to `.local/fb2k-dev`.
+- Owner checks:
+  - Switch Next / Previous / click an Up Next row while a remote track loads and verify Up Next and
+    History animate immediately with the top card without waiting for audio start or double-jumping.
+  - Test Secondary lyric line highlight (`Off` / `Highlight whole line` / `Follow word-by-word
+    progress`) from both Preferences and the Lyrics right-click menu, on both word-timed and
+    line-timed songs, with and without "Swap original and translation".
+
 ## Apple Music runtime update, intermittent FairPlay crash & seek duration mismatch (2026-11-22, latest)
 
 Diagnosed and fixed two Apple Music playback errors reported during live playback:
