@@ -2,7 +2,48 @@
 
 Updated: 2026-11-22
 
-## Dependency audit/upgrades & cross-provider list-cache optimization (2026-11-22, latest)
+## Stable per-account cache scopes, artist-search fallback, mock-test removal & third-party guide (2026-11-22, latest)
+
+1. **Stable per-account cache scopes (`cache/store.*`, `cache/service.cpp`, both providers)**:
+   - Added `account_scopes(provider, account, token)` to SQLite cache index schema v3 (`kIndexSchemaVersion = 3`),
+     plus `Store::SelectAccountScope`, `Store::SignOutScope`, and `cache::SelectAccountScope`.
+   - First-time binding claims an unclaimed active scope token so existing dev cache entries stay
+     100% intact; signing out moves to an isolated `"signed-out:<rand>"` scope without erasing
+     account bindings; switching `A -> B -> A` or `A -> SignOut -> A` restores Account A's exact
+     scope token and reuses all cached covers, audio, snapshots, and lists.
+   - `Provider::NotifyAccountChanged()` now calls `InvalidateListCache(..., RetireInMemory)`
+     instead of `PurgePersistent` (account isolation is enforced by `accountScope`), preserving
+     persisted list snapshots across account switches while Settings "Clear list cache" remains
+     `PurgePersistent`.
+   - Upgraded `.local/fb2k-dev/profile/glasswave/cache/v1/index.sqlite3` in place from schema v2
+     to v3 (`6,571` entries preserved).
+2. **Now Playing artist-name search fallback (`ui/main_window_commands.cpp`, `ui/main_window_nowplaying.cpp`)**:
+   - Extended `MainWindow::BuildArtistLinks(items, allowSearchFallback)` so clicking an artist
+     name in the Now Playing bar opens the artist page when an id is known, and falls back to
+     searching by artist name (`Search(name)`) when the track has no artist id or local group
+     (uploaded/radio/CD/unlinked tracks). Context-menu `"Go to artist"` stays direct-page-only
+     because `"Search for artist"` is already listed below it.
+3. **Removed all mock-service tests and mock-only probes**:
+   - Deleted all 11 brittle mock servers, mock runner scripts, and mock-only component probes
+     (`tests/applemusic_provider_mock.mjs`, `tests/applemusic_mock.mjs`,
+     `tests/applemusic_mapping_mock_tests.mjs`, `tests/image_cache_mock.mjs`,
+     `scripts/test-applemusic-provider.ps1`, `scripts/test-applemusic-startup.ps1`,
+     `scripts/test-applemusic.ps1`, `scripts/test-uploaded-mp4-progressive.ps1`,
+     `scripts/test-image-cache.ps1`, `src/foo_ui_glasswave/applemusic/provider_probe.cpp`,
+     `src/foo_ui_glasswave/cache/image_probe.cpp`) and removed the two probe `.cpp` files from
+     `foo_ui_glasswave.vcxproj`. Standalone unit tests and real-account probes are retained.
+4. **Third-party source & dependency maintenance guide (`docs/third-party.md`)**:
+   - Created `docs/third-party.md` (linked from `AGENTS.md` and `third_party/README.md`) as the
+     single-source-of-truth inventory, modification hierarchy (adapter first -> minimal `git diff`
+     patch -> last-resort ported code), license hygiene, and upgrade/patch-pruning SOP covering
+     all build-time libraries, patched upstream repos, runtime-fetched helpers, lyric scripts,
+     and clean-room reference repos.
+- Verification: `pwsh -File scripts/test-cache-store.ps1` (`802` checks passed, including
+  `StablePerAccountScopeReusesCacheAcrossSwitches`), `pwsh -File scripts/test-list-cache.ps1`
+  (`124` checks passed), `pwsh -File scripts/build.ps1` (Release|x64, `0` warnings / `0` errors),
+  deployed to `.local/fb2k-dev` via `scripts/run-dev.ps1 -NoLaunch`.
+
+## Dependency audit/upgrades & cross-provider list-cache optimization (2026-11-22)
 
 1. **Full external dependency & lyric-script audit and upgrades**:
    - **Cavern** (`third_party/glasswave-cavern/source-pin.json`): upgraded

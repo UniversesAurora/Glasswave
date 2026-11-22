@@ -25,10 +25,9 @@ fold it into `docs/plan/status.md` once it is stale.
 - Edit source with editing tools; scripts only for genuine bulk edits.
 - No screenshots or UI automation unless the owner asks. Build, start the dev instance
   (`scripts/run-dev.ps1`) and give the owner a short check list; they test in the app.
-- **Never run the mock-service tests** (`scripts/test-applemusic-provider.ps1`,
-  `tests/applemusic_provider_mock.mjs`). Besides being unwanted, they sign the provider into a
-  mock account, which rotates Apple Music's cache account scope (a random token) and clears
-  its song records, so the owner's cached covers, audio and lists become unreachable.
+- Do **not** add mock-service tests (all mock servers and mock probes were removed at the
+  owner's request on 2026-11-22: they go stale on every client change and risk polluting
+  dev account state). Keep standalone unit tests and real-account probes instead.
 - Never print the Apple bridge token, the NetEase cookie or API keys. Ask before downloads.
 - Use only `.local/fb2k-dev`. From Git Bash pass foobar2000 switches with
   `MSYS_NO_PATHCONV=1` (`/stop` is otherwise rewritten into a path).
@@ -65,15 +64,17 @@ fold it into `docs/plan/status.md` once it is stale.
   buttons, list cells (rating, favourite, download), menus, scroll bars and flings, play from
   a row everywhere, recent lists and stations across a restart, CD playback, sign-out during
   writes, artist links from the now playing bar and the queue's context menu.
-- Decisions offered, not taken: a song without artist ids could open a search for the
-  artist's name instead of doing nothing; a stable per-account cache scope (switching back
-  to an account would find its cache again) instead of a random token per switch.
+- Decisions resolved (2026-11-22):
+  - Artist links without an artist id now fall back to catalog search by artist name in the
+    Now Playing bar (`BuildArtistLinks(..., true)`).
+  - Cache account scopes are now stable per `(provider, accountId)` (`cache::SelectAccountScope`,
+    SQLite index schema v3) so switching accounts or re-signing in reuses cached covers,
+    audio, snapshots and lists.
 
 ## Open technical points
 
-- A cover at start-up can log "no picture" for a song whose record is complete; the image
-  cache's cache-only lookups seem to log a miss as a failure. Not proven; look at
-  `stream/art_extractor.h` (`LogArtFailure`) and `cache/images.cpp` (`t_cacheOnly`).
+- (Resolved 2026-11-22) Startup false `"no picture"` cover log spam on `CacheOnlyScope` misses
+  was fixed via `cache::IsCacheOnly()` guarding `LogArtFailure` in `stream/art_extractor.h`.
 - A full LTCG rebuild warns C4702 four times in the SDK's `input_impl.h` (after
   `input_stubs::decode_run_raw`, a throw). Older than the review; pragmas, a per-file
   `/wd4702` and an out-of-line stub did not silence it. Incremental builds do not show it.

@@ -1,7 +1,9 @@
 # third_party
 
 Upstream dependencies are fetched by `scripts/bootstrap.ps1`. The source-only Glasswave
-Cavern adapter described below is tracked separately from fetched upstream code.
+Cavern adapter described below is tracked separately from fetched upstream code. For the
+complete inventory of all external codebases (including runtime helpers, lyric scripts,
+patch authoring rules and the upgrade SOP), see [docs/third-party.md](../docs/third-party.md).
 
 | Dependency | Version | Destination | License |
 | --- | --- | --- | --- |
@@ -10,8 +12,10 @@ Cavern adapter described below is tracked separately from fetched upstream code.
 | quickjs-ng amalgamation | 0.18.0 | `third_party/quickjs-ng` | MIT |
 | miniz amalgamation | 3.1.2 | `third_party/miniz` | MIT |
 
-To upgrade: download the new file, put its URL and version (and Authenticode subject for
-executables) into `deps.lock.json`, run `pwsh -File scripts/bootstrap.ps1 -Force`, rebuild.
+To upgrade: update the URL and version (and Authenticode subject for executables) in
+`deps.lock.json`, ensure `.local/fb2k-dev/foobar2000.exe` is closed, run
+`pwsh -File scripts/bootstrap.ps1` (do **not** pass `-Force`, which wipes `.local/fb2k-dev/profile/`),
+and rebuild.
 
 ## Apple Music helper
 
