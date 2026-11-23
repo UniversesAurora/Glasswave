@@ -386,20 +386,13 @@ class DownloadsPage final : public Page {
             actions.push_back({L"Open file location", [path = selected.front().path] { Reveal(path); }});
         actions.push_back({L"Remove from list", [ids] { download::Forget(ids, false); }});
         actions.push_back({L"Delete file", [ids, owner = m_host.Owner(), count = selected.size()] {
-                               const std::wstring text = count == 1
-                                                             ? Tr(L"Move the downloaded file to the Recycle Bin?")
-                                                             : Tr(L"Move the downloaded files to the Recycle Bin?");
-                               if (Confirm(owner, Tr(L"Delete file"), text))
-                                   download::Forget(ids, true, false);
+                               const std::wstring text =
+                                   count == 1 ? Tr(L"Delete the downloaded file?") : Tr(L"Delete the downloaded files?");
+                               bool permanent = false;
+                               if (ConfirmOption(owner, Tr(L"Delete file"), text,
+                                                 Tr(L"Permanently delete (bypass Recycle Bin)"), permanent))
+                                   download::Forget(ids, true, permanent);
                            }});
-        actions.push_back(
-            {L"Delete permanently", [ids, owner = m_host.Owner(), count = selected.size()] {
-                 const std::wstring text =
-                     count == 1 ? Tr(L"Permanently delete the downloaded file? This cannot be undone.")
-                                : Tr(L"Permanently delete the downloaded files? This cannot be undone.");
-                 if (Confirm(owner, Tr(L"Delete permanently"), text, true))
-                     download::Forget(ids, true, true);
-             }});
     }
 
     void AddPageActions(std::vector<MenuAction>& actions) override {
@@ -528,21 +521,13 @@ void AddDownloadActions(std::vector<MenuAction>& actions, const metadb_handle_li
         if (items.get_count() == 1 && !singleDonePath.empty())
             actions.push_back({L"Open file location", [path = std::move(singleDonePath)] { Reveal(path); }});
         actions.push_back({L"Delete downloaded file", [doneIds, owner] {
-                               const std::wstring text =
-                                   doneIds.size() == 1 ? Tr(L"Move the downloaded file to the Recycle Bin?")
-                                                       : Tr(L"Move the downloaded files to the Recycle Bin?");
-                               if (Confirm(owner, Tr(L"Delete downloaded file"), text))
-                                   download::Forget(doneIds, true, false);
+                               const std::wstring text = doneIds.size() == 1 ? Tr(L"Delete the downloaded file?")
+                                                                             : Tr(L"Delete the downloaded files?");
+                               bool permanent = false;
+                               if (ConfirmOption(owner, Tr(L"Delete downloaded file"), text,
+                                                 Tr(L"Permanently delete (bypass Recycle Bin)"), permanent))
+                                   download::Forget(doneIds, true, permanent);
                            }});
-        actions.push_back(
-            {L"Delete downloaded file permanently", [doneIds, owner] {
-                 const std::wstring text =
-                     doneIds.size() == 1
-                         ? Tr(L"Permanently delete the downloaded file? This cannot be undone.")
-                         : Tr(L"Permanently delete the downloaded files? This cannot be undone.");
-                 if (Confirm(owner, Tr(L"Delete downloaded file permanently"), text, true))
-                     download::Forget(doneIds, true, true);
-             }});
     }
 }
 

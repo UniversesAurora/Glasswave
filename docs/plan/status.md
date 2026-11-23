@@ -23,12 +23,13 @@ Updated: 2026-11-23
   - Excluded the current remote playlist from its own page-background `Add to <provider> playlist`
     menu (`TrackPagedPage::ExcludeRemotePlaylist`), and reported `AddToPlaylist` failures via
     `ShowProviderError`.
-- **Downloaded-file management & permanent deletion (`download/downloads.*`, `ui/downloads_page.*`, `lang/zh-CN.json`)**:
+- **Downloaded-file management & permanent deletion (`download/downloads.*`, `ui/downloads_page.*`, `ui/win32.*`, `lang/zh-CN.json`)**:
   - Added `permanent` mode to `download::Forget` (deleting audio + sidecar `.lrc` directly via
-    `DeleteFileW`, bypassing the Recycle Bin).
-  - Exposed `Delete permanently` on `Downloads → Downloaded`, and exposed `Open file location`,
-    `Delete downloaded file`, and `Delete downloaded file permanently` for already-downloaded
-    tracks in song context menus on every other page.
+    `DeleteFileW`, bypassing the Recycle Bin) and `ConfirmOption` (`TaskDialogIndirect` with a
+    verification checkbox).
+  - Kept a single delete entry (`Delete file` on `Downloads → Downloaded`, `Delete downloaded file`
+    plus `Open file location` on every other song list) with a `Permanently delete (bypass Recycle Bin)`
+    checkbox inside the confirmation dialog.
 
 ## Full-screen player idle-with-pane layout & interruptible morph animations (2026-11-23)
 

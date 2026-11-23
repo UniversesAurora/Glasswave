@@ -21,6 +21,9 @@ std::wstring ItemText(HWND dialog, int id);
 void Notice(HWND owner, const std::wstring& title, const std::wstring& text, bool warning = false);
 // A Yes / No question, No the default; `irreversible` (it cannot be undone): the warning icon.
 bool Confirm(HWND owner, const std::wstring& title, const std::wstring& text, bool irreversible = false);
+// Same Yes / No confirmation with a checkbox option (TaskDialog verification box).
+bool ConfirmOption(HWND owner, const std::wstring& title, const std::wstring& text,
+                   const std::wstring& optionLabel, bool& optionChecked, bool irreversible = false);
 
 // Runs a window object's message handler: an exception is reported on the console and the
 // message goes to DefWindowProc instead of unwinding into user32.
