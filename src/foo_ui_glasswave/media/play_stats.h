@@ -35,6 +35,9 @@ public:
     uint32_t CountFor(const metadb_handle_ptr& track) const;
     // Drops the last-played time (the track leaves Recently Played) but keeps the count.
     void ForgetRecent(metadb_handle_list_cref items);
+    // Drops the last-played time of every track belonging to one recently played album.
+    void ForgetRecentAlbum(const std::wstring& provider, const std::wstring& albumId,
+                           const std::wstring& albumNameLower, const std::wstring& artistLower);
     // Resets the count (the track leaves Most Played) but keeps the last-played time.
     void ClearCounts(metadb_handle_list_cref items);
     void ForgetAllRecent();  // clears the whole Recently Played list

@@ -40,6 +40,7 @@ struct SongTableRow {
 class SongTableSource : public media::ListSource {
 public:
     using ActivateHandler = std::function<void(size_t row, const std::wstring& identity)>;
+    using DeleteHandler = std::function<bool()>;
 
     const std::vector<media::Column>& Columns() const override { return m_columns; }
     std::wstring ColumnSetKey() const override;
@@ -80,6 +81,7 @@ public:
     std::wstring RowKey(size_t row) const override;
     void Activate(size_t row) override;
     void ContextMenu(HWND owner, POINT screen) override;
+    bool DeleteSelected() override { return m_delete ? m_delete() : false; }
     metadb_handle_list SelectedItems() const override;
     void SetFilter(std::wstring_view filterLower) override;
     bool HasFilter() const override { return !m_filter.empty(); }
@@ -108,6 +110,7 @@ public:
     std::wstring RowIdentity(size_t row) const;
     size_t FindRowByIdentity(const std::wstring& identity) const;
     void SetActivateHandler(ActivateHandler handler) { m_activate = std::move(handler); }
+    void SetDeleteHandler(DeleteHandler handler) { m_delete = std::move(handler); }
     void SetEmptyText(std::wstring text) { m_emptyText = std::move(text); }
 
 protected:
@@ -173,6 +176,7 @@ private:
     bool m_offerPopularity = false, m_popularityShown = false;
     bool m_grouping = true;
     ActivateHandler m_activate;
+    DeleteHandler m_delete;
 };
 
 // Tracks of one streaming provider (favorites, a playlist, an album, top tracks).

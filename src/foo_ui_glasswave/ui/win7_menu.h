@@ -26,7 +26,8 @@ UINT TrackWin7Menu(HMENU menu, UINT flags, int x, int y, HWND owner, const std::
 // foobar2000's context menu for `items` at screen point `pt`, as a Win7 menu. One song also
 // offers "Save album art...". nowPlaying: the playing song's own menu (on its title and cover),
 // without the play and queue commands that make no sense for it.
-void RunContextMenu(HWND owner, metadb_handle_list_cref items, POINT pt, bool nowPlaying = false);
+void RunContextMenu(HWND owner, metadb_handle_list_cref items, POINT pt, bool nowPlaying = false,
+                    std::vector<MenuAction> extra = {});
 // foobar2000's context menu for the active playlist's selection (playlist commands included).
 void RunPlaylistContextMenu(HWND owner, POINT pt);
 

@@ -72,7 +72,9 @@ void AddRemotePlaylistMenu(std::vector<MenuAction>& actions, stream::Provider& p
                  [&provider, songs, id = playlist.id] {
                      songs([&provider, id](metadb_handle_list items) {
                          if (auto ids = TrackIds(provider, items); !ids.empty())
-                             provider.AddToPlaylist(id, std::move(ids));
+                             provider.AddToPlaylist(id, std::move(ids), [&provider](std::wstring error) {
+                                 if (!error.empty()) ShowProviderError(provider, error);
+                             });
                      });
                  }});
         }

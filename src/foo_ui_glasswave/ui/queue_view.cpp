@@ -938,7 +938,10 @@ void QueueView::OnRButtonUp(POINT pt, POINT screen) {
     const Hit hit = HitAt(pt);
     if (hit.row < 0) return;
     const auto& r = *m_rows[static_cast<size_t>(hit.row)];
-    if (!r.history && onRowMenu) onRowMenu(r.data.playlistIndex, screen);
+    if (!r.history && onRowMenu)
+        onRowMenu(r.data.playlistIndex, r.data.handle, screen);
+    else if (r.history && onHistoryMenu)
+        onHistoryMenu(r.data.handle, screen);
 }
 
 } // namespace glasswave::ui

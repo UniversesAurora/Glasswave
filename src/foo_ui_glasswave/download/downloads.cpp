@@ -922,25 +922,31 @@ void Cancel(const std::vector<uint64_t>& ids) {
     Changed(true);
 }
 
-void Forget(const std::vector<uint64_t>& ids, bool deleteFiles) {
-    std::wstring files; // double-null-terminated, as SHFileOperation wants
+void Forget(const std::vector<uint64_t>& ids, bool deleteFiles, bool permanent) {
+    std::vector<std::wstring> paths;
     {
         std::lock_guard lock(g_mutex);
         for (const uint64_t id : ids) {
             Entry* e = Find(id);
             if (!e || e->item.state != State::Done) continue;
-            if (deleteFiles && Exists(e->item.path)) files += e->item.path + L'\0';
-            if (deleteFiles && Exists(LrcPath(e->item.path))) files += LrcPath(e->item.path) + L'\0';
+            if (deleteFiles && Exists(e->item.path)) paths.push_back(e->item.path);
+            if (deleteFiles && Exists(LrcPath(e->item.path))) paths.push_back(LrcPath(e->item.path));
             g_entries.erase(g_entries.begin() + (e - g_entries.data()));
         }
     }
-    if (!files.empty()) {
-        files += L'\0';
-        SHFILEOPSTRUCTW op{};
-        op.wFunc = FO_DELETE;
-        op.pFrom = files.c_str();
-        op.fFlags = FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_SILENT | FOF_NOERRORUI;
-        SHFileOperationW(&op);
+    if (!paths.empty()) {
+        if (permanent) {
+            for (const auto& path : paths) DeleteFileW(path.c_str());
+        } else {
+            std::wstring files; // double-null-terminated, as SHFileOperation wants
+            for (const auto& path : paths) files += path + L'\0';
+            files += L'\0';
+            SHFILEOPSTRUCTW op{};
+            op.wFunc = FO_DELETE;
+            op.pFrom = files.c_str();
+            op.fFlags = FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_SILENT | FOF_NOERRORUI;
+            SHFileOperationW(&op);
+        }
     }
     Changed(true);
 }

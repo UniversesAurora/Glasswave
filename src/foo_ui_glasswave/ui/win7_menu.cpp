@@ -423,7 +423,8 @@ void SetContextActionProvider(std::function<std::vector<MenuAction>(metadb_handl
     g_contextActions = std::move(provider);
 }
 
-void RunContextMenu(HWND owner, metadb_handle_list_cref items, POINT pt, bool nowPlaying) {
+void RunContextMenu(HWND owner, metadb_handle_list_cref items, POINT pt, bool nowPlaying,
+                    std::vector<MenuAction> extra) {
     if (items.get_count() == 0) return;
     auto cm = contextmenu_manager::get();
     cm->init_context(items, contextmenu_manager::flag_show_shortcuts);
@@ -431,8 +432,13 @@ void RunContextMenu(HWND owner, metadb_handle_list_cref items, POINT pt, bool no
     constexpr UINT kActionBase = 0x8200;
     HMENU menu = CreatePopupMenu();
     AppendQueueCommands(menu, nowPlaying);
+    auto actions = ContextActionsFor(items);
+    if (!extra.empty()) {
+        if (!actions.empty() && !actions.back().label.empty()) actions.push_back({});
+        for (auto& action : extra) actions.push_back(std::move(action));
+    }
     MenuBuilder custom(kActionBase);
-    custom.Append(menu, ContextActionsFor(items));
+    custom.Append(menu, actions);
     if (items.get_count() == 1) AppendMenuW(menu, MF_STRING, kSaveArt, TrC(L"Save album art..."));
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     cm->win32_build_menu(menu, kBase, 0x7FFF);
@@ -466,10 +472,15 @@ void RunPlaylistContextMenu(HWND owner, POINT pt) {
     const auto actions = ContextActionsFor(items);
     MenuBuilder custom(kActionBase);
     custom.Append(menu, actions);
-    if (!actions.empty()) AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+    if (items.get_count() == 1) AppendMenuW(menu, MF_STRING, kSaveArt, TrC(L"Save album art..."));
+    if (!actions.empty() || items.get_count() == 1) AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     cm->win32_build_menu(menu, kBase, 0x7FFF);
     const UINT cmd = TrackWin7Menu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_NONOTIFY, pt.x, pt.y, owner);
     DestroyMenu(menu);
+    if (cmd == kSaveArt && items.get_count() == 1) {
+        SaveAlbumArt(owner, items[0]);
+        return;
+    }
     if (cmd == kClearQueue) {
         if (queue) {
             t_size playingPlaylist = SIZE_MAX, playingIndex = SIZE_MAX;

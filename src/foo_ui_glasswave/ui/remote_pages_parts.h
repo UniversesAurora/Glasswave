@@ -1077,12 +1077,13 @@ class TrackPagedPage : public PagedPage {
 
     void AddPageSpecificActions(std::vector<MenuAction>& actions) override {
         if (auto* source = SongSource(); source && source->Count()) {
-            AddBulkActions(actions, AllSongsFetch(), &m_provider);
+            AddBulkActions(actions, AllSongsFetch(), &m_provider, ExcludeRemotePlaylist());
             actions.push_back({});
         }
         AddTrackPageActions(actions);
     }
 
+    virtual stream::Id ExcludeRemotePlaylist() const { return {}; }
     virtual void AddTrackPageActions(std::vector<MenuAction>&) {}
     virtual void ApplyTrackState() {}
 

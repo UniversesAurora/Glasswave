@@ -65,7 +65,8 @@ class QueueView {
     // The displayed slots can wrap around the end of the playlist. Items maps each slot
     // to the old playlist index of the song that should occupy it.
     std::function<void(const std::vector<size_t>& slots, const std::vector<size_t>& items)> onReorder;
-    std::function<void(size_t playlistIndex, POINT screen)> onRowMenu;
+    std::function<void(size_t playlistIndex, const metadb_handle_ptr& handle, POINT screen)> onRowMenu;
+    std::function<void(const metadb_handle_ptr& handle, POINT screen)> onHistoryMenu;
 
   private:
     struct RowView;

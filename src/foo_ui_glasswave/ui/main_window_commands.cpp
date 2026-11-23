@@ -283,7 +283,8 @@ std::vector<MenuAction> MainWindow::BuildContextActions(metadb_handle_list_cref 
         AddRemotePlaylistMenu(actions, *provider, Ready(selected),
                               onPlaylist ? m_view.remoteId : stream::Id());
     }
-    AddDownloadActions(actions, selected, m_hwnd);
+    const bool onDownloadsDone = m_view.kind == View::Kind::Downloads && m_view.sectionId == L"done";
+    AddDownloadActions(actions, selected, m_hwnd, !onDownloadsDone);
 
     // Searches name what they look for (owner, 2026-11-21: a song offered only 搜索此唱片集).
     actions.push_back({});
@@ -296,18 +297,26 @@ std::vector<MenuAction> MainWindow::BuildContextActions(metadb_handle_list_cref 
         actions.push_back({Tr(L"Search for album") + quoted(albumName), [this, albumName] { Search(albumName); }});
 
     // Removals that belong to the page go last.
-    std::vector<MenuAction> page;
-    if (m_page) m_page->AddSongActions(page, selected);
-    if (m_view.kind == View::Kind::Playlist && media::IsQueue(m_view.playlist))
-        page.push_back({L"Remove from Now Playing", [this] { RemoveFromNowPlaying(); }});
-    else if (m_view.kind == View::Kind::AllRecentPlayed)
-        page.push_back(
-            {L"Remove from Recently Played", [this, selected] { ForgetPlayStats(selected, true); }});
-    else if (m_view.kind == View::Kind::AllMostPlayed)
-        page.push_back({L"Remove from Most Played", [this, selected] { ForgetPlayStats(selected, false); }});
-    if (!page.empty() && !page.front().label.empty()) actions.push_back({});
-    for (auto& action : page)
-        actions.push_back(std::move(action));
+    if (!m_suppressPageSongActions) {
+        std::vector<MenuAction> page;
+        if (m_page) m_page->AddSongActions(page, selected);
+        if (m_view.kind == View::Kind::Playlist && media::IsQueue(m_view.playlist)) {
+            page.push_back({L"Remove from Now Playing", [this] { RemoveFromNowPlaying(); }});
+        } else if (m_view.kind == View::Kind::Playlist && !media::IsAutoPlaylist(m_view.playlist) &&
+                   m_view.playlist != media::FavoritesPlaylist(false)) {
+            page.push_back({L"Remove from playlist", [this] {
+                                if (m_source && m_source->DeleteSelected() && m_list) m_list->Refresh();
+                            }});
+        } else if (m_view.kind == View::Kind::AllRecentPlayed) {
+            page.push_back(
+                {L"Remove from Recently Played", [this, selected] { ForgetPlayStats(selected, true); }});
+        } else if (m_view.kind == View::Kind::AllMostPlayed) {
+            page.push_back({L"Remove from Most Played", [this, selected] { ForgetPlayStats(selected, false); }});
+        }
+        if (!page.empty() && !page.front().label.empty()) actions.push_back({});
+        for (auto& action : page)
+            actions.push_back(std::move(action));
+    }
     return actions;
 }
 
@@ -384,10 +393,12 @@ void MainWindow::ForgetPlayStats(metadb_handle_list_cref items, bool recent) {
 }
 
 void MainWindow::ClearPlayStats(bool recent) {
-    if (recent)
+    if (recent) {
         media::PlayStats::Get().ForgetAllRecent();
-    else
+        media::ClearRecentLists();
+    } else {
         media::PlayStats::Get().ClearAllCounts();
+    }
     if (m_view.kind == View::Kind::AllRecentPlayed || m_view.kind == View::Kind::AllMostPlayed)
         Navigate(m_view, false);
 }
@@ -423,12 +434,28 @@ void MainWindow::ShowPageContextMenu(POINT screen) {
                            }});
     std::vector<MenuAction> page;
     if (m_page) m_page->AddPageActions(page);
-    if (m_view.kind == View::Kind::Playlist && media::IsQueue(m_view.playlist))
+    if (m_view.kind == View::Kind::Playlist && media::IsQueue(m_view.playlist)) {
         page.push_back({L"Clear Now Playing", [this] { ClearNowPlaying(); }});
-    else if (m_view.kind == View::Kind::AllRecentPlayed)
+    } else if (localPlaylist) {
+        const t_size playlist = m_view.playlist;
+        if (media::IsSmart(playlist))
+            page.push_back({L"Edit smart playlist...", [playlist] {
+                                if (auto c = autoplaylist_manager::get()->query_client(playlist); c.is_valid())
+                                    c->show_ui(playlist);
+                            }});
+        if (playlist != media::FavoritesPlaylist(false)) {
+            page.push_back({L"Rename...", [this, playlist] {
+                                playlist_manager::get()->set_active_playlist(playlist);
+                                standard_commands::run_main(standard_commands::guid_main_rename_playlist);
+                                KeepQueueActive();
+                            }});
+            page.push_back({L"Remove", [playlist] { playlist_manager::get()->remove_playlist(playlist); }});
+        }
+    } else if (m_view.kind == View::Kind::AllRecentPlayed) {
         page.push_back({L"Clear Recently Played", [this] { ClearPlayStats(true); }});
-    else if (m_view.kind == View::Kind::AllMostPlayed)
+    } else if (m_view.kind == View::Kind::AllMostPlayed) {
         page.push_back({L"Clear Most Played", [this] { ClearPlayStats(false); }});
+    }
     actions.push_back({});
     for (auto& action : page)
         actions.push_back(std::move(action));

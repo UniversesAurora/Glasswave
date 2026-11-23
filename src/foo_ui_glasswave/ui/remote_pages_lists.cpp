@@ -98,6 +98,23 @@ class PlaylistPage final : public TrackPagedPage {
     }
 
   protected:
+    void ConfigureSource() override {
+        TrackPagedPage::ConfigureSource();
+        if (auto* source = SongSource()) {
+            source->SetDeleteHandler([this, alive = LifetimeToken()]() -> bool {
+                if (alive.expired() || !Own() || !m_provider.Can(stream::Capability::RemovePlaylistTracks)) return false;
+                auto* s = SongSource();
+                if (!s) return false;
+                auto ids = TrackIds(m_provider, s->SelectedItems());
+                if (ids.empty()) return false;
+                Remove(ids);
+                return true;
+            });
+        }
+    }
+
+    stream::Id ExcludeRemotePlaylist() const override { return m_view.remoteId; }
+
     void AddTrackPageActions(std::vector<MenuAction>& actions) override {
         const std::wstring name = m_info && !m_info->name.empty() ? m_info->name : m_view.name;
         auto account = PlaylistAccountActions(m_host, m_provider, m_view.remoteId, name, m_view.sectionId, Flags(),

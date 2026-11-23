@@ -390,8 +390,16 @@ class DownloadsPage final : public Page {
                                                              ? Tr(L"Move the downloaded file to the Recycle Bin?")
                                                              : Tr(L"Move the downloaded files to the Recycle Bin?");
                                if (Confirm(owner, Tr(L"Delete file"), text))
-                                   download::Forget(ids, true);
+                                   download::Forget(ids, true, false);
                            }});
+        actions.push_back(
+            {L"Delete permanently", [ids, owner = m_host.Owner(), count = selected.size()] {
+                 const std::wstring text =
+                     count == 1 ? Tr(L"Permanently delete the downloaded file? This cannot be undone.")
+                                : Tr(L"Permanently delete the downloaded files? This cannot be undone.");
+                 if (Confirm(owner, Tr(L"Delete permanently"), text, true))
+                     download::Forget(ids, true, true);
+             }});
     }
 
     void AddPageActions(std::vector<MenuAction>& actions) override {
@@ -481,11 +489,29 @@ std::unique_ptr<Page> MakeDownloadsPage(PageHost& host, const View& view) {
     return std::make_unique<DownloadsPage>(host, view);
 }
 
-void AddDownloadActions(std::vector<MenuAction>& actions, const metadb_handle_list& items, HWND owner) {
+void AddDownloadActions(std::vector<MenuAction>& actions, const metadb_handle_list& items, HWND owner,
+                        bool includeDownloadedActions) {
     if (!download::AnyDownloadable(items)) return;
     bool anyNew = false; // not downloaded nor downloading yet
-    for (size_t i = 0; i < items.get_count() && !anyNew; ++i)
-        anyNew = download::Downloadable(items[i]) && !download::StateOf(items[i]);
+    std::vector<uint64_t> doneIds;
+    std::wstring singleDonePath;
+    for (size_t i = 0; i < items.get_count(); ++i) {
+        if (!download::Downloadable(items[i])) continue;
+        const auto state = download::StateOf(items[i]);
+        if (!state) {
+            anyNew = true;
+            continue;
+        }
+        if (state->state == download::State::Done) {
+            doneIds.push_back(state->id);
+            if (items.get_count() == 1) {
+                if (auto* provider = stream::ProviderOf(items[i])) {
+                    if (auto path = download::LocalFile(provider->Key(), provider->TrackId(items[i])))
+                        singleDonePath = std::move(*path);
+                }
+            }
+        }
+    }
     if (anyNew) actions.push_back({L"Download", [items, owner] { Queue(owner, items, {}); }});
     if (items.get_count() == 1) {
         actions.push_back({L"Save as...", [handle = items[0], owner] {
@@ -497,6 +523,26 @@ void AddDownloadActions(std::vector<MenuAction>& actions, const metadb_handle_li
                                if (const std::wstring folder = PickDownloadFolder(owner); !folder.empty())
                                    Queue(owner, items, folder);
                            }});
+    }
+    if (includeDownloadedActions && !doneIds.empty()) {
+        if (items.get_count() == 1 && !singleDonePath.empty())
+            actions.push_back({L"Open file location", [path = std::move(singleDonePath)] { Reveal(path); }});
+        actions.push_back({L"Delete downloaded file", [doneIds, owner] {
+                               const std::wstring text =
+                                   doneIds.size() == 1 ? Tr(L"Move the downloaded file to the Recycle Bin?")
+                                                       : Tr(L"Move the downloaded files to the Recycle Bin?");
+                               if (Confirm(owner, Tr(L"Delete downloaded file"), text))
+                                   download::Forget(doneIds, true, false);
+                           }});
+        actions.push_back(
+            {L"Delete downloaded file permanently", [doneIds, owner] {
+                 const std::wstring text =
+                     doneIds.size() == 1
+                         ? Tr(L"Permanently delete the downloaded file? This cannot be undone.")
+                         : Tr(L"Permanently delete the downloaded files? This cannot be undone.");
+                 if (Confirm(owner, Tr(L"Delete downloaded file permanently"), text, true))
+                     download::Forget(doneIds, true, true);
+             }});
     }
 }
 

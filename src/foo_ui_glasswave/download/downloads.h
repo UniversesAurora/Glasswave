@@ -97,8 +97,9 @@ void Pause(const std::vector<uint64_t>& ids);
 void Resume(const std::vector<uint64_t>& ids); // Paused or Failed: queued again
 // Unfinished items leave the list and their partial files are deleted.
 void Cancel(const std::vector<uint64_t>& ids);
-// Finished items leave the list; with deleteFiles their files go to the Recycle Bin.
-void Forget(const std::vector<uint64_t>& ids, bool deleteFiles);
+// Finished items leave the list; with deleteFiles their files go to the Recycle Bin, or are
+// deleted directly when permanent is true.
+void Forget(const std::vector<uint64_t>& ids, bool deleteFiles, bool permanent = false);
 
 // The downloaded file of a song while it exists (any thread).
 std::optional<std::wstring> LocalFile(std::wstring_view provider, std::wstring_view track);

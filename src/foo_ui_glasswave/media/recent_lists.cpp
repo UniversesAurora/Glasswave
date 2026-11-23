@@ -55,4 +55,8 @@ void ForgetRecentList(const std::wstring& provider, const std::wstring& id) {
     Store(lists);
 }
 
+void ClearRecentLists() {
+    cfg_recentLists.set("");
+}
+
 } // namespace glasswave::media

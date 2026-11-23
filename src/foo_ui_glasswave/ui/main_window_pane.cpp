@@ -314,26 +314,48 @@ void MainWindow::ConnectPaneQueue() {
         // A stale drag is discarded and repainted from the current committed schedule.
         OnCoreQueueChanged();
     };
-    queue.onRowMenu = [this](size_t index, POINT screen) {
-        std::vector<MenuAction> actions;
-        actions.push_back({Tr(L"Remove from Now Playing"), [this, index, revision = m_paneScheduleRevision] {
-                               if (media::PlaybackScheduler::Get().ScheduleRevision() != revision) {
-                                   OnCoreQueueChanged();
-                                   return;
-                               }
-                               auto pm = playlist_manager::get();
-                               if (QueueView::IsExplicitQueue(index)) {
-                                   const size_t at = QueueView::ExplicitQueueIndex(index);
-                                   if (at < pm->queue_get_count())
-                                       pm->queue_remove_mask(pfc::bit_array_one(at));
-                                   return;
-                               }
-                               const t_size p = media::QueuePlaylist(false);
-                               if (p == SIZE_MAX || index >= pm->playlist_get_item_count(p)) return;
-                               pm->playlist_undo_backup(p);
-                               pm->playlist_remove_items(p, pfc::bit_array_one(index));
-                           }});
-        ShowActionMenu(m_hwnd, screen, actions);
+    queue.onRowMenu = [this](size_t index, const metadb_handle_ptr& handle, POINT screen) {
+        const HWND owner = m_player && m_player->Shown() ? m_player->Hwnd() : m_hwnd;
+        std::vector<MenuAction> extra;
+        extra.push_back({L"Remove from Now Playing", [this, index, revision = m_paneScheduleRevision] {
+                             if (media::PlaybackScheduler::Get().ScheduleRevision() != revision) {
+                                 OnCoreQueueChanged();
+                                 return;
+                             }
+                             auto pm = playlist_manager::get();
+                             if (QueueView::IsExplicitQueue(index)) {
+                                 const size_t at = QueueView::ExplicitQueueIndex(index);
+                                 if (at < pm->queue_get_count())
+                                     pm->queue_remove_mask(pfc::bit_array_one(at));
+                                 return;
+                             }
+                             const t_size p = media::QueuePlaylist(false);
+                             if (p == SIZE_MAX || index >= pm->playlist_get_item_count(p)) return;
+                             pm->playlist_undo_backup(p);
+                             pm->playlist_remove_items(p, pfc::bit_array_one(index));
+                         }});
+        if (!handle.is_valid()) {
+            ShowActionMenu(owner, screen, extra);
+            return;
+        }
+        const bool prev = std::exchange(m_suppressPageSongActions, true);
+        RunContextMenu(owner, pfc::list_single_ref_t<metadb_handle_ptr>(handle), screen, false, std::move(extra));
+        m_suppressPageSongActions = prev;
+    };
+    queue.onHistoryMenu = [this](const metadb_handle_ptr& handle, POINT screen) {
+        if (!handle.is_valid()) return;
+        const HWND owner = m_player && m_player->Shown() ? m_player->Hwnd() : m_hwnd;
+        std::vector<MenuAction> extra;
+        extra.push_back({L"Remove from Recently Played", [this, handle] {
+                             metadb_handle_list single;
+                             single.add_item(handle);
+                             media::PlayStats::Get().ForgetRecent(single);
+                             RefreshPaneQueue();
+                             if (m_view.kind == View::Kind::AllRecentPlayed) Navigate(m_view, false);
+                         }});
+        const bool prev = std::exchange(m_suppressPageSongActions, true);
+        RunContextMenu(owner, pfc::list_single_ref_t<metadb_handle_ptr>(handle), screen, false, std::move(extra));
+        m_suppressPageSongActions = prev;
     };
 }
 
@@ -341,7 +363,9 @@ void MainWindow::ShowNowPlayingSongMenu(POINT screen) {
     const HWND owner = m_player && m_player->Shown() ? m_player->Hwnd() : m_hwnd;
     metadb_handle_ptr now;
     if (!playback_control::get()->get_now_playing(now)) return;
+    const bool prev = std::exchange(m_suppressPageSongActions, true);
     RunContextMenu(owner, pfc::list_single_ref_t<metadb_handle_ptr>(now), screen, true);
+    m_suppressPageSongActions = prev;
 }
 
 void MainWindow::ShowLyricsMenu(POINT screen) {

@@ -582,6 +582,7 @@ class MainWindow : public PageHost, public PlayerHost {
     media::LibraryModel m_library;
     std::unique_ptr<media::ListSource> m_source;
     std::unique_ptr<Page> m_page; // the asynchronous page on screen, if any; owns its loading state
+    bool m_suppressPageSongActions = false; // set while building menus for the now-playing / queue pane
     std::unique_ptr<ListView> m_list;
     std::unique_ptr<NavPane> m_nav;
     std::unique_ptr<SearchBox> m_search;

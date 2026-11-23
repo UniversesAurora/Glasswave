@@ -2,7 +2,35 @@
 
 Updated: 2026-11-23
 
-## Full-screen player idle-with-pane layout & interruptible morph animations (2026-11-23, latest)
+## Context-menu CRUD symmetry & permanent downloaded-file deletion (2026-11-23, latest)
+
+- **Queue / History pane full song context menus (`ui/queue_view.*`, `ui/win7_menu.*`, `ui/main_window_pane.cpp`, `ui/main_window_commands.cpp`)**:
+  - Extended `RunContextMenu` with optional `extra` actions and added `QueueView::onHistoryMenu`
+    plus track handle forwarding on `QueueView::onRowMenu`. Both Up Next and History rows in
+    `NowPlayingPane` (library and full-screen player) now open the full unified song context menu
+    with `Remove from Now Playing` / `Remove from Recently Played`, using the active player/main
+    window owner and suppressing unrelated background-page song actions (`m_suppressPageSongActions`).
+  - Added `Save album art...` to `RunPlaylistContextMenu` for single-track parity.
+- **Unified record, playlist & recently-played operations (`ui/remote_pages_artists.cpp`, `ui/remote_pages_lists.cpp`, `ui/remote_pages_parts.h`, `ui/song_table.h`, `ui/song_actions.cpp`, `ui/recent_page.cpp`, `ui/search_page.cpp`, `media/play_stats.*`, `media/recent_lists.*`)**:
+  - Routed artist overview Similar Artists right-clicks through `ShowRecordMenu` (adding Follow /
+    Unfollow, Play, Queue, Add to playlist, and Search).
+  - Wired `Delete` key removal (`SongTableSource::SetDeleteHandler`) on owned remote playlists,
+    added explicit `Remove from playlist` in local regular playlist context menus, and added
+    local playlist `Edit smart playlist...` / `Rename...` / `Remove` actions on local playlist
+    page backgrounds and Search results.
+  - Added `PlayStats::ForgetRecentAlbum` and `ClearRecentLists` so Recently Played → Albums
+    supports single-album removal and Clear Recently Played also clears the Playlists tab.
+  - Excluded the current remote playlist from its own page-background `Add to <provider> playlist`
+    menu (`TrackPagedPage::ExcludeRemotePlaylist`), and reported `AddToPlaylist` failures via
+    `ShowProviderError`.
+- **Downloaded-file management & permanent deletion (`download/downloads.*`, `ui/downloads_page.*`, `lang/zh-CN.json`)**:
+  - Added `permanent` mode to `download::Forget` (deleting audio + sidecar `.lrc` directly via
+    `DeleteFileW`, bypassing the Recycle Bin).
+  - Exposed `Delete permanently` on `Downloads → Downloaded`, and exposed `Open file location`,
+    `Delete downloaded file`, and `Delete downloaded file permanently` for already-downloaded
+    tracks in song context menus on every other page.
+
+## Full-screen player idle-with-pane layout & interruptible morph animations (2026-11-23)
 
 - **Balanced left-stage idle layout beside the full-screen glass pane (`ui/player_window.*`, `ui/player_window_paint.cpp`)**:
   - When full-screen chrome hides with the lyrics/queue pane open (`!m_chromeShown && m_paneShown`),

@@ -7,6 +7,7 @@
 #include "core/paths.h"
 #include "stream/provider.h"
 #include "app/settings.h"
+#include "media/library_model.h"
 #include "media/path_behaviour.h"
 
 #include <cstdlib>
@@ -237,6 +238,27 @@ void PlayStats::ForgetRecent(metadb_handle_list_cref items) {
         if (it == m_index.end()) continue;
         PlayRecord& record = m_records[it->second];
         if (record.lastPlayed) {
+            record.lastPlayed = 0;
+            changed = true;
+        }
+    }
+    if (changed) QueueSave();
+}
+
+void PlayStats::ForgetRecentAlbum(const std::wstring& provider, const std::wstring& albumId,
+                                  const std::wstring& albumNameLower, const std::wstring& artistLower) {
+    if (!m_loaded) Load();
+    bool changed = false;
+    for (PlayRecord& record : m_records) {
+        if (!record.lastPlayed) continue;
+        bool match = false;
+        if (!provider.empty()) {
+            match = record.provider == provider && record.albumId == albumId;
+        } else {
+            match = record.provider.empty() && Lower(core::Wide(record.album.c_str())) == albumNameLower &&
+                    Lower(core::Wide(record.artist.c_str())) == artistLower;
+        }
+        if (match) {
             record.lastPlayed = 0;
             changed = true;
         }

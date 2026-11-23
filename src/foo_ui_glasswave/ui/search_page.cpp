@@ -2,7 +2,9 @@
 #include "ui/search_page.h"
 #include "core/text.h"
 
+#include "media/favorites.h"
 #include "media/library_model.h"
+#include "media/special_playlists.h"
 #include "stream/list_session.h"
 #include "ui/i18n.h"
 #include "ui/remote_grids.h"
@@ -749,6 +751,33 @@ class SearchPage final : public Page {
         if (songs.get_count()) {
             actions.push_back({});
             AddBulkActions(actions, Ready(songs));
+        }
+        if (const auto* pl = std::get_if<stream::Playlist>(&item.value)) {
+            auto pm = playlist_manager::get();
+            const auto index = static_cast<t_size>(_wtoi64(pl->id.c_str()));
+            if (index < pm->get_playlist_count()) {
+                actions.push_back({});
+                if (media::IsSmart(index))
+                    actions.push_back({L"Edit smart playlist...", [index] {
+                                           if (auto c = autoplaylist_manager::get()->query_client(index);
+                                               c.is_valid())
+                                               c->show_ui(index);
+                                       }});
+                if (!media::IsQueue(index) && index != media::FavoritesPlaylist(false)) {
+                    actions.push_back({L"Rename...", [index] {
+                                           auto p = playlist_manager::get();
+                                           const t_size prev = p->get_active_playlist();
+                                           p->set_active_playlist(index);
+                                           standard_commands::run_main(standard_commands::guid_main_rename_playlist);
+                                           if (prev < p->get_playlist_count()) p->set_active_playlist(prev);
+                                       }});
+                    actions.push_back({L"Remove", [this, index] {
+                                           auto p = playlist_manager::get();
+                                           if (index < p->get_playlist_count()) p->remove_playlist(index);
+                                           m_host.Reload();
+                                       }});
+                }
+            }
         }
         std::wstring name;
         const wchar_t* what = L"Search for album";

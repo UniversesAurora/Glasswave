@@ -543,10 +543,10 @@ class ArtistPage final : public AlbumBrowsePage {
             ShowRemotePlaylistMenu(m_host, m_provider, playlist->id, playlist->name, std::nullopt, m_view.sectionId,
                                    screen);
         } else if (const auto* artist = std::get_if<stream::Artist>(&value)) {
-            const stream::Artist a = *artist;
-            std::vector<MenuAction> actions{
-                {L"View", [this, a] { m_host.Open(ArtistView(m_provider, a.id, a.name, m_view.sectionId)); }}};
-            ShowActionMenu(m_host.Owner(), screen, actions);
+            RecordMenuContext context;
+            context.sectionId = m_view.sectionId;
+            context.page.push_back(RefreshAction(m_host));
+            ShowRecordMenu(m_host, m_provider, *artist, screen, context);
         }
     }
 

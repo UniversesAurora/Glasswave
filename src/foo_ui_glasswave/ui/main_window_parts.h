@@ -37,6 +37,7 @@
 #include "cd/playback.h"
 #include "cd/discs.h"
 #include "media/play_stats.h"
+#include "media/recent_lists.h"
 #include "media/special_playlists.h"
 #include "media/queue_order.h"
 #include "media/playback_scheduler.h"

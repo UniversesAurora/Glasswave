@@ -238,11 +238,19 @@ class RecentPage final : public Page {
     void Menu(const Entry& e) {
         const POINT at = m_tiles ? m_tiles->MenuAt() : POINT{};
         std::vector<MenuAction> page;
-        if (e.playlist)
+        if (e.playlist) {
             page.push_back({L"Remove from Recently Played", [this, e] {
                                 media::ForgetRecentList(e.provider ? std::wstring(e.provider->Key()) : L"", e.id);
                                 m_host.Reload();
                             }});
+        } else {
+            page.push_back({L"Remove from Recently Played", [this, e] {
+                                media::PlayStats::Get().ForgetRecentAlbum(
+                                    e.provider ? std::wstring(e.provider->Key()) : L"", e.id, media::Lower(e.name),
+                                    media::Lower(e.localArtist));
+                                m_host.Reload();
+                            }});
+        }
         if (e.provider) {
             RecordMenuContext context;
             context.page = std::move(page);

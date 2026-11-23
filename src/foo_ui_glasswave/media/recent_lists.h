@@ -19,5 +19,6 @@ struct RecentList {
 std::vector<RecentList> RecentLists();
 void RecordRecentList(const std::wstring& provider, const std::wstring& id, const std::wstring& name);
 void ForgetRecentList(const std::wstring& provider, const std::wstring& id);
+void ClearRecentLists();
 
 } // namespace glasswave::media

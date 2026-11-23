@@ -12,7 +12,8 @@ std::unique_ptr<Page> MakeDownloadsPage(PageHost& host, const View& view);
 
 // Download, and Save as... (one song) or Download to... (several), for selected songs when
 // any of them comes from a source that can download them (download::Service).
-void AddDownloadActions(std::vector<MenuAction>& actions, const metadb_handle_list& items, HWND owner);
+void AddDownloadActions(std::vector<MenuAction>& actions, const metadb_handle_list& items, HWND owner,
+                        bool includeDownloadedActions = true);
 // Download and Download to... for the songs a fetch delivers (an album or a playlist).
 void AddBulkDownloadActions(std::vector<MenuAction>& actions, SongsFetch songs, HWND owner);
 // The folder dialog, starting in the download folder (Download to..., the settings). Empty:
