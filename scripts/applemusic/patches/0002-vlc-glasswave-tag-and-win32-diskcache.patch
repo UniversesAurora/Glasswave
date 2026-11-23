@@ -1,6 +1,6 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Glasswave <glasswave@local>
-Date: Mon, 23 Nov 2026 12:55:21 +0800
+Date: Mon, 23 Nov 2026 14:32:29 +0800
 Subject: [PATCH 2/8] vlc, diskcache: select nocgo VLC stub under glasswave tag
  and fix Windows close test
 

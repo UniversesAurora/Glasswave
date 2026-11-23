@@ -2,7 +2,28 @@
 
 Updated: 2026-11-23
 
-## Apple Music ALAC escape-frame repair workaround (2026-11-23, latest)
+## Apple Music Atmos playback fix: drop trial-length validation (2026-11-23, latest)
+
+- **Symptom**: `Cure For Me` (`song_id=1640353346`) failed with `Apple Music bridge request failed
+  (HTTP 500)` when "prefer Dolby Atmos" was on. Reproduced in the isolated dev helper:
+  `playback resolution failed: full song required: media source is 2714ms shorter than catalog
+  (198926ms vs 201640ms)`. ALAC and AAC opened fine.
+- **Cause**: the `RequireFullSong` guard (Go `validateFullSongDuration`, plus the C++ "incomplete
+  full-song session" check in `input_applemusic.cpp`) rejected any source more than 2 s shorter than
+  the catalog length. An Atmos master legitimately runs a few seconds shorter than the stereo master,
+  so a complete track was refused. The guard only existed to catch previews, which are not a case
+  worth rejecting.
+- **Fix**: removed `OpenRequest.RequireFullSong`, `validateFullSongDuration` and the C++ check
+  (patches `0003`, `0005`, `0007`). The normal `media.ReconcileDurationMs` path now reports the
+  stream's real length (`198926 ms` for the Atmos master), so the player's end-of-track and
+  truncation checks stay consistent with the delivered stream.
+- **Diagnostics**: `handleCreatePlayback` now logs every failed open (asset, status, latency, error)
+  to `component-service.log` (patch `0007`). The C++ client keeps its existing rule of never copying
+  bridge response bodies into exceptions; the engine log is the place to read the reason.
+- **Verified**: dev helper opens `1640353346` as ALAC (`201640 ms`), AAC (`201640 ms`) and Atmos
+  (`198926 ms`); `playback`, `media`, `hls`, `fairplay`, `alacstream` and `cmd` Go tests pass.
+
+## Apple Music ALAC escape-frame repair workaround (2026-11-23)
 
 - **Root cause**: Certain Apple Music 24-bit ALAC tracks (observed on `song_id=1842289855`,
   `SHOCK (feat. 梅とら)`, failing at `70.827 s` with `Unsupported format or corrupted file` /

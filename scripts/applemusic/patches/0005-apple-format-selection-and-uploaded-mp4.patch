@@ -1,6 +1,6 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Glasswave <glasswave@local>
-Date: Mon, 23 Nov 2026 12:55:24 +0800
+Date: Mon, 23 Nov 2026 14:32:31 +0800
 Subject: [PATCH 5/8] apple: add lossless/Atmos format selection policy and
  uploaded library MP4 streaming
 
@@ -2265,7 +2265,7 @@ index 0000000..d9e47d0
 +}
 diff --git a/engine/core/apple/uploaded_mp4_contract_test.go b/engine/core/apple/uploaded_mp4_contract_test.go
 new file mode 100644
-index 0000000..c172c55
+index 0000000..2136515
 --- /dev/null
 +++ b/engine/core/apple/uploaded_mp4_contract_test.go
 @@ -0,0 +1,55 @@
@@ -2296,7 +2296,7 @@ index 0000000..c172c55
 +			})}
 +		}
 +		manager := playback.NewWithProviderWithoutReaper(provider)
-+		session, err := manager.Open(context.Background(), playback.OpenRequest{AssetID: "i.test", Token: "dev", MUT: "mut", RequireFullSong: true})
++		session, err := manager.Open(context.Background(), playback.OpenRequest{AssetID: "i.test", Token: "dev", MUT: "mut"})
 +		if err != nil {
 +			t.Fatal(err)
 +		}
@@ -3135,10 +3135,10 @@ index 0000000..fb246ef
 +}
 diff --git a/engine/core/apple/uploaded_test.go b/engine/core/apple/uploaded_test.go
 new file mode 100644
-index 0000000..f544b84
+index 0000000..34e93cb
 --- /dev/null
 +++ b/engine/core/apple/uploaded_test.go
-@@ -0,0 +1,565 @@
+@@ -0,0 +1,564 @@
 +package apple
 +
 +import (
@@ -3368,7 +3368,6 @@ index 0000000..f544b84
 +		Token:           "developer-token",
 +		MUT:             "music-token",
 +		PreferAtmos:     true,
-+		RequireFullSong: true,
 +		Private:         true,
 +	})
 +	if err != nil {
@@ -3429,7 +3428,7 @@ index 0000000..f544b84
 +	manager := playback.NewWithProviderWithoutReaper(newUploadedTestProvider(fixture))
 +	session, err := manager.Open(context.Background(), playback.OpenRequest{
 +		AssetID: "i.test", Token: "dev", MUT: "mut",
-+		RequireFullSong: true, Private: true,
++		Private: true,
 +	})
 +	if err != nil {
 +		t.Fatal(err)

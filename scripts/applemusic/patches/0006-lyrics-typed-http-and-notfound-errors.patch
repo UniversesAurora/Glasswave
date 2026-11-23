@@ -1,6 +1,6 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Glasswave <glasswave@local>
-Date: Mon, 23 Nov 2026 12:55:24 +0800
+Date: Mon, 23 Nov 2026 14:32:32 +0800
 Subject: [PATCH 6/8] lyrics: return typed ErrNotFound and HTTPError with
  bounded response reads
 

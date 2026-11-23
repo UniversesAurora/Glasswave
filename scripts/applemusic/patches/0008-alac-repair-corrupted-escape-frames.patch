@@ -1,6 +1,6 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Glasswave <glasswave@local>
-Date: Mon, 23 Nov 2026 12:55:26 +0800
+Date: Mon, 23 Nov 2026 14:32:33 +0800
 Subject: [PATCH 8/8] alacstream, fairplay: repair corrupted upstream ALAC
  escape frames
 

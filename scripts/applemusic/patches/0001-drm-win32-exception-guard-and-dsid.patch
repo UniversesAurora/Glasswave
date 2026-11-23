@@ -1,6 +1,6 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Glasswave <glasswave@local>
-Date: Mon, 23 Nov 2026 12:55:20 +0800
+Date: Mon, 23 Nov 2026 14:32:28 +0800
 Subject: [PATCH 1/8] drm: add Windows ELF C++ exception guard and export
  account DSID
 

@@ -1,6 +1,6 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Glasswave <glasswave@local>
-Date: Mon, 23 Nov 2026 12:55:22 +0800
+Date: Mon, 23 Nov 2026 14:32:30 +0800
 Subject: [PATCH 3/8] drm, hls, cbcs, playback: harden FairPlay CBCS retries,
  HLS selection and full-song validation
 
@@ -1483,117 +1483,11 @@ index a2a47fe..5efcb54 100644
  	CodecAtmos Codec = "atmos"
  	CodecH264  Codec = "h264"
  )
-diff --git a/engine/core/playback/duration_test.go b/engine/core/playback/duration_test.go
-index fe6983f..63bbc64 100644
---- a/engine/core/playback/duration_test.go
-+++ b/engine/core/playback/duration_test.go
-@@ -2,12 +2,101 @@ package playback
- 
- import (
- 	"context"
-+	"strings"
- 	"testing"
- 
- 	"engine/core/media"
- 	"engine/core/pipeline"
- )
- 
-+func TestOpenKeySeparatesFullSongRequirement(t *testing.T) {
-+	t.Parallel()
-+	reusable := OpenRequest{AssetID: "song", Storefront: "us"}
-+	fullOnly := reusable
-+	fullOnly.RequireFullSong = true
-+	if reusableKey, fullKey := openKey(reusable), openKey(fullOnly); reusableKey == fullKey {
-+		t.Fatalf("full-song and reusable sessions share open key %q", reusableKey)
-+	}
-+}
-+
-+func TestOpenRequireFullSong(t *testing.T) {
-+	t.Parallel()
-+	tests := []struct {
-+		name           string
-+		catalogMs      int
-+		sourceMs       int
-+		wantCatalogMs  int
-+		wantErrorParts []string
-+	}{
-+		{name: "valid full song", catalogMs: 180000, sourceMs: 180000, wantCatalogMs: 180000},
-+		{name: "two seconds of padding", catalogMs: 180000, sourceMs: 178000, wantCatalogMs: 180000},
-+		{name: "longer padding or master", catalogMs: 180000, sourceMs: 181500, wantCatalogMs: 180000},
-+		{
-+			name:      "thirty second trial",
-+			catalogMs: 180000, sourceMs: 30000,
-+			wantErrorParts: []string{"full song required", "shorter than catalog", "150000ms"},
-+		},
-+		{
-+			name:      "more than two seconds truncated",
-+			catalogMs: 180000, sourceMs: 177999,
-+			wantErrorParts: []string{"full song required", "shorter than catalog", "2001ms"},
-+		},
-+		{
-+			name:      "catalog known but source missing",
-+			catalogMs: 180000, sourceMs: 0,
-+			wantErrorParts: []string{"full song required", "source duration unavailable"},
-+		},
-+		{
-+			name:      "catalog and source unknown",
-+			catalogMs: 0, sourceMs: 0,
-+			wantErrorParts: []string{"full song required", "source duration unavailable"},
-+		},
-+	}
-+	for _, tc := range tests {
-+		tc := tc
-+		t.Run(tc.name, func(t *testing.T) {
-+			t.Parallel()
-+			m := newTestManager(&stubProvider{resp: &media.Session{
-+				Kind:     "song",
-+				Metadata: media.Metadata{DurationMs: tc.catalogMs},
-+				Tracks: []media.Track{{
-+					Kind:  pipeline.KindAudio,
-+					Codec: pipeline.CodecALAC,
-+					Open: func(context.Context) (*pipeline.Stream, error) {
-+						return &pipeline.Stream{
-+							Kind:       pipeline.KindAudio,
-+							Codec:      pipeline.CodecALAC,
-+							DurationMs: tc.sourceMs,
-+						}, nil
-+					},
-+				}},
-+			}})
-+			session, err := m.Open(context.Background(), OpenRequest{
-+				AssetID:         "full-song-" + tc.name,
-+				Storefront:      "us",
-+				RequireFullSong: true,
-+			})
-+			if len(tc.wantErrorParts) > 0 {
-+				if err == nil {
-+					t.Fatalf("Open succeeded with session %+v; want full-song rejection", session)
-+				}
-+				for _, part := range tc.wantErrorParts {
-+					if !strings.Contains(err.Error(), part) {
-+						t.Errorf("error %q does not contain %q", err, part)
-+					}
-+				}
-+				return
-+			}
-+			if err != nil {
-+				t.Fatalf("Open: %v", err)
-+			}
-+			if session.DurationMs != tc.wantCatalogMs {
-+				t.Fatalf("session DurationMs = %d, want catalog %d", session.DurationMs, tc.wantCatalogMs)
-+			}
-+		})
-+	}
-+}
-+
- // A session reports the length its stream declares when that differs from the catalog's by more than the tolerance.
- func TestOpenReportsStreamDuration(t *testing.T) {
- 	for _, tc := range []struct {
 diff --git a/engine/core/playback/manager.go b/engine/core/playback/manager.go
-index 8107cdf..5806810 100644
+index 8107cdf..a57ea9a 100644
 --- a/engine/core/playback/manager.go
 +++ b/engine/core/playback/manager.go
-@@ -47,10 +47,15 @@ type OpenRequest struct {
+@@ -47,6 +47,7 @@ type OpenRequest struct {
  	Lossless          bool
  	HiRes             bool
  	Atmos             bool
@@ -1601,15 +1495,7 @@ index 8107cdf..5806810 100644
  	Video             bool
  	MVMaxHeight       int
  	MVAudioPriorities []string
- 
-+	// RequireFullSong rejects a resolved song whose media playlist has no
-+	// declared duration or is materially shorter than the catalog duration.
-+	RequireFullSong bool
-+
- 	// Private opens a session owned exclusively by the caller: it never reuses
- 	// an existing session, never joins a concurrent Open for the same asset,
- 	// and is never indexed for reuse by later Opens. Exports use this so their
-@@ -210,6 +215,17 @@ func (c countingHeaderWriter) SetHeader(k, v string) { c.hw.SetHeader(k, v) }
+@@ -210,6 +211,17 @@ func (c countingHeaderWriter) SetHeader(k, v string) { c.hw.SetHeader(k, v) }
  // Use this when the caller needs to configure the provider before wiring it
  // (e.g. passing a CBCS socket address to apple.NewProviderWithCBCS).
  func NewWithProvider(p media.Provider) *Manager {
@@ -1627,7 +1513,7 @@ index 8107cdf..5806810 100644
  	m := &Manager{
  		provider:       p,
  		stopReap:       make(chan struct{}),
-@@ -219,14 +235,18 @@ func NewWithProvider(p media.Provider) *Manager {
+@@ -219,14 +231,18 @@ func NewWithProvider(p media.Provider) *Manager {
  		sessionToAsset: make(map[string]string),
  		inflight:       make(map[string]*openFlight),
  	}
@@ -1642,13 +1528,13 @@ index 8107cdf..5806810 100644
  // two Open calls would produce the same session type.
  func openKey(req OpenRequest) string {
 -	flags := fmt.Sprintf("%v:%v:%v:%v:%d", req.Lossless, req.HiRes, req.Atmos, req.Video, req.MVMaxHeight)
-+	flags := fmt.Sprintf("%v:%v:%v:%v:%v:%d:%v",
++	flags := fmt.Sprintf("%v:%v:%v:%v:%v:%d",
 +		req.Lossless, req.HiRes, req.Atmos, req.PreferAtmos, req.Video,
-+		req.MVMaxHeight, req.RequireFullSong)
++		req.MVMaxHeight)
  	return req.AssetID + ":" + req.Storefront + ":" + flags
  }
  
-@@ -301,6 +321,7 @@ func (m *Manager) openDirect(ctx context.Context, req OpenRequest, assetKey stri
+@@ -301,6 +317,7 @@ func (m *Manager) openDirect(ctx context.Context, req OpenRequest, assetKey stri
  		Lossless:          req.Lossless,
  		HiRes:             req.HiRes,
  		Atmos:             req.Atmos,
@@ -1656,7 +1542,7 @@ index 8107cdf..5806810 100644
  		Video:             req.Video,
  		MVMaxHeight:       req.MVMaxHeight,
  		MVAudioPriorities: req.MVAudioPriorities,
-@@ -338,15 +359,25 @@ func (m *Manager) openDirect(ctx context.Context, req OpenRequest, assetKey stri
+@@ -338,8 +355,9 @@ func (m *Manager) openDirect(ctx context.Context, req OpenRequest, assetKey stri
  	if err != nil {
  		return nil, err
  	}
@@ -1668,24 +1554,7 @@ index 8107cdf..5806810 100644
  	declared := 0
  	for _, st := range streams {
  		if st != nil && st.DurationMs > declared {
- 			declared = st.DurationMs
- 		}
- 	}
--	if d := media.ReconcileDurationMs(sess.DurationMs, declared); d != sess.DurationMs {
-+	if req.RequireFullSong {
-+		if ms.Kind != "song" {
-+			return nil, fmt.Errorf("open %s: full song required, provider returned %q", req.AssetID, ms.Kind)
-+		}
-+		if err := validateFullSongDuration(sess.DurationMs, declared); err != nil {
-+			return nil, fmt.Errorf("open %s: %w", req.AssetID, err)
-+		}
-+		// A validated full song keeps the catalog duration. Reconcile is only for
-+		// presentation-length differences outside the full-song contract.
-+	} else if d := media.ReconcileDurationMs(sess.DurationMs, declared); d != sess.DurationMs {
- 		log.Printf("[playback] %s: stream is %dms, catalog says %dms: reporting the stream's", req.AssetID, d, sess.DurationMs)
- 		sess.DurationMs = d
- 	}
-@@ -364,6 +395,9 @@ func (m *Manager) openDirect(ctx context.Context, req OpenRequest, assetKey stri
+@@ -364,6 +382,9 @@ func (m *Manager) openDirect(ctx context.Context, req OpenRequest, assetKey stri
  				sess.BitRate = track.BitRate
  				sess.ChannelCount = track.ChannelCount
  				sess.CodecMIMEType = track.CodecMIMEType
@@ -1695,29 +1564,6 @@ index 8107cdf..5806810 100644
  				sess.SpatialAudio = track.SpatialAudio
  			}
  			_, sess.Capabilities.Seekable = stream.Source.(pipeline.SeekableSource)
-@@ -381,6 +415,22 @@ func (m *Manager) openDirect(ctx context.Context, req OpenRequest, assetKey stri
- 	return sess, nil
- }
- 
-+// fullSongDurationToleranceMs absorbs playlist rounding, encoder padding and
-+// trailing-silence differences. A source more than two seconds shorter is
-+// treated as a trial, preview or truncated response.
-+const fullSongDurationToleranceMs = 2000
-+
-+func validateFullSongDuration(catalogMs, sourceMs int) error {
-+	if sourceMs <= 0 {
-+		return fmt.Errorf("full song required: media source duration unavailable")
-+	}
-+	if catalogMs > 0 && sourceMs+fullSongDurationToleranceMs < catalogMs {
-+		return fmt.Errorf("full song required: media source is %dms shorter than catalog (%dms vs %dms)",
-+			catalogMs-sourceMs, sourceMs, catalogMs)
-+	}
-+	return nil
-+}
-+
- // openTracks opens every track concurrently. A music video has an audio and a video
- // track, each needing its own playlist round-trip, so opening them one after another
- // added a full round-trip to every start. The results are returned in track order;
 diff --git a/engine/core/playback/manager_resume_test.go b/engine/core/playback/manager_resume_test.go
 index 4f54668..0d5a9c9 100644
 --- a/engine/core/playback/manager_resume_test.go

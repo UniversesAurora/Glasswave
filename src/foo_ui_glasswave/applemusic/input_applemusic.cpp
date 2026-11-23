@@ -445,14 +445,7 @@ class AppleInput : public stream::EncodedInputBase {
         const std::wstring audio = streams ? json::GetString(*streams, L"audio") : std::wstring();
         const std::wstring expected = L"/api/v1/playback/" + Encode(sessionId) + L"/audio";
         if (sessionId.empty() || delivered.durationMs <= 0 || audio != expected || !delivered.ValidCodec())
-            throw exception_io_data("Apple Music returned an invalid full-song session");
-        // A short session is a preview of a catalog song. An uploaded library song has no
-        // preview, and its library length is computed from the upload and can be wrong
-        // (an MP3 measured at twice its length), so its session length stands.
-        if (m_song && m_song->track.durationMs > 0 && !IsLibraryId(asset) &&
-            static_cast<double>(delivered.durationMs) / 1000.0 + stream::kFullSongToleranceSeconds <
-                static_cast<double>(m_song->track.durationMs) / 1000.0)
-            throw exception_io_data("Apple Music returned an incomplete full-song session");
+            throw exception_io_data("Apple Music returned an invalid playback session");
         if (delivered.codec == L"atmos" && !m_rendererAvailable)
             throw exception_io_data("The Dolby Atmos renderer is unavailable");
         delivered.sourceVersion =
