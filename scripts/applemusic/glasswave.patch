@@ -8014,7 +8014,7 @@ index 278a8ef..37d9002 100644
  
  // ErrNotAuthenticated is returned by Decrypt and GetM3U8 when no valid
 diff --git a/engine/core/fairplay/cbcs.go b/engine/core/fairplay/cbcs.go
-index 997dd20..f9c75c0 100644
+index 997dd20..7ea585f 100644
 --- a/engine/core/fairplay/cbcs.go
 +++ b/engine/core/fairplay/cbcs.go
 @@ -8,7 +8,6 @@ import (
@@ -8249,8 +8249,11 @@ index 997dd20..f9c75c0 100644
  // skipStartFragments reads and discards startFrag fragments, accumulating
  // the total TFDT delta needed so subsequent fragments have correct timestamps.
  func skipStartFragments(inBuf *bufio.Reader, startOffset uint64, startFrag int) (accTfdt, finalOffset uint64, err error) {
-@@ -738,11 +791,16 @@ func (s *cbcsSkipSource) streamAttemptSkip(ctx context.Context, w io.Writer) err
+@@ -736,13 +789,19 @@ func (s *cbcsSkipSource) streamAttemptSkip(ctx context.Context, w io.Writer) err
+ 	if err := alacstream.SanitizeInit(init); err != nil {
+ 		log.Printf("cbcs seek: warning: sanitize init: %v", err)
  	}
++	alacConfigs := alacstream.ParseALACConfigs(init)
  
  	patchMoovDuration(init, s.durationMs)
 -	if err := init.Encode(outBuf); err != nil {
@@ -8271,7 +8274,7 @@ index 997dd20..f9c75c0 100644
  	}
  
  	// Skip startFrag fragments: read+discard, accumulate tfdt for correct continuation.
-@@ -751,10 +809,6 @@ func (s *cbcsSkipSource) streamAttemptSkip(ctx context.Context, w io.Writer) err
+@@ -751,10 +810,6 @@ func (s *cbcsSkipSource) streamAttemptSkip(ctx context.Context, w io.Writer) err
  		return err
  	}
  
@@ -8282,7 +8285,7 @@ index 997dd20..f9c75c0 100644
  	for i := s.startFrag; ; i++ {
  		frag, newOffset, err := alacstream.ReadNextFragment(inBuf, offset)
  		if err != nil {
-@@ -768,44 +822,16 @@ func (s *cbcsSkipSource) streamAttemptSkip(ctx context.Context, w io.Writer) err
+@@ -768,44 +823,20 @@ func (s *cbcsSkipSource) streamAttemptSkip(ctx context.Context, w io.Writer) err
  		// Proactive reconnect: refresh the DRM socket before it goes stale. A
  		// fresh connection has no key, so it gets a handshake for the key in
  		// force at i; otherwise only a key change at i is sent.
@@ -8328,6 +8331,10 @@ index 997dd20..f9c75c0 100644
 -				return fmt.Errorf("cbcs seek: decrypt fragment %d after reconnect: %w", i, err2)
 -			}
 -			log.Printf("cbcs seek: fragment %d decrypted after reconnect", i)
++		if repaired := alacstream.RepairALACFragment(frag, alacConfigs); repaired > 0 {
++			log.Printf("cbcs seek: repaired %d corrupted ALAC escape frame(s) in fragment %d (adamID=%s)",
++				repaired, i, s.adamID)
++		}
 +		// Defer flushing init until the first fragment decrypts so an early key
 +		// failure still allows outer Stream() retries and a clean HTTP 502.
 +		if err := writeInit(); err != nil {
@@ -8335,7 +8342,7 @@ index 997dd20..f9c75c0 100644
  		}
  		// Patch decode times only after decrypting: growing tfdt changes the moof
  		// size, and GetFullSamples locates sample data by the original offsets.
-@@ -822,6 +848,14 @@ func (s *cbcsSkipSource) streamAttemptSkip(ctx context.Context, w io.Writer) err
+@@ -822,6 +853,14 @@ func (s *cbcsSkipSource) streamAttemptSkip(ctx context.Context, w io.Writer) err
  			tr.RecordPlaybackReady()
  		}
  	}
@@ -8350,7 +8357,7 @@ index 997dd20..f9c75c0 100644
  	return nil
  }
  
-@@ -844,10 +878,6 @@ func (s *cbcsSource) streamAttempt(ctx context.Context, w io.Writer) error {
+@@ -844,10 +883,6 @@ func (s *cbcsSource) streamAttempt(ctx context.Context, w io.Writer) error {
  	if resp.StatusCode != http.StatusOK {
  		return fmt.Errorf("cbcs: download: HTTP %d", resp.StatusCode)
  	}
@@ -8361,8 +8368,11 @@ index 997dd20..f9c75c0 100644
  	stalled := newStallDetector(resp.Body, cbcsStallTimeout, cancel)
  
  	tr.RecordCBCSDialStart()
-@@ -878,15 +908,19 @@ func (s *cbcsSource) streamAttempt(ctx context.Context, w io.Writer) error {
+@@ -876,17 +911,22 @@ func (s *cbcsSource) streamAttempt(ctx context.Context, w io.Writer) error {
+ 	if err := alacstream.SanitizeInit(init); err != nil {
+ 		log.Printf("cbcs: warning: sanitize init: %v", err)
  	}
++	alacConfigs := alacstream.ParseALACConfigs(init)
  
  	patchMoovDuration(init, s.durationMs)
 -	if err := init.Encode(outBuf); err != nil {
@@ -8387,7 +8397,7 @@ index 997dd20..f9c75c0 100644
  	for i := 0; ; i++ {
  		frag, newOffset, err := alacstream.ReadNextFragment(inBuf, offset)
  		if err != nil {
-@@ -900,53 +934,16 @@ func (s *cbcsSource) streamAttempt(ctx context.Context, w io.Writer) error {
+@@ -900,53 +940,20 @@ func (s *cbcsSource) streamAttempt(ctx context.Context, w io.Writer) error {
  		// Proactive reconnect: refresh the DRM socket before it goes stale. A
  		// fresh connection has no key, so it gets a handshake for the key in
  		// force at i; otherwise only a key change at i is sent.
@@ -8443,6 +8453,10 @@ index 997dd20..f9c75c0 100644
 -				return fmt.Errorf("cbcs: decrypt fragment %d after reconnect: %w", i, err2)
 -			}
 -			log.Printf("cbcs: fragment %d decrypted after reconnect", i)
++		if repaired := alacstream.RepairALACFragment(frag, alacConfigs); repaired > 0 {
++			log.Printf("cbcs: repaired %d corrupted ALAC escape frame(s) in fragment %d (adamID=%s)",
++				repaired, i, s.adamID)
++		}
 +		// Defer flushing init until fragment 0 decrypts so an early key failure
 +		// leaves tw.wrote == 0, enabling outer Stream() retries and HTTP 502.
 +		if err := writeInit(); err != nil {
@@ -8450,7 +8464,7 @@ index 997dd20..f9c75c0 100644
  		}
  		// Patch decode times only after decrypting: growing tfdt changes the moof
  		// size, and GetFullSamples locates sample data by the original offsets.
-@@ -963,5 +960,14 @@ func (s *cbcsSource) streamAttempt(ctx context.Context, w io.Writer) error {
+@@ -963,5 +970,14 @@ func (s *cbcsSource) streamAttempt(ctx context.Context, w io.Writer) error {
  		}
  	}
  
@@ -10073,6 +10087,765 @@ index a8e2812..e81311d 100644
  package vlc
  
  // TestVLCSyncStutter measures whether continuous libvlc_media_player_set_time
+diff --git a/engine/utils/alacstream/alac_repair.go b/engine/utils/alacstream/alac_repair.go
+new file mode 100644
+index 0000000..41b6559
+--- /dev/null
++++ b/engine/utils/alacstream/alac_repair.go
+@@ -0,0 +1,448 @@
++package alacstream
++
++import (
++	"bytes"
++	"encoding/binary"
++	"math"
++
++	"github.com/itouakirai/mp4ff/mp4"
++)
++
++// ALACConfig holds the subset of ALACSpecificConfig needed to validate and
++// repair uncompressed ALAC escape frames.
++type ALACConfig struct {
++	FrameLength uint32
++	BitDepth    uint8
++	NumChannels uint8
++}
++
++// ParseALACConfigs extracts ALACSpecificConfig per track ID from a decrypted
++// (or unencrypted) MP4 init segment. Non-ALAC tracks are ignored.
++func ParseALACConfigs(init *mp4.InitSegment) map[uint32]ALACConfig {
++	if init == nil || init.Moov == nil {
++		return nil
++	}
++	var configs map[uint32]ALACConfig
++	for _, trak := range init.Moov.Traks {
++		if trak.Tkhd == nil || trak.Mdia == nil || trak.Mdia.Minf == nil ||
++			trak.Mdia.Minf.Stbl == nil || trak.Mdia.Minf.Stbl.Stsd == nil {
++			continue
++		}
++		for _, child := range trak.Mdia.Minf.Stbl.Stsd.Children {
++			if child.Type() != "alac" {
++				continue
++			}
++			cfg, ok := extractALACConfigFromSampleEntry(child)
++			if !ok {
++				continue
++			}
++			if configs == nil {
++				configs = make(map[uint32]ALACConfig, 1)
++			}
++			configs[trak.Tkhd.TrackID] = cfg
++			break
++		}
++	}
++	return configs
++}
++
++func extractALACConfigFromSampleEntry(entry mp4.Box) (ALACConfig, bool) {
++	// Decrypted CBCS init segments keep the outer entry as *mp4.AudioSampleEntryBox
++	// (originally "enca", renamed to "alac" by mp4.DecryptInit) with an inner
++	// "alac" fullbox child carrying the 24-byte ALACSpecificConfig.
++	if ase, ok := entry.(*mp4.AudioSampleEntryBox); ok {
++		for _, c := range ase.Children {
++			if c.Type() != "alac" {
++				continue
++			}
++			if cfg, ok := parseInnerALACBox(c); ok {
++				return cfg, true
++			}
++		}
++	}
++
++	// Unencrypted ALAC init segments parse the outer "alac" AudioSampleEntry as
++	// *mp4.UnknownBox (28-byte AudioSampleEntry header + child boxes).
++	var buf bytes.Buffer
++	if err := entry.Encode(&buf); err != nil {
++		return ALACConfig{}, false
++	}
++	raw := buf.Bytes()
++	// 8-byte box header + 28-byte AudioSampleEntry fixed header = 36 bytes.
++	const subBoxStart = 8 + 28
++	if len(raw) < subBoxStart+8 {
++		return ALACConfig{}, false
++	}
++	for pos := subBoxStart; pos+8 <= len(raw); {
++		boxSize := int(binary.BigEndian.Uint32(raw[pos : pos+4]))
++		if boxSize < 8 || pos+boxSize > len(raw) {
++			break
++		}
++		if string(raw[pos+4:pos+8]) == "alac" {
++			return parseALACSpecificConfig(raw[pos+8 : pos+boxSize])
++		}
++		pos += boxSize
++	}
++	return ALACConfig{}, false
++}
++
++func parseInnerALACBox(box mp4.Box) (ALACConfig, bool) {
++	var buf bytes.Buffer
++	if err := box.Encode(&buf); err != nil {
++		return ALACConfig{}, false
++	}
++	raw := buf.Bytes()
++	if len(raw) < 8 {
++		return ALACConfig{}, false
++	}
++	return parseALACSpecificConfig(raw[8:])
++}
++
++// parseALACSpecificConfig parses the payload of the inner "alac" fullbox:
++// 4-byte version/flags followed by the 24-byte ALACSpecificConfig.
++func parseALACSpecificConfig(payload []byte) (ALACConfig, bool) {
++	if len(payload) < 28 {
++		return ALACConfig{}, false
++	}
++	cfg := ALACConfig{
++		FrameLength: binary.BigEndian.Uint32(payload[4:8]),
++		BitDepth:    payload[9],
++		NumChannels: payload[13],
++	}
++	if cfg.FrameLength == 0 || cfg.FrameLength > 16384 {
++		return ALACConfig{}, false
++	}
++	switch cfg.BitDepth {
++	case 16, 20, 24, 32:
++	default:
++		return ALACConfig{}, false
++	}
++	if cfg.NumChannels != 1 && cfg.NumChannels != 2 {
++		return ALACConfig{}, false
++	}
++	return cfg, true
++}
++
++// RepairALACFragment inspects decrypted ALAC samples in frag and repairs
++// uncompressed ALAC escape frames whose trailing bytes were overwritten
++// upstream (missing ID_END tag and corrupted final sample). Valid compressed
++// and valid uncompressed frames are left untouched. Returns the number of
++// repaired samples.
++func RepairALACFragment(frag *mp4.Fragment, configs map[uint32]ALACConfig) int {
++	if frag == nil || frag.Moof == nil || frag.Mdat == nil || len(configs) == 0 {
++		return 0
++	}
++
++	moofToMdat := int64(0)
++	seenMoof := false
++	for _, c := range frag.Children {
++		if c == frag.Moof {
++			seenMoof = true
++			moofToMdat += int64(c.Size())
++			continue
++		}
++		if !seenMoof {
++			continue
++		}
++		if c == frag.Mdat {
++			break
++		}
++		moofToMdat += int64(c.Size())
++	}
++	if !seenMoof {
++		moofToMdat = int64(frag.Moof.Size())
++	}
++
++	mdatData := frag.Mdat.Data
++	mdatHdrSize := int64(frag.Mdat.Size()) - int64(len(mdatData))
++	if mdatHdrSize < 8 {
++		mdatHdrSize = 8
++	}
++
++	repaired := 0
++	for _, traf := range frag.Moof.Trafs {
++		if traf.Tfhd == nil {
++			continue
++		}
++		cfg, ok := configs[traf.Tfhd.TrackID]
++		if !ok && len(configs) == 1 && len(frag.Moof.Trafs) == 1 {
++			for _, only := range configs {
++				cfg = only
++				ok = true
++			}
++		}
++		if !ok {
++			continue
++		}
++
++		var defaultSampleSize int64
++		if traf.Tfhd.HasDefaultSampleSize() {
++			defaultSampleSize = int64(traf.Tfhd.DefaultSampleSize)
++		}
++
++		var curOff int64
++		for _, trun := range traf.Truns {
++			if trun.HasDataOffset() {
++				off := int64(trun.DataOffset) - moofToMdat - mdatHdrSize
++				if off < 0 || off > int64(len(mdatData)) {
++					break
++				}
++				curOff = off
++			}
++			for _, s := range trun.Samples {
++				sz := int64(s.Size)
++				if !trun.HasSampleSize() {
++					sz = defaultSampleSize
++				}
++				if sz <= 0 || curOff+sz > int64(len(mdatData)) {
++					break
++				}
++				if RepairALACEscapeSample(mdatData[curOff:curOff+sz], cfg) {
++					repaired++
++				}
++				curOff += sz
++			}
++		}
++	}
++	return repaired
++}
++
++// RepairALACEscapeSample repairs a single decrypted ALAC packet in place if and
++// only if it is a single-element uncompressed escape frame (isNotCompressed=1)
++// with a corrupted/missing ID_END (0b111) terminator.
++//
++// Background: some Apple Music ALAC tracks re-encoded upstream suffer from a
++// server-side buffer sizing defect on uncompressed escape frames (allocating
++// raw PCM bytes instead of raw PCM + 4 bytes), overwriting bytes starting at
++// rawPCMBytes with heap metadata. That overwrites the trailing 1-2 samples and
++// wipes out the 3-bit ID_END terminator, causing strict ALAC decoders (FFmpeg,
++// foobar2000) to fail with "invalid element channel count".
++//
++// Repair strategy:
++//  1. Never touch bytes before rawPCMBytes — all intact audio bits (including
++//     any intact leading MSBs of the boundary sample) are preserved bit-for-bit.
++//  2. Conceal only the overwritten sample(s) using a 4-tap regularized
++//     Levinson-Durbin AR predictor on the preceding 64 intact samples of the
++//     same channel, clamped to the exact signed interval matching any intact
++//     leading MSBs.
++//  3. Restore the 3-bit ID_END (0b111) marker and zero-fill trailing pad bits.
++func RepairALACEscapeSample(pkt []byte, cfg ALACConfig) bool {
++	if len(pkt) < 4 || cfg.FrameLength == 0 {
++		return false
++	}
++	var expectedTag uint64
++	switch cfg.NumChannels {
++	case 1:
++		expectedTag = 0 // ID_SCE
++	case 2:
++		expectedTag = 1 // ID_CPE
++	default:
++		return false
++	}
++
++	// Fast reject: byte 0..2 carries tag(3) + inst(4) + unused(12) + hasSize(1) + extraBits(2) + isNotCompressed(1).
++	if readBits(pkt, 0, 3) != expectedTag {
++		return false
++	}
++	if readBits(pkt, 3, 4) != 0 || readBits(pkt, 7, 12) != 0 {
++		return false
++	}
++	hasSize := readBits(pkt, 19, 1)
++	if readBits(pkt, 20, 2) != 0 { // extraBits must be 0 in uncompressed ALAC
++		return false
++	}
++	if readBits(pkt, 22, 1) != 1 { // compressed frame — never touch
++		return false
++	}
++
++	var headerBits, numSamples uint64
++	if hasSize == 0 {
++		headerBits = 23
++		numSamples = uint64(cfg.FrameLength)
++	} else {
++		if len(pkt) < 8 {
++			return false
++		}
++		headerBits = 55
++		numSamples = readBits(pkt, 23, 32)
++		if numSamples == 0 || numSamples > uint64(cfg.FrameLength) {
++			return false
++		}
++	}
++
++	bitDepth := uint64(cfg.BitDepth)
++	channels := uint64(cfg.NumChannels)
++	pcmBits := numSamples * channels * bitDepth
++	endBit := headerBits + pcmBits
++	expectedBytes := (endBit + 3 + 7) / 8
++	if uint64(len(pkt)) != expectedBytes {
++		return false
++	}
++
++	// If ID_END is already intact (0b111), the escape frame is valid — never touch it.
++	if readBits(pkt, endBit, 3) == 0x7 {
++		return false
++	}
++
++	// Bytes at and after rawPCMBytes (= pcmBits / 8) were overwritten upstream.
++	corruptStartBit := (pcmBits / 8) * 8
++	strideBits := channels * bitDepth
++	minVal := -(int64(1) << (cfg.BitDepth - 1))
++	maxVal := (int64(1) << (cfg.BitDepth - 1)) - 1
++
++	const historyCap = 64
++	var histBuf [historyCap]int64
++
++	for ch := uint64(0); ch < channels; ch++ {
++		chOffset := ch * bitDepth
++		// Find the first sample index whose bits cross into [corruptStartBit, endBit).
++		firstCorrupt := numSamples
++		for s := numSamples; s > 0; s-- {
++			sampleEnd := headerBits + (s-1)*strideBits + chOffset + bitDepth
++			if sampleEnd <= corruptStartBit {
++				break
++			}
++			firstCorrupt = s - 1
++		}
++		for s := firstCorrupt; s < numSamples; s++ {
++			histStart := uint64(0)
++			if s > historyCap {
++				histStart = s - historyCap
++			}
++			histLen := int(s - histStart)
++			for i := 0; i < histLen; i++ {
++				bp := headerBits + (histStart+uint64(i))*strideBits + chOffset
++				histBuf[i] = signExtend(readBits(pkt, bp, bitDepth), cfg.BitDepth)
++			}
++
++			pred := predictNextSample(histBuf[:histLen])
++			lo, hi := minVal, maxVal
++
++			sampleStart := headerBits + s*strideBits + chOffset
++			if sampleStart < corruptStartBit {
++				intactBits := corruptStartBit - sampleStart
++				remBits := bitDepth - intactBits
++				prefix := readBits(pkt, sampleStart, intactBits)
++				uLo := prefix << remBits
++				uHi := uLo | ((uint64(1) << remBits) - 1)
++				lo = signExtend(uLo, cfg.BitDepth)
++				hi = signExtend(uHi, cfg.BitDepth)
++			}
++			if pred < lo {
++				pred = lo
++			} else if pred > hi {
++				pred = hi
++			}
++
++			mask := (uint64(1) << bitDepth) - 1
++			writeBits(pkt, sampleStart, bitDepth, uint64(pred)&mask)
++		}
++	}
++
++	// Restore ID_END (0b111) and zero-fill trailing alignment bits.
++	writeBits(pkt, endBit, 3, 0x7)
++	totalBits := uint64(len(pkt)) * 8
++	if padBits := totalBits - (endBit + 3); padBits > 0 {
++		writeBits(pkt, endBit+3, padBits, 0)
++	}
++	return true
++}
++
++// predictNextSample predicts the next PCM sample from preceding samples using
++// a mean-centered 4-tap regularized Levinson-Durbin AR predictor, falling back
++// to sample-hold when history is short or near-constant.
++func predictNextSample(hist []int64) int64 {
++	n := len(hist)
++	if n == 0 {
++		return 0
++	}
++	if n < 8 {
++		return hist[n-1]
++	}
++
++	var mean float64
++	for _, v := range hist {
++		mean += float64(v)
++	}
++	mean /= float64(n)
++
++	const order = 4
++	var r [order + 1]float64
++	for lag := 0; lag <= order; lag++ {
++		var sum float64
++		for i := lag; i < n; i++ {
++			sum += (float64(hist[i]) - mean) * (float64(hist[i-lag]) - mean)
++		}
++		r[lag] = sum
++	}
++	if r[0] <= 1e-9 {
++		return hist[n-1]
++	}
++	r[0] *= 1.0001 // slight ridge regularization for numerical stability
++
++	var a, aNext [order + 1]float64
++	e := r[0]
++	for k := 1; k <= order; k++ {
++		acc := r[k]
++		for j := 1; j < k; j++ {
++			acc -= a[j] * r[k-j]
++		}
++		kappa := acc / e
++		if math.Abs(kappa) >= 0.999 || math.IsNaN(kappa) || math.IsInf(kappa, 0) {
++			break
++		}
++		aNext[k] = kappa
++		for j := 1; j < k; j++ {
++			aNext[j] = a[j] - kappa*a[k-j]
++		}
++		for j := 1; j <= k; j++ {
++			a[j] = aNext[j]
++		}
++		e *= 1.0 - kappa*kappa
++		if e <= 1e-9 {
++			break
++		}
++	}
++
++	pred := mean
++	for j := 1; j <= order; j++ {
++		pred += a[j] * (float64(hist[n-j]) - mean)
++	}
++	if math.IsNaN(pred) || math.IsInf(pred, 0) {
++		return hist[n-1]
++	}
++	return int64(math.Round(pred))
++}
++
++func readBits(buf []byte, bitPos, n uint64) uint64 {
++	var val uint64
++	for i := uint64(0); i < n; i++ {
++		bp := bitPos + i
++		bit := (buf[bp>>3] >> (7 - (bp & 7))) & 1
++		val = (val << 1) | uint64(bit)
++	}
++	return val
++}
++
++func writeBits(buf []byte, bitPos, n uint64, val uint64) {
++	for i := uint64(0); i < n; i++ {
++		bp := bitPos + i
++		shift := n - 1 - i
++		mask := byte(1 << (7 - (bp & 7)))
++		if (val>>shift)&1 != 0 {
++			buf[bp>>3] |= mask
++		} else {
++			buf[bp>>3] &^= mask
++		}
++	}
++}
++
++func signExtend(u uint64, bits uint8) int64 {
++	mask := (uint64(1) << bits) - 1
++	u &= mask
++	sign := uint64(1) << (bits - 1)
++	if u&sign != 0 {
++		return int64(u) - int64(uint64(1)<<bits)
++	}
++	return int64(u)
++}
+diff --git a/engine/utils/alacstream/alac_repair_test.go b/engine/utils/alacstream/alac_repair_test.go
+new file mode 100644
+index 0000000..9fd94ee
+--- /dev/null
++++ b/engine/utils/alacstream/alac_repair_test.go
+@@ -0,0 +1,299 @@
++package alacstream
++
++import (
++	"bytes"
++	"encoding/binary"
++	"math"
++	"testing"
++
++	"github.com/itouakirai/mp4ff/mp4"
++)
++
++func buildEscapePacket(cfg ALACConfig, numSamples int, hasSize bool, sampleFn func(s, ch int) int64) []byte {
++	var headerBits uint64 = 23
++	if hasSize {
++		headerBits = 55
++	}
++	bitDepth := uint64(cfg.BitDepth)
++	channels := uint64(cfg.NumChannels)
++	endBit := headerBits + uint64(numSamples)*channels*bitDepth
++	pkt := make([]byte, (endBit+3+7)/8)
++
++	var tag uint64
++	if cfg.NumChannels == 2 {
++		tag = 1
++	}
++	writeBits(pkt, 0, 3, tag)
++	if hasSize {
++		writeBits(pkt, 19, 1, 1)
++	}
++	writeBits(pkt, 22, 1, 1) // isNotCompressed = 1
++	if hasSize {
++		writeBits(pkt, 23, 32, uint64(numSamples))
++	}
++
++	mask := (uint64(1) << bitDepth) - 1
++	stride := channels * bitDepth
++	for s := 0; s < numSamples; s++ {
++		for ch := 0; ch < int(cfg.NumChannels); ch++ {
++			bp := headerBits + uint64(s)*stride + uint64(ch)*bitDepth
++			writeBits(pkt, bp, bitDepth, uint64(sampleFn(s, ch))&mask)
++		}
++	}
++	writeBits(pkt, endBit, 3, 0x7) // valid ID_END
++	return pkt
++}
++
++func readSample(pkt []byte, cfg ALACConfig, hasSize bool, s, ch int) int64 {
++	var headerBits uint64 = 23
++	if hasSize {
++		headerBits = 55
++	}
++	bitDepth := uint64(cfg.BitDepth)
++	stride := uint64(cfg.NumChannels) * bitDepth
++	bp := headerBits + uint64(s)*stride + uint64(ch)*bitDepth
++	return signExtend(readBits(pkt, bp, bitDepth), cfg.BitDepth)
++}
++
++func TestRepairALACEscapeSample_24BitStereo(t *testing.T) {
++	t.Parallel()
++	cfg := ALACConfig{FrameLength: 4096, BitDepth: 24, NumChannels: 2}
++	wave := func(s, ch int) int64 {
++		// Smooth low-frequency sine wave; right channel stays negative near sample 4095.
++		phase := 2 * math.Pi * float64(s) / 97.0
++		if ch == 0 {
++			return int64(math.Round(1_200_000 * math.Sin(phase)))
++		}
++		return int64(math.Round(-1_500_000 + 400_000*math.Cos(phase)))
++	}
++
++	orig := buildEscapePacket(cfg, 4096, false, wave)
++	if len(orig) != 24580 {
++		t.Fatalf("escape packet len = %d, want 24580", len(orig))
++	}
++
++	// Valid escape frame must not be modified.
++	validCopy := append([]byte(nil), orig...)
++	if RepairALACEscapeSample(validCopy, cfg) {
++		t.Fatal("valid escape frame was unexpectedly reported as repaired")
++	}
++	if !bytes.Equal(validCopy, orig) {
++		t.Fatal("valid escape frame was modified")
++	}
++
++	// Simulate Apple server glibc heap chunk overwrite at bytes 24576..24579.
++	corrupt := append([]byte(nil), orig...)
++	copy(corrupt[24576:24580], []byte{0x10, 0x60, 0x00, 0x00})
++
++	if !RepairALACEscapeSample(corrupt, cfg) {
++		t.Fatal("corrupted 24-bit stereo escape frame was not repaired")
++	}
++
++	// Bytes 0..24575 (including sample[4095].L and the sign bit of sample[4095].R) must be bit-identical.
++	if !bytes.Equal(corrupt[:24576], orig[:24576]) {
++		t.Fatal("intact prefix bytes 0..24575 were modified")
++	}
++
++	// ID_END (0b111) and trailing zero padding must be restored.
++	endBit := uint64(23 + 4096*2*24)
++	if got := readBits(corrupt, endBit, 3); got != 0x7 {
++		t.Fatalf("ID_END = %03b, want 111", got)
++	}
++	if corrupt[24579]&0x3f != 0 {
++		t.Fatalf("trailing pad bits = %06b, want 0", corrupt[24579]&0x3f)
++	}
++
++	// Concealed final R sample must closely track the true waveform (no click).
++	wantR := wave(4095, 1)
++	gotR := readSample(corrupt, cfg, false, 4095, 1)
++	if diff := math.Abs(float64(gotR - wantR)); diff > 25_000 {
++		t.Fatalf("concealed sample[4095].R = %d, want ~%d (diff %.0f)", gotR, wantR, diff)
++	}
++}
++
++func TestRepairALACEscapeSample_16BitStereoPreservesIntactMSBs(t *testing.T) {
++	t.Parallel()
++	cfg := ALACConfig{FrameLength: 4096, BitDepth: 16, NumChannels: 2}
++	wave := func(s, ch int) int64 {
++		phase := 2 * math.Pi * float64(s) / 73.0
++		if ch == 0 {
++			return int64(math.Round(12_000 * math.Sin(phase)))
++		}
++		return int64(math.Round(-9_000 * math.Cos(phase)))
++	}
++
++	orig := buildEscapePacket(cfg, 4096, false, wave)
++	if len(orig) != 16388 {
++		t.Fatalf("16-bit escape packet len = %d, want 16388", len(orig))
++	}
++
++	corrupt := append([]byte(nil), orig...)
++	copy(corrupt[16384:16388], []byte{0x10, 0x40, 0x00, 0x00})
++
++	if !RepairALACEscapeSample(corrupt, cfg) {
++		t.Fatal("corrupted 16-bit stereo escape frame was not repaired")
++	}
++	if !bytes.Equal(corrupt[:16384], orig[:16384]) {
++		t.Fatal("intact prefix bytes 0..16383 were modified (top 9 bits of sample[4095].L must be preserved)")
++	}
++	endBit := uint64(23 + 4096*2*16)
++	if got := readBits(corrupt, endBit, 3); got != 0x7 {
++		t.Fatalf("ID_END = %03b, want 111", got)
++	}
++	// Because the top 9 bits of sample[4095].L are intact, its error is bounded by < 128.
++	if diff := math.Abs(float64(readSample(corrupt, cfg, false, 4095, 0) - wave(4095, 0))); diff >= 128 {
++		t.Fatalf("sample[4095].L diff = %.0f, must be < 128", diff)
++	}
++	if diff := math.Abs(float64(readSample(corrupt, cfg, false, 4095, 1) - wave(4095, 1))); diff > 250 {
++		t.Fatalf("sample[4095].R diff = %.0f, too large", diff)
++	}
++}
++
++func TestRepairALACEscapeSample_IgnoresCompressedFrames(t *testing.T) {
++	t.Parallel()
++	cfg := ALACConfig{FrameLength: 4096, BitDepth: 24, NumChannels: 2}
++	// Construct a packet of identical length (24580) with isNotCompressed = 0.
++	pkt := make([]byte, 24580)
++	writeBits(pkt, 0, 3, 1) // ID_CPE
++	// isNotCompressed (bit 22) remains 0
++	orig := append([]byte(nil), pkt...)
++
++	if RepairALACEscapeSample(pkt, cfg) {
++		t.Fatal("compressed frame was unexpectedly modified")
++	}
++	if !bytes.Equal(pkt, orig) {
++		t.Fatal("compressed frame bytes changed")
++	}
++}
++
++func TestRepairALACEscapeSample_PartialHasSizeFrame(t *testing.T) {
++	t.Parallel()
++	cfg := ALACConfig{FrameLength: 4096, BitDepth: 24, NumChannels: 1}
++	wave := func(s, _ int) int64 {
++		return int64(math.Round(500_000 * math.Sin(2*math.Pi*float64(s)/64.0)))
++	}
++	orig := buildEscapePacket(cfg, 128, true, wave)
++	corrupt := append([]byte(nil), orig...)
++	// Overwrite bytes starting at rawPCMBytes (= 128*3 = 384).
++	for i := 384; i < len(corrupt); i++ {
++		corrupt[i] = 0
++	}
++
++	if !RepairALACEscapeSample(corrupt, cfg) {
++		t.Fatal("corrupted hasSize escape frame was not repaired")
++	}
++	if !bytes.Equal(corrupt[:384], orig[:384]) {
++		t.Fatal("intact prefix bytes before rawPCMBytes were modified")
++	}
++	endBit := uint64(55 + 128*24)
++	if got := readBits(corrupt, endBit, 3); got != 0x7 {
++		t.Fatalf("ID_END = %03b, want 111", got)
++	}
++}
++
++func TestParseALACConfigs_BothSampleEntryEncodings(t *testing.T) {
++	t.Parallel()
++
++	innerPayload := make([]byte, 28)
++	binary.BigEndian.PutUint32(innerPayload[4:8], 4096)
++	innerPayload[9] = 24
++	innerPayload[13] = 2
++	binary.BigEndian.PutUint32(innerPayload[16:20], 24580)
++	binary.BigEndian.PutUint32(innerPayload[24:28], 48000)
++
++	innerBox, err := mp4.DecodeBox(0, bytes.NewReader(makeBox("alac", innerPayload)))
++	if err != nil {
++		t.Fatalf("DecodeBox inner alac: %v", err)
++	}
++
++	// Case 1: decrypted CBCS init where outer entry is *mp4.AudioSampleEntryBox("alac").
++	ase := mp4.NewAudioSampleEntryBox("alac")
++	ase.ChannelCount = 2
++	ase.SampleSize = 16
++	ase.SampleRate = 48000
++	ase.AddChild(innerBox)
++
++	init1 := mp4.NewMP4Init()
++	moov1 := mp4.NewMoovBox()
++	trak1 := mp4.CreateEmptyTrak(1, 48000, "soun", "und")
++	trak1.Mdia.Minf.Stbl.Stsd.AddChild(ase)
++	moov1.AddChild(trak1)
++	init1.AddChild(mp4.CreateFtyp())
++	init1.AddChild(moov1)
++
++	cfgs1 := ParseALACConfigs(init1)
++	want := ALACConfig{FrameLength: 4096, BitDepth: 24, NumChannels: 2}
++	if cfgs1[1] != want {
++		t.Fatalf("AudioSampleEntryBox config = %+v, want %+v", cfgs1[1], want)
++	}
++
++	// Case 2: round-trip through encode/decode so outer "alac" parses as *mp4.UnknownBox.
++	var wire bytes.Buffer
++	if err := init1.Encode(&wire); err != nil {
++		t.Fatalf("encode init: %v", err)
++	}
++	init2, _, err := ReadInitSegment(&wire)
++	if err != nil {
++		t.Fatalf("ReadInitSegment: %v", err)
++	}
++	cfgs2 := ParseALACConfigs(init2)
++	if cfgs2[1] != want {
++		t.Fatalf("UnknownBox round-trip config = %+v, want %+v", cfgs2[1], want)
++	}
++}
++
++func TestRepairALACFragment_MultiTrun(t *testing.T) {
++	t.Parallel()
++	cfg := ALACConfig{FrameLength: 4096, BitDepth: 24, NumChannels: 2}
++	wave := func(s, ch int) int64 {
++		return int64((s%64)*1000 - 30000 + ch*5000)
++	}
++
++	compPkt := make([]byte, 128)
++	writeBits(compPkt, 0, 3, 1) // compressed (bit 22 == 0)
++	badEsc := buildEscapePacket(cfg, 4096, false, wave)
++	copy(badEsc[24576:24580], []byte{0x10, 0x60, 0x00, 0x00})
++
++	frag := mp4.NewFragment()
++	moof := &mp4.MoofBox{}
++	mfhd := mp4.CreateMfhd(1)
++	moof.AddChild(mfhd)
++	traf := &mp4.TrafBox{}
++	tfhd := mp4.CreateTfhd(1)
++	traf.AddChild(tfhd)
++
++	trun1 := mp4.CreateTrun(0)
++	trun1.Flags = mp4.TrunDataOffsetPresentFlag | mp4.TrunSampleSizePresentFlag
++	trun1.Samples = []mp4.Sample{{Size: uint32(len(compPkt))}}
++	traf.AddChild(trun1)
++
++	trun2 := mp4.CreateTrun(1)
++	trun2.Flags = mp4.TrunDataOffsetPresentFlag | mp4.TrunSampleSizePresentFlag
++	trun2.Samples = []mp4.Sample{{Size: uint32(len(badEsc))}}
++	traf.AddChild(trun2)
++
++	moof.AddChild(traf)
++	frag.AddChild(moof)
++
++	mdat := &mp4.MdatBox{}
++	mdat.Data = append(append([]byte(nil), compPkt...), badEsc...)
++	frag.AddChild(mdat)
++
++	moofSize := int32(moof.Size())
++	trun1.DataOffset = moofSize + 8
++	trun2.DataOffset = moofSize + 8 + int32(len(compPkt))
++
++	repaired := RepairALACFragment(frag, map[uint32]ALACConfig{1: cfg})
++	if repaired != 1 {
++		t.Fatalf("RepairALACFragment repaired = %d, want 1", repaired)
++	}
++	// Verify compressed packet untouched and escape packet ID_END restored.
++	if !bytes.Equal(frag.Mdat.Data[:len(compPkt)], compPkt) {
++		t.Fatal("compressed packet was modified")
++	}
++	repairedPkt := frag.Mdat.Data[len(compPkt):]
++	endBit := uint64(23 + 4096*2*24)
++	if got := readBits(repairedPkt, endBit, 3); got != 0x7 {
++		t.Fatalf("repaired packet ID_END = %03b, want 111", got)
++	}
++}
 diff --git a/engine/utils/lyrics/lyrics.go b/engine/utils/lyrics/lyrics.go
 index 1f1f2c9..b6023b9 100644
 --- a/engine/utils/lyrics/lyrics.go

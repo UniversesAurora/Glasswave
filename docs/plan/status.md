@@ -2,7 +2,29 @@
 
 Updated: 2026-11-23
 
-## Context-menu CRUD symmetry & permanent downloaded-file deletion (2026-11-23, latest)
+## Apple Music ALAC escape-frame repair workaround (2026-11-23, latest)
+
+- **Root cause**: Certain Apple Music 24-bit ALAC tracks (observed on `song_id=1842289855`,
+  `SHOCK (feat. 梅とら)`, failing at `70.827 s` with `Unsupported format or corrupted file` /
+  FFmpeg `invalid element channel count`) arrive from Apple's CDN with the trailing 4 bytes of
+  uncompressed ALAC escape frames (`is_not_compressed = 1`, `24,580` bytes) overwritten upstream
+  with heap metadata (`0x6010` / `0x27ff`), corrupting the final right-channel sample and wiping
+  out the 3-bit `ID_END` (`0b111`) terminator.
+- **Workaround (`scripts/applemusic/glasswave.patch`: `engine/utils/alacstream/alac_repair.go`,
+  `alac_repair_test.go`, `engine/core/fairplay/cbcs.go`)**:
+  - Added `ParseALACConfigs` and `RepairALACFragment` / `RepairALACEscapeSample` in `alacstream`,
+    wired right after fragment decryption in both `cbcsSource.streamAttempt` and
+    `cbcsSkipSource.streamAttemptSkip`.
+  - Leaves non-ALAC tracks, compressed ALAC frames, and valid escape frames (`ID_END == 0b111`)
+    untouched; on corrupted escape frames, preserves every byte before `rawPCMBytes` bit-for-bit
+    (including intact leading MSBs of the boundary sample), conceals only the overwritten trailing
+    sample(s) with a mean-centered 4-tap regularized Levinson-Durbin AR predictor clamped to the
+    intact MSB interval, and restores `ID_END` (`0b111`) plus zero alignment padding.
+  - Verified with Go unit tests (`alacstream`, `fairplay`, `cmd`, `hls`, `playback`, `media`,
+    `diskcache`) and full `ffmpeg -v error` decoding of `1842289855` (2/2 corrupted escape packets
+    repaired, 0 errors across all 1,998 packets). Rebuilt and promoted `engine.exe`.
+
+## Context-menu CRUD symmetry & permanent downloaded-file deletion (2026-11-23)
 
 - **Queue / History pane full song context menus (`ui/queue_view.*`, `ui/win7_menu.*`, `ui/main_window_pane.cpp`, `ui/main_window_commands.cpp`)**:
   - Extended `RunContextMenu` with optional `extra` actions and added `QueueView::onHistoryMenu`
