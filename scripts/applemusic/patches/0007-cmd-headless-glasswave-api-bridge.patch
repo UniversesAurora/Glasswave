@@ -1,0 +1,3641 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Glasswave <glasswave@local>
+Date: Mon, 23 Nov 2026 12:55:25 +0800
+Subject: [PATCH 7/8] cmd: add headless Glasswave HTTP API bridge, lyrics
+ endpoints and token cache
+
+Expose local authenticated endpoints for Glasswave library/catalog/playlist/lyrics/playback operations, cache layout support for uploaded tracks, and cached token handling in headless mode.
+
+diff --git a/engine/cmd/apiserver.go b/engine/cmd/apiserver.go
+index ded5997..ba3ddef 100644
+--- a/engine/cmd/apiserver.go
++++ b/engine/cmd/apiserver.go
+@@ -40,6 +40,7 @@ import (
+ 	"encoding/hex"
+ 	"encoding/json"
+ 	"engine/internal/appdir"
++	"errors"
+ 	"fmt"
+ 	"log"
+ 	"log/slog"
+@@ -91,12 +92,15 @@ type drmAccountAdapter struct {
+ }
+ 
+ func (a *drmAccountAdapter) GetMusicToken(ctx context.Context) (devToken, musicToken string, err error) {
+-	// Prefer the in-memory MK token (pushed by the renderer at startup).
++	info, err := a.dm.GetAccount(ctx)
++	// The native account is authoritative. The web token is only a fallback for
++	// interactive builds whose account record has no MusicToken yet.
++	if err == nil && info.MusicToken != "" {
++		return info.DevToken, info.MusicToken, nil
++	}
+ 	if mut := a.getMUT(); mut != "" {
+-		devTok, err := a.dm.GetAccount(ctx)
+-		return devTok.DevToken, mut, err
++		return info.DevToken, mut, err
+ 	}
+-	info, err := a.dm.GetAccount(ctx)
+ 	return info.DevToken, info.MusicToken, err
+ }
+ 
+@@ -120,9 +124,10 @@ type PlaybackRequest struct {
+ 	// renderer can supply the tokens MusicKit already has.
+ 	Token        string `json:"token"`
+ 	MUT          string `json:"mediaUserToken"`
++	PreferAtmos  bool   `json:"preferAtmos"`
+ 	Capabilities struct {
+ 		Lossless bool `json:"lossless"`
+-		HiRes    bool `json:"hiRes"` // true = hi-res ALAC permitted; false = cap at 44100/16-bit
++		HiRes    bool `json:"hiRes"` // true = hi-res ALAC permitted; false = cap at 48 kHz
+ 		Video    bool `json:"video"`
+ 		Atmos    bool `json:"atmos"`
+ 	} `json:"capabilities"`
+@@ -240,6 +245,14 @@ func (l *engineLifecycle) OnFairPlayReady(onRefreshDue func()) {
+ 	}
+ 	l.drmReadyActive = true
+ 	l.drmReadySince = time.Now()
++	if glasswaveHeadlessEnabled() {
++		l.drmRefreshAt = time.Time{}
++		if l.drmRefreshTimer != nil {
++			l.drmRefreshTimer.Stop()
++			l.drmRefreshTimer = nil
++		}
++		return
++	}
+ 	l.drmRefreshAt = l.drmReadySince.Add(drmSessionTTL - drmRefreshLeadTime)
+ 	if l.drmRefreshTimer != nil {
+ 		l.drmRefreshTimer.Stop()
+@@ -499,6 +512,14 @@ type APIServer struct {
+ 	vlcPlayer   *vlc.Player         // nil when libvlc is not available
+ 	vlcGate     vlcGate             // session that currently owns vlcPlayer
+ 	vlcLoads    loadOrder           // keeps /vlc/load requests in arrival order
++	headless    bool                // GLASSWAVE_HEADLESS=1: loopback HTTP and no speculative subsystems
++
++	glasswaveHTTPClient *http.Client
++	glasswaveAPIBase    string
++	glasswaveAMPBase    string
++	glasswaveGetAccount func(context.Context) (drm.AccountInfo, error)
++	glasswaveGetLyrics  func(context.Context, string, string, string, string, string, string, string) (string, error)
++	glasswaveGetToken   func() (string, error)
+ 
+ 	tokenMu     sync.RWMutex
+ 	cachedToken string // bearer token cached from the most recent browser request
+@@ -528,19 +549,26 @@ type ServerConfig struct {
+ // NewAPIServer wires all routes.
+ func NewAPIServer(port int, cfg ServerConfig) *APIServer {
+ 	setupStart := time.Now()
+-	initMVPrefs()
++	headless := glasswaveHeadlessEnabled()
++	if !headless {
++		initMVPrefs()
++	}
+ 	listenPort.Store(int32(port))
+ 	epoch := newEpochManager()
+ 	shutCtx, shutStop := context.WithCancel(context.Background())
+ 	s := &APIServer{
+-		port:         port,
+-		epoch:        epoch,
+-		lifecycle:    newEngineLifecycle(epoch),
+-		events:       newEventBus(epoch),
+-		openLatency:  ring.New(100),
+-		openCB:       newCircuitBreaker(3, 60*time.Second),
+-		shutdownCtx:  shutCtx,
+-		shutdownStop: shutStop,
++		port:                port,
++		epoch:               epoch,
++		lifecycle:           newEngineLifecycle(epoch),
++		events:              newEventBus(epoch),
++		openLatency:         ring.New(100),
++		openCB:              newCircuitBreaker(3, 60*time.Second),
++		shutdownCtx:         shutCtx,
++		shutdownStop:        shutStop,
++		headless:            headless,
++		glasswaveAPIBase:    defaultGlasswaveAppleAPIBase,
++		glasswaveAMPBase:    defaultGlasswaveAppleAMPBase,
++		glasswaveHTTPClient: glasswaveAppleHTTPClient,
+ 	}
+ 
+ 	// DRM subsystem constructed first: DRMManager is passed to the PlaybackManager
+@@ -634,7 +662,7 @@ func NewAPIServer(port int, cfg ServerConfig) *APIServer {
+ 	// Eager-start decision (executed in Start(), after the session lock is held):
+ 	// if a session DB exists, initialise DRM immediately so process/fairplay
+ 	// state is visible without waiting for the first playback request.
+-	s.eagerStart = s.drmReady && drmSession.HasSession()
++	s.eagerStart = !headless && s.drmReady && drmSession.HasSession()
+ 
+ 	// PlaybackManager receives DRMManager as the CBCSDialer for ALAC/Atmos.
+ 	// DRMManager.DialCBCS auto-starts DRM if a session exists, then returns an
+@@ -647,33 +675,44 @@ func NewAPIServer(port int, cfg ServerConfig) *APIServer {
+ 		cbcsDialer = s.dm
+ 		acctSource = &drmAccountAdapter{dm: s.dm, getMUT: s.musicUserToken}
+ 	}
+-	s.pm = playback.NewWithProvider(apple.NewProviderWithCBCS(cbcsDialer, acctSource))
++	provider := apple.NewProviderWithCBCSConfig(cbcsDialer, acctSource, apple.ProviderConfig{
++		DisableCBCSKeyPrewarm: headless,
++	})
++	if headless {
++		s.pm = playback.NewWithProviderWithoutReaper(provider)
++	} else {
++		s.pm = playback.NewWithProvider(provider)
++	}
+ 	s.installReleaseHook()
+ 
+ 	// Prefetch scheduler — credentials are resolved lazily at Submit time
+ 	// so token rotations are picked up automatically.
+ 	// Use ev.Kind as the SSE event name so clients can subscribe to specific
+ 	// phases (prefetch.cached, prefetch.done, …) without filtering JSON.
+-	s.scheduler = prefetch.NewScheduler(s.pm, s.token, s.musicUserToken, func(ev prefetch.Event) {
+-		s.events.emit(string(ev.Kind), ev)
+-	}, prefetch.DefaultWorkers)
+-	go func() {
+-		t := time.NewTicker(5 * time.Minute)
+-		defer t.Stop()
+-		for {
+-			select {
+-			case <-s.shutdownCtx.Done():
+-				return
+-			case <-t.C:
+-				s.scheduler.PruneExpiredPreWarmed()
++	if !headless {
++		s.scheduler = prefetch.NewScheduler(s.pm, s.token, s.musicUserToken, func(ev prefetch.Event) {
++			s.events.emit(string(ev.Kind), ev)
++		}, prefetch.DefaultWorkers)
++		go func() {
++			t := time.NewTicker(5 * time.Minute)
++			defer t.Stop()
++			for {
++				select {
++				case <-s.shutdownCtx.Done():
++					return
++				case <-t.C:
++					s.scheduler.PruneExpiredPreWarmed()
++				}
+ 			}
+-		}
+-	}()
++		}()
++	}
+ 
+ 	// Pre-warm TLS connection to Apple's FairPlay license server so the first
+ 	// AcquireKey call skips the handshake latency. Mirrors Android
+ 	// FootHillDecryptionKeyController pre-warming the CDM at player init time.
+-	go fairplay.WarmLicensePool(s.shutdownCtx)
++	if !headless {
++		go fairplay.WarmLicensePool(s.shutdownCtx)
++	}
+ 
+ 	// Disk cache — decrypted per-track audio; falls back gracefully on error.
+ 	// Limits (persistLimitMB, persistTTLDays) are pushed by the frontend on
+@@ -686,28 +725,31 @@ func NewAPIServer(port int, cfg ServerConfig) *APIServer {
+ 			dc.RemoveInFlight()
+ 			s.alac = newALACGate()
+ 			invalidateALACCacheIfStale(filepath.Join(cacheBase, "playback"))
+-			go func() {
+-				t := time.NewTicker(time.Hour)
+-				defer t.Stop()
+-				for {
+-					select {
+-					case <-s.shutdownCtx.Done():
+-						return
+-					case <-t.C:
+-						s.diskCache.EvictExpired()
++			if !headless {
++				go func() {
++					t := time.NewTicker(time.Hour)
++					defer t.Stop()
++					for {
++						select {
++						case <-s.shutdownCtx.Done():
++							return
++						case <-t.C:
++							s.diskCache.EvictExpired()
++						}
+ 					}
+-				}
+-			}()
++				}()
++			}
+ 		}
+ 
+-		// Library metadata cache — songs + playlist membership for instant queue ops.
+-		libCacheDir := cacheBase
+-		if err := os.MkdirAll(libCacheDir, 0o700); err == nil { // holds library.key
+-			s.libStore = library.New(libCacheDir)
+-			// Auto-sync removed: the Go-side API client cannot authenticate with
+-			// Apple's API (GetToken is broken; Android DRM tokens don't pair with
+-			// the web developer JWT). Sync is now driven by the JS layer via
+-			// POST /api/v1/library/ingest — trigger it from Settings → Library.
++		if !headless {
++			// Library metadata cache — songs + playlist membership for instant queue ops.
++			libCacheDir := cacheBase
++			if err := os.MkdirAll(libCacheDir, 0o700); err == nil { // holds library.key
++				s.libStore = library.New(libCacheDir)
++				// Interactive library sync remains driven by the renderer through
++				// POST /api/v1/library/ingest; the headless integration uses the
++				// native account API above instead of eagerly syncing a library.
++			}
+ 		}
+ 	}
+ 
+@@ -782,6 +824,12 @@ func NewAPIServer(port int, cfg ServerConfig) *APIServer {
+ 	mux.HandleFunc("DELETE /api/v1/drm/session", cors(s.handleDRMClearSession))
+ 	mux.HandleFunc("POST /api/v1/drm/forget-device", cors(s.handleDRMForgetDevice))
+ 
++	// Glasswave headless integration. Apple API calls use native account tokens
++	// resolved inside the engine; the C++ client never receives credentials.
++	mux.HandleFunc("POST /api/v1/glasswave/apple", cors(s.handleGlasswaveApple))
++	mux.HandleFunc("GET /api/v1/glasswave/account", cors(s.handleGlasswaveAccount))
++	mux.HandleFunc("POST /api/v1/glasswave/lyrics", cors(s.handleGlasswaveLyrics))
++
+ 	// Library — local metadata cache (songs, playlists, playlist tracks).
+ 	// Mirrors what Android's MediaLibrary and Windows' AMPLibraryAgent provide:
+ 	// instant queue building from local SQLite instead of live Apple Music API calls.
+@@ -808,7 +856,9 @@ func NewAPIServer(port int, cfg ServerConfig) *APIServer {
+ 	// VLC player — libvlc-backed playback for ALAC/Atmos that the browser cannot decode.
+ 	// Routes are no-ops when libvlc is not installed; frontend falls back to MSE.
+ 	vlcStart := time.Now()
+-	s.vlcPlayer, _ = vlc.New() // nil if libvlc unavailable
++	if !headless {
++		s.vlcPlayer, _ = vlc.New() // nil if libvlc unavailable
++	}
+ 	vlcSetup := time.Since(vlcStart)
+ 	mux.HandleFunc("POST /api/v1/vlc/load", cors(s.handleVLCLoad))
+ 	mux.HandleFunc("POST /api/v1/vlc/pause", cors(s.handleVLCPause))
+@@ -852,6 +902,9 @@ func NewAPIServer(port int, cfg ServerConfig) *APIServer {
+ // returns an error so this instance refuses to run (preventing dual ownership
+ // of the single-user Apple session).
+ func (s *APIServer) Start() error {
++	if s.headless && strings.TrimSpace(os.Getenv("ADAM_API_TOKEN")) == "" {
++		return fmt.Errorf("ADAM_API_TOKEN is required when GLASSWAVE_HEADLESS=1")
++	}
+ 	if s.drmReady {
+ 		lock, err := drm.AcquireSessionLock(s.sessionDir)
+ 		if err != nil {
+@@ -901,11 +954,23 @@ func (s *APIServer) Start() error {
+ 		}()
+ 	}
+ 
++	if s.headless {
++		s.srv.ErrorLog = log.New(handshakeNoiseFilter{}, "", log.LstdFlags)
++		go func() {
++			if err := s.srv.Serve(l); err != nil && !errors.Is(err, http.ErrServerClosed) {
++				slog.Error("headless HTTP API stopped", "err", err)
++			}
++		}()
++		slog.Info("Glasswave API ready", "url", fmt.Sprintf("http://127.0.0.1:%d", s.port), "auth", "ADAM_API_TOKEN")
++		return nil
++	}
++
+ 	// TLS listener on the configured port (primary API endpoint).
+ 	// All internal engine communication is encrypted via TLS on localhost.
+ 	// Electron trusts this loopback cert via session.setCertificateVerifyProc.
+ 	tlsCfg, err := loopbackTLSConfig()
+ 	if err != nil {
++		l.Close() //nolint:errcheck
+ 		slog.Error("loopback TLS setup failed", "err", err)
+ 		// Give back what this call took: the port and the session lock would otherwise stay held by a server that never runs.
+ 		l.Close()
+@@ -971,8 +1036,9 @@ func (s *APIServer) Stop() {
+ 	}
+ }
+ 
+-// corsPreflightHandler is the outermost handler. The API is unauthenticated on
+-// a fixed port, so it rejects any request a foreign web page could forge:
++// corsPreflightHandler is the outermost handler. The API listens on a fixed
++// loopback port; headless builds additionally require ADAM_API_TOKEN in the
++// inner middleware. It rejects any request a foreign web page could forge:
+ // a non-loopback Host (DNS rebinding) or a browser Origin outside the
+ // allowlist (cross-site "simple" POSTs skip CORS preflight entirely).
+ // Media elements and the Electron main process send no Origin and pass.
+@@ -1050,8 +1116,8 @@ func setCORSHeaders(w http.ResponseWriter, r *http.Request) {
+ 	default:
+ 		w.Header().Set("Access-Control-Allow-Origin", "https://music.apple.com")
+ 	}
+-	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+-	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Range, Last-Event-ID, Cache-Control")
++	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
++	w.Header().Set("Access-Control-Allow-Headers", "Authorization, X-API-Token, Content-Type, Range, Last-Event-ID, Cache-Control")
+ 	w.Header().Set("Access-Control-Expose-Headers", "Content-Type, Content-Length")
+ 	if r.Header.Get("Access-Control-Request-Private-Network") == "true" {
+ 		w.Header().Set("Access-Control-Allow-Private-Network", "true")
+diff --git a/engine/cmd/cors_guard_test.go b/engine/cmd/cors_guard_test.go
+index b7b84a1..5a73735 100644
+--- a/engine/cmd/cors_guard_test.go
++++ b/engine/cmd/cors_guard_test.go
+@@ -4,6 +4,7 @@ import (
+ 	"net/http"
+ 	"net/http/httptest"
+ 	"net/url"
++	"strings"
+ 	"testing"
+ 	"time"
+ )
+@@ -86,6 +87,19 @@ func TestResponsesAreNosniff(t *testing.T) {
+ 	}
+ }
+ 
++func TestCORSAllowsHeadlessAPIAuthHeaders(t *testing.T) {
++	h := corsPreflightHandler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
++	r := httptest.NewRequest(http.MethodOptions, "/api/v1/glasswave/apple", nil)
++	r.Host = "127.0.0.1:20025"
++	r.Header.Set("Origin", "http://127.0.0.1:20025")
++	w := httptest.NewRecorder()
++	h.ServeHTTP(w, r)
++	allow := w.Header().Get("Access-Control-Allow-Headers")
++	if !strings.Contains(allow, "X-API-Token") || !strings.Contains(allow, "Authorization") {
++		t.Fatalf("Access-Control-Allow-Headers = %q", allow)
++	}
++}
++
+ func TestLyricsParamsValidation(t *testing.T) {
+ 	s := &APIServer{}
+ 	for _, c := range []struct {
+diff --git a/engine/cmd/glasswave_token_cache.go b/engine/cmd/glasswave_token_cache.go
+new file mode 100644
+index 0000000..4780a57
+--- /dev/null
++++ b/engine/cmd/glasswave_token_cache.go
+@@ -0,0 +1,56 @@
++package main
++
++import (
++	"encoding/base64"
++	"encoding/json"
++	"strings"
++	"sync"
++	"time"
++)
++
++// The application token is shared by all catalog calls, not tied to an account.
++// Keep this adapter cache separate from upstream ampapi to simplify upstream sync.
++type glasswaveTokenCache struct {
++	mu      sync.Mutex
++	token   string
++	expires time.Time
++}
++
++var glasswaveApplicationToken glasswaveTokenCache
++
++func (c *glasswaveTokenCache) get(now time.Time, fetch func() (string, error)) (string, error) {
++	c.mu.Lock()
++	defer c.mu.Unlock()
++	if c.token != "" && now.Before(c.expires) {
++		return c.token, nil
++	}
++	token, err := fetch()
++	if err != nil {
++		return "", err
++	}
++	// Unknown JWT lifetime gets a short cache; known expiry is never extended.
++	expires := now.Add(15 * time.Minute)
++	parts := strings.Split(token, ".")
++	if len(parts) == 3 {
++		payload, decodeErr := base64.RawURLEncoding.DecodeString(strings.TrimRight(parts[1], "="))
++		var claims struct {
++			Exp int64 `json:"exp"`
++		}
++		if decodeErr == nil && json.Unmarshal(payload, &claims) == nil && claims.Exp > 0 {
++			jwtExpiry := time.Unix(claims.Exp, 0).Add(-time.Minute)
++			if jwtExpiry.Before(expires) {
++				expires = jwtExpiry
++			}
++		}
++	}
++	c.token, c.expires = token, expires
++	return token, nil
++}
++
++func (c *glasswaveTokenCache) invalidate(token string) {
++	c.mu.Lock()
++	defer c.mu.Unlock()
++	if token == c.token {
++		c.token, c.expires = "", time.Time{}
++	}
++}
+diff --git a/engine/cmd/glasswave_token_cache_test.go b/engine/cmd/glasswave_token_cache_test.go
+new file mode 100644
+index 0000000..88d03ba
+--- /dev/null
++++ b/engine/cmd/glasswave_token_cache_test.go
+@@ -0,0 +1,58 @@
++package main
++
++import (
++	"encoding/base64"
++	"fmt"
++	"sync"
++	"sync/atomic"
++	"testing"
++	"time"
++)
++
++func TestGlasswaveTokenCacheCoalescesConcurrentCalls(t *testing.T) {
++	var cache glasswaveTokenCache
++	var calls atomic.Int32
++	now := time.Now()
++	fetch := func() (string, error) { calls.Add(1); return "fixture", nil }
++	var workers sync.WaitGroup
++	for range 20 {
++		workers.Add(1)
++		go func() {
++			defer workers.Done()
++			if _, err := cache.get(now, fetch); err != nil {
++				t.Error(err)
++			}
++		}()
++	}
++	workers.Wait()
++	if calls.Load() != 1 {
++		t.Fatalf("fetch count = %d, want 1", calls.Load())
++	}
++	cache.invalidate("old-unrelated-token")
++	_, _ = cache.get(now, fetch)
++	if calls.Load() != 1 {
++		t.Fatal("an unrelated failure invalidated the current token")
++	}
++	cache.invalidate("fixture")
++	_, _ = cache.get(now, fetch)
++	if calls.Load() != 2 {
++		t.Fatal("invalidation did not refresh the token")
++	}
++}
++
++func TestGlasswaveTokenCacheHonorsJWTExpiry(t *testing.T) {
++	var cache glasswaveTokenCache
++	now := time.Unix(1_800_000_000, 0)
++	payload := base64.RawURLEncoding.EncodeToString([]byte(fmt.Sprintf(`{"exp":%d}`, now.Add(3*time.Minute).Unix())))
++	calls := 0
++	fetch := func() (string, error) { calls++; return "eyJ." + payload + ".fixture", nil }
++	_, _ = cache.get(now, fetch)
++	_, _ = cache.get(now.Add(time.Minute), fetch)
++	if calls != 1 {
++		t.Fatal("valid token was fetched again")
++	}
++	_, _ = cache.get(now.Add(2*time.Minute), fetch)
++	if calls != 2 {
++		t.Fatal("token was cached past its safe JWT expiry")
++	}
++}
+diff --git a/engine/cmd/handlers_cache.go b/engine/cmd/handlers_cache.go
+index 1dda0dd..b37ab8c 100644
+--- a/engine/cmd/handlers_cache.go
++++ b/engine/cmd/handlers_cache.go
+@@ -19,15 +19,25 @@ func (s *APIServer) handleCacheConfig(w http.ResponseWriter, r *http.Request) {
+ 		http.Error(w, "invalid cache config: "+err.Error(), http.StatusBadRequest)
+ 		return
+ 	}
+-	s.scheduler.SetCacheConfig(cfg)
++	if s.scheduler != nil {
++		s.scheduler.SetCacheConfig(cfg)
++	}
+ 	if s.diskCache != nil {
+ 		s.diskCache.SetConfig(cfg.PersistLimitMB, cfg.PersistTTLDays)
+ 	}
+-	writeJSON(w, http.StatusOK, s.scheduler.GetCacheConfig())
++	if s.scheduler != nil {
++		cfg = s.scheduler.GetCacheConfig()
++	}
++	writeJSON(w, http.StatusOK, cfg)
+ }
+ 
+ func (s *APIServer) handleCacheStats(w http.ResponseWriter, r *http.Request) {
+-	cfg := s.scheduler.GetCacheConfig()
++	var cfg prefetch.CacheConfig
++	prewarmEntries := 0
++	if s.scheduler != nil {
++		cfg = s.scheduler.GetCacheConfig()
++		prewarmEntries = s.scheduler.PrewarmCount()
++	}
+ 	prewarmLimitBytes := cfg.PrewarmLimitMB * 1024 * 1024
+ 	if prewarmLimitBytes == 0 {
+ 		prewarmLimitBytes = 1024 * 1024 * 1024 // 1 GB default shown in UI
+@@ -52,7 +62,7 @@ func (s *APIServer) handleCacheStats(w http.ResponseWriter, r *http.Request) {
+ 	writeJSON(w, http.StatusOK, map[string]any{
+ 		"persistent": persistSection,
+ 		"prewarm": map[string]any{
+-			"entries":    s.scheduler.PrewarmCount(),
++			"entries":    prewarmEntries,
+ 			"sizeBytes":  0,
+ 			"limitBytes": prewarmLimitBytes,
+ 		},
+@@ -104,7 +114,7 @@ func (s *APIServer) handleMVCachePut(w http.ResponseWriter, r *http.Request) {
+ 
+ func (s *APIServer) handleCachePlaybackDelete(w http.ResponseWriter, r *http.Request) {
+ 	what := r.URL.Query().Get("what") // "prewarm", "persistent", "segments", or "" (all)
+-	if what == "" || what == "prewarm" {
++	if s.scheduler != nil && (what == "" || what == "prewarm") {
+ 		s.scheduler.ClearPreWarmed()
+ 	}
+ 	if what == "" || what == "persistent" {
+diff --git a/engine/cmd/handlers_glasswave.go b/engine/cmd/handlers_glasswave.go
+new file mode 100644
+index 0000000..22e5e6a
+--- /dev/null
++++ b/engine/cmd/handlers_glasswave.go
+@@ -0,0 +1,546 @@
++package main
++
++import (
++	"bytes"
++	"context"
++	"encoding/json"
++	"errors"
++	"fmt"
++	"io"
++	"net/http"
++	"net/url"
++	"os"
++	pathpkg "path"
++	"strconv"
++	"strings"
++	"time"
++
++	"engine/core/drm"
++	"engine/utils/ampapi"
++)
++
++const (
++	defaultGlasswaveAppleAPIBase = "https://api.music.apple.com"
++	defaultGlasswaveAppleAMPBase = "https://amp-api.music.apple.com"
++
++	glasswaveAppleRequestLimit  = 512 << 10
++	glasswaveAppleResponseLimit = 8 << 20
++	glasswaveAppleUserAgent     = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
++)
++
++var glasswaveAppleHTTPClient = &http.Client{
++	Timeout: 30 * time.Second,
++	Transport: &http.Transport{
++		MaxIdleConns:        20,
++		MaxIdleConnsPerHost: 10,
++		IdleConnTimeout:     30 * time.Second,
++	},
++	// Apple API responses occasionally redirect. Returning the redirect to the
++	// caller preserves its status without letting an upstream response change
++	// the fixed host or carry auth headers to a new destination.
++	CheckRedirect: func(*http.Request, []*http.Request) error {
++		return http.ErrUseLastResponse
++	},
++}
++
++func glasswaveHeadlessEnabled() bool {
++	return strings.TrimSpace(os.Getenv("GLASSWAVE_HEADLESS")) == "1"
++}
++
++type glasswaveAppleRequest struct {
++	Method string          `json:"method"`
++	Path   string          `json:"path"`
++	Body   json.RawMessage `json:"body"`
++}
++
++type glasswaveAccountResponse struct {
++	SignedIn   bool   `json:"signedIn"`
++	Storefront string `json:"storefront"`
++	AccountID  string `json:"accountId"`
++	Name       string `json:"name,omitempty"`
++}
++
++type glasswaveStorefront struct {
++	ID   string
++	Name string
++}
++
++type glasswaveAppleStatusError struct {
++	StatusCode int
++}
++
++func (e *glasswaveAppleStatusError) Error() string {
++	return fmt.Sprintf("Apple Music API: HTTP %d", e.StatusCode)
++}
++
++func (s *APIServer) handleGlasswaveApple(w http.ResponseWriter, r *http.Request) {
++	r.Body = http.MaxBytesReader(w, r.Body, glasswaveAppleRequestLimit)
++	defer r.Body.Close()
++
++	var req glasswaveAppleRequest
++	dec := json.NewDecoder(r.Body)
++	if err := dec.Decode(&req); err != nil {
++		var maxErr *http.MaxBytesError
++		if errors.As(err, &maxErr) {
++			writeGlasswaveError(w, http.StatusRequestEntityTooLarge, "request body too large")
++		} else {
++			writeGlasswaveError(w, http.StatusBadRequest, "invalid request body")
++		}
++		return
++	}
++	var extra any
++	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
++		writeGlasswaveError(w, http.StatusBadRequest, "invalid request body")
++		return
++	}
++
++	method := strings.ToUpper(strings.TrimSpace(req.Method))
++	if !glasswaveMethodAllowed(method) {
++		writeGlasswaveError(w, http.StatusBadRequest, "unsupported method")
++		return
++	}
++	target, err := s.validateGlasswaveApplePath(method, req.Path)
++	if err != nil {
++		writeGlasswaveError(w, http.StatusBadRequest, err.Error())
++		return
++	}
++	if len(req.Body) > glasswaveAppleRequestLimit {
++		writeGlasswaveError(w, http.StatusRequestEntityTooLarge, "request body too large")
++		return
++	}
++
++	account, _ := s.glasswaveNativeAccount(r.Context())
++	devToken := strings.TrimPrefix(strings.TrimSpace(account.DevToken), "Bearer ")
++	if devToken == "" {
++		devToken, err = s.glasswaveDeveloperToken()
++		if err != nil {
++			writeGlasswaveError(w, http.StatusBadGateway, "Apple developer token unavailable")
++			return
++		}
++	}
++	musicToken := strings.TrimSpace(account.MusicToken)
++	if musicToken == "" {
++		musicToken = strings.TrimSpace(s.musicUserToken())
++	}
++	if target.RequiresMusicToken && musicToken == "" {
++		writeGlasswaveError(w, http.StatusUnauthorized, "Apple Music account is not signed in")
++		return
++	}
++
++	var body io.Reader = http.NoBody
++	if len(req.Body) > 0 && !bytes.Equal(bytes.TrimSpace(req.Body), []byte("null")) {
++		body = bytes.NewReader(req.Body)
++	}
++	upstream, err := http.NewRequestWithContext(r.Context(), method, target.URL, body)
++	if err != nil {
++		writeGlasswaveError(w, http.StatusBadRequest, "invalid Apple API request")
++		return
++	}
++	upstream.Header.Set("Authorization", "Bearer "+devToken)
++	upstream.Header.Set("User-Agent", glasswaveAppleUserAgent)
++	upstream.Header.Set("Origin", "https://music.apple.com")
++	upstream.Header.Set("Accept", "application/json")
++	if len(req.Body) > 0 && body != http.NoBody {
++		upstream.Header.Set("Content-Type", "application/json")
++	}
++	if musicToken != "" {
++		// amp-api accepts the web header while api.music.apple.com documents
++		// Music-User-Token. Sending both names keeps the fixed upstream usable
++		// across both Apple API surfaces.
++		upstream.Header.Set("Music-User-Token", musicToken)
++		upstream.Header.Set("x-apple-music-user-token", musicToken)
++	}
++	s.copyGlasswaveAppleResponse(w, upstream, devToken, musicToken)
++}
++
++type validatedGlasswaveAppleTarget struct {
++	URL                string
++	RequiresMusicToken bool
++}
++
++func (s *APIServer) validateGlasswaveApplePath(method, raw string) (validatedGlasswaveAppleTarget, error) {
++	raw = strings.TrimSpace(raw)
++	if raw == "" || len(raw) > 8192 || strings.HasPrefix(raw, "//") || strings.Contains(raw, "#") {
++		return validatedGlasswaveAppleTarget{}, fmt.Errorf("invalid Apple API path")
++	}
++	u, err := url.ParseRequestURI(raw)
++	if err != nil || u.IsAbs() || u.Scheme != "" || u.Host != "" || u.User != nil || u.Fragment != "" {
++		return validatedGlasswaveAppleTarget{}, fmt.Errorf("invalid Apple API path")
++	}
++	if !strings.HasPrefix(u.Path, "/") || strings.ContainsAny(u.Path, "\\\x00") || pathpkg.Clean(u.Path) != u.Path {
++		return validatedGlasswaveAppleTarget{}, fmt.Errorf("invalid Apple API path")
++	}
++	if !validGlasswavePathEncoding(u.EscapedPath()) {
++		return validatedGlasswaveAppleTarget{}, fmt.Errorf("invalid Apple API path")
++	}
++	privateCatalogExtension := glasswaveCatalogRequiresWebAPI(u)
++	requiresMusicToken := strings.HasPrefix(u.Path, "/v1/me/") || privateCatalogExtension
++	if !requiresMusicToken && !strings.HasPrefix(u.Path, "/v1/catalog/") {
++		return validatedGlasswaveAppleTarget{}, fmt.Errorf("Apple API path is not allowed")
++	}
++	if method != http.MethodGet && strings.HasPrefix(u.Path, "/v1/catalog/") {
++		return validatedGlasswaveAppleTarget{}, fmt.Errorf("catalog API only supports reads")
++	}
++
++	base := s.glasswaveProxyBase()
++	if strings.HasPrefix(u.Path, "/v1/catalog/") && !privateCatalogExtension {
++		base = s.glasswaveOfficialBase()
++	}
++	b, err := url.Parse(base)
++	if err != nil || b.Host == "" || (b.Scheme != "https" && b.Scheme != "http") {
++		return validatedGlasswaveAppleTarget{}, fmt.Errorf("Apple API endpoint is unavailable")
++	}
++	target := *b
++	target.Path = u.Path
++	target.RawPath = u.RawPath
++	target.RawQuery = u.RawQuery
++	target.Fragment = ""
++	return validatedGlasswaveAppleTarget{
++		URL:                target.String(),
++		RequiresMusicToken: requiresMusicToken,
++	}, nil
++}
++
++func glasswaveCatalogRequiresWebAPI(target *url.URL) bool {
++	for name, values := range target.Query() {
++		lowerName := strings.ToLower(name)
++		for _, value := range values {
++			lowerValue := strings.ToLower(value)
++			if strings.HasPrefix(lowerName, "extend") &&
++				(strings.Contains(lowerValue, "infavorites") || strings.Contains(lowerValue, "library-")) {
++				return true
++			}
++			if lowerName == "relate" &&
++				(strings.Contains(lowerValue, "library") || strings.Contains(lowerValue, "favorite")) {
++				return true
++			}
++		}
++	}
++	return false
++}
++
++func validGlasswavePathEncoding(escapedPath string) bool {
++	candidate := escapedPath
++	for range 3 {
++		decoded, err := url.PathUnescape(candidate)
++		if err != nil || strings.ContainsAny(decoded, "\\\x00") || pathpkg.Clean(decoded) != decoded {
++			return false
++		}
++		if decoded == candidate {
++			return true
++		}
++		candidate = decoded
++	}
++	return false
++}
++
++func (s *APIServer) glasswaveProxyBase() string {
++	if s.glasswaveAMPBase != "" {
++		return s.glasswaveAMPBase
++	}
++	return defaultGlasswaveAppleAMPBase
++}
++
++func (s *APIServer) glasswaveOfficialBase() string {
++	if s.glasswaveAPIBase != "" {
++		return s.glasswaveAPIBase
++	}
++	return defaultGlasswaveAppleAPIBase
++}
++
++func (s *APIServer) glasswaveClient() *http.Client {
++	if s.glasswaveHTTPClient != nil {
++		return s.glasswaveHTTPClient
++	}
++	return glasswaveAppleHTTPClient
++}
++
++func (s *APIServer) copyGlasswaveAppleResponse(w http.ResponseWriter, req *http.Request, secrets ...string) {
++	resp, err := s.doGlasswaveAppleRequest(req)
++	if err != nil {
++		writeGlasswaveError(w, http.StatusBadGateway, "Apple Music API request failed")
++		return
++	}
++	defer resp.Body.Close()
++	body, err := io.ReadAll(io.LimitReader(resp.Body, glasswaveAppleResponseLimit+1))
++	if err != nil {
++		writeGlasswaveError(w, http.StatusBadGateway, "failed to read Apple Music API response")
++		return
++	}
++	if len(body) > glasswaveAppleResponseLimit {
++		writeGlasswaveError(w, http.StatusBadGateway, "Apple Music API response too large")
++		return
++	}
++	secrets = append(secrets, strings.TrimPrefix(req.Header.Get("Authorization"), "Bearer "))
++	for _, secret := range secrets {
++		if secret != "" {
++			body = bytes.ReplaceAll(body, []byte(secret), []byte("[redacted]"))
++		}
++	}
++	contentType := resp.Header.Get("Content-Type")
++	if contentType == "" {
++		contentType = "application/json"
++	}
++	w.Header().Set("Content-Type", contentType)
++	w.Header().Set("Cache-Control", "no-store")
++	w.WriteHeader(resp.StatusCode)
++	_, _ = w.Write(body)
++}
++
++func (s *APIServer) handleGlasswaveAccount(w http.ResponseWriter, r *http.Request) {
++	w.Header().Set("Cache-Control", "no-store")
++	accountBefore, err := s.glasswaveNativeAccount(r.Context())
++	if err != nil {
++		if s.session == nil || !s.session.HasSession() {
++			writeGlasswaveAccount(w, http.StatusOK, glasswaveAccountResponse{SignedIn: false})
++		} else {
++			writeGlasswaveError(w, http.StatusServiceUnavailable, "Apple account is temporarily unavailable")
++		}
++		return
++	}
++	musicToken := strings.TrimSpace(accountBefore.MusicToken)
++	if musicToken == "" {
++		musicToken = strings.TrimSpace(s.musicUserToken())
++	}
++	if musicToken == "" {
++		writeGlasswaveAccount(w, http.StatusOK, glasswaveAccountResponse{SignedIn: false})
++		return
++	}
++	if accountBefore.DSID <= 0 {
++		writeGlasswaveError(w, http.StatusServiceUnavailable, "Apple account identity is temporarily unavailable")
++		return
++	}
++	devToken := strings.TrimPrefix(strings.TrimSpace(accountBefore.DevToken), "Bearer ")
++	if devToken == "" {
++		devToken, err = s.glasswaveDeveloperToken()
++		if err != nil {
++			writeGlasswaveError(w, http.StatusBadGateway, "Apple developer token unavailable")
++			return
++		}
++	}
++
++	storefront, err := s.fetchGlasswaveStorefront(r.Context(), devToken, musicToken, accountBefore.StorefrontID)
++	if err != nil {
++		var statusErr *glasswaveAppleStatusError
++		if errors.As(err, &statusErr) && (statusErr.StatusCode == http.StatusUnauthorized || statusErr.StatusCode == http.StatusForbidden) {
++			writeGlasswaveAccount(w, http.StatusOK, glasswaveAccountResponse{SignedIn: false})
++			return
++		}
++		writeGlasswaveError(w, http.StatusBadGateway, "Apple account validation failed")
++		return
++	}
++	accountAfter, err := s.glasswaveNativeAccount(r.Context())
++	if err != nil || accountAfter.DSID <= 0 {
++		writeGlasswaveError(w, http.StatusServiceUnavailable, "Apple account identity is temporarily unavailable")
++		return
++	}
++	if accountBefore.DSID != accountAfter.DSID {
++		writeGlasswaveError(w, http.StatusServiceUnavailable, "Apple account changed while it was being validated")
++		return
++	}
++	writeGlasswaveAccount(w, http.StatusOK, glasswaveAccountResponse{
++		SignedIn:   true,
++		Storefront: storefront.ID,
++		AccountID:  strconv.FormatInt(accountAfter.DSID, 10),
++		Name:       storefront.Name,
++	})
++}
++
++func writeGlasswaveAccount(w http.ResponseWriter, status int, response glasswaveAccountResponse) {
++	w.Header().Set("Cache-Control", "no-store")
++	writeJSON(w, status, response)
++}
++
++func (s *APIServer) glasswaveNativeAccount(ctx context.Context) (drm.AccountInfo, error) {
++	if s.glasswaveGetAccount != nil {
++		return s.glasswaveGetAccount(ctx)
++	}
++	if s.dm == nil {
++		return drm.AccountInfo{}, drm.ErrNotAuthenticated
++	}
++	return s.dm.GetAccount(ctx)
++}
++
++func (s *APIServer) glasswaveDeveloperToken() (string, error) {
++	if s.glasswaveGetToken != nil {
++		return s.glasswaveGetToken()
++	}
++	return glasswaveApplicationToken.get(time.Now(), ampapi.GetToken)
++}
++
++func (s *APIServer) doGlasswaveAppleRequest(req *http.Request) (*http.Response, error) {
++	response, err := s.glasswaveClient().Do(req)
++	if err != nil || response.StatusCode != http.StatusUnauthorized {
++		return response, err
++	}
++	used := strings.TrimPrefix(req.Header.Get("Authorization"), "Bearer ")
++	glasswaveApplicationToken.invalidate(used)
++	if req.Method != http.MethodGet {
++		return response, nil
++	}
++	fresh, refreshErr := s.glasswaveDeveloperToken()
++	if refreshErr != nil || fresh == used || (req.Body != nil && req.Body != http.NoBody && req.GetBody == nil) {
++		return response, nil
++	}
++	retry := req.Clone(req.Context())
++	if req.GetBody != nil {
++		retry.Body, refreshErr = req.GetBody()
++		if refreshErr != nil {
++			return response, nil
++		}
++	}
++	response.Body.Close()
++	retry.Header.Set("Authorization", "Bearer "+fresh)
++	// Also retain the current value for response redaction; it is never logged.
++	req.Header.Set("Authorization", "Bearer "+fresh)
++	return s.glasswaveClient().Do(retry)
++}
++
++func (s *APIServer) fetchGlasswaveStorefront(ctx context.Context, devToken, musicToken, nativeStorefront string) (glasswaveStorefront, error) {
++	base, err := url.Parse(s.glasswaveOfficialBase())
++	if err != nil || base.Host == "" {
++		return glasswaveStorefront{}, fmt.Errorf("Apple API endpoint is unavailable")
++	}
++	target := *base
++	target.Path = "/v1/me/storefront"
++	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target.String(), nil)
++	if err != nil {
++		return glasswaveStorefront{}, err
++	}
++	req.Header.Set("Authorization", "Bearer "+devToken)
++	req.Header.Set("Music-User-Token", musicToken)
++	req.Header.Set("x-apple-music-user-token", musicToken)
++	req.Header.Set("User-Agent", glasswaveAppleUserAgent)
++	req.Header.Set("Origin", "https://music.apple.com")
++	req.Header.Set("Accept", "application/json")
++
++	resp, err := s.doGlasswaveAppleRequest(req)
++	if err != nil {
++		return glasswaveStorefront{}, err
++	}
++	defer resp.Body.Close()
++	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20+1))
++	if err != nil {
++		return glasswaveStorefront{}, err
++	}
++	if len(body) > 1<<20 {
++		return glasswaveStorefront{}, fmt.Errorf("storefront response too large")
++	}
++	if resp.StatusCode != http.StatusOK {
++		return glasswaveStorefront{}, &glasswaveAppleStatusError{StatusCode: resp.StatusCode}
++	}
++
++	var decoded struct {
++		Data []struct {
++			ID         string `json:"id"`
++			Attributes struct {
++				Name string `json:"name"`
++			} `json:"attributes"`
++		} `json:"data"`
++	}
++	if err := json.Unmarshal(body, &decoded); err != nil || len(decoded.Data) == 0 {
++		return glasswaveStorefront{}, fmt.Errorf("invalid storefront response")
++	}
++	id := strings.ToLower(strings.TrimSpace(decoded.Data[0].ID))
++	if !isTwoLetterStorefront(id) {
++		id = strings.ToLower(strings.TrimSpace(nativeStorefront))
++	}
++	if !isTwoLetterStorefront(id) {
++		return glasswaveStorefront{}, fmt.Errorf("Apple returned an invalid storefront")
++	}
++	return glasswaveStorefront{
++		ID:   id,
++		Name: strings.TrimSpace(decoded.Data[0].Attributes.Name),
++	}, nil
++}
++
++func isTwoLetterStorefront(s string) bool {
++	if len(s) != 2 {
++		return false
++	}
++	for _, r := range s {
++		if (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') {
++			return false
++		}
++	}
++	return true
++}
++
++type glasswavePlaybackCredentials struct {
++	Token      string
++	MusicToken string
++	Storefront string
++}
++
++// resolveGlasswavePlaybackCredentials fills omitted playback credentials from
++// the native account first. The caller's explicit values remain authoritative.
++// A storefront is never defaulted to "us": it is taken from a validated
++// /v1/me/storefront response when neither the request nor cached session has a
++// usable two-letter code.
++func (s *APIServer) resolveGlasswavePlaybackCredentials(ctx context.Context, token, musicToken, storefront string) (glasswavePlaybackCredentials, error) {
++	out := glasswavePlaybackCredentials{
++		Token:      strings.TrimPrefix(strings.TrimSpace(token), "Bearer "),
++		MusicToken: strings.TrimSpace(musicToken),
++		Storefront: strings.ToLower(strings.TrimSpace(storefront)),
++	}
++
++	var account drm.AccountInfo
++	if out.Token == "" || out.MusicToken == "" || !isTwoLetterStorefront(out.Storefront) {
++		account, _ = s.glasswaveNativeAccount(ctx)
++		if out.Token == "" {
++			out.Token = strings.TrimPrefix(strings.TrimSpace(account.DevToken), "Bearer ")
++		}
++		if out.MusicToken == "" {
++			out.MusicToken = strings.TrimSpace(account.MusicToken)
++		}
++		if !isTwoLetterStorefront(out.Storefront) {
++			nativeSF := strings.ToLower(strings.TrimSpace(drm.NormalizeStorefrontID(account.StorefrontID)))
++			if isTwoLetterStorefront(nativeSF) {
++				out.Storefront = nativeSF
++			}
++		}
++	}
++	if out.Token == "" {
++		var err error
++		out.Token, err = s.glasswaveDeveloperToken()
++		if err != nil {
++			return glasswavePlaybackCredentials{}, fmt.Errorf("Apple developer token unavailable")
++		}
++	}
++	if out.MusicToken == "" {
++		out.MusicToken = strings.TrimSpace(s.musicUserToken())
++	}
++	if out.Token == "" {
++		return glasswavePlaybackCredentials{}, fmt.Errorf("Apple developer token unavailable")
++	}
++	if out.MusicToken == "" {
++		return glasswavePlaybackCredentials{}, fmt.Errorf("Apple Music account is not signed in")
++	}
++	if !isTwoLetterStorefront(out.Storefront) {
++		cached := strings.ToLower(strings.TrimSpace(s.storefront()))
++		if isTwoLetterStorefront(cached) {
++			out.Storefront = cached
++		}
++	}
++	if !isTwoLetterStorefront(out.Storefront) {
++		resolved, err := s.fetchGlasswaveStorefront(ctx, out.Token, out.MusicToken, account.StorefrontID)
++		if err != nil {
++			return glasswavePlaybackCredentials{}, fmt.Errorf("Apple Music storefront validation failed")
++		}
++		out.Storefront = resolved.ID
++	}
++	return out, nil
++}
++
++func glasswaveMethodAllowed(method string) bool {
++	switch method {
++	case http.MethodGet, http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete:
++		return true
++	default:
++		return false
++	}
++}
++
++func writeGlasswaveError(w http.ResponseWriter, status int, message string) {
++	writeJSON(w, status, map[string]string{"error": message})
++}
+diff --git a/engine/cmd/handlers_glasswave_lyrics.go b/engine/cmd/handlers_glasswave_lyrics.go
+new file mode 100644
+index 0000000..b127171
+--- /dev/null
++++ b/engine/cmd/handlers_glasswave_lyrics.go
+@@ -0,0 +1,614 @@
++package main
++
++import (
++	"context"
++	"encoding/json"
++	"errors"
++	"fmt"
++	"io"
++	"net/http"
++	"net/url"
++	"regexp"
++	"sort"
++	"strings"
++	"unicode"
++
++	"engine/core/drm"
++	"engine/utils/lyrics"
++)
++
++const (
++	glasswaveLyricsRequestLimit = 64 << 10
++	glasswaveLyricsSearchLimit  = 5
++	glasswaveLyricsFetchLimit   = 3
++	glasswaveLyricsBodyLimit    = 4 << 20
++)
++
++var glasswaveLyricsLocaleRe = regexp.MustCompile(`^[A-Za-z0-9-]{2,32}$`)
++var errGlasswaveLyricsUnauthorized = errors.New("Apple Music account is not signed in")
++
++type glasswaveLyricsRequest struct {
++	Mode       string `json:"mode"`
++	TrackID    string `json:"trackId"`
++	TrackType  string `json:"trackType"`
++	Title      string `json:"title"`
++	Artist     string `json:"artist"`
++	Album      string `json:"album"`
++	Locale     string `json:"locale"`
++	DurationMs int    `json:"durationMs"`
++}
++
++type glasswaveLyricsResult struct {
++	Title      string `json:"title"`
++	Artist     string `json:"artist"`
++	Album      string `json:"album"`
++	LRC        string `json:"lrc"`
++	Confidence int    `json:"confidence"`
++}
++
++type glasswaveLyricsResponse struct {
++	Results []glasswaveLyricsResult `json:"results"`
++}
++
++type glasswaveLyricsSong struct {
++	ID         string `json:"id"`
++	Type       string `json:"type"`
++	Attributes struct {
++		Name             string `json:"name"`
++		ArtistName       string `json:"artistName"`
++		AlbumName        string `json:"albumName"`
++		DurationInMillis int    `json:"durationInMillis"`
++	} `json:"attributes"`
++}
++
++type glasswaveLyricsSearchResponse struct {
++	TopResults *struct {
++		Data []glasswaveLyricsSong `json:"data"`
++	} `json:"topResults"`
++	Results struct {
++		TopResults *struct {
++			Data []glasswaveLyricsSong `json:"data"`
++		} `json:"topResults"`
++		Songs *struct {
++			Data []glasswaveLyricsSong `json:"data"`
++		} `json:"songs"`
++	} `json:"results"`
++}
++
++type rankedGlasswaveLyricsSong struct {
++	song       glasswaveLyricsSong
++	confidence int
++}
++
++func (s *APIServer) handleGlasswaveLyrics(w http.ResponseWriter, r *http.Request) {
++	r.Body = http.MaxBytesReader(w, r.Body, glasswaveLyricsRequestLimit)
++	defer r.Body.Close()
++
++	var request glasswaveLyricsRequest
++	decoder := json.NewDecoder(r.Body)
++	decoder.DisallowUnknownFields()
++	if err := decoder.Decode(&request); err != nil {
++		var maxErr *http.MaxBytesError
++		if errors.As(err, &maxErr) {
++			writeGlasswaveError(w, http.StatusRequestEntityTooLarge, "request body too large")
++		} else {
++			writeGlasswaveError(w, http.StatusBadRequest, "invalid lyrics request")
++		}
++		return
++	}
++	var extra any
++	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
++		writeGlasswaveError(w, http.StatusBadRequest, "invalid lyrics request")
++		return
++	}
++	if err := validateGlasswaveLyricsRequest(&request, r); err != nil {
++		writeGlasswaveError(w, http.StatusBadRequest, err.Error())
++		return
++	}
++
++	devToken, musicToken, err := s.glasswaveLyricsCredentials(r.Context())
++	if err != nil {
++		if errors.Is(err, errGlasswaveLyricsUnauthorized) {
++			writeGlasswaveError(w, http.StatusUnauthorized, "Apple Music account is not signed in")
++		} else {
++			writeGlasswaveError(w, http.StatusBadGateway, "Apple developer token unavailable")
++		}
++		return
++	}
++	storefront, err := s.glasswaveLyricsStorefront(r.Context(), devToken, musicToken)
++	if err != nil {
++		writeGlasswaveLyricsFailure(w, err)
++		return
++	}
++
++	var tracks []rankedGlasswaveLyricsSong
++	switch request.Mode {
++	case "direct":
++		trackID := request.TrackID
++		if request.TrackType == "library-songs" {
++			trackID, err = s.resolveGlasswaveLibraryLyricsID(
++				r.Context(), request.TrackID, request.Locale, devToken, musicToken)
++			if errors.Is(err, lyrics.ErrNotFound) {
++				writeJSON(w, http.StatusOK, glasswaveLyricsResponse{Results: []glasswaveLyricsResult{}})
++				return
++			}
++			if err != nil {
++				writeGlasswaveLyricsFailure(w, err)
++				return
++			}
++		}
++		tracks = []rankedGlasswaveLyricsSong{{
++			song: glasswaveLyricsSong{
++				ID:   trackID,
++				Type: "songs",
++			},
++			confidence: 100,
++		}}
++	case "search":
++		tracks, err = s.searchGlasswaveLyricsTracks(r.Context(), storefront, &request, devToken)
++		if err != nil {
++			writeGlasswaveLyricsFailure(w, err)
++			return
++		}
++	}
++
++	results := make([]glasswaveLyricsResult, 0, min(len(tracks), glasswaveLyricsFetchLimit))
++	for _, track := range tracks {
++		if len(results) == glasswaveLyricsFetchLimit {
++			break
++		}
++		lrc, err := s.getGlasswaveLyrics(
++			r.Context(), storefront, track.song.ID, request.Locale, devToken, musicToken)
++		if errors.Is(err, lyrics.ErrNotFound) {
++			continue
++		}
++		if err != nil {
++			writeGlasswaveLyricsFailure(w, err)
++			return
++		}
++		if lrc == "" || len(lrc) > glasswaveLyricsBodyLimit {
++			continue
++		}
++		results = append(results, glasswaveLyricsResult{
++			Title:      track.song.Attributes.Name,
++			Artist:     track.song.Attributes.ArtistName,
++			Album:      track.song.Attributes.AlbumName,
++			LRC:        lrc,
++			Confidence: track.confidence,
++		})
++	}
++	writeJSON(w, http.StatusOK, glasswaveLyricsResponse{Results: results})
++}
++
++func validateGlasswaveLyricsRequest(request *glasswaveLyricsRequest, r *http.Request) error {
++	request.Mode = strings.ToLower(strings.TrimSpace(request.Mode))
++	request.TrackID = strings.TrimSpace(request.TrackID)
++	request.TrackType = strings.ToLower(strings.TrimSpace(request.TrackType))
++	request.Title = strings.TrimSpace(request.Title)
++	request.Artist = strings.TrimSpace(request.Artist)
++	request.Album = strings.TrimSpace(request.Album)
++	request.Locale = strings.TrimSpace(request.Locale)
++	if request.Locale == "" {
++		request.Locale = sLang(r)
++	}
++	if !glasswaveLyricsLocaleRe.MatchString(request.Locale) {
++		return fmt.Errorf("invalid lyrics locale")
++	}
++	for _, value := range []string{request.Title, request.Artist, request.Album} {
++		if len(value) > 512 || strings.IndexFunc(value, unicode.IsControl) >= 0 {
++			return fmt.Errorf("invalid lyrics metadata")
++		}
++	}
++	if request.DurationMs < 0 || request.DurationMs > 24*60*60*1000 {
++		return fmt.Errorf("invalid track duration")
++	}
++	switch request.Mode {
++	case "direct":
++		if request.TrackType != "songs" && request.TrackType != "library-songs" {
++			return fmt.Errorf("invalid track type")
++		}
++		if !catalogIDRe.MatchString(request.TrackID) || request.TrackID == "." || request.TrackID == ".." {
++			return fmt.Errorf("invalid track id")
++		}
++	case "search":
++		if request.Title == "" {
++			return fmt.Errorf("lyrics search requires a title")
++		}
++		request.TrackType = "songs"
++	default:
++		return fmt.Errorf("invalid lyrics mode")
++	}
++	return nil
++}
++
++func sLang(r *http.Request) string {
++	value := strings.TrimSpace(r.URL.Query().Get("l"))
++	if value == "" {
++		value = "en-US"
++	}
++	return value
++}
++
++func (s *APIServer) glasswaveLyricsCredentials(ctx context.Context) (string, string, error) {
++	account, _ := s.glasswaveNativeAccount(ctx)
++	devToken := strings.TrimPrefix(strings.TrimSpace(account.DevToken), "Bearer ")
++	if devToken == "" {
++		var err error
++		devToken, err = s.glasswaveDeveloperToken()
++		if err != nil {
++			return "", "", err
++		}
++	}
++	musicToken := strings.TrimSpace(account.MusicToken)
++	if musicToken == "" {
++		musicToken = strings.TrimSpace(s.musicUserToken())
++	}
++	if devToken == "" {
++		return "", "", fmt.Errorf("Apple developer token unavailable")
++	}
++	if musicToken == "" {
++		return "", "", errGlasswaveLyricsUnauthorized
++	}
++	return devToken, musicToken, nil
++}
++
++func (s *APIServer) glasswaveLyricsStorefront(ctx context.Context, devToken, musicToken string) (string, error) {
++	storefront := strings.ToLower(strings.TrimSpace(drm.NormalizeStorefrontID(s.storefront())))
++	if isTwoLetterStorefront(storefront) {
++		return storefront, nil
++	}
++	resolved, err := s.fetchGlasswaveStorefront(ctx, devToken, musicToken, s.storefront())
++	if err != nil {
++		return "", err
++	}
++	return resolved.ID, nil
++}
++
++func (s *APIServer) resolveGlasswaveLibraryLyricsID(
++	ctx context.Context,
++	libraryID, locale, devToken, musicToken string,
++) (string, error) {
++	base, err := url.Parse(s.glasswaveProxyBase())
++	if err != nil || base.Host == "" {
++		return "", fmt.Errorf("Apple Music API endpoint is unavailable")
++	}
++	target := *base
++	target.Path = "/v1/me/library/songs/" + url.PathEscape(libraryID)
++	query := target.Query()
++	query.Set("include", "catalog")
++	query.Set("l", locale)
++	target.RawQuery = query.Encode()
++	request, err := http.NewRequestWithContext(ctx, http.MethodGet, target.String(), nil)
++	if err != nil {
++		return "", err
++	}
++	setGlasswaveLyricsHeaders(request, devToken, musicToken)
++	response, err := s.doGlasswaveAppleRequest(request)
++	if err != nil {
++		return "", fmt.Errorf("library lyrics mapping failed")
++	}
++	defer response.Body.Close()
++	if response.StatusCode == http.StatusNotFound {
++		return "", lyrics.ErrNotFound
++	}
++	if response.StatusCode != http.StatusOK {
++		return "", &glasswaveAppleStatusError{StatusCode: response.StatusCode}
++	}
++	body, err := io.ReadAll(io.LimitReader(response.Body, 1<<20+1))
++	if err != nil || len(body) > 1<<20 {
++		return "", fmt.Errorf("invalid library lyrics mapping")
++	}
++	var decoded struct {
++		Data []struct {
++			ID         string `json:"id"`
++			Type       string `json:"type"`
++			Attributes struct {
++				PlayParams struct {
++					ID          string `json:"id"`
++					Kind        string `json:"kind"`
++					IsLibrary   bool   `json:"isLibrary"`
++					CatalogID   string `json:"catalogId"`
++					Reporting   bool   `json:"reporting"`
++					ReportingID string `json:"reportingId"`
++				} `json:"playParams"`
++			} `json:"attributes"`
++		} `json:"data"`
++	}
++	if err := json.Unmarshal(body, &decoded); err != nil || len(decoded.Data) != 1 {
++		return "", fmt.Errorf("invalid library lyrics mapping")
++	}
++	item := decoded.Data[0]
++	params := item.Attributes.PlayParams
++	if item.ID != libraryID || item.Type != "library-songs" || !params.IsLibrary ||
++		params.ID != libraryID || params.Kind != "song" {
++		return "", lyrics.ErrNotFound
++	}
++	if validCatalogResourceID(params.ReportingID) && params.ReportingID != params.CatalogID {
++		if params.Reporting || params.CatalogID != "" {
++			return params.ReportingID, nil
++		}
++	}
++	if validCatalogResourceID(params.CatalogID) {
++		return params.CatalogID, nil
++	}
++	return "", lyrics.ErrNotFound
++}
++
++func validCatalogResourceID(id string) bool {
++	id = strings.TrimSpace(id)
++	return catalogIDRe.MatchString(id) && id != "." && id != ".." &&
++		(len(id) < 2 || id[1] != '.')
++}
++
++func (s *APIServer) searchGlasswaveLyricsTracks(
++	ctx context.Context,
++	storefront string,
++	request *glasswaveLyricsRequest,
++	devToken string,
++) ([]rankedGlasswaveLyricsSong, error) {
++	base, err := url.Parse(s.glasswaveOfficialBase())
++	if err != nil || base.Host == "" {
++		return nil, fmt.Errorf("Apple Music API endpoint is unavailable")
++	}
++	target := *base
++	target.Path = "/v1/catalog/" + url.PathEscape(storefront) + "/search"
++	query := target.Query()
++	query.Set("term", strings.TrimSpace(request.Title+" "+request.Artist))
++	query.Set("types", "songs")
++	query.Set("limit", "5")
++	query.Set("l", request.Locale)
++	query.Set("with", "topResults")
++	target.RawQuery = query.Encode()
++
++	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target.String(), nil)
++	if err != nil {
++		return nil, err
++	}
++	req.Header.Set("Authorization", "Bearer "+devToken)
++	req.Header.Set("User-Agent", glasswaveAppleUserAgent)
++	req.Header.Set("Origin", "https://music.apple.com")
++	req.Header.Set("Accept", "application/json")
++	response, err := s.doGlasswaveAppleRequest(req)
++	if err != nil {
++		return nil, fmt.Errorf("lyrics metadata search failed")
++	}
++	defer response.Body.Close()
++	if response.StatusCode == http.StatusNotFound {
++		return nil, nil
++	}
++	if response.StatusCode != http.StatusOK {
++		return nil, &glasswaveAppleStatusError{StatusCode: response.StatusCode}
++	}
++	body, err := io.ReadAll(io.LimitReader(response.Body, 2<<20+1))
++	if err != nil || len(body) > 2<<20 {
++		return nil, fmt.Errorf("invalid lyrics metadata search")
++	}
++	var decoded glasswaveLyricsSearchResponse
++	if err := json.Unmarshal(body, &decoded); err != nil {
++		return nil, fmt.Errorf("invalid lyrics metadata search")
++	}
++	var songs []glasswaveLyricsSong
++	if decoded.TopResults != nil {
++		songs = append(songs, decoded.TopResults.Data...)
++	}
++	if decoded.Results.TopResults != nil {
++		songs = append(songs, decoded.Results.TopResults.Data...)
++	}
++	if decoded.Results.Songs != nil {
++		songs = append(songs, decoded.Results.Songs.Data...)
++	}
++
++	seen := make(map[string]struct{})
++	ranked := make([]rankedGlasswaveLyricsSong, 0, glasswaveLyricsSearchLimit)
++	for _, song := range songs {
++		if len(ranked) == glasswaveLyricsSearchLimit {
++			break
++		}
++		if song.Type != "songs" || !validCatalogResourceID(song.ID) {
++			continue
++		}
++		if _, exists := seen[song.ID]; exists {
++			continue
++		}
++		seen[song.ID] = struct{}{}
++		confidence := glasswaveLyricsMatchConfidence(request, song)
++		if confidence < 50 {
++			continue
++		}
++		ranked = append(ranked, rankedGlasswaveLyricsSong{song: song, confidence: confidence})
++	}
++	sort.SliceStable(ranked, func(i, j int) bool { return ranked[i].confidence > ranked[j].confidence })
++	return ranked, nil
++}
++
++func (s *APIServer) getGlasswaveLyrics(
++	ctx context.Context,
++	storefront, trackID, locale, devToken, musicToken string,
++) (string, error) {
++	fetch := s.glasswaveGetLyrics
++	if fetch == nil {
++		fetch = lyrics.GetContext
++	}
++	var notFound error
++	for _, lyricType := range []string{"syllable-lyrics", "lyrics"} {
++		value, err := fetch(ctx, storefront, trackID, lyricType, locale, "lrc", devToken, musicToken)
++		if err == nil && strings.TrimSpace(value) != "" {
++			return value, nil
++		}
++		if err == nil || errors.Is(err, lyrics.ErrNotFound) {
++			notFound = lyrics.ErrNotFound
++			continue
++		}
++		return "", err
++	}
++	return "", notFound
++}
++
++func setGlasswaveLyricsHeaders(request *http.Request, devToken, musicToken string) {
++	request.Header.Set("Authorization", "Bearer "+devToken)
++	request.Header.Set("Music-User-Token", musicToken)
++	request.Header.Set("x-apple-music-user-token", musicToken)
++	request.Header.Set("User-Agent", glasswaveAppleUserAgent)
++	request.Header.Set("Origin", "https://music.apple.com")
++	request.Header.Set("Accept", "application/json")
++}
++
++func writeGlasswaveLyricsFailure(w http.ResponseWriter, err error) {
++	if errors.Is(err, lyrics.ErrNotFound) {
++		writeJSON(w, http.StatusOK, glasswaveLyricsResponse{Results: []glasswaveLyricsResult{}})
++		return
++	}
++	var lyricsStatus *lyrics.HTTPError
++	if errors.As(err, &lyricsStatus) {
++		switch lyricsStatus.StatusCode {
++		case http.StatusUnauthorized, http.StatusForbidden:
++			writeGlasswaveError(w, lyricsStatus.StatusCode, "Apple Music lyrics authorization failed")
++		default:
++			writeGlasswaveError(w, http.StatusBadGateway, "Apple Music lyrics request failed")
++		}
++		return
++	}
++	var appleStatus *glasswaveAppleStatusError
++	if errors.As(err, &appleStatus) {
++		switch appleStatus.StatusCode {
++		case http.StatusUnauthorized, http.StatusForbidden:
++			writeGlasswaveError(w, appleStatus.StatusCode, "Apple Music authorization failed")
++		default:
++			writeGlasswaveError(w, http.StatusBadGateway, "Apple Music lyrics metadata request failed")
++		}
++		return
++	}
++	writeGlasswaveError(w, http.StatusBadGateway, "Apple Music lyrics request failed")
++}
++
++func glasswaveLyricsMatchConfidence(query *glasswaveLyricsRequest, candidate glasswaveLyricsSong) int {
++	title := glasswaveNormalizeLyricsText(query.Title)
++	foundTitle := glasswaveNormalizeLyricsText(candidate.Attributes.Name)
++	titleScore := glasswaveTextSimilarity(title, foundTitle)
++	if titleScore < 0.5 {
++		return 0
++	}
++	artistScore := glasswaveArtistSimilarity(query.Artist, candidate.Attributes.ArtistName)
++	if query.Artist != "" && candidate.Attributes.ArtistName != "" && artistScore < 0.4 {
++		return 0
++	}
++	albumScore := 0.5
++	if query.Album != "" && candidate.Attributes.AlbumName != "" {
++		albumScore = glasswaveTextSimilarity(
++			glasswaveNormalizeLyricsText(query.Album),
++			glasswaveNormalizeLyricsText(candidate.Attributes.AlbumName))
++	}
++	durationScore := 0.5
++	if query.DurationMs > 0 && candidate.Attributes.DurationInMillis > 0 {
++		difference := max(query.DurationMs, candidate.Attributes.DurationInMillis) -
++			min(query.DurationMs, candidate.Attributes.DurationInMillis)
++		durationScore = max(0.0, 1.0-float64(difference)/20000.0)
++	}
++	score := titleScore*65 + artistScore*25 + albumScore*5 + durationScore*5
++	return max(0, min(100, int(score+0.5)))
++}
++
++func glasswaveNormalizeLyricsText(text string) string {
++	return glasswaveNormalizeLyricsTextMode(text, true)
++}
++
++func glasswaveNormalizeLyricsTextMode(text string, stripBrackets bool) string {
++	var output []rune
++	depth := 0
++	for _, r := range text {
++		if stripBrackets {
++			switch r {
++			case '(', '[', '（', '【', '{':
++				depth++
++				continue
++			case ')', ']', '）', '】', '}':
++				if depth > 0 {
++					depth--
++				}
++				continue
++			}
++			if depth > 0 {
++				continue
++			}
++		}
++		if unicode.IsSpace(r) || unicode.IsPunct(r) {
++			continue
++		}
++		output = append(output, unicode.ToLower(r))
++	}
++	if len(output) == 0 && stripBrackets {
++		return glasswaveNormalizeLyricsTextMode(text, false)
++	}
++	return string(output)
++}
++
++func glasswaveTextSimilarity(a, b string) float64 {
++	if a == "" || b == "" {
++		return 0
++	}
++	if a == b {
++		return 1
++	}
++	if strings.Contains(a, b) || strings.Contains(b, a) {
++		shorter := min(len([]rune(a)), len([]rune(b)))
++		longer := max(len([]rune(a)), len([]rune(b)))
++		return 0.75 + 0.25*float64(shorter)/float64(longer)
++	}
++	ar := []rune(a)
++	br := []rune(b)
++	previous := make([]int, len(br)+1)
++	current := make([]int, len(br)+1)
++	for index := range previous {
++		previous[index] = index
++	}
++	for i := 1; i <= len(ar); i++ {
++		current[0] = i
++		for j := 1; j <= len(br); j++ {
++			cost := 0
++			if ar[i-1] != br[j-1] {
++				cost = 1
++			}
++			current[j] = min(previous[j]+1, current[j-1]+1, previous[j-1]+cost)
++		}
++		previous, current = current, previous
++	}
++	return 1 - float64(previous[len(br)])/float64(max(len(ar), len(br)))
++}
++
++func glasswaveArtistSimilarity(query, found string) float64 {
++	left := glasswaveSplitLyricsArtists(query)
++	right := glasswaveSplitLyricsArtists(found)
++	if len(left) == 0 || len(right) == 0 {
++		return 0.5
++	}
++	best := 0.0
++	for _, a := range left {
++		for _, b := range right {
++			best = max(best, glasswaveTextSimilarity(a, b))
++		}
++	}
++	return best
++}
++
++func glasswaveSplitLyricsArtists(value string) []string {
++	fields := strings.FieldsFunc(value, func(r rune) bool {
++		switch r {
++		case '/', ',', '&', '、', ';', '，', '×':
++			return true
++		default:
++			return false
++		}
++	})
++	output := make([]string, 0, len(fields))
++	for _, field := range fields {
++		lower := strings.ToLower(strings.TrimSpace(field))
++		if strings.HasPrefix(lower, "feat.") || strings.HasPrefix(lower, "ft.") ||
++			strings.HasPrefix(lower, "feat ") {
++			continue
++		}
++		if normalized := glasswaveNormalizeLyricsText(field); normalized != "" {
++			output = append(output, normalized)
++		}
++	}
++	return output
++}
+diff --git a/engine/cmd/handlers_glasswave_lyrics_test.go b/engine/cmd/handlers_glasswave_lyrics_test.go
+new file mode 100644
+index 0000000..831e083
+--- /dev/null
++++ b/engine/cmd/handlers_glasswave_lyrics_test.go
+@@ -0,0 +1,250 @@
++package main
++
++import (
++	"context"
++	"encoding/json"
++	"errors"
++	"io"
++	"net/http"
++	"net/http/httptest"
++	"strings"
++	"sync/atomic"
++	"testing"
++
++	"engine/core/drm"
++	"engine/utils/lyrics"
++)
++
++func TestGlasswaveLyricsDirectUsesExplicitSongID(t *testing.T) {
++	storefront := newLyricsStorefrontServer(t)
++	defer storefront.Close()
++	var calls atomic.Int32
++	s := &APIServer{
++		glasswaveAPIBase:    storefront.URL,
++		glasswaveHTTPClient: glasswaveAppleHTTPClient,
++		glasswaveGetAccount: func(context.Context) (drm.AccountInfo, error) {
++			return drm.AccountInfo{DevToken: "dev-test", MusicToken: "music-test"}, nil
++		},
++		glasswaveGetLyrics: func(_ context.Context, sf, trackID, lyricType, locale, format,
++			devToken, musicToken string) (string, error) {
++			calls.Add(1)
++			if sf != "us" || trackID != "12345" || lyricType != "syllable-lyrics" ||
++				locale != "zh-Hans-CN" || format != "lrc" ||
++				devToken != "dev-test" || musicToken != "music-test" {
++				t.Fatal("direct lyrics arguments were not preserved")
++			}
++			return "[00:01.00]<00:01.00>Hello", nil
++		},
++	}
++	body := `{"mode":"direct","trackId":"12345","trackType":"songs","locale":"zh-Hans-CN"}`
++	w := httptest.NewRecorder()
++	s.handleGlasswaveLyrics(w, httptest.NewRequest(http.MethodPost, "/api/v1/glasswave/lyrics", strings.NewReader(body)))
++	if w.Code != http.StatusOK || calls.Load() != 1 {
++		t.Fatalf("status=%d calls=%d body=%q", w.Code, calls.Load(), w.Body.String())
++	}
++	var response glasswaveLyricsResponse
++	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
++		t.Fatal(err)
++	}
++	if len(response.Results) != 1 || response.Results[0].Confidence != 100 ||
++		response.Results[0].LRC == "" {
++		t.Fatalf("unexpected direct lyrics response: %+v", response)
++	}
++	for _, secret := range []string{"dev-test", "music-test"} {
++		if strings.Contains(w.Body.String(), secret) {
++			t.Fatal("lyrics response exposed credentials")
++		}
++	}
++}
++
++func TestGlasswaveLyricsFallsBackFromSyllableToLine(t *testing.T) {
++	storefront := newLyricsStorefrontServer(t)
++	defer storefront.Close()
++	s := lyricsTestServer(storefront.URL, func(_ context.Context, _ string, _ string, lyricType, _ string,
++		_ string, _ string, _ string) (string, error) {
++		if lyricType == "syllable-lyrics" {
++			return "", lyrics.ErrNotFound
++		}
++		return "[00:01.00]Line lyrics", nil
++	})
++	w := lyricsRequest(s, `{"mode":"direct","trackId":"12345","trackType":"songs","locale":"en-US"}`)
++	if w.Code != http.StatusOK {
++		t.Fatalf("status=%d body=%q", w.Code, w.Body.String())
++	}
++	var response glasswaveLyricsResponse
++	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil || len(response.Results) != 1 {
++		t.Fatal("line-lyrics fallback did not produce one result")
++	}
++}
++
++func TestGlasswaveLyricsNoResultIsEmptyArray(t *testing.T) {
++	storefront := newLyricsStorefrontServer(t)
++	defer storefront.Close()
++	s := lyricsTestServer(storefront.URL, func(context.Context, string, string, string, string,
++		string, string, string) (string, error) {
++		return "", lyrics.ErrNotFound
++	})
++	w := lyricsRequest(s, `{"mode":"direct","trackId":"12345","trackType":"songs","locale":"en-US"}`)
++	if w.Code != http.StatusOK || strings.TrimSpace(w.Body.String()) != `{"results":[]}` {
++		t.Fatalf("status=%d body=%q", w.Code, w.Body.String())
++	}
++}
++
++func TestGlasswaveLyricsRequiresAuthenticatedSession(t *testing.T) {
++	s := &APIServer{
++		glasswaveGetAccount: func(context.Context) (drm.AccountInfo, error) {
++			return drm.AccountInfo{DevToken: "dev-test"}, nil
++		},
++	}
++	w := lyricsRequest(s, `{"mode":"direct","trackId":"12345","trackType":"songs","locale":"en-US"}`)
++	if w.Code != http.StatusUnauthorized {
++		t.Fatalf("status=%d body=%q", w.Code, w.Body.String())
++	}
++}
++
++func TestGlasswaveLyricsLibraryDirectResolvesReportingID(t *testing.T) {
++	storefront := newLyricsStorefrontServer(t)
++	defer storefront.Close()
++	var mappingRequests atomic.Int32
++	privateAPI := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		mappingRequests.Add(1)
++		if r.URL.Path != "/v1/me/library/songs/i.test" ||
++			r.URL.Query().Get("include") != "catalog" ||
++			r.Header.Get("Music-User-Token") != "music-test" {
++			t.Error("library mapping request was not authoritative")
++		}
++		w.Header().Set("Content-Type", "application/json")
++		_, _ = io.WriteString(w, `{"data":[{
++			"id":"i.test","type":"library-songs",
++			"attributes":{"playParams":{
++				"id":"i.test","kind":"song","isLibrary":true,
++				"catalogId":"12345","reporting":true,"reportingId":"1865440142"
++			}}
++		}]}`)
++	}))
++	defer privateAPI.Close()
++
++	var lyricTrack string
++	s := &APIServer{
++		glasswaveAPIBase:    storefront.URL,
++		glasswaveAMPBase:    privateAPI.URL,
++		glasswaveHTTPClient: glasswaveAppleHTTPClient,
++		glasswaveGetAccount: func(context.Context) (drm.AccountInfo, error) {
++			return drm.AccountInfo{DevToken: "dev-test", MusicToken: "music-test"}, nil
++		},
++		glasswaveGetLyrics: func(_ context.Context, _ string, trackID, _ string, _ string,
++			_ string, _ string, _ string) (string, error) {
++			lyricTrack = trackID
++			return "[00:01.00]Resolved", nil
++		},
++	}
++	w := lyricsRequest(s, `{"mode":"direct","trackId":"i.test","trackType":"library-songs","locale":"en-US"}`)
++	if w.Code != http.StatusOK || mappingRequests.Load() != 1 || lyricTrack != "1865440142" {
++		t.Fatalf("status=%d mapping=%d track=%q body=%q",
++			w.Code, mappingRequests.Load(), lyricTrack, w.Body.String())
++	}
++}
++
++func TestGlasswaveLyricsSearchUsesPublicSearchAndConfidence(t *testing.T) {
++	var searchRequests atomic.Int32
++	publicAPI := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		switch r.URL.Path {
++		case "/v1/me/storefront":
++			w.Header().Set("Content-Type", "application/json")
++			_, _ = io.WriteString(w, `{"data":[{"id":"us","type":"storefronts","attributes":{"name":"United States"}}]}`)
++		case "/v1/catalog/us/search":
++			searchRequests.Add(1)
++			if r.URL.Query().Get("types") != "songs" || r.URL.Query().Get("limit") != "5" ||
++				r.Header.Get("Authorization") != "Bearer dev-test" {
++				t.Error("public search request contract was not preserved")
++			}
++			if r.Header.Get("Music-User-Token") != "" {
++				t.Error("public search carried an account token")
++			}
++			w.Header().Set("Content-Type", "application/json")
++			_, _ = io.WriteString(w, `{"topResults":{"data":[
++				{"id":"200","type":"songs","attributes":{"name":"Song Title","artistName":"Artist","albumName":"Album","durationInMillis":180000}},
++				{"id":"201","type":"songs","attributes":{"name":"Other","artistName":"Different","albumName":"Elsewhere","durationInMillis":100000}}
++			]}}`)
++		default:
++			w.WriteHeader(http.StatusNotFound)
++		}
++	}))
++	defer publicAPI.Close()
++
++	var lyricTrack string
++	s := &APIServer{
++		glasswaveAPIBase:    publicAPI.URL,
++		glasswaveHTTPClient: glasswaveAppleHTTPClient,
++		glasswaveGetAccount: func(context.Context) (drm.AccountInfo, error) {
++			return drm.AccountInfo{DevToken: "dev-test", MusicToken: "music-test"}, nil
++		},
++		glasswaveGetLyrics: func(_ context.Context, _ string, trackID, _ string, _ string,
++			_ string, _ string, _ string) (string, error) {
++			lyricTrack = trackID
++			return "[00:01.00]Matched", nil
++		},
++	}
++	body := `{"mode":"search","title":"Song Title","artist":"Artist","album":"Album",
++		"locale":"en-US","durationMs":181000}`
++	w := lyricsRequest(s, body)
++	if w.Code != http.StatusOK || searchRequests.Load() != 1 || lyricTrack != "200" {
++		t.Fatalf("status=%d searches=%d track=%q body=%q",
++			w.Code, searchRequests.Load(), lyricTrack, w.Body.String())
++	}
++	var response glasswaveLyricsResponse
++	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil || len(response.Results) != 1 {
++		t.Fatal("search did not produce one matched lyric result")
++	}
++	if response.Results[0].Confidence < 50 || response.Results[0].Title != "Song Title" {
++		t.Fatalf("unexpected confidence or metadata: %+v", response.Results[0])
++	}
++}
++
++func TestGlasswaveLyricsCanceledFetchPreservesCancellation(t *testing.T) {
++	s := &APIServer{glasswaveGetLyrics: func(context.Context, string, string, string, string,
++		string, string, string) (string, error) {
++		return "", context.Canceled
++	}}
++	if _, err := s.getGlasswaveLyrics(context.Background(), "us", "1", "en-US", "dev", "music"); !errors.Is(err, context.Canceled) {
++		t.Fatal("canceled lyrics fetch did not preserve cancellation")
++	}
++}
++
++func TestGlasswaveLyricsRejectsUnknownFields(t *testing.T) {
++	s := &APIServer{}
++	w := lyricsRequest(s, `{"mode":"search","title":"Song","unknown":true}`)
++	if w.Code != http.StatusBadRequest {
++		t.Fatalf("status=%d body=%q", w.Code, w.Body.String())
++	}
++}
++
++func lyricsRequest(s *APIServer, body string) *httptest.ResponseRecorder {
++	w := httptest.NewRecorder()
++	s.handleGlasswaveLyrics(w, httptest.NewRequest(http.MethodPost, "/api/v1/glasswave/lyrics", strings.NewReader(body)))
++	return w
++}
++
++func lyricsTestServer(baseURL string, fetch func(context.Context, string, string, string, string,
++	string, string, string) (string, error)) *APIServer {
++	return &APIServer{
++		glasswaveAPIBase:    baseURL,
++		glasswaveHTTPClient: glasswaveAppleHTTPClient,
++		glasswaveGetAccount: func(context.Context) (drm.AccountInfo, error) {
++			return drm.AccountInfo{DevToken: "dev-test", MusicToken: "music-test"}, nil
++		},
++		glasswaveGetLyrics: fetch,
++	}
++}
++
++func newLyricsStorefrontServer(t *testing.T) *httptest.Server {
++	t.Helper()
++	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		if r.URL.Path != "/v1/me/storefront" {
++			w.WriteHeader(http.StatusNotFound)
++			return
++		}
++		w.Header().Set("Content-Type", "application/json")
++		_, _ = io.WriteString(w, `{"data":[{"id":"us","type":"storefronts","attributes":{"name":"United States"}}]}`)
++	}))
++}
+diff --git a/engine/cmd/handlers_glasswave_test.go b/engine/cmd/handlers_glasswave_test.go
+new file mode 100644
+index 0000000..301bc99
+--- /dev/null
++++ b/engine/cmd/handlers_glasswave_test.go
+@@ -0,0 +1,568 @@
++package main
++
++import (
++	"bytes"
++	"context"
++	"encoding/json"
++	"errors"
++	"io"
++	"net/http"
++	"net/http/httptest"
++	"net/url"
++	"strings"
++	"sync"
++	"sync/atomic"
++	"testing"
++
++	"engine/core/drm"
++	"engine/core/media"
++	"engine/core/pipeline"
++	"engine/core/playback"
++	"engine/internal/ring"
++)
++
++type fullSongTestProvider struct{}
++
++func (fullSongTestProvider) Open(context.Context, media.OpenRequest) (*media.Session, error) {
++	return &media.Session{
++		Kind:     "song",
++		Metadata: media.Metadata{DurationMs: 180000},
++		Tracks: []media.Track{{
++			Kind:  pipeline.KindAudio,
++			Codec: pipeline.CodecALAC,
++			Open: func(context.Context) (*pipeline.Stream, error) {
++				return &pipeline.Stream{
++					Kind:       pipeline.KindAudio,
++					Codec:      pipeline.CodecALAC,
++					Source:     mvAudioTestSource(func(io.Writer) error { return nil }),
++					DurationMs: 180000,
++				}, nil
++			},
++		}},
++	}, nil
++}
++
++func TestGlasswaveAccountUsesNativeTokensAndMapsStorefront(t *testing.T) {
++	var sawDev, sawMusic bool
++	var sawPath bool
++	var mu sync.Mutex
++	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		mu.Lock()
++		sawPath = r.URL.Path == "/v1/me/storefront"
++		sawDev = r.Header.Get("Authorization") == "Bearer dev-test"
++		sawMusic = r.Header.Get("Music-User-Token") == "native-music-token"
++		mu.Unlock()
++		w.Header().Set("Content-Type", "application/json")
++		_, _ = io.WriteString(w, `{"data":[{"id":"us","type":"storefronts","attributes":{"name":"United States"}}]}`)
++	}))
++	defer srv.Close()
++
++	s := &APIServer{
++		headless:            true,
++		glasswaveAPIBase:    srv.URL,
++		glasswaveHTTPClient: glasswaveAppleHTTPClient,
++		glasswaveGetAccount: func(context.Context) (drm.AccountInfo, error) {
++			return drm.AccountInfo{
++				StorefrontID: "143441",
++				MusicToken:   "native-music-token",
++				DSID:         9000000002,
++			}, nil
++		},
++		glasswaveGetToken: func() (string, error) { return "dev-test", nil },
++		mkMusicToken:      "web-session-token-must-not-win",
++	}
++	r := httptest.NewRequest(http.MethodGet, "/api/v1/glasswave/account", nil)
++	w := httptest.NewRecorder()
++	s.handleGlasswaveAccount(w, r)
++
++	if w.Code != http.StatusOK {
++		t.Fatalf("status = %d; body=%q", w.Code, w.Body.String())
++	}
++	mu.Lock()
++	defer mu.Unlock()
++	if !sawPath || !sawDev || !sawMusic {
++		t.Fatalf("request validation failed: path=%v dev=%v music=%v", sawPath, sawDev, sawMusic)
++	}
++	var got glasswaveAccountResponse
++	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
++		t.Fatal(err)
++	}
++	if !got.SignedIn || got.Storefront != "us" || got.AccountID != "9000000002" ||
++		got.Name != "United States" {
++		t.Fatalf("account response = %+v", got)
++	}
++	var wire map[string]any
++	if err := json.Unmarshal(w.Body.Bytes(), &wire); err != nil {
++		t.Fatal(err)
++	}
++	if _, ok := wire["accountId"]; !ok {
++		t.Fatal("account response did not use the accountId JSON contract")
++	}
++	for _, secret := range []string{"native-music-token", "web-session-token-must-not-win", "dev-test"} {
++		if strings.Contains(w.Body.String(), secret) {
++			t.Fatalf("account response exposed credential %q", secret)
++		}
++	}
++}
++
++type capturePlaybackProvider struct {
++	request media.OpenRequest
++}
++
++func (p *capturePlaybackProvider) Open(ctx context.Context, req media.OpenRequest) (*media.Session, error) {
++	p.request = req
++	return fullSongTestProvider{}.Open(ctx, req)
++}
++
++func TestGlasswaveAccountSignedOutContract(t *testing.T) {
++	s := &APIServer{
++		glasswaveGetAccount: func(context.Context) (drm.AccountInfo, error) {
++			return drm.AccountInfo{}, drm.ErrNotAuthenticated
++		},
++	}
++	w := httptest.NewRecorder()
++	s.handleGlasswaveAccount(w, httptest.NewRequest(http.MethodGet, "/api/v1/glasswave/account", nil))
++	if w.Code != http.StatusOK {
++		t.Fatalf("status = %d, want 200", w.Code)
++	}
++	var got glasswaveAccountResponse
++	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
++		t.Fatal(err)
++	}
++	if got.SignedIn || got.Storefront != "" || got.Name != "" {
++		t.Fatalf("signed-out response = %+v", got)
++	}
++}
++
++func TestGlasswaveAccountVerifiedTokenWithoutIdentityReturns503(t *testing.T) {
++	s := &APIServer{
++		glasswaveGetAccount: func(context.Context) (drm.AccountInfo, error) {
++			return drm.AccountInfo{DevToken: "dev-test", MusicToken: "music-test"}, nil
++		},
++	}
++	w := httptest.NewRecorder()
++	s.handleGlasswaveAccount(w, httptest.NewRequest(http.MethodGet, "/api/v1/glasswave/account", nil))
++	if w.Code != http.StatusServiceUnavailable {
++		t.Fatalf("status = %d, want 503", w.Code)
++	}
++	if strings.Contains(w.Body.String(), "mpl_db") || strings.Contains(w.Body.String(), `:\`) {
++		t.Fatal("account identity error exposed an internal path")
++	}
++}
++
++func TestGlasswaveAccountRejectsSwitchBetweenIdentitySnapshots(t *testing.T) {
++	storefront := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		w.Header().Set("Content-Type", "application/json")
++		_, _ = io.WriteString(w, `{"data":[{"id":"us","type":"storefronts","attributes":{"name":"Same Country"}}]}`)
++	}))
++	defer storefront.Close()
++
++	var accountCalls atomic.Int32
++	s := &APIServer{
++		glasswaveAPIBase:    storefront.URL,
++		glasswaveHTTPClient: glasswaveAppleHTTPClient,
++		glasswaveGetAccount: func(context.Context) (drm.AccountInfo, error) {
++			dsid := int64(9000000011)
++			if accountCalls.Add(1) > 1 {
++				dsid = 9000000012
++			}
++			return drm.AccountInfo{DevToken: "dev-test", MusicToken: "music-test", DSID: dsid}, nil
++		},
++	}
++	w := httptest.NewRecorder()
++	s.handleGlasswaveAccount(w, httptest.NewRequest(http.MethodGet, "/api/v1/glasswave/account", nil))
++	if w.Code != http.StatusServiceUnavailable {
++		t.Fatalf("status = %d, want 503", w.Code)
++	}
++}
++
++func TestGlasswaveAppleProxyUsesNativeAuthAndReturnsStandardJSON(t *testing.T) {
++	var gotMethod, gotPath, gotBody string
++	var gotNativeAuth bool
++	var mu sync.Mutex
++	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		mu.Lock()
++		gotMethod = r.Method
++		gotPath = r.URL.RequestURI()
++		body, _ := io.ReadAll(r.Body)
++		gotBody = string(body)
++		gotNativeAuth = r.Header.Get("Authorization") == "Bearer dev-test" &&
++			r.Header.Get("Music-User-Token") == "native-music-token"
++		mu.Unlock()
++		w.Header().Set("Content-Type", "application/json")
++		w.WriteHeader(http.StatusCreated)
++		_, _ = io.WriteString(w, `{"data":[{"id":"library-item","type":"library-songs"}],"echo":["dev-test","native-music-token"]}`)
++	}))
++	defer srv.Close()
++
++	s := &APIServer{
++		glasswaveAMPBase:    srv.URL,
++		glasswaveHTTPClient: glasswaveAppleHTTPClient,
++		glasswaveGetAccount: func(context.Context) (drm.AccountInfo, error) {
++			return drm.AccountInfo{DevToken: "dev-test", MusicToken: "native-music-token"}, nil
++		},
++	}
++	payload := `{"method":"POST","path":"/v1/me/library?l=en-US","body":{"ids":["1"]}}`
++	r := httptest.NewRequest(http.MethodPost, "/api/v1/glasswave/apple", strings.NewReader(payload))
++	w := httptest.NewRecorder()
++	s.handleGlasswaveApple(w, r)
++
++	if w.Code != http.StatusCreated {
++		t.Fatalf("status = %d; body=%q", w.Code, w.Body.String())
++	}
++	mu.Lock()
++	defer mu.Unlock()
++	if gotMethod != http.MethodPost || gotPath != "/v1/me/library?l=en-US" || gotBody != `{"ids":["1"]}` {
++		t.Fatalf("upstream request = method %q path %q body %q", gotMethod, gotPath, gotBody)
++	}
++	if !gotNativeAuth {
++		t.Fatal("proxy did not use native account tokens")
++	}
++	if got := w.Body.String(); got != `{"data":[{"id":"library-item","type":"library-songs"}],"echo":["[redacted]","[redacted]"]}` {
++		t.Fatalf("upstream JSON changed: %q", got)
++	}
++	if strings.Contains(w.Body.String(), "dev-test") || strings.Contains(w.Body.String(), "native-music-token") {
++		t.Fatal("proxy response exposed credentials")
++	}
++}
++
++func TestGlasswaveAppleProxyRoutesCatalogReadsToPublicAPI(t *testing.T) {
++	var publicRequests atomic.Int32
++	var privateRequests atomic.Int32
++	publicServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		publicRequests.Add(1)
++		if r.Header.Get("Authorization") != "Bearer dev-test" {
++			t.Error("public catalog request did not use the developer token")
++		}
++		if r.Header.Get("Music-User-Token") != "" || r.Header.Get("x-apple-music-user-token") != "" {
++			t.Error("public catalog request carried an account token")
++		}
++		w.Header().Set("Content-Type", "application/json")
++		_, _ = io.WriteString(w, `{"data":[]}`)
++	}))
++	defer publicServer.Close()
++	privateServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		privateRequests.Add(1)
++		w.WriteHeader(http.StatusBadGateway)
++	}))
++	defer privateServer.Close()
++
++	s := &APIServer{
++		glasswaveAPIBase:    publicServer.URL,
++		glasswaveAMPBase:    privateServer.URL,
++		glasswaveHTTPClient: glasswaveAppleHTTPClient,
++		glasswaveGetAccount: func(context.Context) (drm.AccountInfo, error) {
++			return drm.AccountInfo{DevToken: "dev-test"}, nil
++		},
++	}
++	paths := []string{
++		"/v1/catalog/us/search?term=glasswave&types=songs,artists,albums,playlists&limit=5",
++		"/v1/catalog/us/search/suggestions?kinds=terms,topResults",
++		"/v1/catalog/us/artists/159260351/top-songs?l=zh-Hans-CN",
++	}
++	for _, path := range paths {
++		body := `{"method":"GET","path":` + mustJSON(t, path) + `}`
++		w := httptest.NewRecorder()
++		s.handleGlasswaveApple(w, httptest.NewRequest(http.MethodPost, "/api/v1/glasswave/apple", strings.NewReader(body)))
++		if w.Code != http.StatusOK {
++			t.Fatalf("path %q status = %d; body=%q", path, w.Code, w.Body.String())
++		}
++	}
++	if publicRequests.Load() != int32(len(paths)) || privateRequests.Load() != 0 {
++		t.Fatalf("catalog routing public=%d private=%d", publicRequests.Load(), privateRequests.Load())
++	}
++}
++
++func TestGlasswaveAppleProxyRoutesPrivateCatalogExtensionsToWebAPI(t *testing.T) {
++	var publicRequests atomic.Int32
++	var privateRequests atomic.Int32
++	publicServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		publicRequests.Add(1)
++		w.WriteHeader(http.StatusBadGateway)
++	}))
++	defer publicServer.Close()
++	privateServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		privateRequests.Add(1)
++		if r.Header.Get("Music-User-Token") != "native-music-token" {
++			t.Error("private catalog extension did not carry the account token")
++		}
++		w.Header().Set("Content-Type", "application/json")
++		_, _ = io.WriteString(w, `{"data":[]}`)
++	}))
++	defer privateServer.Close()
++
++	s := &APIServer{
++		glasswaveAPIBase:    publicServer.URL,
++		glasswaveAMPBase:    privateServer.URL,
++		glasswaveHTTPClient: glasswaveAppleHTTPClient,
++		glasswaveGetAccount: func(context.Context) (drm.AccountInfo, error) {
++			return drm.AccountInfo{DevToken: "dev-test", MusicToken: "native-music-token"}, nil
++		},
++	}
++	paths := []string{
++		"/v1/catalog/us/artists/1?extend=inFavorites&platform=web",
++		"/v1/catalog/us/artists?ids=1&extend[library-artists]=inFavorites&platform=web",
++		"/v1/catalog/us?relate=library&ids[songs]=1",
++	}
++	for _, path := range paths {
++		body := `{"method":"GET","path":` + mustJSON(t, path) + `}`
++		w := httptest.NewRecorder()
++		s.handleGlasswaveApple(w, httptest.NewRequest(http.MethodPost, "/api/v1/glasswave/apple", strings.NewReader(body)))
++		if w.Code != http.StatusOK {
++			t.Fatalf("path %q status = %d; body=%q", path, w.Code, w.Body.String())
++		}
++	}
++	if publicRequests.Load() != 0 || privateRequests.Load() != int32(len(paths)) {
++		t.Fatalf("private catalog routing public=%d private=%d", publicRequests.Load(), privateRequests.Load())
++	}
++}
++
++func TestGlasswaveAppleProxyRejectsNonFixedTargets(t *testing.T) {
++	s := &APIServer{}
++	for _, path := range []string{
++		"https://evil.example/v1/catalog/us/songs/1",
++		"//evil.example/v1/catalog/us/songs/1",
++		"/v1/catalog/us/songs/1#fragment",
++		"/v1/me/../catalog/us/songs/1",
++		"/v1/me/%2e%2e/catalog/us/songs/1",
++		"/v1/me/%2F..%2Fcatalog/us/songs/1",
++		"/v1/me/%252e%252e/catalog/us/songs/1",
++		`/v1\me\library`,
++		"/v2/catalog/us/songs/1",
++		"/v1/library",
++	} {
++		path := path
++		t.Run(path, func(t *testing.T) {
++			body := `{"method":"GET","path":` + mustJSON(t, path) + `}`
++			w := httptest.NewRecorder()
++			s.handleGlasswaveApple(w, httptest.NewRequest(http.MethodPost, "/api/v1/glasswave/apple", strings.NewReader(body)))
++			if w.Code != http.StatusBadRequest {
++				t.Fatalf("status = %d, want 400; body=%q", w.Code, w.Body.String())
++			}
++		})
++	}
++}
++
++func TestGlasswaveAppleProxyRejectsCatalogWrites(t *testing.T) {
++	s := &APIServer{}
++	for _, method := range []string{http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete} {
++		body := `{"method":` + mustJSON(t, method) + `,"path":"/v1/catalog/us/songs/1"}`
++		w := httptest.NewRecorder()
++		s.handleGlasswaveApple(w, httptest.NewRequest(http.MethodPost, "/api/v1/glasswave/apple", strings.NewReader(body)))
++		if w.Code != http.StatusBadRequest {
++			t.Fatalf("method %s status = %d, want 400", method, w.Code)
++		}
++	}
++}
++
++func TestGlasswaveAppleProxyDoesNotRetryNonIdempotentWriteAfterUnauthorized(t *testing.T) {
++	var requests atomic.Int32
++	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		requests.Add(1)
++		w.WriteHeader(http.StatusUnauthorized)
++	}))
++	defer upstream.Close()
++	s := &APIServer{
++		glasswaveAMPBase:    upstream.URL,
++		glasswaveHTTPClient: glasswaveAppleHTTPClient,
++		glasswaveGetAccount: func(context.Context) (drm.AccountInfo, error) {
++			return drm.AccountInfo{DevToken: "stale-dev", MusicToken: "music"}, nil
++		},
++		glasswaveGetToken: func() (string, error) { return "fresh-dev", nil },
++	}
++	body := `{"method":"POST","path":"/v1/me/library","body":{"ids":["1"]}}`
++	w := httptest.NewRecorder()
++	s.handleGlasswaveApple(w, httptest.NewRequest(http.MethodPost, "/api/v1/glasswave/apple", strings.NewReader(body)))
++	if w.Code != http.StatusUnauthorized {
++		t.Fatalf("status = %d, want 401", w.Code)
++	}
++	if requests.Load() != 1 {
++		t.Fatalf("non-idempotent write was retried %d times", requests.Load())
++	}
++}
++
++func TestGlasswaveAppleProxyDoesNotFollowRedirects(t *testing.T) {
++	var redirectedRequests atomic.Int32
++	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		redirectedRequests.Add(1)
++		_, _ = io.WriteString(w, `{"redirected":true}`)
++	}))
++	defer target.Close()
++	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		http.Redirect(w, r, target.URL+"/v1/me/storefront", http.StatusTemporaryRedirect)
++	}))
++	defer origin.Close()
++
++	s := &APIServer{
++		glasswaveAMPBase:    origin.URL,
++		glasswaveHTTPClient: glasswaveAppleHTTPClient,
++		glasswaveGetAccount: func(context.Context) (drm.AccountInfo, error) {
++			return drm.AccountInfo{DevToken: "dev", MusicToken: "music"}, nil
++		},
++	}
++	body := `{"method":"GET","path":"/v1/me/storefront"}`
++	w := httptest.NewRecorder()
++	s.handleGlasswaveApple(w, httptest.NewRequest(http.MethodPost, "/api/v1/glasswave/apple", strings.NewReader(body)))
++	if w.Code != http.StatusTemporaryRedirect {
++		t.Fatalf("status = %d, want upstream 307", w.Code)
++	}
++	if got := redirectedRequests.Load(); got != 0 {
++		t.Fatalf("client followed redirect %d time(s)", got)
++	}
++	if loc := w.Header().Get("Location"); loc != "" {
++		t.Fatalf("proxy forwarded redirect target %q", loc)
++	}
++}
++
++func TestGlasswaveAppleProxyBoundsResponseBody(t *testing.T) {
++	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		w.Header().Set("Content-Type", "application/json")
++		_, _ = w.Write(bytes.Repeat([]byte("x"), glasswaveAppleResponseLimit+1))
++	}))
++	defer srv.Close()
++	s := &APIServer{
++		glasswaveAPIBase:    srv.URL,
++		glasswaveHTTPClient: glasswaveAppleHTTPClient,
++		glasswaveGetAccount: func(context.Context) (drm.AccountInfo, error) {
++			return drm.AccountInfo{DevToken: "dev", MusicToken: "music"}, nil
++		},
++	}
++	body := `{"method":"GET","path":"/v1/catalog/us/songs/1"}`
++	w := httptest.NewRecorder()
++	s.handleGlasswaveApple(w, httptest.NewRequest(http.MethodPost, "/api/v1/glasswave/apple", strings.NewReader(body)))
++	if w.Code != http.StatusBadGateway {
++		t.Fatalf("status = %d, want 502", w.Code)
++	}
++	if w.Body.Len() > 1024 {
++		t.Fatalf("error response was not bounded: %d bytes", w.Body.Len())
++	}
++}
++
++func TestGlasswaveAppleProxyBoundsRequestBody(t *testing.T) {
++	s := &APIServer{}
++	oversized := `{"method":"POST","path":"/v1/me/library","body":{"value":"` +
++		strings.Repeat("x", glasswaveAppleRequestLimit) + `"}}`
++	w := httptest.NewRecorder()
++	s.handleGlasswaveApple(w, httptest.NewRequest(http.MethodPost, "/api/v1/glasswave/apple", strings.NewReader(oversized)))
++	if w.Code != http.StatusRequestEntityTooLarge {
++		t.Fatalf("status = %d, want 413; body=%q", w.Code, w.Body.String())
++	}
++}
++
++func TestGlasswavePlaybackFillsCredentialsAndReturnsFixedAudioPath(t *testing.T) {
++	pm := playback.NewWithProviderWithoutReaper(fullSongTestProvider{})
++	s := &APIServer{
++		headless:    true,
++		pm:          pm,
++		events:      newEventBus(newEpochManager()),
++		openLatency: ring.New(100),
++		openCB:      newCircuitBreaker(3, 0),
++		shutdownCtx: context.Background(),
++		glasswaveGetAccount: func(context.Context) (drm.AccountInfo, error) {
++			return drm.AccountInfo{
++				DevToken:     "native-dev",
++				MusicToken:   "native-music",
++				StorefrontID: "143441",
++			}, nil
++		},
++	}
++	body := `{"assetId":"contract-song","storefront":"us","capabilities":{"lossless":true,"hiRes":true}}`
++	r := httptest.NewRequest(http.MethodPost, "/api/v1/playback", strings.NewReader(body))
++	w := httptest.NewRecorder()
++	s.handleCreatePlayback(w, r)
++	if w.Code != http.StatusCreated {
++		t.Fatalf("status = %d; body=%q", w.Code, w.Body.String())
++	}
++	var response struct {
++		SessionID string `json:"sessionId"`
++		Streams   struct {
++			Audio string `json:"audio"`
++		} `json:"streams"`
++	}
++	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
++		t.Fatal(err)
++	}
++	defer pm.Release(response.SessionID)
++	u, err := url.Parse(response.Streams.Audio)
++	if err != nil {
++		t.Fatal(err)
++	}
++	if u.Path != "/api/v1/playback/"+response.SessionID+"/audio" || response.SessionID == "" {
++		t.Fatalf("streams.audio = %q for session %q", response.Streams.Audio, response.SessionID)
++	}
++	for _, secret := range []string{"native-dev", "native-music"} {
++		if strings.Contains(w.Body.String(), secret) {
++			t.Fatalf("playback response exposed credential %q", secret)
++		}
++	}
++}
++
++func TestGlasswavePlaybackCredentialErrorDoesNotExposeProviderSecret(t *testing.T) {
++	secret := "provider-error-with-secret"
++	s := &APIServer{
++		glasswaveGetAccount: func(context.Context) (drm.AccountInfo, error) {
++			return drm.AccountInfo{}, errors.New(secret)
++		},
++		glasswaveGetToken: func() (string, error) { return "", errors.New(secret) },
++	}
++	r := httptest.NewRequest(http.MethodPost, "/api/v1/playback", strings.NewReader(`{"assetId":"1","storefront":"us"}`))
++	w := httptest.NewRecorder()
++	s.handleCreatePlayback(w, r)
++	if strings.Contains(w.Body.String(), secret) {
++		t.Fatalf("response exposed provider error: %q", w.Body.String())
++	}
++}
++
++func TestGlasswavePlaybackCarriesPreferAtmosSeparatelyFromForcedAtmos(t *testing.T) {
++	provider := &capturePlaybackProvider{}
++	pm := playback.NewWithProviderWithoutReaper(provider)
++	s := &APIServer{
++		headless:    true,
++		pm:          pm,
++		events:      newEventBus(newEpochManager()),
++		openLatency: ring.New(100),
++		openCB:      newCircuitBreaker(3, 0),
++		shutdownCtx: context.Background(),
++		glasswaveGetAccount: func(context.Context) (drm.AccountInfo, error) {
++			return drm.AccountInfo{
++				DevToken:     "native-dev",
++				MusicToken:   "native-music",
++				StorefrontID: "143441",
++			}, nil
++		},
++	}
++	body := `{"assetId":"prefer-atmos-song","storefront":"us","preferAtmos":true,"capabilities":{"lossless":true,"hiRes":true,"atmos":false}}`
++	r := httptest.NewRequest(http.MethodPost, "/api/v1/playback", strings.NewReader(body))
++	w := httptest.NewRecorder()
++	s.handleCreatePlayback(w, r)
++	if w.Code != http.StatusCreated {
++		t.Fatalf("status = %d; body=%q", w.Code, w.Body.String())
++	}
++	if !provider.request.PreferAtmos || provider.request.Atmos {
++		t.Fatalf("provider request PreferAtmos=%v Atmos=%v", provider.request.PreferAtmos, provider.request.Atmos)
++	}
++	var response struct {
++		SessionID string `json:"sessionId"`
++	}
++	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
++		t.Fatal(err)
++	}
++	pm.Release(response.SessionID)
++}
++
++func TestGlasswaveHeadlessStartRequiresAPIToken(t *testing.T) {
++	t.Setenv("ADAM_API_TOKEN", "")
++	s := &APIServer{headless: true}
++	if err := s.Start(); err == nil || !strings.Contains(err.Error(), "ADAM_API_TOKEN") {
++		t.Fatalf("Start() error = %v, want missing ADAM_API_TOKEN", err)
++	}
++}
++
++func mustJSON(t *testing.T, v any) string {
++	t.Helper()
++	b, err := json.Marshal(v)
++	if err != nil {
++		t.Fatal(err)
++	}
++	return string(b)
++}
+diff --git a/engine/cmd/handlers_jobs.go b/engine/cmd/handlers_jobs.go
+index 9e353e5..73c0d45 100644
+--- a/engine/cmd/handlers_jobs.go
++++ b/engine/cmd/handlers_jobs.go
+@@ -7,6 +7,10 @@ import (
+ // handleJobStatus returns a snapshot of a cache-warming job.
+ // Intended for debugging and progress UI; do not poll in normal operation.
+ func (s *APIServer) handleJobStatus(w http.ResponseWriter, r *http.Request) {
++	if s.scheduler == nil {
++		http.Error(w, "job not found", http.StatusNotFound)
++		return
++	}
+ 	job, ok := s.scheduler.Status(r.PathValue("id"))
+ 	if !ok {
+ 		http.Error(w, "job not found", http.StatusNotFound)
+@@ -18,6 +22,10 @@ func (s *APIServer) handleJobStatus(w http.ResponseWriter, r *http.Request) {
+ // handleJobCancel cancels remaining work for a cache-warming job.
+ // Called by the renderer on navigation away (per-slot cancellation).
+ func (s *APIServer) handleJobCancel(w http.ResponseWriter, r *http.Request) {
++	if s.scheduler == nil {
++		http.Error(w, "job not found", http.StatusNotFound)
++		return
++	}
+ 	if !s.scheduler.Cancel(r.PathValue("id")) {
+ 		http.Error(w, "job not found", http.StatusNotFound)
+ 		return
+diff --git a/engine/cmd/handlers_metadata.go b/engine/cmd/handlers_metadata.go
+index 9e6eb57..7811a3b 100644
+--- a/engine/cmd/handlers_metadata.go
++++ b/engine/cmd/handlers_metadata.go
+@@ -184,21 +184,9 @@ func streamsFromTraits(traits []string) []StreamInfo {
+ 		set[t] = true
+ 	}
+ 	var out []StreamInfo
+-	if set["hi-res-lossless"] {
+-		sr, bd := 96000, 24
+-		for _, t := range traits {
+-			parts := strings.Split(t, "-")
+-			if len(parts) >= 2 {
+-				fmt.Sscanf(parts[len(parts)-2], "%d", &sr)
+-				fmt.Sscanf(parts[len(parts)-1], "%d", &bd)
+-				if sr > 0 && bd > 0 {
+-					break
+-				}
+-			}
+-		}
++	if set["hi-res-lossless"] || set["lossless"] {
++		sr, bd := knownALACQualityFromTraits(traits)
+ 		out = append(out, StreamInfo{Codec: "ALAC", SampleRate: sr, BitDepth: bd})
+-	} else if set["lossless"] {
+-		out = append(out, StreamInfo{Codec: "ALAC", SampleRate: 44100, BitDepth: 16})
+ 	}
+ 	if set["atmos"] {
+ 		out = append(out, StreamInfo{Codec: "E-AC-3"})
+@@ -206,3 +194,35 @@ func streamsFromTraits(traits []string) []StreamInfo {
+ 	out = append(out, StreamInfo{Codec: "AAC", Bitrate: 256000})
+ 	return out
+ }
++
++// knownALACQualityFromTraits extracts only explicit, supported numeric
++// evidence. Apple's ordinary "lossless" and "hi-res-lossless" traits prove the
++// format exists, not which sample rate or bit depth a track uses.
++func knownALACQualityFromTraits(traits []string) (sampleRate, bitDepth int) {
++	for _, trait := range traits {
++		lower := strings.ToLower(trait)
++		if !strings.Contains(lower, "lossless") && !strings.Contains(lower, "alac") {
++			continue
++		}
++		parts := strings.FieldsFunc(trait, func(r rune) bool { return r == '-' || r == '_' })
++		for i := 0; i+1 < len(parts); i++ {
++			rate, rateErr := strconv.Atoi(parts[i])
++			depth, depthErr := strconv.Atoi(parts[i+1])
++			if rateErr != nil || depthErr != nil {
++				continue
++			}
++			if rate == 44 || rate == 48 || rate == 88 || rate == 96 || rate == 176 || rate == 192 {
++				rate *= 1000
++			}
++			switch rate {
++			case 44100, 48000, 88200, 96000, 176400, 192000:
++			default:
++				continue
++			}
++			if depth == 16 || depth == 24 {
++				return rate, depth
++			}
++		}
++	}
++	return 0, 0
++}
+diff --git a/engine/cmd/handlers_playback.go b/engine/cmd/handlers_playback.go
+index f396b2d..7d6a081 100644
+--- a/engine/cmd/handlers_playback.go
++++ b/engine/cmd/handlers_playback.go
+@@ -16,6 +16,7 @@ import (
+ 	"time"
+ 
+ 	"engine/core/diskcache"
++	"engine/core/fairplay"
+ 	"engine/core/pipeline"
+ 	"engine/core/playback"
+ 	"engine/core/prefetch"
+@@ -122,32 +123,22 @@ func (s *APIServer) handleCreatePlayback(w http.ResponseWriter, r *http.Request)
+ 		return
+ 	}
+ 
+-	// Prefer request-level tokens (supplied by the browser renderer from MusicKit)
+-	// over the cached token so that the renderer's live session is always used.
+-	token := req.Token
+-	if token == "" {
+-		token = s.token()
+-	}
+-	mut := req.MUT
+-	if mut == "" {
+-		// musicUserToken() checks the in-memory MK token pushed at startup via
+-		// POST /api/v1/library/token before falling back to the MUSIC_TOKEN file.
+-		// This lets lossless work from the web-player session without any DRM file.
+-		mut = s.musicUserToken()
+-	}
+-	if token == "" || mut == "" {
+-		http.Error(w, "not authenticated — provide token+mediaUserToken in request body or configure them", http.StatusUnauthorized)
++	// Explicit request values win. Omitted values come from the native account
++	// first, so a native client never needs to know or forward Apple tokens.
++	creds, err := s.resolveGlasswavePlaybackCredentials(r.Context(), req.Token, req.MUT, req.Storefront)
++	if err != nil {
++		status := http.StatusBadGateway
++		if strings.Contains(err.Error(), "not signed in") {
++			status = http.StatusUnauthorized
++		}
++		http.Error(w, err.Error(), status)
+ 		return
+ 	}
+-	s.setToken(token)
+-	// Also update the MK music user token used by library API calls.
+-	// req.MUT is the media-user-token cookie from the web session — the correct
+-	// web-auth Music-User-Token paired with the web developer JWT above.
+-	s.setMusicUserToken(mut)
+-
+-	sf := req.Storefront
+-	if sf == "" {
+-		sf = s.storefront()
++	s.setToken(creds.Token)
++	// Keep the native account authoritative in headless builds. Only an
++	// explicit renderer-supplied MUT enters the web-session override path.
++	if req.MUT != "" || !s.headless {
++		s.setMusicUserToken(creds.MusicToken)
+ 	}
+ 
+ 	// Use a pre-warmed session if the prefetch scheduler already opened one
+@@ -157,13 +148,15 @@ func (s *APIServer) handleCreatePlayback(w http.ResponseWriter, r *http.Request)
+ 	// at whichever quality the renderer reported via ContextPayload.Lossless.
+ 	// The renderer's idea of what is available can be stale (FairPlay not up yet, or lost since): serve AAC rather
+ 	// than open a lossless session that cannot decrypt.
+-	if l, h, a, dropped := clampQuality(req.Capabilities.Lossless, req.Capabilities.HiRes, req.Capabilities.Atmos, s.drmCapabilities()); dropped {
+-		log.Printf("[playback] %s: DRM not ready (lossless %t->%t hiRes %t->%t atmos %t->%t), opening as AAC", req.AssetID,
+-			req.Capabilities.Lossless, l, req.Capabilities.HiRes, h, req.Capabilities.Atmos, a)
+-		req.Capabilities.Lossless, req.Capabilities.HiRes, req.Capabilities.Atmos = l, h, a
++	if !s.headless {
++		if l, h, a, dropped := clampQuality(req.Capabilities.Lossless, req.Capabilities.HiRes, req.Capabilities.Atmos, s.drmCapabilities()); dropped {
++			log.Printf("[playback] %s: DRM not ready (lossless %t->%t hiRes %t->%t atmos %t->%t), opening as AAC", req.AssetID,
++				req.Capabilities.Lossless, l, req.Capabilities.HiRes, h, req.Capabilities.Atmos, a)
++			req.Capabilities.Lossless, req.Capabilities.HiRes, req.Capabilities.Atmos = l, h, a
++		}
+ 	}
+ 	var sess *playback.Session
+-	if !req.Capabilities.Atmos && !req.Capabilities.Video {
++	if s.scheduler != nil && !req.PreferAtmos && !req.Capabilities.Atmos && !req.Capabilities.Video {
+ 		if sessionID, ok := s.scheduler.TakePreWarmed(req.AssetID, req.Capabilities.Lossless, req.Capabilities.HiRes); ok {
+ 			if preOpened, found := s.pm.GetSession(sessionID); found {
+ 				sess = preOpened
+@@ -180,16 +173,18 @@ func (s *APIServer) handleCreatePlayback(w http.ResponseWriter, r *http.Request)
+ 		t0 := time.Now()
+ 		var err error
+ 		sess, err = s.pm.Open(r.Context(), playback.OpenRequest{
+-			AssetID:     req.AssetID,
+-			Storefront:  sf,
+-			Token:       token,
+-			MUT:         mut,
+-			Lossless:    req.Capabilities.Lossless,
+-			HiRes:       req.Capabilities.HiRes,
+-			Video:       req.Capabilities.Video,
+-			Atmos:       req.Capabilities.Atmos,
+-			Language:    s.lang(r),
+-			MVMaxHeight: req.MVMaxHeight,
++			AssetID:         req.AssetID,
++			Storefront:      creds.Storefront,
++			Token:           creds.Token,
++			MUT:             creds.MusicToken,
++			Lossless:        req.Capabilities.Lossless,
++			HiRes:           req.Capabilities.HiRes,
++			Video:           req.Capabilities.Video,
++			Atmos:           req.Capabilities.Atmos,
++			PreferAtmos:     req.PreferAtmos,
++			Language:        s.lang(r),
++			MVMaxHeight:     req.MVMaxHeight,
++			RequireFullSong: s.headless,
+ 		})
+ 		latMs := time.Since(t0).Milliseconds()
+ 		if err != nil {
+@@ -236,6 +231,38 @@ func (s *APIServer) handlePlaybackAudio(w http.ResponseWriter, r *http.Request)
+ 		return
+ 	}
+ 
++	container := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("container")))
++	if container != "" && container != "ec3" {
++		http.Error(w, "unsupported audio container", http.StatusBadRequest)
++		return
++	}
++	if container == "ec3" {
++		if !s.headless {
++			http.Error(w, "encoded EC-3 output is only available in headless mode", http.StatusNotFound)
++			return
++		}
++		if sess.Codec != string(pipeline.CodecAtmos) {
++			http.Error(w, "container=ec3 requires an Atmos session", http.StatusConflict)
++			return
++		}
++		if r.Header.Get("Range") != "" || r.URL.Query().Get("t") != "" {
++			http.Error(w, "encoded EC-3 output is not independently seekable", http.StatusRequestedRangeNotSatisfiable)
++			return
++		}
++		w.Header().Set("Content-Type", "audio/eac3")
++		w.Header().Set("Cache-Control", "no-store")
++		if r.Method == http.MethodHead {
++			w.WriteHeader(http.StatusOK)
++			return
++		}
++		streamMedia(w, r, func(dst io.Writer) error {
++			return fairplay.RemuxEC3(r.Context(), dst, func(ctx context.Context, dst io.Writer) error {
++				return s.pm.Stream(ctx, id, pipeline.KindAudio, dst)
++			})
++		}, "audio/eac3")
++		return
++	}
++
+ 	// ?t=<seconds> — seek to an approximate time offset.
+ 	// The response header X-Actual-Start reports the real segment start time so
+ 	// the frontend can set audio.currentTime accurately after a seek.
+@@ -245,6 +272,13 @@ func (s *APIServer) handlePlaybackAudio(w http.ResponseWriter, r *http.Request)
+ 			seekSec = v
+ 		}
+ 	}
++	if s.headless && sess.Codec == "alac" && s.diskCache == nil && (r.Method == http.MethodHead || r.Header.Get("Range") != "") {
++		w.Header().Set("Retry-After", "1")
++		writeJSON(w, http.StatusServiceUnavailable, map[string]string{
++			"error": "encoded ALAC cache is unavailable for exact range access",
++		})
++		return
++	}
+ 
+ 	// Disk cache: serve cached files for non-seek requests so replays skip CDN.
+ 	// Seeks (seekSec > 0) bypass the cache — the cached file may be truncated from a
+@@ -260,7 +294,7 @@ func (s *APIServer) handlePlaybackAudio(w http.ResponseWriter, r *http.Request)
+ 		streamMedia(w, r, func(dst io.Writer) error {
+ 			cw.w = dst
+ 			return s.pm.Stream(r.Context(), id, pipeline.KindAudio, cw)
+-		}, "audio/mp4")
++		}, playbackAudioContentType(sess))
+ 		log.Printf("[INTERCEPT] MV audio stream END id=%s totalBytes=%d", id, cw.n)
+ 		return
+ 	}
+@@ -268,15 +302,15 @@ func (s *APIServer) handlePlaybackAudio(w http.ResponseWriter, r *http.Request)
+ 	// MV sessions stream audio direct to MSE — skip disk cache to avoid
+ 	// colliding with same-AssetID song cache entries.
+ 	if s.diskCache != nil && sess.Type != "mv" && seekSec == 0 {
+-		qualifier := playbackCacheQualifier(sess.Codec, sess.SampleRate)
++		qualifier := sessionCacheQualifier(sess, s.headless)
+ 		if f, ok := s.diskCache.Get(sess.AssetID, qualifier); ok {
+ 			defer f.Close()
+-			w.Header().Set("Content-Type", "audio/mp4")
++			w.Header().Set("Content-Type", playbackAudioContentType(sess))
+ 			http.ServeContent(w, r, "", time.Time{}, f)
+ 			return
+ 		}
+ 
+-		// ALAC cache miss: stream to VLC while downloading in the background.
++		// ALAC cache miss: stream encoded ALAC while downloading in the background.
+ 		// This cuts first-play latency from the full lossless download time
+ 		// (~5-15 s) to the initial buffer fill (~0.5 s). The download goroutine
+ 		// uses a detached context so the file is always committed even when VLC
+@@ -284,12 +318,27 @@ func (s *APIServer) handlePlaybackAudio(w http.ResponseWriter, r *http.Request)
+ 		// On commit the file is served via http.ServeContent with full byte-range
+ 		// support on every subsequent play, enabling accurate SetTime seeks.
+ 		//
+-		// During first play, Accept-Ranges: bytes is advertised so VLC knows it
+-		// can send Range requests for seeking. A concurrent Range request hits
+-		// GetStreaming and is served by a NewReaderAt on the in-progress writer —
+-		// it blocks at the byte level (Android RandomAccessFile model) until the
+-		// requested offset is available, then streams from there.
++		// Interactive VLC may issue Range requests during its first streaming
++		// download. Headless file consumers wait for a committed file instead:
++		// foobar2000 needs a truthful total size before it trusts range or EOF.
+ 		if sess.Codec == "alac" {
++			if s.headless {
++				if r.Method == http.MethodHead || r.Header.Get("Range") != "" {
++					if s.diskCache.GetStreaming(sess.AssetID, qualifier) == nil {
++						if spw, err := s.diskCache.BeginStreamingPut(sess.AssetID, qualifier); err == nil && spw != nil {
++							s.startCacheDownload(id, spw)
++						}
++					}
++					// No total is known until commit. Refuse a speculative range
++					// rather than inventing a sentinel or forwarding the encrypted
++					// upstream Content-Length.
++					w.Header().Set("Retry-After", "1")
++					writeJSON(w, http.StatusServiceUnavailable, map[string]string{
++						"error": "encoded ALAC is still being cached for exact range access",
++					})
++					return
++				}
++			}
+ 			// VLC Range seek during an active streaming download: serve the
+ 			// requested byte range from the in-progress writer only if the
+ 			// offset has already been written. Return 416 immediately when the
+@@ -314,7 +363,7 @@ func (s *APIServer) handlePlaybackAudio(w http.ResponseWriter, r *http.Request)
+ 					// Use a 1 GiB sentinel for the total size (no ALAC file is that
+ 					// large) since the true size is unknown during streaming.
+ 					const sentinel = int64(1 << 30)
+-					w.Header().Set("Content-Type", "audio/mp4")
++					w.Header().Set("Content-Type", playbackAudioContentType(sess))
+ 					w.Header().Set("Accept-Ranges", "bytes")
+ 					w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", offset, sentinel-1, sentinel))
+ 					w.WriteHeader(http.StatusPartialContent)
+@@ -327,11 +376,9 @@ func (s *APIServer) handlePlaybackAudio(w http.ResponseWriter, r *http.Request)
+ 
+ 			if spw, _ := s.diskCache.BeginStreamingPut(sess.AssetID, qualifier); spw != nil {
+ 				s.startCacheDownload(id, spw)
+-				w.Header().Set("Content-Type", "audio/mp4")
+-				w.Header().Set("Accept-Ranges", "bytes")
+ 				reader := spw.NewReader()
+ 				defer reader.Close()
+-				io.Copy(w, reader) //nolint:errcheck — client disconnect is normal
++				serveStreamingReader(w, r, reader, playbackAudioContentType(sess), id, "ALAC")
+ 				return
+ 			}
+ 		}
+@@ -346,27 +393,16 @@ func (s *APIServer) handlePlaybackAudio(w http.ResponseWriter, r *http.Request)
+ 		// hit the committed file above via http.ServeContent.
+ 		if spw, _ := s.diskCache.BeginStreamingPut(sess.AssetID, qualifier); spw != nil {
+ 			s.startCacheDownload(id, spw)
+-			w.Header().Set("Content-Type", "audio/mp4")
+ 			reader := spw.NewReader()
+ 			defer reader.Close()
+-			// The streaming reader surfaces the download error (Discard sets it) as a
+-			// non-EOF read error. If it fails before any byte reached the client, the
+-			// 200 headers are not yet committed, so report a clean 502 instead of an
+-			// empty 200. A mid-stream failure (n>0) can only be logged — headers are out.
+-			if n, err := io.Copy(w, reader); err != nil {
+-				if n == 0 && r.Context().Err() == nil {
+-					writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+-				} else if r.Context().Err() == nil {
+-					slog.Error("AAC stream error (partial)", "id", id, "err", err)
+-				}
+-			}
++			serveStreamingReader(w, r, reader, playbackAudioContentType(sess), id, "AAC")
+ 			return
+ 		}
+ 		// Fallback: another goroutine is already caching this key (BeginStreamingPut
+ 		// returned nil) — stream without caching.
+ 		streamMedia(w, r, func(dst io.Writer) error {
+ 			return s.pm.Stream(r.Context(), id, pipeline.KindAudio, dst)
+-		}, "audio/mp4")
++		}, playbackAudioContentType(sess))
+ 		return
+ 	}
+ 
+@@ -384,13 +420,44 @@ func (s *APIServer) handlePlaybackAudio(w http.ResponseWriter, r *http.Request)
+ 		streamMedia(w, r, func(dst io.Writer) error {
+ 			_, err := s.pm.StreamFrom(seekCtx, id, pipeline.KindAudio, seekSec, dst)
+ 			return err
+-		}, "audio/mp4")
++		}, playbackAudioContentType(sess))
+ 		return
+ 	}
+ 
+ 	streamMedia(w, r, func(dst io.Writer) error {
+ 		return s.pm.Stream(r.Context(), id, pipeline.KindAudio, dst)
+-	}, "audio/mp4")
++	}, playbackAudioContentType(sess))
++}
++
++func playbackAudioContentType(sess *playback.Session) string {
++	if sess != nil && sess.Codec == "mp3" {
++		if contentType := strings.TrimSpace(sess.CodecMIMEType); contentType != "" {
++			return contentType
++		}
++	}
++	return "audio/mp4"
++}
++
++// sessionCacheQualifier scopes disk-cache entries to the delivered audio format.
++// In headless mode, sample rate, bit depth and duration are included so a track
++// remastered or upgraded by Apple never collides with a stale older file on disk.
++func sessionCacheQualifier(sess *playback.Session, headless bool) string {
++	qualifier := playbackCacheQualifier(sess.Codec, sess.SampleRate)
++	if headless {
++		if sess.SampleRate > 0 {
++			qualifier += fmt.Sprintf("-%d", sess.SampleRate)
++		}
++		if sess.BitDepth > 0 {
++			qualifier += fmt.Sprintf("-%dbit", sess.BitDepth)
++		}
++		if sess.DurationMs > 0 {
++			qualifier += fmt.Sprintf("-%dms", sess.DurationMs)
++		}
++	}
++	if sess.SourceVersion != "" {
++		qualifier += "-" + sess.SourceVersion
++	}
++	return qualifier
+ }
+ 
+ // startCacheDownload fills spw from the session's audio stream in the
+@@ -417,6 +484,10 @@ func (s *APIServer) startCacheDownload(id string, spw *diskcache.StreamingPutWri
+ // session so VLC can load it instantly on the next track change. Returns 202
+ // immediately; the download runs in a detached goroutine.
+ func (s *APIServer) handlePlaybackPrecache(w http.ResponseWriter, r *http.Request) {
++	if s.headless {
++		w.WriteHeader(http.StatusNoContent)
++		return
++	}
+ 	id := r.PathValue("id")
+ 	sess, ok := s.pm.GetSession(id)
+ 	if !ok {
+@@ -486,6 +557,10 @@ func (s *APIServer) handlePlaybackTouch(w http.ResponseWriter, r *http.Request)
+ // The renderer is telling the engine "the user is looking at this content."
+ // All scheduling policy (which tracks, order, concurrency) is engine-internal.
+ func (s *APIServer) handlePlaybackContext(w http.ResponseWriter, r *http.Request) {
++	if s.scheduler == nil {
++		w.WriteHeader(http.StatusNoContent)
++		return
++	}
+ 	r.Body = http.MaxBytesReader(w, r.Body, 512<<10) // 512 KB — up to 50 tracks
+ 	var payload prefetch.ContextPayload
+ 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+@@ -498,11 +573,34 @@ func (s *APIServer) handlePlaybackContext(w http.ResponseWriter, r *http.Request
+ 	writeJSON(w, http.StatusAccepted, map[string]string{"jobId": jobID})
+ }
+ 
++// serveStreamingReader streams a diskcache.StreamingReader to the HTTP client.
++// Before the first byte is committed, download failures (spw.Discard) become a
++// clean 502 JSON error instead of an empty 200. Once bytes are already on the
++// wire, a download error aborts the HTTP response when running under net/http's
++// Server so the client does not receive a clean chunked EOF on a truncated file.
++func serveStreamingReader(w http.ResponseWriter, r *http.Request, reader io.Reader, ct, id, label string) {
++	bw := &firstByteWriter{w: w, ct: ct}
++	if _, err := io.Copy(bw, reader); err != nil {
++		if r.Context().Err() != nil {
++			return // client disconnected — not an error
++		}
++		if !bw.started {
++			writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
++			return
++		}
++		slog.Error(label+" stream error (partial)", "id", id, "err", err)
++		if r.Context().Value(http.ServerContextKey) != nil {
++			panic(http.ErrAbortHandler)
++		}
++	}
++}
++
+ // streamMedia runs fn into a firstByteWriter so that:
+ //   - If fn produces no bytes and returns an error, the client receives a
+ //     502 JSON error instead of a silent empty 200 response.
+ //   - If fn produces at least one byte before failing, headers are already
+-//     committed; the partial stream is what the client sees (best effort).
++//     committed; abort the chunked connection under net/http so the client
++//     knows the stream was truncated.
+ func streamMedia(w http.ResponseWriter, r *http.Request, fn func(io.Writer) error, ct string) {
+ 	bw := &firstByteWriter{w: w, ct: ct}
+ 	if err := fn(bw); err != nil {
+@@ -513,8 +611,12 @@ func streamMedia(w http.ResponseWriter, r *http.Request, fn func(io.Writer) erro
+ 			writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+ 			return
+ 		}
+-		// Headers already committed; log and let the client handle the truncated stream.
++		// Headers already committed; log and abort the chunked response so clients
++		// do not mistake a truncated stream for a complete file.
+ 		slog.Error("stream error (partial)", "err", err)
++		if r.Context().Value(http.ServerContextKey) != nil {
++			panic(http.ErrAbortHandler)
++		}
+ 	}
+ }
+ 
+diff --git a/engine/cmd/handlers_playback_test.go b/engine/cmd/handlers_playback_test.go
+index 2e497f7..3945ba9 100644
+--- a/engine/cmd/handlers_playback_test.go
++++ b/engine/cmd/handlers_playback_test.go
+@@ -1,6 +1,7 @@
+ package main
+ 
+ import (
++	"bytes"
+ 	"context"
+ 	"errors"
+ 	"fmt"
+@@ -9,8 +10,13 @@ import (
+ 	"net/http"
+ 	"net/http/httptest"
+ 	"strings"
++	"sync"
+ 	"testing"
++	"time"
+ 
++	"github.com/itouakirai/mp4ff/mp4"
++
++	"engine/core/diskcache"
+ 	"engine/core/media"
+ 	"engine/core/pipeline"
+ 	"engine/core/playback"
+@@ -173,6 +179,24 @@ type mvAudioTestSource func(io.Writer) error
+ 
+ func (f mvAudioTestSource) Stream(_ context.Context, w io.Writer) error { return f(w) }
+ 
++type alacTestProvider struct {
++	stream func(io.Writer) error
++}
++
++func (p alacTestProvider) Open(context.Context, media.OpenRequest) (*media.Session, error) {
++	return &media.Session{Kind: "song", Tracks: []media.Track{{
++		Kind:  pipeline.KindAudio,
++		Codec: pipeline.CodecALAC,
++		Open: func(context.Context) (*pipeline.Stream, error) {
++			return &pipeline.Stream{
++				Kind:   pipeline.KindAudio,
++				Codec:  pipeline.CodecALAC,
++				Source: mvAudioTestSource(p.stream),
++			}, nil
++		},
++	}}}, nil
++}
++
+ func TestMVAudioStreamDefersHeadersUntilFirstByte(t *testing.T) {
+ 	streamErr := errors.New("upstream failed")
+ 	for _, tc := range []struct {
+@@ -210,6 +234,119 @@ func TestMVAudioStreamDefersHeadersUntilFirstByte(t *testing.T) {
+ 	}
+ }
+ 
++type ec3TestProvider struct {
++	codec  pipeline.Codec
++	stream []byte
++}
++
++func (p ec3TestProvider) Open(context.Context, media.OpenRequest) (*media.Session, error) {
++	return &media.Session{
++		Kind:     "song",
++		Metadata: media.Metadata{DurationMs: 3000},
++		Tracks: []media.Track{{
++			Kind:          pipeline.KindAudio,
++			Codec:         p.codec,
++			SampleRate:    48000,
++			ChannelCount:  8,
++			CodecMIMEType: `audio/mp4; codecs="ec-3"`,
++			Open: func(context.Context) (*pipeline.Stream, error) {
++				return &pipeline.Stream{
++					Kind:       pipeline.KindAudio,
++					Codec:      p.codec,
++					DurationMs: 3000,
++					Source: mvAudioTestSource(func(w io.Writer) error {
++						_, err := w.Write(p.stream)
++						return err
++					}),
++				}, nil
++			},
++		}},
++	}, nil
++}
++
++func TestAtmosEC3RouteExtractsSamplesAndLeavesOrdinaryRouteAlone(t *testing.T) {
++	fMP4, wantEC3 := buildEC3HandlerFixture(t)
++	s := &APIServer{
++		headless: true,
++		pm:       playback.NewWithProviderWithoutReaper(ec3TestProvider{codec: pipeline.CodecAtmos, stream: fMP4}),
++	}
++	sess, err := s.pm.Open(context.Background(), playback.OpenRequest{AssetID: "atmos"})
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer s.pm.Release(sess.ID)
++
++	raw := httptest.NewRequest(http.MethodGet, "/audio?container=ec3", nil)
++	raw.SetPathValue("id", sess.ID)
++	rawRec := httptest.NewRecorder()
++	s.handlePlaybackAudio(rawRec, raw)
++	if rawRec.Code != http.StatusOK {
++		t.Fatalf("EC3 status = %d: %s", rawRec.Code, rawRec.Body.String())
++	}
++	if got := rawRec.Header().Get("Content-Type"); got != "audio/eac3" {
++		t.Fatalf("EC3 Content-Type = %q", got)
++	}
++	if !bytes.Equal(rawRec.Body.Bytes(), wantEC3) {
++		t.Fatalf("EC3 output = %d bytes, want %d", rawRec.Body.Len(), len(wantEC3))
++	}
++
++	ordinary := httptest.NewRequest(http.MethodGet, "/audio", nil)
++	ordinary.SetPathValue("id", sess.ID)
++	ordinaryRec := httptest.NewRecorder()
++	s.handlePlaybackAudio(ordinaryRec, ordinary)
++	if ordinaryRec.Code != http.StatusOK {
++		t.Fatalf("ordinary status = %d: %s", ordinaryRec.Code, ordinaryRec.Body.String())
++	}
++	if !bytes.Equal(ordinaryRec.Body.Bytes(), fMP4) {
++		t.Fatalf("ordinary route changed the fMP4 stream")
++	}
++}
++
++func TestAtmosEC3RouteBoundaries(t *testing.T) {
++	fMP4, _ := buildEC3HandlerFixture(t)
++	s := &APIServer{
++		headless: true,
++		pm:       playback.NewWithProviderWithoutReaper(ec3TestProvider{codec: pipeline.CodecAAC, stream: fMP4}),
++	}
++	sess, err := s.pm.Open(context.Background(), playback.OpenRequest{AssetID: "aac"})
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer s.pm.Release(sess.ID)
++
++	request := func(target string) *httptest.ResponseRecorder {
++		r := httptest.NewRequest(http.MethodGet, target, nil)
++		r.SetPathValue("id", sess.ID)
++		w := httptest.NewRecorder()
++		s.handlePlaybackAudio(w, r)
++		return w
++	}
++	if got := request("/audio?container=ec3").Code; got != http.StatusConflict {
++		t.Fatalf("non-Atmos EC3 status = %d, want 409", got)
++	}
++	if got := request("/audio?container=wav").Code; got != http.StatusBadRequest {
++		t.Fatalf("unknown container status = %d, want 400", got)
++	}
++
++	atmosSrv := &APIServer{
++		headless: true,
++		pm:       playback.NewWithProviderWithoutReaper(ec3TestProvider{codec: pipeline.CodecAtmos, stream: fMP4}),
++	}
++	atmosSess, err := atmosSrv.pm.Open(context.Background(), playback.OpenRequest{AssetID: "atmos-range"})
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer atmosSrv.pm.Release(atmosSess.ID)
++	r := httptest.NewRequest(http.MethodGet, "/audio?container=ec3", nil)
++	r.SetPathValue("id", atmosSess.ID)
++	r.Header.Set("Range", "bytes=0-1")
++	w := httptest.NewRecorder()
++	atmosSrv.handlePlaybackAudio(w, r)
++	if w.Code != http.StatusRequestedRangeNotSatisfiable {
++		t.Fatalf("EC3 range status = %d, want 416", w.Code)
++	}
++}
++
+ func TestCountingWriterCountsBytesActuallyWritten(t *testing.T) {
+ 	w := &countingWriter{w: &shortWriter{}}
+ 	if n, err := w.Write([]byte("audio")); n != 2 || err != nil {
+@@ -220,6 +357,143 @@ func TestCountingWriterCountsBytesActuallyWritten(t *testing.T) {
+ 	}
+ }
+ 
++func TestHeadlessALACRangeUsesCommittedFileTruthfulLength(t *testing.T) {
++	cache, err := diskcache.New(t.TempDir())
++	if err != nil {
++		t.Fatal(err)
++	}
++	pw, err := cache.BeginPut("cached-alac", "alac")
++	if err != nil || pw == nil {
++		t.Fatalf("BeginPut = %v, %v", pw, err)
++	}
++	if _, err := pw.Write([]byte("0123456789")); err != nil {
++		t.Fatal(err)
++	}
++	if err := pw.Commit(); err != nil {
++		t.Fatal(err)
++	}
++
++	s := &APIServer{
++		headless:  true,
++		diskCache: cache,
++		alac:      newALACGate(),
++		pm: playback.NewWithProviderWithoutReaper(alacTestProvider{stream: func(io.Writer) error {
++			return errors.New("committed cache must be served without opening the stream")
++		}}),
++	}
++	sess, err := s.pm.Open(context.Background(), playback.OpenRequest{AssetID: "cached-alac", Storefront: "us"})
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer s.pm.Release(sess.ID)
++
++	r := httptest.NewRequest(http.MethodGet, "/audio", nil)
++	r.SetPathValue("id", sess.ID)
++	r.Header.Set("Range", "bytes=2-5")
++	w := httptest.NewRecorder()
++	s.handlePlaybackAudio(w, r)
++
++	if w.Code != http.StatusPartialContent {
++		t.Fatalf("status = %d, want 206; body=%q", w.Code, w.Body.String())
++	}
++	if got := w.Header().Get("Content-Range"); got != "bytes 2-5/10" {
++		t.Fatalf("Content-Range = %q, want exact committed size", got)
++	}
++	if got := w.Header().Get("Content-Length"); got != "4" {
++		t.Fatalf("Content-Length = %q, want 4", got)
++	}
++	if got := w.Body.String(); got != "2345" {
++		t.Fatalf("body = %q, want 2345", got)
++	}
++
++	head := httptest.NewRequest(http.MethodHead, "/audio", nil)
++	head.SetPathValue("id", sess.ID)
++	headRec := httptest.NewRecorder()
++	s.handlePlaybackAudio(headRec, head)
++	if headRec.Code != http.StatusOK || headRec.Header().Get("Content-Length") != "10" || headRec.Body.Len() != 0 {
++		t.Fatalf("HEAD = status %d length %q body %d bytes",
++			headRec.Code, headRec.Header().Get("Content-Length"), headRec.Body.Len())
++	}
++}
++
++func TestHeadlessFirstALACRangeWaitsForExactCacheInsteadOfSentinel(t *testing.T) {
++	cache, err := diskcache.New(t.TempDir())
++	if err != nil {
++		t.Fatal(err)
++	}
++	started := make(chan struct{})
++	release := make(chan struct{})
++	finished := make(chan struct{})
++	var releaseOnce sync.Once
++	s := &APIServer{
++		headless:    true,
++		diskCache:   cache,
++		alac:        newALACGate(),
++		shutdownCtx: context.Background(),
++		pm: playback.NewWithProviderWithoutReaper(alacTestProvider{stream: func(w io.Writer) error {
++			close(started)
++			<-release
++			defer close(finished)
++			_, err := io.WriteString(w, "encoded-alac")
++			return err
++		}}),
++	}
++	sess, err := s.pm.Open(context.Background(), playback.OpenRequest{AssetID: "pending-alac", Storefront: "us"})
++	if err != nil {
++		t.Fatal(err)
++	}
++	t.Cleanup(func() {
++		releaseOnce.Do(func() { close(release) })
++		select {
++		case <-finished:
++		case <-time.After(2 * time.Second):
++		}
++		s.pm.Release(sess.ID)
++	})
++
++	r := httptest.NewRequest(http.MethodGet, "/audio", nil)
++	r.SetPathValue("id", sess.ID)
++	r.Header.Set("Range", "bytes=0-3")
++	w := httptest.NewRecorder()
++	s.handlePlaybackAudio(w, r)
++
++	if w.Code != http.StatusServiceUnavailable {
++		t.Fatalf("status = %d, want 503 while the first cache is incomplete", w.Code)
++	}
++	if got := w.Header().Get("Retry-After"); got != "1" {
++		t.Fatalf("Retry-After = %q, want 1", got)
++	}
++	for _, key := range []string{"Content-Range", "Accept-Ranges"} {
++		if got := w.Header().Get(key); got != "" {
++			t.Fatalf("%s = %q, must stay unknown before commit", key, got)
++		}
++	}
++	if strings.Contains(w.Body.String(), "1073741824") || strings.Contains(w.Body.String(), "1 GiB") {
++		t.Fatalf("response invented a file length: %q", w.Body.String())
++	}
++	select {
++	case <-started:
++	case <-time.After(2 * time.Second):
++		t.Fatal("cache warm did not start")
++	}
++	releaseOnce.Do(func() { close(release) })
++	select {
++	case <-finished:
++	case <-time.After(2 * time.Second):
++		t.Fatal("cache warm did not finish")
++	}
++	deadline := time.Now().Add(2 * time.Second)
++	for {
++		if _, ok := cache.Path("pending-alac", "alac"); ok {
++			break
++		}
++		if time.Now().After(deadline) {
++			t.Fatal("encoded ALAC cache did not commit")
++		}
++		time.Sleep(10 * time.Millisecond)
++	}
++}
++
+ type shortWriter struct{}
+ 
+ func (*shortWriter) Write([]byte) (int, error) { return 2, nil }
+@@ -248,3 +522,155 @@ func TestPlaybackTouchKeepsSessionAlive(t *testing.T) {
+ 		t.Fatalf("touch of an unknown session = %d, want 404", got)
+ 	}
+ }
++
++func TestPlaybackAudioContentTypeUsesSessionFormat(t *testing.T) {
++	if got := playbackAudioContentType(nil); got != "audio/mp4" {
++		t.Fatalf("nil session content type = %q", got)
++	}
++	mp3 := &playback.Session{Codec: "mp3", CodecMIMEType: "audio/mpeg"}
++	if got := playbackAudioContentType(mp3); got != "audio/mpeg" {
++		t.Fatalf("MP3 content type = %q", got)
++	}
++	aac := &playback.Session{Codec: "aac", CodecMIMEType: "audio/mp4"}
++	if got := playbackAudioContentType(aac); got != "audio/mp4" {
++		t.Fatalf("AAC content type = %q", got)
++	}
++}
++
++func TestSessionCacheQualifierSeparatesRemasteredFormats(t *testing.T) {
++	oldMaster := &playback.Session{Codec: "alac", SampleRate: 48000, BitDepth: 16, DurationMs: 160000}
++	newMaster := &playback.Session{Codec: "alac", SampleRate: 48000, BitDepth: 16, DurationMs: 163655}
++	hiBit := &playback.Session{Codec: "alac", SampleRate: 48000, BitDepth: 24, DurationMs: 163655}
++
++	qOld := sessionCacheQualifier(oldMaster, true)
++	qNew := sessionCacheQualifier(newMaster, true)
++	qHiBit := sessionCacheQualifier(hiBit, true)
++	if qOld == qNew {
++		t.Fatalf("different durations collided in headless cache key: %q", qOld)
++	}
++	if qNew == qHiBit {
++		t.Fatalf("different bit depths collided in headless cache key: %q", qNew)
++	}
++	if got := sessionCacheQualifier(&playback.Session{Codec: "alac"}, true); got != "alac" {
++		t.Fatalf("zero-metadata headless qualifier = %q, want alac", got)
++	}
++}
++
++func buildEC3HandlerFixture(t *testing.T) ([]byte, []byte) {
++	t.Helper()
++	init := mp4.CreateEmptyInit()
++	init.AddEmptyTrack(48000, "audio", "und")
++	dec3 := &mp4.Dec3Box{
++		DataRate: 768,
++		EC3Subs: []mp4.EC3Sub{{
++			FSCod: 0, BSID: 16, ACMod: 7, LFEOn: 1,
++		}},
++	}
++	if err := init.Moov.Traks[0].SetEC3Descriptor(dec3); err != nil {
++		t.Fatal(err)
++	}
++	samples := [][][]byte{
++		{
++			{0x0b, 0x77, 0x10, 0x01, 0xaa, 0xbb},
++			{0x0b, 0x77, 0x10, 0x02, 0xcc, 0xdd},
++		},
++		{
++			{0x0b, 0x77, 0x10, 0x03, 0xee, 0xff},
++		},
++	}
++	var fMP4 bytes.Buffer
++	if err := init.Encode(&fMP4); err != nil {
++		t.Fatal(err)
++	}
++	var decodeTime uint64
++	for i, fragmentSamples := range samples {
++		frag, err := mp4.CreateFragment(uint32(i+1), 1)
++		if err != nil {
++			t.Fatal(err)
++		}
++		for _, data := range fragmentSamples {
++			frag.AddFullSample(mp4.FullSample{
++				Sample: mp4.Sample{
++					Flags: mp4.SyncSampleFlags,
++					Dur:   1536,
++					Size:  uint32(len(data)),
++				},
++				DecodeTime: decodeTime,
++				Data:       data,
++			})
++			decodeTime += 1536
++		}
++		if err := frag.Encode(&fMP4); err != nil {
++			t.Fatal(err)
++		}
++	}
++	var raw bytes.Buffer
++	for _, fragmentSamples := range samples {
++		for _, sample := range fragmentSamples {
++			raw.Write(sample)
++		}
++	}
++	return fMP4.Bytes(), raw.Bytes()
++}
++
++func TestServeStreamingReaderPropagatesErrors(t *testing.T) {
++	t.Run("zero-byte failure returns 502", func(t *testing.T) {
++		cache, err := diskcache.New(t.TempDir())
++		if err != nil {
++			t.Fatal(err)
++		}
++		spw, err := cache.BeginStreamingPut("fail-zero", "alac")
++		if err != nil {
++			t.Fatal(err)
++		}
++		reader := spw.NewReader()
++		defer reader.Close()
++		spw.Discard()
++
++		r := httptest.NewRequest(http.MethodGet, "/audio", nil)
++		w := httptest.NewRecorder()
++		serveStreamingReader(w, r, reader, "audio/mp4", "sess-1", "ALAC")
++		if w.Code != http.StatusBadGateway {
++			t.Fatalf("status = %d, want 502 on pre-first-byte failure", w.Code)
++		}
++	})
++
++	t.Run("partial failure aborts HTTP response instead of clean EOF", func(t *testing.T) {
++		cache, err := diskcache.New(t.TempDir())
++		if err != nil {
++			t.Fatal(err)
++		}
++		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++			spw, err := cache.BeginStreamingPut("fail-partial", "alac")
++			if err != nil {
++				http.Error(w, err.Error(), http.StatusInternalServerError)
++				return
++			}
++			reader := spw.NewReader()
++			defer reader.Close()
++			go func() {
++				_, _ = spw.Write([]byte("partial-init-bytes"))
++				time.Sleep(20 * time.Millisecond)
++				spw.Discard()
++			}()
++			serveStreamingReader(w, r, reader, "audio/mp4", "sess-2", "ALAC")
++		}))
++		defer srv.Close()
++
++		resp, err := srv.Client().Get(srv.URL)
++		if err != nil {
++			t.Fatalf("GET: %v", err)
++		}
++		defer resp.Body.Close()
++		if resp.StatusCode != http.StatusOK {
++			t.Fatalf("status = %d, want 200 after first bytes committed", resp.StatusCode)
++		}
++		body, readErr := io.ReadAll(resp.Body)
++		if readErr == nil {
++			t.Fatalf("expected truncated chunked stream error after Discard, got clean EOF with body=%q", string(body))
++		}
++		if string(body) != "partial-init-bytes" {
++			t.Fatalf("partial body = %q, want %q", string(body), "partial-init-bytes")
++		}
++	})
++}
+diff --git a/engine/cmd/http_middleware_test.go b/engine/cmd/http_middleware_test.go
+index a6dbcdb..43b2bfa 100644
+--- a/engine/cmd/http_middleware_test.go
++++ b/engine/cmd/http_middleware_test.go
+@@ -160,11 +160,8 @@ func TestStreamsFromTraits_HiRes(t *testing.T) {
+ 	streams := streamsFromTraits([]string{"hi-res-lossless"})
+ 	for _, s := range streams {
+ 		if s.Codec == "ALAC" {
+-			if s.SampleRate == 0 {
+-				t.Fatal("hi-res ALAC must have non-zero SampleRate")
+-			}
+-			if s.BitDepth == 0 {
+-				t.Fatal("hi-res ALAC must have non-zero BitDepth")
++			if s.SampleRate != 0 || s.BitDepth != 0 {
++				t.Fatalf("generic hi-res trait guessed ALAC quality %d/%d", s.SampleRate, s.BitDepth)
+ 			}
+ 			return
+ 		}
+@@ -172,6 +169,19 @@ func TestStreamsFromTraits_HiRes(t *testing.T) {
+ 	t.Fatal("expected ALAC in streams for hi-res-lossless trait")
+ }
+ 
++func TestStreamsFromTraits_ExplicitALACQuality(t *testing.T) {
++	streams := streamsFromTraits([]string{"hi-res-lossless", "lossless-audio-192-24"})
++	for _, s := range streams {
++		if s.Codec == "ALAC" {
++			if s.SampleRate != 192000 || s.BitDepth != 24 {
++				t.Fatalf("explicit ALAC quality parsed as %d/%d, want 192000/24", s.SampleRate, s.BitDepth)
++			}
++			return
++		}
++	}
++	t.Fatal("expected ALAC in streams")
++}
++
+ // ── Metrics response shape ─────────────────────────────────────────────────────
+ 
+ func TestHandleMetrics_ResponseShape(t *testing.T) {
+diff --git a/engine/cmd/main.go b/engine/cmd/main.go
+index b331f88..4f93b79 100644
+--- a/engine/cmd/main.go
++++ b/engine/cmd/main.go
+@@ -42,13 +42,15 @@ func main() {
+ 	// so the engine's RSS ratchets up and never falls. FreeOSMemory hands them
+ 	// back. Purely additive — it only releases memory the GC already freed, so it
+ 	// cannot OOM or throttle any playback path (ALAC/VLC included).
+-	go func() {
+-		t := time.NewTicker(2 * time.Minute)
+-		defer t.Stop()
+-		for range t.C {
+-			debug.FreeOSMemory()
+-		}
+-	}()
++	if !glasswaveHeadlessEnabled() {
++		go func() {
++			t := time.NewTicker(2 * time.Minute)
++			defer t.Stop()
++			for range t.C {
++				debug.FreeOSMemory()
++			}
++		}()
++	}
+ 
+ 	if err := loadConfig(); err != nil {
+ 		log.Printf("load config failed (%v); using defaults", err)
+@@ -88,7 +90,9 @@ func main() {
+ 	}
+ 	flag.IntVar(&apiPort, "api", 0, "Start local HTTP API server on given port (e.g. --api 20025)")
+ 	flag.Parse()
+-	aacstream.WarmCache()
++	if !glasswaveHeadlessEnabled() {
++		aacstream.WarmCache()
++	}
+ 	if apiPort > 0 {
+ 		srv := NewAPIServer(apiPort, ServerConfig{
+ 			DRMBinaryPath:   Config.DRMBinaryPath,
+diff --git a/engine/cmd/uploaded_cache_layout_test.go b/engine/cmd/uploaded_cache_layout_test.go
+new file mode 100644
+index 0000000..93c3589
+--- /dev/null
++++ b/engine/cmd/uploaded_cache_layout_test.go
+@@ -0,0 +1,73 @@
++package main
++
++import (
++	"context"
++	"io"
++	"net/http"
++	"net/http/httptest"
++	"testing"
++
++	"engine/core/diskcache"
++	"engine/core/media"
++	"engine/core/pipeline"
++	"engine/core/playback"
++)
++
++type uploadedLayoutProvider struct{ calls *int }
++
++func (p uploadedLayoutProvider) Open(context.Context, media.OpenRequest) (*media.Session, error) {
++	return &media.Session{Kind: "song", Tracks: []media.Track{{Kind: pipeline.KindAudio, Codec: pipeline.CodecAAC, SourceVersion: "uploaded-mp4-faststart-v1", Open: func(context.Context) (*pipeline.Stream, error) {
++		return &pipeline.Stream{Kind: pipeline.KindAudio, Codec: pipeline.CodecAAC, Source: mvAudioTestSource(func(w io.Writer) error { *p.calls++; _, err := io.WriteString(w, "normalized-front-index"); return err })}, nil
++	}}}}, nil
++}
++
++func TestUploadedLayoutMissesOldTailCacheWithoutClearingOtherAudio(t *testing.T) {
++	cache, err := diskcache.New(t.TempDir())
++	if err != nil {
++		t.Fatal(err)
++	}
++	put := func(id, quality, body string) {
++		w, err := cache.BeginPut(id, quality)
++		if err != nil || w == nil {
++			t.Fatal("Cache fixture failed")
++		}
++		if _, err := io.WriteString(w, body); err != nil {
++			t.Fatal(err)
++		}
++		if err := w.Commit(); err != nil {
++			t.Fatal(err)
++		}
++	}
++	put("i.uploaded-layout", "aac", "old-tail-index")
++	put("unrelated-alac", "alac", "untouched-lossless")
++	calls := 0
++	s := &APIServer{headless: true, diskCache: cache, alac: newALACGate(), shutdownCtx: context.Background(), pm: playback.NewWithProviderWithoutReaper(uploadedLayoutProvider{&calls})}
++	session, err := s.pm.Open(context.Background(), playback.OpenRequest{AssetID: "i.uploaded-layout", Storefront: "us"})
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer s.pm.Release(session.ID)
++	for i := 0; i < 2; i++ {
++		r := httptest.NewRequest(http.MethodGet, "/audio", nil)
++		r.SetPathValue("id", session.ID)
++		w := httptest.NewRecorder()
++		s.handlePlaybackAudio(w, r)
++		if w.Code != 200 || w.Body.String() != "normalized-front-index" {
++			t.Fatalf("Read old tail-index bytes after layout generation changed: %q", w.Body.String())
++		}
++	}
++	if calls != 1 {
++		t.Fatalf("Normalized generation did not reuse its completed cache: streams=%d", calls)
++	}
++	for _, entry := range [][3]string{{"i.uploaded-layout", "aac", "old-tail-index"}, {"unrelated-alac", "alac", "untouched-lossless"}} {
++		f, ok := cache.Get(entry[0], entry[1])
++		if !ok {
++			t.Fatal("An unaffected cache entry was cleared")
++		}
++		body, err := io.ReadAll(f)
++		f.Close()
++		if err != nil || string(body) != entry[2] {
++			t.Fatal("An unaffected cache entry changed")
++		}
++	}
++}

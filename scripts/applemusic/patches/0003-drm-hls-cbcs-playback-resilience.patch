@@ -1,0 +1,1769 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Glasswave <glasswave@local>
+Date: Mon, 23 Nov 2026 12:55:22 +0800
+Subject: [PATCH 3/8] drm, hls, cbcs, playback: harden FairPlay CBCS retries,
+ HLS selection and full-song validation
+
+Add in-flight DRM backend guards, CBCS fragment retry backoff and deferred init flush, Atmos preference and full-song duration validation, and container/extension/source-version metadata fields.
+
+diff --git a/engine/core/drm/adamplay_backend.go b/engine/core/drm/adamplay_backend.go
+index 8f37eb8..5d34c70 100644
+--- a/engine/core/drm/adamplay_backend.go
++++ b/engine/core/drm/adamplay_backend.go
+@@ -116,6 +116,9 @@ type adamplayBackend struct {
+ }
+ 
+ var errBackendStopped = errors.New("DRM backend is not running")
++var errAccountContextUnavailable = errors.New("Apple account context is unavailable")
++
++const accountContextInitTimeout = 20 * time.Second
+ 
+ // enter registers one call into the C library. gen is the generation the caller's
+ // state (key contexts) belongs to, or 0 for calls that carry none. The returned func
+@@ -140,6 +143,44 @@ func (b *adamplayBackend) leave() {
+ 	b.mu.Unlock()
+ }
+ 
++func (b *adamplayBackend) waitForAccountContext(ctx context.Context) error {
++	waitCtx, cancel := context.WithTimeout(ctx, accountContextInitTimeout)
++	defer cancel()
++
++	b.mu.Lock()
++	running := b.running
++	ready := b.hybrisReady
++	initDone := b.hybrisInitDone
++	b.mu.Unlock()
++	if !running {
++		return errBackendStopped
++	}
++	if ready {
++		return nil
++	}
++	if initDone == nil {
++		return errAccountContextUnavailable
++	}
++
++	select {
++	case <-initDone:
++	case <-waitCtx.Done():
++		return fmt.Errorf("%w: %v", errAccountContextUnavailable, waitCtx.Err())
++	}
++
++	b.mu.Lock()
++	running = b.running
++	ready = b.hybrisReady
++	b.mu.Unlock()
++	if !running {
++		return errBackendStopped
++	}
++	if !ready {
++		return errAccountContextUnavailable
++	}
++	return nil
++}
++
+ func (b *adamplayBackend) currentGen() uint64 {
+ 	b.mu.Lock()
+ 	defer b.mu.Unlock()
+@@ -622,6 +663,9 @@ func (b *adamplayBackend) SetAccountFallback(fn func() AccountInfo) {
+ 
+ // GetAccount returns the account information
+ func (b *adamplayBackend) GetAccount(ctx context.Context) (AccountInfo, error) {
++	if err := b.waitForAccountContext(ctx); err != nil {
++		return AccountInfo{}, err
++	}
+ 	leave, err := b.enter(0)
+ 	if err != nil {
+ 		return AccountInfo{}, err
+diff --git a/engine/core/drm/adamplay_backend_inflight_test.go b/engine/core/drm/adamplay_backend_inflight_test.go
+index 7069926..9df978c 100644
+--- a/engine/core/drm/adamplay_backend_inflight_test.go
++++ b/engine/core/drm/adamplay_backend_inflight_test.go
+@@ -3,10 +3,40 @@
+ package drm
+ 
+ import (
++	"context"
++	"errors"
+ 	"testing"
+ 	"time"
+ )
+ 
++func TestWaitForAccountContextWaitsForSessionReuseInit(t *testing.T) {
++	done := make(chan struct{})
++	b := &adamplayBackend{running: true, hybrisInitDone: done}
++	go func() {
++		time.Sleep(20 * time.Millisecond)
++		b.mu.Lock()
++		b.hybrisReady = true
++		b.mu.Unlock()
++		close(done)
++	}()
++
++	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
++	defer cancel()
++	if err := b.waitForAccountContext(ctx); err != nil {
++		t.Fatal(err)
++	}
++}
++
++func TestWaitForAccountContextFailsClosedAfterInitFailure(t *testing.T) {
++	done := make(chan struct{})
++	close(done)
++	b := &adamplayBackend{running: true, hybrisInitDone: done}
++
++	if err := b.waitForAccountContext(context.Background()); !errors.Is(err, errAccountContextUnavailable) {
++		t.Fatalf("want account context unavailable, got %v", err)
++	}
++}
++
+ // Stop must not tear the C library down under a call that is still inside it, and must
+ // refuse new calls from the moment it starts.
+ func TestQuiesceWaitsForInFlightCalls(t *testing.T) {
+diff --git a/engine/core/drm/provider.go b/engine/core/drm/provider.go
+index 278a8ef..37d9002 100644
+--- a/engine/core/drm/provider.go
++++ b/engine/core/drm/provider.go
+@@ -31,11 +31,13 @@ type DRMProvider interface {
+ 	GetProgressiveMVURL(ctx context.Context, adamID uint64) (url string, downloadKey string, err error)
+ }
+ 
+-// AccountInfo holds the cached Apple Music account information.
++// AccountInfo holds one native Apple Music account snapshot. DSID is the stable
++// account identity; tokens and storefront remain credentials/display context.
+ type AccountInfo struct {
+ 	StorefrontID string `json:"storefront_id"`
+ 	DevToken     string `json:"dev_token"`
+ 	MusicToken   string `json:"music_token"`
++	DSID         int64  `json:"dsid"`
+ }
+ 
+ // ErrNotAuthenticated is returned by Decrypt and GetM3U8 when no valid
+diff --git a/engine/core/fairplay/cbcs.go b/engine/core/fairplay/cbcs.go
+index 997dd20..f9c75c0 100644
+--- a/engine/core/fairplay/cbcs.go
++++ b/engine/core/fairplay/cbcs.go
+@@ -8,7 +8,6 @@ import (
+ 	"log"
+ 	"net"
+ 	"net/http"
+-	"strconv"
+ 	"strings"
+ 	"time"
+ 
+@@ -127,6 +126,7 @@ type drmConn struct {
+ 	rw                *bufio.ReadWriter
+ 	lastUsed          time.Time
+ 	fragsSinceConnect int
++	armedKey          string // belongs to this connection, never to a reusable source
+ }
+ 
+ func newDRMConn(ctx context.Context, dialer CBCSDialer, conn net.Conn) *drmConn {
+@@ -174,12 +174,34 @@ func (dc *drmConn) refreshIfNeeded() bool {
+ 	alacstream.Close(dc.conn)
+ 	dc.conn = conn2
+ 	dc.rw = bufio.NewReadWriter(bufio.NewReader(conn2), bufio.NewWriter(conn2))
++	dc.armedKey = ""
+ 	dc.fragsSinceConnect = 0
+ 	dc.lastUsed = time.Now()
+ 	log.Printf("cbcs: proactive reconnect (%s) succeeded", reason)
+ 	return true
+ }
+ 
++// selectKey is shared by sequential playback, seeking and reconnect recovery.
++// A fresh connection needs a handshake; an existing one needs an explicit switch.
++func (dc *drmConn) selectKey(adamID, uri string) error {
++	if uri == "" || uri == dc.armedKey {
++		return nil
++	}
++	if dc.armedKey != "" {
++		if err := alacstream.SwitchKeys(dc.rw); err != nil {
++			return fmt.Errorf("cbcs: switch key: %w", err)
++		}
++	}
++	if err := sendKeyHandshake(dc.rw, adamID, uri); err != nil {
++		return err
++	}
++	if err := dc.rw.Flush(); err != nil {
++		return fmt.Errorf("cbcs: flush key: %w", err)
++	}
++	dc.armedKey = uri
++	return nil
++}
++
+ // recordUse marks the connection as just used after a successful decrypt.
+ func (dc *drmConn) recordUse() {
+ 	dc.lastUsed = time.Now()
+@@ -223,14 +245,12 @@ func CBCSSource(adamID string, dialer CBCSDialer, fileURL string, keyURIs []stri
+ 	}
+ }
+ 
+-// upstreamKeyURIs keeps only the key tags on segments 0 (prefetch) and 1
+-// (track content key), exactly like zhaarey/apple-music-downloader; later
+-// EXT-X-KEY tags are ignored there and every remaining fragment decrypts with
+-// the segment-1 key. Returns a copy so the shared playlist is never mutated.
++// upstreamKeyURIs preserves the playlist's complete key schedule. The content key
++// can begin after segment 1, and later segments may rotate it again. Dropping
++// those tags silently emits corrupt encoded samples after the first transition.
++// Return a copy so the shared playlist is never mutated.
+ func upstreamKeyURIs(keyURIs []string) []string {
+-	out := make([]string, len(keyURIs))
+-	copy(out, keyURIs[:min(2, len(keyURIs))])
+-	return out
++	return append([]string(nil), keyURIs...)
+ }
+ 
+ type cbcsSource struct {
+@@ -372,7 +392,6 @@ func (s *cbcsSeekableSource) SourceFrom(startSec float64) (pipeline.Source, floa
+ 		keyURIs:    keys,
+ 		durationMs: s.durationMs,
+ 		startFrag:  startFrag,
+-		startKey:   effectiveKeyURI(keys, startFrag),
+ 	}, actualStart
+ }
+ 
+@@ -387,7 +406,6 @@ type cbcsSkipSource struct {
+ 	keyURIs    []string
+ 	durationMs int
+ 	startFrag  int
+-	startKey   string
+ }
+ 
+ func (s *cbcsSkipSource) Stream(ctx context.Context, w io.Writer) error {
+@@ -535,54 +553,6 @@ func patchAlacFragmentSeq(frag *mp4.Fragment, seqNum int, accumulatedTfdt uint64
+ 	return patchAlacFragment(frag, accumulatedTfdt)
+ }
+ 
+-// sendInitialKey sends the seek start key to the decryption socket before the
+-// first kept fragment is decrypted.
+-func (s *cbcsSkipSource) sendInitialKey(rw *bufio.ReadWriter) error {
+-	return sendKeyHandshake(rw, s.adamID, s.startKey)
+-}
+-
+-// sendSeekFragKey switches decryption keys at fragment i when a new key URI is
+-// present in the kept region (not the first kept fragment, which was set by
+-// sendInitialKey).
+-func (s *cbcsSkipSource) sendSeekFragKey(i int, rw *bufio.ReadWriter) error {
+-	if i <= s.startFrag || i >= len(s.keyURIs) || s.keyURIs[i] == "" {
+-		return nil
+-	}
+-	if err := alacstream.SwitchKeys(rw); err != nil {
+-		return fmt.Errorf("cbcs seek: switch keys at %d: %w", i, err)
+-	}
+-	if err := alacstream.SendString(rw, keyAdamID(s.adamID, s.keyURIs[i])); err != nil {
+-		return fmt.Errorf("cbcs seek: send adamID %d: %w", i, err)
+-	}
+-	if err := alacstream.SendString(rw, s.keyURIs[i]); err != nil {
+-		return fmt.Errorf("cbcs seek: send key %d: %w", i, err)
+-	}
+-	return nil
+-}
+-
+-// sendFragKey sends the key URI for fragment i to the decryption socket.
+-// Errors are intentionally ignored — key delivery is best-effort and a
+-// failure here manifests as a decrypt error on the next fragment.
+-//
+-// armed is the key URI most recently sent on this attempt's connection. It belongs to one attempt, not to the
+-// source: a source is run again for every retry and replay (and by several streams at once), and a key
+-// remembered from an earlier connection would be taken for armed on a fresh one that has no key at all.
+-func (s *cbcsSource) sendFragKey(i int, rw *bufio.ReadWriter, armed *string) {
+-	if i >= len(s.keyURIs) || s.keyURIs[i] == "" {
+-		return
+-	}
+-	keyURI := s.keyURIs[i]
+-	if keyURI == *armed {
+-		return
+-	}
+-	if *armed != "" {
+-		alacstream.SwitchKeys(rw)
+-	}
+-	alacstream.SendString(rw, keyAdamID(s.adamID, s.keyURIs[i]))
+-	alacstream.SendString(rw, keyURI)
+-	*armed = keyURI
+-}
+-
+ // effectiveKeyURI returns the key in force at fragment i: the last non-empty
+ // key URI at or before i ("" when none has been declared yet).
+ func effectiveKeyURI(keyURIs []string, i int) string {
+@@ -670,6 +640,89 @@ func sendKeyHandshake(rw *bufio.ReadWriter, adamID, uri string) error {
+ 	return nil
+ }
+ 
++// cbcsFragRetryBackoffs defines the reconnect backoff schedule when a single
++// fragment's key handshake or FairPlay decrypt fails transiently (for example,
++// an intermittent Apple FPS /getCKC error caught by the DRM exception barrier).
++var cbcsFragRetryBackoffs = []time.Duration{
++	250 * time.Millisecond,
++	750 * time.Millisecond,
++	1500 * time.Millisecond,
++}
++
++// decryptFragmentWithRetry selects keyURI on dc and decrypts frag in-place,
++// reconnecting with bounded backoff on transient DRM errors.
++func decryptFragmentWithRetry(
++	ctx context.Context,
++	dc *drmConn,
++	frag *mp4.Fragment,
++	tracks map[uint32]mp4.DecryptTrackInfo,
++	adamID, keyURI string,
++	fragIdx int,
++	logPrefix string,
++) error {
++	// Snapshot mdat before decryption (in-place) so we can restore on DRM failure.
++	mdatBackup := make([]byte, len(frag.Mdat.Data))
++	copy(mdatBackup, frag.Mdat.Data)
++
++	var lastErr error
++	if err := dc.selectKey(adamID, keyURI); err != nil {
++		lastErr = fmt.Errorf("%s: key at fragment %d: %w", logPrefix, fragIdx, err)
++	} else if err := alacstream.DecryptFragment(frag, tracks, dc.rw); err != nil {
++		lastErr = fmt.Errorf("%s: decrypt fragment %d: %w", logPrefix, fragIdx, err)
++	} else {
++		return nil
++	}
++
++	for attempt, wait := range cbcsFragRetryBackoffs {
++		log.Printf("%s: fragment %d failed (%v), reconnecting DRM socket (retry %d/%d in %v)…",
++			logPrefix, fragIdx, lastErr, attempt+1, len(cbcsFragRetryBackoffs), wait)
++		alacstream.Close(dc.conn)
++
++		// If the context was cancelled (e.g. playback torn down), the pipe
++		// closed because the server goroutine exited — not a transient error.
++		// Calling DialCBCS on a cancelled context would invoke C.drm_lib_open_kd_ctx
++		// against a partially-shutdown DRM backend.
++		if ctx.Err() != nil {
++			return ctx.Err()
++		}
++
++		if wait > 0 {
++			timer := time.NewTimer(wait)
++			select {
++			case <-ctx.Done():
++				timer.Stop()
++				return ctx.Err()
++			case <-timer.C:
++			}
++		}
++
++		conn2, dialErr := dc.dialer.DialCBCS(ctx)
++		if dialErr != nil {
++			lastErr = fmt.Errorf("%s: reconnect after fragment %d: %w", logPrefix, fragIdx, dialErr)
++			continue
++		}
++		dc.conn = conn2
++		dc.rw = bufio.NewReadWriter(bufio.NewReader(conn2), bufio.NewWriter(conn2))
++		dc.armedKey = ""
++		dc.fragsSinceConnect = 0
++		dc.lastUsed = time.Now()
++
++		copy(frag.Mdat.Data, mdatBackup)
++		if err := dc.selectKey(adamID, keyURI); err != nil {
++			lastErr = fmt.Errorf("%s: key after reconnect %d: %w", logPrefix, fragIdx, err)
++			continue
++		}
++		if err := alacstream.DecryptFragment(frag, tracks, dc.rw); err != nil {
++			lastErr = fmt.Errorf("%s: decrypt fragment %d after reconnect: %w", logPrefix, fragIdx, err)
++			continue
++		}
++		log.Printf("%s: fragment %d decrypted after reconnect (retry %d)", logPrefix, fragIdx, attempt+1)
++		return nil
++	}
++
++	return lastErr
++}
++
+ // skipStartFragments reads and discards startFrag fragments, accumulating
+ // the total TFDT delta needed so subsequent fragments have correct timestamps.
+ func skipStartFragments(inBuf *bufio.Reader, startOffset uint64, startFrag int) (accTfdt, finalOffset uint64, err error) {
+@@ -738,11 +791,16 @@ func (s *cbcsSkipSource) streamAttemptSkip(ctx context.Context, w io.Writer) err
+ 	}
+ 
+ 	patchMoovDuration(init, s.durationMs)
+-	if err := init.Encode(outBuf); err != nil {
+-		return fmt.Errorf("cbcs seek: encode init: %w", err)
+-	}
+-	if err := outBuf.Flush(); err != nil {
+-		return fmt.Errorf("cbcs seek: flush init: %w", err)
++	initWritten := false
++	writeInit := func() error {
++		if initWritten {
++			return nil
++		}
++		if err := init.Encode(outBuf); err != nil {
++			return fmt.Errorf("cbcs seek: encode init: %w", err)
++		}
++		initWritten = true
++		return nil
+ 	}
+ 
+ 	// Skip startFrag fragments: read+discard, accumulate tfdt for correct continuation.
+@@ -751,10 +809,6 @@ func (s *cbcsSkipSource) streamAttemptSkip(ctx context.Context, w io.Writer) err
+ 		return err
+ 	}
+ 
+-	if err := s.sendInitialKey(dc.rw); err != nil {
+-		return err
+-	}
+-
+ 	for i := s.startFrag; ; i++ {
+ 		frag, newOffset, err := alacstream.ReadNextFragment(inBuf, offset)
+ 		if err != nil {
+@@ -768,44 +822,16 @@ func (s *cbcsSkipSource) streamAttemptSkip(ctx context.Context, w io.Writer) err
+ 		// Proactive reconnect: refresh the DRM socket before it goes stale. A
+ 		// fresh connection has no key, so it gets a handshake for the key in
+ 		// force at i; otherwise only a key change at i is sent.
+-		reconnected := dc.refreshIfNeeded()
+-		if reconnected {
+-			if err := sendKeyHandshake(dc.rw, s.adamID, effectiveKeyURI(s.keyURIs, i)); err != nil {
+-				return fmt.Errorf("cbcs seek: key after proactive reconnect %d: %w", i, err)
+-			}
+-		} else if err := s.sendSeekFragKey(i, dc.rw); err != nil {
++		dc.refreshIfNeeded()
++		if err := decryptFragmentWithRetry(
++			ctx, dc, frag, tracks, s.adamID, effectiveKeyURI(s.keyURIs, i), i, "cbcs seek",
++		); err != nil {
+ 			return err
+ 		}
+-
+-		mdatBackup := make([]byte, len(frag.Mdat.Data))
+-		copy(mdatBackup, frag.Mdat.Data)
+-
+-		if err := alacstream.DecryptFragment(frag, tracks, dc.rw); err != nil {
+-			log.Printf("cbcs seek: decrypt fragment %d failed (%v), reconnecting DRM socket…", i, err)
+-			alacstream.Close(dc.conn)
+-
+-			if ctx.Err() != nil {
+-				return ctx.Err()
+-			}
+-
+-			conn2, dialErr := s.dialer.DialCBCS(ctx)
+-			if dialErr != nil {
+-				return fmt.Errorf("cbcs seek: reconnect after fragment %d: %w", i, dialErr)
+-			}
+-			dc.conn = conn2
+-			dc.rw = bufio.NewReadWriter(bufio.NewReader(conn2), bufio.NewWriter(conn2))
+-			dc.fragsSinceConnect = 0
+-			dc.lastUsed = time.Now()
+-
+-			copy(frag.Mdat.Data, mdatBackup)
+-			if err := sendKeyHandshake(dc.rw, s.adamID, effectiveKeyURI(s.keyURIs, i)); err != nil {
+-				return fmt.Errorf("cbcs seek: key after reconnect %d: %w", i, err)
+-			}
+-
+-			if err2 := alacstream.DecryptFragment(frag, tracks, dc.rw); err2 != nil {
+-				return fmt.Errorf("cbcs seek: decrypt fragment %d after reconnect: %w", i, err2)
+-			}
+-			log.Printf("cbcs seek: fragment %d decrypted after reconnect", i)
++		// Defer flushing init until the first fragment decrypts so an early key
++		// failure still allows outer Stream() retries and a clean HTTP 502.
++		if err := writeInit(); err != nil {
++			return err
+ 		}
+ 		// Patch decode times only after decrypting: growing tfdt changes the moof
+ 		// size, and GetFullSamples locates sample data by the original offsets.
+@@ -822,6 +848,14 @@ func (s *cbcsSkipSource) streamAttemptSkip(ctx context.Context, w io.Writer) err
+ 			tr.RecordPlaybackReady()
+ 		}
+ 	}
++	if !initWritten {
++		if err := writeInit(); err != nil {
++			return err
++		}
++		if err := outBuf.Flush(); err != nil {
++			return fmt.Errorf("cbcs seek: flush init: %w", err)
++		}
++	}
+ 	return nil
+ }
+ 
+@@ -844,10 +878,6 @@ func (s *cbcsSource) streamAttempt(ctx context.Context, w io.Writer) error {
+ 	if resp.StatusCode != http.StatusOK {
+ 		return fmt.Errorf("cbcs: download: HTTP %d", resp.StatusCode)
+ 	}
+-	if hw, ok := w.(pipeline.HeaderWriter); ok && resp.ContentLength > 0 {
+-		hw.SetHeader("Content-Length", strconv.FormatInt(resp.ContentLength, 10))
+-	}
+-
+ 	stalled := newStallDetector(resp.Body, cbcsStallTimeout, cancel)
+ 
+ 	tr.RecordCBCSDialStart()
+@@ -878,15 +908,19 @@ func (s *cbcsSource) streamAttempt(ctx context.Context, w io.Writer) error {
+ 	}
+ 
+ 	patchMoovDuration(init, s.durationMs)
+-	if err := init.Encode(outBuf); err != nil {
+-		return fmt.Errorf("cbcs: encode init: %w", err)
+-	}
+-	if err := outBuf.Flush(); err != nil {
+-		return fmt.Errorf("cbcs: flush init: %w", err)
++	initWritten := false
++	writeInit := func() error {
++		if initWritten {
++			return nil
++		}
++		if err := init.Encode(outBuf); err != nil {
++			return fmt.Errorf("cbcs: encode init: %w", err)
++		}
++		initWritten = true
++		return nil
+ 	}
+ 
+ 	var accumulatedTfdt uint64
+-	var armedKey string // the key this attempt's connection holds; a new connection holds none
+ 	for i := 0; ; i++ {
+ 		frag, newOffset, err := alacstream.ReadNextFragment(inBuf, offset)
+ 		if err != nil {
+@@ -900,53 +934,16 @@ func (s *cbcsSource) streamAttempt(ctx context.Context, w io.Writer) error {
+ 		// Proactive reconnect: refresh the DRM socket before it goes stale. A
+ 		// fresh connection has no key, so it gets a handshake for the key in
+ 		// force at i; otherwise only a key change at i is sent.
+-		reconnected := dc.refreshIfNeeded()
+-		if reconnected {
+-			newKey := effectiveKeyURI(s.keyURIs, i)
+-			if err := sendKeyHandshake(dc.rw, s.adamID, newKey); err != nil {
+-				return fmt.Errorf("cbcs: key after proactive reconnect %d: %w", i, err)
+-			}
+-			armedKey = newKey
+-		} else {
+-			s.sendFragKey(i, dc.rw, &armedKey)
++		dc.refreshIfNeeded()
++		if err := decryptFragmentWithRetry(
++			ctx, dc, frag, tracks, s.adamID, effectiveKeyURI(s.keyURIs, i), i, "cbcs",
++		); err != nil {
++			return err
+ 		}
+-
+-		// Snapshot mdat before decryption (in-place) so we can restore on DRM socket failure.
+-		mdatBackup := make([]byte, len(frag.Mdat.Data))
+-		copy(mdatBackup, frag.Mdat.Data)
+-
+-		if err := alacstream.DecryptFragment(frag, tracks, dc.rw); err != nil {
+-			log.Printf("cbcs: decrypt fragment %d failed (%v), reconnecting DRM socket…", i, err)
+-			alacstream.Close(dc.conn)
+-
+-			// If the context was cancelled (e.g. playback torn down), the pipe
+-			// closed because the server goroutine exited — not a transient error.
+-			// Calling DialCBCS on a cancelled context would invoke C.drm_lib_open_kd_ctx
+-			// against a partially-shutdown DRM backend and crash the engine.
+-			if ctx.Err() != nil {
+-				return ctx.Err()
+-			}
+-
+-			conn2, dialErr := s.dialer.DialCBCS(ctx)
+-			if dialErr != nil {
+-				return fmt.Errorf("cbcs: reconnect after fragment %d: %w", i, dialErr)
+-			}
+-			dc.conn = conn2
+-			dc.rw = bufio.NewReadWriter(bufio.NewReader(conn2), bufio.NewWriter(conn2))
+-			dc.fragsSinceConnect = 0
+-			dc.lastUsed = time.Now()
+-
+-			copy(frag.Mdat.Data, mdatBackup)
+-			reconnKey := effectiveKeyURI(s.keyURIs, i)
+-			if err := sendKeyHandshake(dc.rw, s.adamID, reconnKey); err != nil {
+-				return fmt.Errorf("cbcs: key after reconnect %d: %w", i, err)
+-			}
+-			armedKey = reconnKey
+-
+-			if err2 := alacstream.DecryptFragment(frag, tracks, dc.rw); err2 != nil {
+-				return fmt.Errorf("cbcs: decrypt fragment %d after reconnect: %w", i, err2)
+-			}
+-			log.Printf("cbcs: fragment %d decrypted after reconnect", i)
++		// Defer flushing init until fragment 0 decrypts so an early key failure
++		// leaves tw.wrote == 0, enabling outer Stream() retries and HTTP 502.
++		if err := writeInit(); err != nil {
++			return err
+ 		}
+ 		// Patch decode times only after decrypting: growing tfdt changes the moof
+ 		// size, and GetFullSamples locates sample data by the original offsets.
+@@ -963,5 +960,14 @@ func (s *cbcsSource) streamAttempt(ctx context.Context, w io.Writer) error {
+ 		}
+ 	}
+ 
++	if !initWritten {
++		if err := writeInit(); err != nil {
++			return err
++		}
++		if err := outBuf.Flush(); err != nil {
++			return fmt.Errorf("cbcs: flush init: %w", err)
++		}
++	}
++
+ 	return nil
+ }
+diff --git a/engine/core/fairplay/cbcs_keys_test.go b/engine/core/fairplay/cbcs_keys_test.go
+index 52304e8..85b1189 100644
+--- a/engine/core/fairplay/cbcs_keys_test.go
++++ b/engine/core/fairplay/cbcs_keys_test.go
+@@ -3,11 +3,27 @@ package fairplay
+ import (
+ 	"bufio"
+ 	"bytes"
++	"errors"
++	"io"
+ 	"testing"
+ 
+ 	"engine/core/hls"
+ )
+ 
++type failedKeyWriter struct{}
++
++func (failedKeyWriter) Write([]byte) (int, error) { return 0, io.ErrClosedPipe }
++
++func TestConnectionKeyFailureDoesNotArmKey(t *testing.T) {
++	dc := &drmConn{rw: bufio.NewReadWriter(bufio.NewReader(&bytes.Buffer{}), bufio.NewWriter(failedKeyWriter{}))}
++	if err := dc.selectKey(testAdamID, testContentKey); !errors.Is(err, io.ErrClosedPipe) {
++		t.Fatalf("key handshake error = %v, want closed pipe", err)
++	}
++	if dc.armedKey != "" {
++		t.Fatal("a failed handshake must not arm its key")
++	}
++}
++
+ func TestEffectiveKeyURI(t *testing.T) {
+ 	keys := []string{cbcsPrefetchKey, "skd://real", "", "", "skd://next", ""}
+ 	for i, want := range []string{cbcsPrefetchKey, "skd://real", "skd://real", "skd://real", "skd://next", "skd://next"} {
+@@ -46,16 +62,15 @@ func TestSendKeyHandshakeBytes(t *testing.T) {
+ 	}
+ }
+ 
+-func TestSendFragKeyStartsWithFragmentZeroKey(t *testing.T) {
++func TestConnectionKeySelectionStartsWithFragmentZeroKey(t *testing.T) {
+ 	var buf bytes.Buffer
+ 	rw := bufio.NewReadWriter(bufio.NewReader(&bytes.Buffer{}), bufio.NewWriter(&buf))
+-	src := &cbcsSource{
+-		adamID:  "1440833098",
+-		keyURIs: []string{cbcsPrefetchKey, "skd://real"},
+-	}
++	const adamID = "1440833098"
++	dc := &drmConn{rw: rw}
+ 
+-	var armed string
+-	src.sendFragKey(0, rw, &armed)
++	if err := dc.selectKey(adamID, cbcsPrefetchKey); err != nil {
++		t.Fatal(err)
++	}
+ 	rw.Flush()
+ 	want := append(append([]byte{1, '0'}, byte(len(cbcsPrefetchKey))), cbcsPrefetchKey...)
+ 	if !bytes.Equal(buf.Bytes(), want) {
+@@ -63,9 +78,11 @@ func TestSendFragKeyStartsWithFragmentZeroKey(t *testing.T) {
+ 	}
+ 
+ 	buf.Reset()
+-	src.sendFragKey(1, rw, &armed)
++	if err := dc.selectKey(adamID, "skd://real"); err != nil {
++		t.Fatal(err)
++	}
+ 	rw.Flush()
+-	wantReal := append([]byte{0, 0, 0, 0, byte(len(src.adamID))}, src.adamID...)
++	wantReal := append([]byte{0, 0, 0, 0, byte(len(adamID))}, adamID...)
+ 	// The playlist URI goes out bare, as upstream sends it: no ",<kid>" suffix.
+ 	wantReal = append(wantReal, byte(len("skd://real")))
+ 	wantReal = append(wantReal, "skd://real"...)
+@@ -74,16 +91,17 @@ func TestSendFragKeyStartsWithFragmentZeroKey(t *testing.T) {
+ 	}
+ }
+ 
+-// Like upstream, only the keys on segments 0 and 1 are used; later tags are ignored.
++// Preserve delayed content keys and later rotations without mutating the playlist.
+ func TestUpstreamKeyURIs(t *testing.T) {
+ 	in := []string{cbcsPrefetchKey, "skd://real", "", "skd://later"}
+ 	got := upstreamKeyURIs(in)
+-	want := []string{cbcsPrefetchKey, "skd://real", "", ""}
++	want := []string{cbcsPrefetchKey, "skd://real", "", "skd://later"}
+ 	for i := range want {
+ 		if got[i] != want[i] {
+ 			t.Fatalf("key %d = %q, want %q", i, got[i], want[i])
+ 		}
+ 	}
++	got[3] = "changed"
+ 	if in[3] != "skd://later" {
+ 		t.Fatal("upstreamKeyURIs must not mutate the playlist's slice")
+ 	}
+@@ -108,10 +126,12 @@ func TestSendFragKeyArmsEachConnectionAfresh(t *testing.T) {
+ 	src := &cbcsSource{adamID: "1", keyURIs: []string{cbcsPrefetchKey, "skd://real"}}
+ 	for run := range 2 {
+ 		var buf bytes.Buffer
+-		rw := bufio.NewReadWriter(bufio.NewReader(&bytes.Buffer{}), bufio.NewWriter(&buf))
+-		var armed string
+-		src.sendFragKey(0, rw, &armed)
+-		rw.Flush()
++		dc := &drmConn{
++			rw: bufio.NewReadWriter(bufio.NewReader(&bytes.Buffer{}), bufio.NewWriter(&buf)),
++		}
++		if err := dc.selectKey(src.adamID, effectiveKeyURI(src.keyURIs, 0)); err != nil {
++			t.Fatalf("run %d selectKey failed: %v", run, err)
++		}
+ 		if buf.Len() == 0 {
+ 			t.Fatalf("run %d sent no key on its fresh connection", run)
+ 		}
+diff --git a/engine/core/fairplay/cbcs_pipeline_test.go b/engine/core/fairplay/cbcs_pipeline_test.go
+index fb7c495..2fa0537 100644
+--- a/engine/core/fairplay/cbcs_pipeline_test.go
++++ b/engine/core/fairplay/cbcs_pipeline_test.go
+@@ -45,6 +45,18 @@ type encryptedTrack struct {
+ }
+ 
+ func buildEncryptedTrack(t *testing.T, nFrags int) encryptedTrack {
++	t.Helper()
++	keys := make([][]byte, nFrags)
++	for i := range keys {
++		keys[i] = contentAK
++		if i == 0 {
++			keys[i] = prefetchAK
++		}
++	}
++	return buildEncryptedTrackWithKeys(t, keys)
++}
++
++func buildEncryptedTrackWithKeys(t *testing.T, fragmentKeys [][]byte) encryptedTrack {
+ 	t.Helper()
+ 	rng := rand.New(rand.NewSource(1))
+ 	init := mp4.CreateEmptyInit()
+@@ -61,7 +73,7 @@ func buildEncryptedTrack(t *testing.T, nFrags int) encryptedTrack {
+ 		t.Fatal(err)
+ 	}
+ 	tr := encryptedTrack{}
+-	for f := 0; f < nFrags; f++ {
++	for f := range fragmentKeys {
+ 		frag, err := mp4.CreateFragment(uint32(f+1), 1)
+ 		if err != nil {
+ 			t.Fatal(err)
+@@ -78,10 +90,7 @@ func buildEncryptedTrack(t *testing.T, nFrags int) encryptedTrack {
+ 				Data:       data,
+ 			})
+ 		}
+-		key := contentAK
+-		if f == 0 {
+-			key = prefetchAK
+-		}
++		key := fragmentKeys[f]
+ 		if err := mp4.EncryptFragment(frag, key, testIV, ipd); err != nil {
+ 			t.Fatal(err)
+ 		}
+@@ -192,6 +201,18 @@ func serveFile(t *testing.T, data []byte) string {
+ 	return srv.URL
+ }
+ 
++type headerTrackingBuffer struct {
++	bytes.Buffer
++	headers map[string]string
++}
++
++func (b *headerTrackingBuffer) SetHeader(key, value string) {
++	if b.headers == nil {
++		b.headers = make(map[string]string)
++	}
++	b.headers[key] = value
++}
++
+ type decodedFragment struct {
+ 	tfdt    uint64
+ 	samples [][]byte
+@@ -275,6 +296,26 @@ func TestCBCSPipelineDecryptsPrefetchAndContentKeys(t *testing.T) {
+ 	}
+ }
+ 
++func TestCBCSSourceDoesNotForwardUpstreamEncryptedLength(t *testing.T) {
++	tr := buildEncryptedTrack(t, 3)
++	fp := newFakeFairPlay(t, map[string][]byte{cbcsPrefetchKey: prefetchAK, testContentKey: contentAK})
++	out := &headerTrackingBuffer{}
++	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
++	defer cancel()
++	if err := CBCSSource(
++		testAdamID,
++		DialerFromAddr(fp.ln.Addr().String()),
++		serveFile(t, tr.file),
++		[]string{cbcsPrefetchKey, testContentKey, ""},
++		0,
++	).Stream(ctx, out); err != nil {
++		t.Fatal(err)
++	}
++	if got := out.headers["Content-Length"]; got != "" {
++		t.Fatalf("forwarded encrypted upstream Content-Length %q for resized output", got)
++	}
++}
++
+ func TestCBCSSeekStartsMidTrackWithTheContentKey(t *testing.T) {
+ 	tr := buildEncryptedTrack(t, 5)
+ 	fp := newFakeFairPlay(t, map[string][]byte{cbcsPrefetchKey: prefetchAK, testContentKey: contentAK})
+@@ -300,22 +341,150 @@ func TestCBCSSeekStartsMidTrackWithTheContentKey(t *testing.T) {
+ 	}
+ }
+ 
+-// Upstream only uses the key tags on segments 0 and 1; a later tag must not be
+-// sent to FairPlay (here it is unknown to the server and would kill the stream).
+-func TestCBCSIgnoresKeyTagsAfterSegmentOne(t *testing.T) {
+-	tr := buildEncryptedTrack(t, 4)
++// Real tracks may keep the prefetch key for two fragments, or rotate content
++// keys again later. Verify actual plaintext across both playback and seeks.
++func TestCBCSHonorsCompleteKeySchedule(t *testing.T) {
++	const rotatedURI = "skd://itunes.apple.com/p1/c99"
++	rotatedKey := bytes.Repeat([]byte{0x33}, 16)
++	for _, tc := range []struct {
++		name         string
++		keys         []string
++		fragmentKeys [][]byte
++	}{
++		{"delayed-content", []string{cbcsPrefetchKey, "", testContentKey, "", ""},
++			[][]byte{prefetchAK, prefetchAK, contentAK, contentAK, contentAK}},
++		{"later-rotation", []string{cbcsPrefetchKey, testContentKey, "", rotatedURI, ""},
++			[][]byte{prefetchAK, contentAK, contentAK, rotatedKey, rotatedKey}},
++	} {
++		t.Run(tc.name, func(t *testing.T) {
++			tr := buildEncryptedTrackWithKeys(t, tc.fragmentKeys)
++			for _, seek := range []bool{false, true} {
++				name := "playback"
++				if seek {
++					name = "seek-after-transition"
++				}
++				t.Run(name, func(t *testing.T) {
++					fp := newFakeFairPlay(t, map[string][]byte{cbcsPrefetchKey: prefetchAK, testContentKey: contentAK, rotatedURI: rotatedKey})
++					dialer := DialerFromAddr(fp.ln.Addr().String())
++					fileURL := serveFile(t, tr.file)
++					ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
++					defer cancel()
++					var out bytes.Buffer
++					first := 0
++					if seek {
++						const segDur = float64(samplesPerFrag*sampleDur) / 44100
++						media := &hls.CBCSMedia{FileURL: fileURL, KeyURIs: tc.keys,
++							SegmentDurations: []float64{segDur, segDur, segDur, segDur, segDur}}
++						src, _ := CBCSSeekableSource(testAdamID, dialer, media, 0).SourceFrom(3.5 * segDur)
++						if err := src.Stream(ctx, &out); err != nil {
++							t.Fatal(err)
++						}
++						first = 3
++					} else if err := CBCSSource(testAdamID, dialer, fileURL, tc.keys, 0).Stream(ctx, &out); err != nil {
++						t.Fatal(err)
++					}
++					checkFragments(t, decodeOutput(t, out.Bytes()), tr.plain, first)
++				})
++			}
++		})
++	}
++}
++
++func TestCBCSSourceCanBeReusedAcrossConnections(t *testing.T) {
++	tr := buildEncryptedTrackWithKeys(t, [][]byte{prefetchAK, prefetchAK, contentAK, contentAK})
+ 	fp := newFakeFairPlay(t, map[string][]byte{cbcsPrefetchKey: prefetchAK, testContentKey: contentAK})
+-	keys := []string{cbcsPrefetchKey, testContentKey, "", "skd://itunes.apple.com/p1/c99"}
++	src := CBCSSource(testAdamID, DialerFromAddr(fp.ln.Addr().String()), serveFile(t, tr.file),
++		[]string{cbcsPrefetchKey, "", testContentKey, ""}, 0)
++	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
++	defer cancel()
++	for range 2 {
++		var out bytes.Buffer
++		if err := src.Stream(ctx, &out); err != nil {
++			t.Fatal(err)
++		}
++		checkFragments(t, decodeOutput(t, out.Bytes()), tr.plain, 0)
++	}
++}
+ 
+-	var out bytes.Buffer
++type interruptedCBCSDialer struct {
++	inner           CBCSDialer
++	firstReplyBytes int64
++	dials           int
++}
++
++func (d *interruptedCBCSDialer) DialCBCS(ctx context.Context) (net.Conn, error) {
++	c, err := d.inner.DialCBCS(ctx)
++	if err != nil {
++		return nil, err
++	}
++	d.dials++
++	if d.dials == 1 {
++		return &interruptedCBCSConn{Conn: c, remaining: d.firstReplyBytes}, nil
++	}
++	return c, nil
++}
++
++type interruptedCBCSConn struct {
++	net.Conn
++	remaining int64
++}
++
++func (c *interruptedCBCSConn) Read(p []byte) (int, error) {
++	if c.remaining == 0 {
++		c.Conn.Close()
++		return 0, io.ErrUnexpectedEOF
++	}
++	if int64(len(p)) > c.remaining {
++		p = p[:c.remaining]
++	}
++	n, err := c.Conn.Read(p)
++	c.remaining -= int64(n)
++	return n, err
++}
++
++func TestCBCSReconnectRestoresRotatedKey(t *testing.T) {
++	const rotatedURI = "skd://itunes.apple.com/p1/rotated"
++	rotatedKey := bytes.Repeat([]byte{0x33}, 16)
++	tr := buildEncryptedTrackWithKeys(t, [][]byte{prefetchAK, prefetchAK, contentAK, rotatedKey, rotatedKey})
++	fp := newFakeFairPlay(t, map[string][]byte{cbcsPrefetchKey: prefetchAK, testContentKey: contentAK, rotatedURI: rotatedKey})
++	var beforeRotation int64
++	for _, fragment := range tr.plain[:3] {
++		for _, sample := range fragment {
++			beforeRotation += int64(len(sample) &^ 15)
++		}
++	}
++	dialer := &interruptedCBCSDialer{inner: DialerFromAddr(fp.ln.Addr().String()), firstReplyBytes: beforeRotation}
+ 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+ 	defer cancel()
+-	if err := CBCSSource(testAdamID, DialerFromAddr(fp.ln.Addr().String()), serveFile(t, tr.file), keys, 0).Stream(ctx, &out); err != nil {
++	var out bytes.Buffer
++	err := CBCSSource(testAdamID, dialer, serveFile(t, tr.file),
++		[]string{cbcsPrefetchKey, "", testContentKey, rotatedURI, ""}, 0).Stream(ctx, &out)
++	if err != nil {
+ 		t.Fatal(err)
+ 	}
++	if dialer.dials != 2 {
++		t.Fatalf("connections = %d, want exactly one recovery", dialer.dials)
++	}
+ 	checkFragments(t, decodeOutput(t, out.Bytes()), tr.plain, 0)
+-	if got := fp.opened(); len(got) != 2 {
+-		t.Fatalf("keys opened = %q, want only the prefetch and content keys", got)
++}
++
++// A later key FairPlay cannot open must fail, never pass ciphertext through.
++func TestCBCSUnknownLaterKeyFailsInsteadOfEmittingCiphertext(t *testing.T) {
++	const unknownURI = "skd://itunes.apple.com/p1/unavailable"
++	tr := buildEncryptedTrackWithKeys(t, [][]byte{prefetchAK, prefetchAK, contentAK, contentAK})
++	fp := newFakeFairPlay(t, map[string][]byte{cbcsPrefetchKey: prefetchAK})
++	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
++	defer cancel()
++	var out bytes.Buffer
++	err := CBCSSource(testAdamID, DialerFromAddr(fp.ln.Addr().String()), serveFile(t, tr.file),
++		[]string{cbcsPrefetchKey, "", unknownURI, ""}, 0).Stream(ctx, &out)
++	if err == nil || errors.Is(err, context.DeadlineExceeded) {
++		t.Fatalf("stream must fail promptly, got %v", err)
++	}
++	for _, f := range decodeOutputPrefix(out.Bytes()) {
++		if f >= 2 {
++			t.Fatalf("fragment %d was emitted without a valid key", f)
++		}
+ 	}
+ }
+ 
+@@ -342,6 +511,96 @@ func TestCBCSUnknownKeyFailsInsteadOfEmittingCiphertext(t *testing.T) {
+ 	}
+ }
+ 
++// A transient key-open failure (e.g. Apple FPS returning a recoverable SVError)
++// must recover transparently across multiple reconnect retries without failing
++// the audio stream or corrupting any fragment.
++func TestCBCSTransientKeyFailureRecoversAfterRetries(t *testing.T) {
++	origBackoffs := cbcsFragRetryBackoffs
++	cbcsFragRetryBackoffs = []time.Duration{5 * time.Millisecond, 5 * time.Millisecond, 5 * time.Millisecond}
++	defer func() { cbcsFragRetryBackoffs = origBackoffs }()
++
++	tr := buildEncryptedTrack(t, 3)
++	ln, err := net.Listen("tcp", "127.0.0.1:0")
++	if err != nil {
++		t.Fatal(err)
++	}
++	t.Cleanup(func() { ln.Close() })
++
++	var mu sync.Mutex
++	contentKeyAttempts := 0
++	go func() {
++		for {
++			c, err := ln.Accept()
++			if err != nil {
++				return
++			}
++			go func(conn net.Conn) {
++				defer conn.Close()
++				r := bufio.NewReader(conn)
++				for {
++					adam, err := readShort(r)
++					if err != nil || adam == "" {
++						return
++					}
++					uri, err := readShort(r)
++					if err != nil {
++						return
++					}
++					var key []byte
++					if uri == cbcsPrefetchKey {
++						key = prefetchAK
++					} else if uri == testContentKey {
++						mu.Lock()
++						contentKeyAttempts++
++						attempt := contentKeyAttempts
++						mu.Unlock()
++						if attempt <= 2 {
++							return // simulate 2 transient FPS failures before succeeding
++						}
++						key = contentAK
++					} else {
++						return
++					}
++					block, _ := aes.NewCipher(key)
++					for {
++						var sz [4]byte
++						if _, err := io.ReadFull(r, sz[:]); err != nil {
++							return
++						}
++						n := binary.LittleEndian.Uint32(sz[:])
++						if n == 0 {
++							break
++						}
++						buf := make([]byte, n)
++						if _, err := io.ReadFull(r, buf); err != nil {
++							return
++						}
++						cipher.NewCBCDecrypter(block, testIV).CryptBlocks(buf, buf)
++						if _, err := conn.Write(buf); err != nil {
++							return
++						}
++					}
++				}
++			}(c)
++		}
++	}()
++
++	keys := []string{cbcsPrefetchKey, testContentKey, ""}
++	var out bytes.Buffer
++	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
++	defer cancel()
++	if err := CBCSSource(testAdamID, DialerFromAddr(ln.Addr().String()), serveFile(t, tr.file), keys, 0).Stream(ctx, &out); err != nil {
++		t.Fatalf("expected recovery after 2 transient key failures, got %v", err)
++	}
++	mu.Lock()
++	attempts := contentKeyAttempts
++	mu.Unlock()
++	if attempts != 3 {
++		t.Fatalf("content key attempts = %d, want 3", attempts)
++	}
++	checkFragments(t, decodeOutput(t, out.Bytes()), tr.plain, 0)
++}
++
+ // decodeOutputPrefix returns the indexes of the fragments fully present in out.
+ func decodeOutputPrefix(out []byte) []int {
+ 	r := bufio.NewReader(bytes.NewReader(out))
+diff --git a/engine/core/hls/hls.go b/engine/core/hls/hls.go
+index 061557c..24618ce 100644
+--- a/engine/core/hls/hls.go
++++ b/engine/core/hls/hls.go
+@@ -28,8 +28,10 @@ import (
+ )
+ 
+ var (
+-	grRankRe = regexp.MustCompile(`_gr(\d+)_`)
+-	dimRe    = regexp.MustCompile(`_?(\d+)x(\d+)`)
++	grRankRe       = regexp.MustCompile(`_gr(\d+)_`)
++	dimRe          = regexp.MustCompile(`_?(\d+)x(\d+)`)
++	audioGroupRe   = regexp.MustCompile(`(?:^|,)AUDIO="([^"]*)"`)
++	audioQualityRe = regexp.MustCompile(`(?:^|-)audio-(?:alac|ec-?3|atmos)-[^-]+-(\d{2,6})-(\d{1,2})(?:-|$)`)
+ )
+ 
+ // ─── Master playlist ──────────────────────────────────────────────────────────
+@@ -42,6 +44,14 @@ type Variant struct {
+ 	Codecs           string
+ 	Resolution       string
+ 	VideoRange       string
++	// AudioGroup is the EXT-X-STREAM-INF AUDIO group identifier. Apple puts
++	// known codec quality there, for example audio-alac-stereo-44100-16.
++	AudioGroup string
++	// AudioSampleRate and AudioBitDepth are populated only when that group
++	// identifier states a valid, recognised value. Zero means unknown.
++	AudioSampleRate         int
++	AudioBitDepth           int
++	AudioQualityUnsupported bool
+ 	// HDCPLevel is the HDCP-LEVEL attribute ("TYPE-0", "TYPE-1", "NONE"): the output protection the variant
+ 	// requires before it may be played. Empty when the playlist does not say.
+ 	HDCPLevel string
+@@ -197,25 +207,112 @@ func (m *Master) SelectVideoVariantWithCodec(maxHeight int) (variantURL, codecs,
+ 	return "", "", "", fmt.Errorf("no video variant at or below %dp", maxHeight)
+ }
+ 
+-// SelectByCodec returns the URL of the highest-bandwidth variant whose Codecs
+-// field contains the given string.  Falls back to highest bandwidth on no match.
+-func (m *Master) SelectByCodec(codec string) string {
+-	codec = strings.ToLower(codec)
+-	var best, fallback Variant
++// SelectVariantByCodec returns the best variant whose CODECS list contains an
++// exact codec token. Known audio quality wins over unknown quality; within the
++// same evidence tier the higher AVERAGE-BANDWIDTH/BANDWIDTH wins. It never
++// returns a variant with a different codec.
++func (m *Master) SelectVariantByCodec(codec string) (Variant, bool) {
++	codec = strings.ToLower(strings.TrimSpace(codec))
++	if codec == "" {
++		return Variant{}, false
++	}
++	var best Variant
++	found := false
+ 	for _, v := range m.Variants {
+-		if v.Bandwidth > fallback.Bandwidth {
+-			fallback = v
++		if !variantHasCodec(v, codec) || v.AudioQualityUnsupported {
++			continue
+ 		}
+-		if codec != "" && strings.Contains(strings.ToLower(v.Codecs), codec) {
+-			if v.Bandwidth > best.Bandwidth {
+-				best = v
+-			}
++		if !found || betterCodecVariant(v, best) {
++			best = v
++			found = true
++		}
++	}
++	return best, found
++}
++
++// SelectVariantByCodecUpTo is SelectVariantByCodec limited to variants whose
++// sample rate is known and at most maxRate (Apple Music's "Lossless" tier: up to
++// 48 kHz). Variants of unknown rate are skipped.
++func (m *Master) SelectVariantByCodecUpTo(codec string, maxRate int) (Variant, bool) {
++	codec = strings.ToLower(strings.TrimSpace(codec))
++	if codec == "" {
++		return Variant{}, false
++	}
++	var best Variant
++	found := false
++	for _, v := range m.Variants {
++		if !variantHasCodec(v, codec) || v.AudioQualityUnsupported {
++			continue
++		}
++		if v.AudioSampleRate <= 0 || v.AudioSampleRate > maxRate {
++			continue
++		}
++		if !found || betterCodecVariant(v, best) {
++			best = v
++			found = true
+ 		}
+ 	}
+-	if best.URL != "" {
+-		return best.URL
++	return best, found
++}
++
++// SelectByCodec returns the URL selected by SelectVariantByCodec. It returns
++// an empty string when no variant carries the requested codec; callers must
++// decide explicitly whether a different codec is an acceptable fallback.
++func (m *Master) SelectByCodec(codec string) string {
++	v, ok := m.SelectVariantByCodec(codec)
++	if !ok {
++		return ""
+ 	}
+-	return fallback.URL
++	return v.URL
++}
++
++func variantHasCodec(v Variant, codec string) bool {
++	for _, token := range strings.Split(v.Codecs, ",") {
++		if strings.EqualFold(strings.TrimSpace(token), codec) {
++			return true
++		}
++	}
++	return false
++}
++
++// HasCodec reports whether any variant declares the exact codec token,
++// including variants later rejected for unsupported audio quality metadata.
++// Callers use SelectVariantByCodec for the best supported match and HasCodec
++// to distinguish "no such format" from "the format exists but was filtered".
++func (m *Master) HasCodec(codec string) bool {
++	codec = strings.ToLower(strings.TrimSpace(codec))
++	if codec == "" {
++		return false
++	}
++	for _, v := range m.Variants {
++		if variantHasCodec(v, codec) {
++			return true
++		}
++	}
++	return false
++}
++
++func betterCodecVariant(candidate, current Variant) bool {
++	cKnown := candidate.AudioSampleRate > 0 || candidate.AudioBitDepth > 0
++	bKnown := current.AudioSampleRate > 0 || current.AudioBitDepth > 0
++	if cKnown != bKnown {
++		return cKnown
++	}
++	if candidate.AudioSampleRate != current.AudioSampleRate {
++		return candidate.AudioSampleRate > current.AudioSampleRate
++	}
++	if candidate.AudioBitDepth != current.AudioBitDepth {
++		return candidate.AudioBitDepth > current.AudioBitDepth
++	}
++	cRate := candidate.AverageBandwidth
++	if cRate == 0 {
++		cRate = candidate.Bandwidth
++	}
++	bRate := current.AverageBandwidth
++	if bRate == 0 {
++		bRate = current.Bandwidth
++	}
++	return cRate > bRate
+ }
+ 
+ // Height is the variant's pixel height from RESOLUTION, or from the dimensions in its URL; 0 when neither says.
+@@ -351,6 +448,60 @@ func (m *Master) SelectALAC(hiRes bool) (v Variant, ok bool) {
+ 	return best, best.URL != ""
+ }
+ 
++// audioGroupByURI maps each variant URI in a master playlist to its AUDIO
++// group identifier. The m3u8 library does not expose that attribute.
++func audioGroupByURI(master string) map[string]string {
++	out := map[string]string{}
++	pending := ""
++	for _, raw := range strings.Split(master, "\n") {
++		line := strings.TrimSpace(raw)
++		switch {
++		case strings.HasPrefix(line, "#EXT-X-STREAM-INF:"):
++			pending = ""
++			if m := audioGroupRe.FindStringSubmatch(line); m != nil {
++				pending = m[1]
++			}
++		case line == "" || strings.HasPrefix(line, "#"):
++		default:
++			if pending != "" {
++				out[line] = pending
++			}
++			pending = ""
++		}
++	}
++	return out
++}
++
++// audioGroupQuality decodes the quality suffix Apple uses in AUDIO group IDs.
++// Values outside the supported ALAC ceiling (24-bit/192 kHz) and unrecognised
++// sample rates are left unknown instead of being rounded or guessed.
++func audioGroupQuality(group string) (sampleRate, bitDepth int, unsupported bool) {
++	m := audioQualityRe.FindStringSubmatch(strings.ToLower(group))
++	if len(m) != 3 {
++		return 0, 0, false
++	}
++	var rate, depth int
++	if n, err := fmt.Sscanf(m[1], "%d", &rate); n != 1 || err != nil {
++		return 0, 0, true
++	}
++	if n, err := fmt.Sscanf(m[2], "%d", &depth); n != 1 || err != nil {
++		return 0, 0, true
++	}
++	switch rate {
++	case 44, 48, 88, 96, 176, 192:
++		rate *= 1000
++	}
++	switch rate {
++	case 44100, 48000, 88200, 96000, 176400, 192000:
++	default:
++		return 0, 0, true
++	}
++	if depth != 16 && depth != 24 {
++		return 0, 0, true
++	}
++	return rate, depth, false
++}
++
+ // CPCSummary shortens an ALLOWED-CPC value for a log line: the key systems by name with their levels, for example
+ // "fairplay:Main/AppleMain playready:SL3000".
+ func CPCSummary(cpc string) string {
+@@ -953,6 +1104,7 @@ func parseMaster(base *url.URL, rawURL string, body []byte) (*Master, error) {
+ 	m := &Master{baseURL: base}
+ 	cpc := allowedCPCByURI(string(body))
+ 	formats := audioFormatByGroup(string(body))
++	audioGroups := audioGroupByURI(string(body))
+ 
+ 	for _, v := range pl.Variants {
+ 		if v == nil {
+@@ -962,17 +1114,30 @@ func parseMaster(base *url.URL, rawURL string, body []byte) (*Master, error) {
+ 		if err != nil {
+ 			continue
+ 		}
++		audioGroup := audioGroups[v.URI]
++		audioRate, audioDepth, audioUnsupported := audioGroupQuality(audioGroup)
++		mediaFmt := formats[v.Audio]
++		if audioRate == 0 && mediaFmt[0] > 0 {
++			audioRate = mediaFmt[0]
++		}
++		if audioDepth == 0 && mediaFmt[1] > 0 {
++			audioDepth = mediaFmt[1]
++		}
+ 		m.Variants = append(m.Variants, Variant{
+-			URL:              varURL.String(),
+-			Bandwidth:        v.Bandwidth,
+-			AverageBandwidth: v.AverageBandwidth,
+-			Codecs:           v.Codecs,
+-			Resolution:       v.Resolution,
+-			VideoRange:       v.VideoRange,
+-			HDCPLevel:        v.HDCPLevel,
+-			AllowedCPC:       cpc[v.URI],
+-			SampleRate:       formats[v.Audio][0],
+-			BitDepth:         formats[v.Audio][1],
++			URL:                     varURL.String(),
++			Bandwidth:               v.Bandwidth,
++			AverageBandwidth:        v.AverageBandwidth,
++			Codecs:                  v.Codecs,
++			Resolution:              v.Resolution,
++			VideoRange:              v.VideoRange,
++			AudioGroup:              audioGroup,
++			AudioSampleRate:         audioRate,
++			AudioBitDepth:           audioDepth,
++			AudioQualityUnsupported: audioUnsupported,
++			HDCPLevel:               v.HDCPLevel,
++			AllowedCPC:              cpc[v.URI],
++			SampleRate:              mediaFmt[0],
++			BitDepth:                mediaFmt[1],
+ 		})
+ 		for _, alt := range v.Alternatives {
+ 			if alt == nil || alt.URI == "" {
+diff --git a/engine/core/hls/hls_test.go b/engine/core/hls/hls_test.go
+index 1c80570..99a9752 100644
+--- a/engine/core/hls/hls_test.go
++++ b/engine/core/hls/hls_test.go
+@@ -186,9 +186,120 @@ func TestSelectByCodec_NoMatch(t *testing.T) {
+ 		{URL: "a", Bandwidth: 256000, Codecs: "mp4a.40.2"},
+ 		{URL: "b", Bandwidth: 320000, Codecs: "mp4a.40.2"},
+ 	}}
+-	// No ec-3 variant → falls back to highest bandwidth overall.
+-	if got := m.SelectByCodec("ec-3"); got != "b" {
+-		t.Errorf("fallback = %q want b (highest bw)", got)
++	// A requested codec must never silently resolve to another codec.
++	if got := m.SelectByCodec("ec-3"); got != "" {
++		t.Errorf("SelectByCodec(ec-3) = %q, want no match", got)
++	}
++}
++
++func TestSelectByCodec_AllHLSFormatsWithoutALAC(t *testing.T) {
++	t.Parallel()
++	m := &Master{Variants: []Variant{
++		{URL: "aac", Bandwidth: 256000, Codecs: "mp4a.40.2"},
++		{URL: "atmos", Bandwidth: 768000, Codecs: "ec-3"},
++	}}
++	if got := m.SelectByCodec("alac"); got != "" {
++		t.Fatalf("SelectByCodec(alac) = %q, want no ALAC fallback", got)
++	}
++	if got := m.SelectByCodec("mp4a.40.2"); got != "aac" {
++		t.Fatalf("AAC selection = %q, want aac", got)
++	}
++	if got := m.SelectByCodec("ec-3"); got != "atmos" {
++		t.Fatalf("Atmos selection = %q, want atmos", got)
++	}
++}
++
++func TestSelectVariantByCodec_PrefersKnownHighestALAC(t *testing.T) {
++	t.Parallel()
++	m := &Master{Variants: []Variant{
++		{URL: "unknown-fast", Bandwidth: 9_000_000, Codecs: "alac"},
++		{URL: "44-16", Bandwidth: 900_000, Codecs: "alac", AudioSampleRate: 44100, AudioBitDepth: 16},
++		{URL: "96-24", Bandwidth: 2_300_000, Codecs: "alac", AudioSampleRate: 96000, AudioBitDepth: 24},
++		{URL: "192-24", Bandwidth: 4_600_000, Codecs: "alac", AudioSampleRate: 192000, AudioBitDepth: 24},
++	}}
++	got, ok := m.SelectVariantByCodec("alac")
++	if !ok {
++		t.Fatal("expected ALAC variant")
++	}
++	if got.URL != "192-24" {
++		t.Fatalf("selected %q, want known 192kHz/24-bit tier", got.URL)
++	}
++}
++
++func TestSelectVariantByCodec_SkipsALACAboveSupportedCeiling(t *testing.T) {
++	t.Parallel()
++	m := &Master{Variants: []Variant{
++		{
++			URL:                     "too-much",
++			Bandwidth:               9_000_000,
++			Codecs:                  "alac",
++			AudioGroup:              "audio-alac-stereo-384000-32",
++			AudioQualityUnsupported: true,
++		},
++		{URL: "aac", Bandwidth: 256_000, Codecs: "mp4a.40.2"},
++	}}
++	if got := m.SelectByCodec("alac"); got != "" {
++		t.Fatalf("SelectByCodec(alac) = %q, want unsupported tier skipped", got)
++	}
++	if !m.HasCodec("alac") {
++		t.Fatal("HasCodec must distinguish a filtered ALAC variant from a missing codec")
++	}
++	if got := m.SelectByCodec("mp4a.40.2"); got != "aac" {
++		t.Fatalf("AAC selection = %q, want aac", got)
++	}
++}
++
++func TestAudioGroupQuality_KnownAndUnknown(t *testing.T) {
++	t.Parallel()
++	tests := []struct {
++		group       string
++		sr          int
++		bd          int
++		unsupported bool
++	}{
++		{"audio-alac-stereo-44100-16", 44100, 16, false},
++		{"audio-alac-stereo-96-24", 96000, 24, false},
++		{"audio-alac-stereo-192000-24", 192000, 24, false},
++		{"audio-alac-stereo", 0, 0, false},
++		{"audio-alac-stereo-96000", 0, 0, false},
++		{"audio-alac-stereo-192000-32", 0, 0, true},
++		{"audio-alac-stereo-24000-24", 0, 0, true},
++	}
++	for _, tc := range tests {
++		tc := tc
++		t.Run(tc.group, func(t *testing.T) {
++			t.Parallel()
++			gotSR, gotBD, unsupported := audioGroupQuality(tc.group)
++			if gotSR != tc.sr || gotBD != tc.bd || unsupported != tc.unsupported {
++				t.Fatalf("audioGroupQuality(%q) = %d/%d/%v, want %d/%d/%v",
++					tc.group, gotSR, gotBD, unsupported, tc.sr, tc.bd, tc.unsupported)
++			}
++		})
++	}
++}
++
++func TestParseMasterAudioGroupQuality(t *testing.T) {
++	t.Parallel()
++	const playlist = `#EXTM3U
++#EXT-X-STREAM-INF:BANDWIDTH=4600000,CODECS="alac",AUDIO="audio-alac-stereo-192000-24"
++alac_hi.m3u8
++#EXT-X-STREAM-INF:BANDWIDTH=900000,CODECS="alac",AUDIO="audio-alac-stereo-44100-16"
++alac.m3u8
++`
++	base, err := url.Parse("https://example.test/master.m3u8")
++	if err != nil {
++		t.Fatal(err)
++	}
++	m, err := parseMaster(base, base.String(), []byte(playlist))
++	if err != nil {
++		t.Fatal(err)
++	}
++	v, ok := m.SelectVariantByCodec("alac")
++	if !ok {
++		t.Fatal("expected ALAC")
++	}
++	if v.AudioGroup != "audio-alac-stereo-192000-24" || v.AudioSampleRate != 192000 || v.AudioBitDepth != 24 {
++		t.Fatalf("quality not parsed from AUDIO group: %+v", v)
+ 	}
+ }
+ 
+diff --git a/engine/core/media/provider.go b/engine/core/media/provider.go
+index b4be657..ac8ffe8 100644
+--- a/engine/core/media/provider.go
++++ b/engine/core/media/provider.go
+@@ -64,6 +64,9 @@ type Track struct {
+ 	BitRate       int    // average bit-rate in bits/s (0 = unknown)
+ 	ChannelCount  int    // number of audio channels (0 = unknown)
+ 	CodecMIMEType string // MIME type + codec param e.g. "audio/mp4; codecs=\"mp4a.40.2\""
++	Container     string // original container label, e.g. "mp4" or "mp3"
++	Extension     string // truthful file extension without a dot, e.g. "m4a" or "mp3"
++	SourceVersion string // encoded layout identity, never a payload digest
+ 	SpatialAudio  string // "binaural" | "binaural-lossless" | "" (empty = normal stereo)
+ 	Open          func(context.Context) (*pipeline.Stream, error)
+ }
+@@ -95,10 +98,11 @@ type OpenRequest struct {
+ 	Language   string
+ 
+ 	// Quality / capability hints — providers pick the best match they support.
+-	Lossless bool
+-	HiRes    bool // true = hi-res ALAC permitted when Lossless is set; false = cap at 44100/16-bit
+-	Atmos    bool
+-	Video    bool // request a music video if available
++	Lossless    bool
++	HiRes       bool // true = hi-res ALAC permitted when Lossless is set; false = cap at 48 kHz (Apple's Lossless tier)
++	Atmos       bool
++	PreferAtmos bool // use Atmos only when both catalog trait and HLS EC-3 variant exist
++	Video       bool // request a music video if available
+ 
+ 	// MV variant selection hints.
+ 	MVMaxHeight       int
+diff --git a/engine/core/pipeline/pipeline.go b/engine/core/pipeline/pipeline.go
+index a2a47fe..5efcb54 100644
+--- a/engine/core/pipeline/pipeline.go
++++ b/engine/core/pipeline/pipeline.go
+@@ -55,6 +55,7 @@ type Codec string
+ const (
+ 	CodecALAC  Codec = "alac"
+ 	CodecAAC   Codec = "aac"
++	CodecMP3   Codec = "mp3"
+ 	CodecAtmos Codec = "atmos"
+ 	CodecH264  Codec = "h264"
+ )
+diff --git a/engine/core/playback/duration_test.go b/engine/core/playback/duration_test.go
+index fe6983f..63bbc64 100644
+--- a/engine/core/playback/duration_test.go
++++ b/engine/core/playback/duration_test.go
+@@ -2,12 +2,101 @@ package playback
+ 
+ import (
+ 	"context"
++	"strings"
+ 	"testing"
+ 
+ 	"engine/core/media"
+ 	"engine/core/pipeline"
+ )
+ 
++func TestOpenKeySeparatesFullSongRequirement(t *testing.T) {
++	t.Parallel()
++	reusable := OpenRequest{AssetID: "song", Storefront: "us"}
++	fullOnly := reusable
++	fullOnly.RequireFullSong = true
++	if reusableKey, fullKey := openKey(reusable), openKey(fullOnly); reusableKey == fullKey {
++		t.Fatalf("full-song and reusable sessions share open key %q", reusableKey)
++	}
++}
++
++func TestOpenRequireFullSong(t *testing.T) {
++	t.Parallel()
++	tests := []struct {
++		name           string
++		catalogMs      int
++		sourceMs       int
++		wantCatalogMs  int
++		wantErrorParts []string
++	}{
++		{name: "valid full song", catalogMs: 180000, sourceMs: 180000, wantCatalogMs: 180000},
++		{name: "two seconds of padding", catalogMs: 180000, sourceMs: 178000, wantCatalogMs: 180000},
++		{name: "longer padding or master", catalogMs: 180000, sourceMs: 181500, wantCatalogMs: 180000},
++		{
++			name:      "thirty second trial",
++			catalogMs: 180000, sourceMs: 30000,
++			wantErrorParts: []string{"full song required", "shorter than catalog", "150000ms"},
++		},
++		{
++			name:      "more than two seconds truncated",
++			catalogMs: 180000, sourceMs: 177999,
++			wantErrorParts: []string{"full song required", "shorter than catalog", "2001ms"},
++		},
++		{
++			name:      "catalog known but source missing",
++			catalogMs: 180000, sourceMs: 0,
++			wantErrorParts: []string{"full song required", "source duration unavailable"},
++		},
++		{
++			name:      "catalog and source unknown",
++			catalogMs: 0, sourceMs: 0,
++			wantErrorParts: []string{"full song required", "source duration unavailable"},
++		},
++	}
++	for _, tc := range tests {
++		tc := tc
++		t.Run(tc.name, func(t *testing.T) {
++			t.Parallel()
++			m := newTestManager(&stubProvider{resp: &media.Session{
++				Kind:     "song",
++				Metadata: media.Metadata{DurationMs: tc.catalogMs},
++				Tracks: []media.Track{{
++					Kind:  pipeline.KindAudio,
++					Codec: pipeline.CodecALAC,
++					Open: func(context.Context) (*pipeline.Stream, error) {
++						return &pipeline.Stream{
++							Kind:       pipeline.KindAudio,
++							Codec:      pipeline.CodecALAC,
++							DurationMs: tc.sourceMs,
++						}, nil
++					},
++				}},
++			}})
++			session, err := m.Open(context.Background(), OpenRequest{
++				AssetID:         "full-song-" + tc.name,
++				Storefront:      "us",
++				RequireFullSong: true,
++			})
++			if len(tc.wantErrorParts) > 0 {
++				if err == nil {
++					t.Fatalf("Open succeeded with session %+v; want full-song rejection", session)
++				}
++				for _, part := range tc.wantErrorParts {
++					if !strings.Contains(err.Error(), part) {
++						t.Errorf("error %q does not contain %q", err, part)
++					}
++				}
++				return
++			}
++			if err != nil {
++				t.Fatalf("Open: %v", err)
++			}
++			if session.DurationMs != tc.wantCatalogMs {
++				t.Fatalf("session DurationMs = %d, want catalog %d", session.DurationMs, tc.wantCatalogMs)
++			}
++		})
++	}
++}
++
+ // A session reports the length its stream declares when that differs from the catalog's by more than the tolerance.
+ func TestOpenReportsStreamDuration(t *testing.T) {
+ 	for _, tc := range []struct {
+diff --git a/engine/core/playback/manager.go b/engine/core/playback/manager.go
+index 8107cdf..5806810 100644
+--- a/engine/core/playback/manager.go
++++ b/engine/core/playback/manager.go
+@@ -47,10 +47,15 @@ type OpenRequest struct {
+ 	Lossless          bool
+ 	HiRes             bool
+ 	Atmos             bool
++	PreferAtmos       bool
+ 	Video             bool
+ 	MVMaxHeight       int
+ 	MVAudioPriorities []string
+ 
++	// RequireFullSong rejects a resolved song whose media playlist has no
++	// declared duration or is materially shorter than the catalog duration.
++	RequireFullSong bool
++
+ 	// Private opens a session owned exclusively by the caller: it never reuses
+ 	// an existing session, never joins a concurrent Open for the same asset,
+ 	// and is never indexed for reuse by later Opens. Exports use this so their
+@@ -210,6 +215,17 @@ func (c countingHeaderWriter) SetHeader(k, v string) { c.hw.SetHeader(k, v) }
+ // Use this when the caller needs to configure the provider before wiring it
+ // (e.g. passing a CBCS socket address to apple.NewProviderWithCBCS).
+ func NewWithProvider(p media.Provider) *Manager {
++	return newWithProvider(p, true)
++}
++
++// NewWithProviderWithoutReaper returns a Manager backed by p without starting
++// the background expiry timer. Headless embedders that release sessions
++// explicitly use this to keep idle startup free of periodic work.
++func NewWithProviderWithoutReaper(p media.Provider) *Manager {
++	return newWithProvider(p, false)
++}
++
++func newWithProvider(p media.Provider, reapExpired bool) *Manager {
+ 	m := &Manager{
+ 		provider:       p,
+ 		stopReap:       make(chan struct{}),
+@@ -219,14 +235,18 @@ func NewWithProvider(p media.Provider) *Manager {
+ 		sessionToAsset: make(map[string]string),
+ 		inflight:       make(map[string]*openFlight),
+ 	}
+-	go m.reap()
++	if reapExpired {
++		go m.reap()
++	}
+ 	return m
+ }
+ 
+ // openKey builds a deduplication key from the fields that determine whether
+ // two Open calls would produce the same session type.
+ func openKey(req OpenRequest) string {
+-	flags := fmt.Sprintf("%v:%v:%v:%v:%d", req.Lossless, req.HiRes, req.Atmos, req.Video, req.MVMaxHeight)
++	flags := fmt.Sprintf("%v:%v:%v:%v:%v:%d:%v",
++		req.Lossless, req.HiRes, req.Atmos, req.PreferAtmos, req.Video,
++		req.MVMaxHeight, req.RequireFullSong)
+ 	return req.AssetID + ":" + req.Storefront + ":" + flags
+ }
+ 
+@@ -301,6 +321,7 @@ func (m *Manager) openDirect(ctx context.Context, req OpenRequest, assetKey stri
+ 		Lossless:          req.Lossless,
+ 		HiRes:             req.HiRes,
+ 		Atmos:             req.Atmos,
++		PreferAtmos:       req.PreferAtmos,
+ 		Video:             req.Video,
+ 		MVMaxHeight:       req.MVMaxHeight,
+ 		MVAudioPriorities: req.MVAudioPriorities,
+@@ -338,15 +359,25 @@ func (m *Manager) openDirect(ctx context.Context, req OpenRequest, assetKey stri
+ 	if err != nil {
+ 		return nil, err
+ 	}
+-	// Report the length the streams really have when it differs from the catalog's, so the player's progress,
+-	// fades and end-of-track handling match where the audio ends.
++	// The longest track is the presentation length. Songs normally have one
++	// audio track; music videos can have audio and video with slightly different
++	// declarations.
+ 	declared := 0
+ 	for _, st := range streams {
+ 		if st != nil && st.DurationMs > declared {
+ 			declared = st.DurationMs
+ 		}
+ 	}
+-	if d := media.ReconcileDurationMs(sess.DurationMs, declared); d != sess.DurationMs {
++	if req.RequireFullSong {
++		if ms.Kind != "song" {
++			return nil, fmt.Errorf("open %s: full song required, provider returned %q", req.AssetID, ms.Kind)
++		}
++		if err := validateFullSongDuration(sess.DurationMs, declared); err != nil {
++			return nil, fmt.Errorf("open %s: %w", req.AssetID, err)
++		}
++		// A validated full song keeps the catalog duration. Reconcile is only for
++		// presentation-length differences outside the full-song contract.
++	} else if d := media.ReconcileDurationMs(sess.DurationMs, declared); d != sess.DurationMs {
+ 		log.Printf("[playback] %s: stream is %dms, catalog says %dms: reporting the stream's", req.AssetID, d, sess.DurationMs)
+ 		sess.DurationMs = d
+ 	}
+@@ -364,6 +395,9 @@ func (m *Manager) openDirect(ctx context.Context, req OpenRequest, assetKey stri
+ 				sess.BitRate = track.BitRate
+ 				sess.ChannelCount = track.ChannelCount
+ 				sess.CodecMIMEType = track.CodecMIMEType
++				sess.Container = track.Container
++				sess.Extension = track.Extension
++				sess.SourceVersion = track.SourceVersion
+ 				sess.SpatialAudio = track.SpatialAudio
+ 			}
+ 			_, sess.Capabilities.Seekable = stream.Source.(pipeline.SeekableSource)
+@@ -381,6 +415,22 @@ func (m *Manager) openDirect(ctx context.Context, req OpenRequest, assetKey stri
+ 	return sess, nil
+ }
+ 
++// fullSongDurationToleranceMs absorbs playlist rounding, encoder padding and
++// trailing-silence differences. A source more than two seconds shorter is
++// treated as a trial, preview or truncated response.
++const fullSongDurationToleranceMs = 2000
++
++func validateFullSongDuration(catalogMs, sourceMs int) error {
++	if sourceMs <= 0 {
++		return fmt.Errorf("full song required: media source duration unavailable")
++	}
++	if catalogMs > 0 && sourceMs+fullSongDurationToleranceMs < catalogMs {
++		return fmt.Errorf("full song required: media source is %dms shorter than catalog (%dms vs %dms)",
++			catalogMs-sourceMs, sourceMs, catalogMs)
++	}
++	return nil
++}
++
+ // openTracks opens every track concurrently. A music video has an audio and a video
+ // track, each needing its own playlist round-trip, so opening them one after another
+ // added a full round-trip to every start. The results are returned in track order;
+diff --git a/engine/core/playback/manager_resume_test.go b/engine/core/playback/manager_resume_test.go
+index 4f54668..0d5a9c9 100644
+--- a/engine/core/playback/manager_resume_test.go
++++ b/engine/core/playback/manager_resume_test.go
+@@ -160,6 +160,30 @@ func TestOpen_DifferentCapabilitiesProduceSeparateSessions(t *testing.T) {
+ 	}
+ }
+ 
++func TestOpen_PreferencePolicyProducesSeparateSessions(t *testing.T) {
++	p := &stubProvider{}
++	m := newTestManager(p)
++
++	base := OpenRequest{AssetID: "track-prefer-atmos", Storefront: "us", Lossless: true}
++	prefer := base
++	prefer.PreferAtmos = true
++
++	regularSession, err := m.Open(context.Background(), base)
++	if err != nil {
++		t.Fatalf("Open regular: %v", err)
++	}
++	preferSession, err := m.Open(context.Background(), prefer)
++	if err != nil {
++		t.Fatalf("Open preferAtmos: %v", err)
++	}
++	if regularSession.ID == preferSession.ID {
++		t.Fatal("a non-Atmos preference session must not be reused for preferAtmos")
++	}
++	if p.calls != 2 {
++		t.Fatalf("provider calls = %d, want 2", p.calls)
++	}
++}
++
+ func TestOpen_ConcurrentDeduplication(t *testing.T) {
+ 	var callCount atomic.Int32
+ 	slow := &slowProvider{delay: 30 * time.Millisecond, counter: &callCount}
+diff --git a/engine/core/playback/session.go b/engine/core/playback/session.go
+index 8814617..a56dea7 100644
+--- a/engine/core/playback/session.go
++++ b/engine/core/playback/session.go
+@@ -21,6 +21,9 @@ type Session struct {
+ 	BitRate       int    `json:"bitRate,omitempty"`
+ 	ChannelCount  int    `json:"channelCount,omitempty"`
+ 	CodecMIMEType string `json:"codecMimeType,omitempty"`
++	Container     string `json:"container,omitempty"`
++	Extension     string `json:"extension,omitempty"`
++	SourceVersion string `json:"sourceVersion,omitempty"`
+ 	SpatialAudio  string `json:"spatialAudio,omitempty"` // "binaural" | "binaural-lossless"
+ 
+ 	Capabilities struct {

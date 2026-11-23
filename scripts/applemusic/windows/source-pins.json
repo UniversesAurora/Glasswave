@@ -4,7 +4,7 @@
     "repository": "https://github.com/silentone12725/apple-music-linux.git",
     "branch": "nightly",
     "commit": "960bd8a354e9370ca8ddad69c484d7cdc41125e0",
-    "patch": "scripts/applemusic/glasswave.patch"
+    "patchDir": "scripts/applemusic/patches"
   },
   "libhybrisWin": {
     "repository": "https://github.com/silentone12725/libhybris-win.git",

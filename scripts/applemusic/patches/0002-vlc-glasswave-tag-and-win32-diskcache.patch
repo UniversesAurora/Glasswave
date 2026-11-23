@@ -1,0 +1,107 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Glasswave <glasswave@local>
+Date: Mon, 23 Nov 2026 12:55:21 +0800
+Subject: [PATCH 2/8] vlc, diskcache: select nocgo VLC stub under glasswave tag
+ and fix Windows close test
+
+Exclude libvlc CGo bindings when building with -tags glasswave (Glasswave decodes inside foobar2000), and accept ERROR_INVALID_HANDLE on Windows in diskcache streaming close tests.
+
+diff --git a/engine/core/diskcache/streaming_close_test.go b/engine/core/diskcache/streaming_close_test.go
+index 9f1a38a..7c458c8 100644
+--- a/engine/core/diskcache/streaming_close_test.go
++++ b/engine/core/diskcache/streaming_close_test.go
+@@ -6,7 +6,9 @@ import (
+ 	"io"
+ 	"os"
+ 	"path/filepath"
++	"runtime"
+ 	"sync"
++	"syscall"
+ 	"testing"
+ )
+ 
+@@ -40,7 +42,8 @@ func checkCloseReferences(t *testing.T, sw *StreamingPutWriter, want int32) {
+ 	}
+ 	_, err := sw.file.Stat()
+ 	if want == 0 {
+-		if !errors.Is(err, os.ErrClosed) {
++		closedOnWindows := runtime.GOOS == "windows" && errors.Is(err, syscall.Errno(6))
++		if !errors.Is(err, os.ErrClosed) && !closedOnWindows {
+ 			t.Errorf("last reference did not close descriptor: %v", err)
+ 		}
+ 	} else if err != nil {
+diff --git a/engine/core/vlc/callbacks.go b/engine/core/vlc/callbacks.go
+index 3dfd6ee..5873ae2 100644
+--- a/engine/core/vlc/callbacks.go
++++ b/engine/core/vlc/callbacks.go
+@@ -1,3 +1,5 @@
++//go:build !glasswave
++
+ package vlc
+ 
+ /*
+diff --git a/engine/core/vlc/callbacks_eof_test.go b/engine/core/vlc/callbacks_eof_test.go
+index 9c41366..8f1a8b1 100644
+--- a/engine/core/vlc/callbacks_eof_test.go
++++ b/engine/core/vlc/callbacks_eof_test.go
+@@ -1,4 +1,4 @@
+-//go:build cgo
++//go:build cgo && !glasswave
+ 
+ package vlc
+ 
+diff --git a/engine/core/vlc/callbacks_test.go b/engine/core/vlc/callbacks_test.go
+index 2d2ffb0..20c6c18 100644
+--- a/engine/core/vlc/callbacks_test.go
++++ b/engine/core/vlc/callbacks_test.go
+@@ -1,3 +1,5 @@
++//go:build cgo && !glasswave
++
+ package vlc
+ 
+ import (
+diff --git a/engine/core/vlc/player.go b/engine/core/vlc/player.go
+index d647300..5437c60 100644
+--- a/engine/core/vlc/player.go
++++ b/engine/core/vlc/player.go
+@@ -1,3 +1,5 @@
++//go:build !glasswave
++
+ // Package vlc wraps libvlc to play a single HTTP audio stream.
+ // It is used for lossless/ALAC tracks that the browser's MSE cannot handle.
+ package vlc
+diff --git a/engine/core/vlc/player_nocgo.go b/engine/core/vlc/player_nocgo.go
+index 391e1bd..a077ad1 100644
+--- a/engine/core/vlc/player_nocgo.go
++++ b/engine/core/vlc/player_nocgo.go
+@@ -1,4 +1,4 @@
+-//go:build !cgo
++//go:build glasswave || !cgo
+ 
+ package vlc
+ 
+@@ -7,10 +7,10 @@ import (
+ 	"io"
+ )
+ 
+-// Without cgo there is no libvlc, so lossless (ALAC) playback is unavailable. The engine already treats a
+-// failed New as "no player" (APIServer.vlcPlayer stays nil), so AAC and music videos, which play in the
+-// browser, are unaffected. This file replaces player.go and callbacks.go only when cgo is off; the API
+-// below must match theirs.
++// Without cgo there is no libvlc. Glasswave builds deliberately select this
++// stub even when cgo is enabled because the C++ client owns decoding; only the
++// encoded ALAC bitstream crosses the API boundary. The API below must match
++// player.go and callbacks.go.
+ var ErrUnavailable = errors.New("vlc: built without cgo, lossless playback is unavailable")
+ 
+ // Source mirrors the interface in callbacks.go, which the engine's handlers implement.
+diff --git a/engine/core/vlc/sync_stutter_test.go b/engine/core/vlc/sync_stutter_test.go
+index a8e2812..e81311d 100644
+--- a/engine/core/vlc/sync_stutter_test.go
++++ b/engine/core/vlc/sync_stutter_test.go
+@@ -1,3 +1,5 @@
++//go:build cgo && !glasswave
++
+ package vlc
+ 
+ // TestVLCSyncStutter measures whether continuous libvlc_media_player_set_time

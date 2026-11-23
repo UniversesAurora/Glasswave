@@ -1,0 +1,3706 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Glasswave <glasswave@local>
+Date: Mon, 23 Nov 2026 12:55:24 +0800
+Subject: [PATCH 5/8] apple: add lossless/Atmos format selection policy and
+ uploaded library MP4 streaming
+
+Add ProviderConfig (DisableCBCSKeyPrewarm), strict format selection without silent lossless downgrade on transport errors, and streaming support for iCloud uploaded library tracks.
+
+diff --git a/engine/core/apple/apple_test.go b/engine/core/apple/apple_test.go
+index dd46e17..763885f 100644
+--- a/engine/core/apple/apple_test.go
++++ b/engine/core/apple/apple_test.go
+@@ -1,7 +1,13 @@
+ package apple
+ 
+ import (
++	"context"
++	"errors"
+ 	"testing"
++
++	"engine/core/hls"
++	"engine/core/media"
++	"engine/core/pipeline"
+ )
+ 
+ // White-box tests for the unexported helpers.
+@@ -39,6 +45,286 @@ func TestTraitSet_Empty(t *testing.T) {
+ 	}
+ }
+ 
++func TestExtractALACQuality_HiRes(t *testing.T) {
++	t.Parallel()
++	// An explicitly numeric trait is evidence and is normalised to Hz.
++	sr, bd := extractALACQuality([]string{"lossless-audio-192-24"})
++	if sr != 192000 || bd != 24 {
++		t.Errorf("got %d/%d want 192000/24", sr, bd)
++	}
++}
++
++func TestExtractALACQuality_DoesNotGuess(t *testing.T) {
++	t.Parallel()
++	// Generic Apple traits say only that lossless exists. Without a numeric
++	// quality in the trait or HLS group, both fields must stay unknown.
++	sr, bd := extractALACQuality([]string{"lossless", "atmos"})
++	if sr != 0 || bd != 0 {
++		t.Errorf("got %d/%d want 0/0 for generic traits", sr, bd)
++	}
++	sr, bd = extractALACQuality([]string{"hi-res-lossless", "lossless-96000"})
++	if sr != 0 || bd != 0 {
++		t.Errorf("got %d/%d want 0/0 for partial traits", sr, bd)
++	}
++	sr, bd = extractALACQuality([]string{"lossless-24000-16", "lossless-192000-32"})
++	if sr != 0 || bd != 0 {
++		t.Errorf("got %d/%d want 0/0 for unsupported qualities", sr, bd)
++	}
++	sr, bd = extractALACQuality([]string{"release-192-24"})
++	if sr != 0 || bd != 0 {
++		t.Errorf("got %d/%d want 0/0 for unrelated numeric metadata", sr, bd)
++	}
++}
++
++func TestSelectSongFormat_PrefersBestKnownALAC(t *testing.T) {
++	t.Parallel()
++	master := &hls.Master{Variants: []hls.Variant{
++		{URL: "unknown", Bandwidth: 9_000_000, Codecs: "alac"},
++		{URL: "44", Bandwidth: 900_000, Codecs: "alac", AudioSampleRate: 44100, AudioBitDepth: 16},
++		{URL: "192", Bandwidth: 4_600_000, Codecs: "alac", AudioSampleRate: 192000, AudioBitDepth: 24},
++		{URL: "aac", Bandwidth: 256_000, Codecs: "mp4a.40.2"},
++	}}
++	got, err := selectSongFormat(media.OpenRequest{Lossless: true, HiRes: true}, nil, master, nil)
++	if err != nil {
++		t.Fatal(err)
++	}
++	if got.Codec != pipeline.CodecALAC || got.PlaylistURL != "192" {
++		t.Fatalf("selected codec=%s url=%q, want best ALAC at 192", got.Codec, got.PlaylistURL)
++	}
++	if got.SampleRate != 192000 || got.BitDepth != 24 {
++		t.Fatalf("quality = %d/%d, want 192000/24", got.SampleRate, got.BitDepth)
++	}
++}
++
++func TestSelectSongFormat_LosslessTierCapsAt48k(t *testing.T) {
++	t.Parallel()
++	master := &hls.Master{Variants: []hls.Variant{
++		{URL: "44", Bandwidth: 900_000, Codecs: "alac", AudioSampleRate: 44100, AudioBitDepth: 16},
++		{URL: "48", Bandwidth: 1_200_000, Codecs: "alac", AudioSampleRate: 48000, AudioBitDepth: 24},
++		{URL: "192", Bandwidth: 4_600_000, Codecs: "alac", AudioSampleRate: 192000, AudioBitDepth: 24},
++		{URL: "aac", Bandwidth: 256_000, Codecs: "mp4a.40.2"},
++	}}
++	got, err := selectSongFormat(media.OpenRequest{Lossless: true, HiRes: false}, nil, master, nil)
++	if err != nil {
++		t.Fatal(err)
++	}
++	if got.Codec != pipeline.CodecALAC || got.PlaylistURL != "48" {
++		t.Fatalf("selected codec=%s url=%q, want ALAC at 48 kHz", got.Codec, got.PlaylistURL)
++	}
++	onlyHiRes := &hls.Master{Variants: []hls.Variant{
++		{URL: "96", Bandwidth: 2_300_000, Codecs: "alac", AudioSampleRate: 96000, AudioBitDepth: 24},
++	}}
++	got, err = selectSongFormat(media.OpenRequest{Lossless: true, HiRes: false}, nil, onlyHiRes, nil)
++	if err != nil || got.PlaylistURL != "96" {
++		t.Fatalf("hi-res-only master: url=%q err=%v, want the ALAC it has", got.PlaylistURL, err)
++	}
++}
++
++func TestSelectSongFormat_AllHLSFormatsWithoutALAC(t *testing.T) {
++	t.Parallel()
++	master := &hls.Master{Variants: []hls.Variant{
++		{URL: "aac", Bandwidth: 256_000, Codecs: "mp4a.40.2"},
++		{URL: "atmos", Bandwidth: 768_000, Codecs: "ec-3"},
++	}}
++	got, err := selectSongFormat(media.OpenRequest{Lossless: true, HiRes: true}, nil, master, nil)
++	if err != nil {
++		t.Fatal(err)
++	}
++	if got.Codec != pipeline.CodecAAC || !got.FallbackToAAC {
++		t.Fatalf("selected codec=%s fallback=%v, want explicit AAC fallback", got.Codec, got.FallbackToAAC)
++	}
++	if got.SampleRate != 0 || got.BitDepth != 0 {
++		t.Fatalf("AAC fallback fabricated ALAC quality %d/%d", got.SampleRate, got.BitDepth)
++	}
++}
++
++func TestSelectSongFormat_AdvertisedLosslessWithoutHLSFails(t *testing.T) {
++	t.Parallel()
++	for _, traits := range [][]string{
++		{"lossless"},
++		{"hi-res-lossless"},
++		{"lossless", "hi-res-lossless"},
++	} {
++		if _, err := selectSongFormat(
++			media.OpenRequest{Lossless: true, HiRes: true},
++			traitSet(traits),
++			nil,
++			traits,
++		); err == nil {
++			t.Fatalf("traits %v: expected an error when enhanced HLS is missing", traits)
++		}
++	}
++}
++
++func TestSelectSongFormat_UnsupportedALACIsNotTreatedAsNoALAC(t *testing.T) {
++	t.Parallel()
++	master := &hls.Master{Variants: []hls.Variant{
++		{
++			URL:                     "too-much",
++			Bandwidth:               9_000_000,
++			Codecs:                  "alac",
++			AudioGroup:              "audio-alac-stereo-384000-32",
++			AudioQualityUnsupported: true,
++		},
++		{URL: "aac", Bandwidth: 256_000, Codecs: "mp4a.40.2"},
++	}}
++	if _, err := selectSongFormat(media.OpenRequest{Lossless: true, HiRes: true}, nil, master, nil); err == nil {
++		t.Fatal("expected an error instead of treating a filtered ALAC tier as proof that ALAC is absent")
++	}
++}
++
++func TestSelectSongFormat_UnknownALACQualityStaysZero(t *testing.T) {
++	t.Parallel()
++	master := &hls.Master{Variants: []hls.Variant{
++		{URL: "alac", Bandwidth: 900_000, Codecs: "alac"},
++	}}
++	got, err := selectSongFormat(
++		media.OpenRequest{Lossless: true, HiRes: true},
++		map[string]bool{"lossless": true, "hi-res-lossless": true},
++		master,
++		[]string{"lossless", "hi-res-lossless"},
++	)
++	if err != nil {
++		t.Fatal(err)
++	}
++	if got.Codec != pipeline.CodecALAC {
++		t.Fatalf("codec = %s, want alac", got.Codec)
++	}
++	if got.SampleRate != 0 || got.BitDepth != 0 {
++		t.Fatalf("unknown ALAC quality was labelled %d/%d", got.SampleRate, got.BitDepth)
++	}
++}
++
++func TestSelectSongFormat_NoSilentAACDowngradeForAtmos(t *testing.T) {
++	t.Parallel()
++	master := &hls.Master{Variants: []hls.Variant{
++		{URL: "aac", Bandwidth: 256_000, Codecs: "mp4a.40.2"},
++		{URL: "alac", Bandwidth: 900_000, Codecs: "alac"},
++	}}
++	if _, err := selectSongFormat(media.OpenRequest{Atmos: true}, map[string]bool{"atmos": true}, master, nil); err == nil {
++		t.Fatal("expected an error instead of silently selecting AAC or ALAC for Atmos")
++	}
++}
++
++func TestSelectSongFormat_PreferAtmosUsesOnlyAdvertisedHLS(t *testing.T) {
++	t.Parallel()
++	master := &hls.Master{Variants: []hls.Variant{
++		{URL: "atmos", Bandwidth: 768_000, Codecs: "ec-3"},
++		{URL: "alac", Bandwidth: 4_600_000, Codecs: "alac", AudioSampleRate: 192000, AudioBitDepth: 24},
++	}}
++	got, err := selectSongFormat(media.OpenRequest{PreferAtmos: true, Lossless: true, HiRes: true},
++		map[string]bool{"atmos": true, "lossless": true}, master, nil)
++	if err != nil {
++		t.Fatal(err)
++	}
++	if got.Codec != pipeline.CodecAtmos || got.PlaylistURL != "atmos" {
++		t.Fatalf("selected codec=%s url=%q, want Atmos", got.Codec, got.PlaylistURL)
++	}
++}
++
++func TestSelectSongFormat_PreferAtmosFallsBackOnlyWhenAbsent(t *testing.T) {
++	t.Parallel()
++	masterWithALAC := &hls.Master{Variants: []hls.Variant{
++		{URL: "aac", Bandwidth: 256_000, Codecs: "mp4a.40.2"},
++		{URL: "alac", Bandwidth: 4_600_000, Codecs: "alac", AudioSampleRate: 192000, AudioBitDepth: 24},
++	}}
++	got, err := selectSongFormat(media.OpenRequest{PreferAtmos: true, Lossless: true, HiRes: true},
++		map[string]bool{"atmos": true, "lossless": true}, masterWithALAC, nil)
++	if err != nil {
++		t.Fatal(err)
++	}
++	if got.Codec != pipeline.CodecALAC || got.PlaylistURL != "alac" {
++		t.Fatalf("selected codec=%s url=%q, want highest ALAC", got.Codec, got.PlaylistURL)
++	}
++
++	masterWithEC3 := &hls.Master{Variants: []hls.Variant{
++		{URL: "not-allowed-without-trait", Bandwidth: 768_000, Codecs: "ec-3"},
++		{URL: "alac", Bandwidth: 4_600_000, Codecs: "alac", AudioSampleRate: 192000, AudioBitDepth: 24},
++	}}
++	got, err = selectSongFormat(media.OpenRequest{PreferAtmos: true, Lossless: true, HiRes: true},
++		map[string]bool{"lossless": true}, masterWithEC3, nil)
++	if err != nil {
++		t.Fatal(err)
++	}
++	if got.Codec != pipeline.CodecALAC {
++		t.Fatalf("preferAtmos without an Atmos trait selected %s, want ALAC", got.Codec)
++	}
++
++	got, err = selectSongFormat(media.OpenRequest{PreferAtmos: true}, nil, nil, nil)
++	if err != nil {
++		t.Fatal(err)
++	}
++	if got.Codec != pipeline.CodecAAC || got.FallbackToAAC {
++		t.Fatalf("absent Atmos with no lossless request = %s fallback=%v, want AAC", got.Codec, got.FallbackToAAC)
++	}
++}
++
++func TestSelectSongFormat_PreferAtmosDoesNotHideUnsupportedEC3(t *testing.T) {
++	t.Parallel()
++	master := &hls.Master{Variants: []hls.Variant{{
++		URL:                     "unsupported",
++		Bandwidth:               768_000,
++		Codecs:                  "ec-3",
++		AudioQualityUnsupported: true,
++	}}}
++	if _, err := selectSongFormat(media.OpenRequest{PreferAtmos: true},
++		map[string]bool{"atmos": true}, master, nil); err == nil {
++		t.Fatal("expected unsupported EC-3 to fail instead of falling back")
++	}
++}
++
++func TestLoadSongMaster_PreferAtmosTransportErrorIsFatal(t *testing.T) {
++	t.Parallel()
++	called := false
++	p := &appleMusicProvider{openMaster: func(context.Context, string) (*hls.Master, error) {
++		called = true
++		return nil, errors.New("network unavailable")
++	}}
++	if _, err := p.loadSongMaster(context.Background(),
++		media.OpenRequest{PreferAtmos: true},
++		map[string]bool{"atmos": true},
++		"https://example.invalid/master.m3u8"); err == nil {
++		t.Fatal("expected HLS transport error to remain fatal")
++	}
++	if !called {
++		t.Fatal("expected HLS master opener to be called")
++	}
++}
++
++func TestLoadSongMaster_PreferAtmosSkipsFetchWithoutTrait(t *testing.T) {
++	t.Parallel()
++	called := false
++	p := &appleMusicProvider{openMaster: func(context.Context, string) (*hls.Master, error) {
++		called = true
++		return nil, errors.New("must not call")
++	}}
++	master, err := p.loadSongMaster(context.Background(),
++		media.OpenRequest{PreferAtmos: true},
++		map[string]bool{"lossless": true},
++		"https://example.invalid/master.m3u8")
++	if err != nil {
++		t.Fatal(err)
++	}
++	if master != nil || called {
++		t.Fatal("preferAtmos without an Atmos trait must not fetch an HLS master")
++	}
++}
++
++func TestLoadSongMaster_PreferAtmosAllowsFallbackWhenMasterURLIsAbsent(t *testing.T) {
++	t.Parallel()
++	p := &appleMusicProvider{openMaster: func(context.Context, string) (*hls.Master, error) {
++		t.Fatal("missing enhanced HLS URL must not invoke the opener")
++		return nil, nil
++	}}
++	master, err := p.loadSongMaster(context.Background(),
++		media.OpenRequest{PreferAtmos: true},
++		map[string]bool{"atmos": true},
++		"")
++	if err != nil || master != nil {
++		t.Fatalf("master=%v err=%v, want clean absence for fallback", master, err)
++	}
++}
++
+ func TestFmtArtwork(t *testing.T) {
+ 	t.Parallel()
+ 	got := fmtArtwork("https://art/{w}x{h}.jpg", 500)
+diff --git a/engine/core/apple/provider.go b/engine/core/apple/provider.go
+index 74e2c5f..875d441 100644
+--- a/engine/core/apple/provider.go
++++ b/engine/core/apple/provider.go
+@@ -80,6 +80,13 @@ type AccountTokenSource interface {
+ 	DecryptItunSamples(ctx context.Context, adamID uint64, samples [][]byte) ([][]byte, error)
+ }
+ 
++// ProviderConfig controls optional latency optimisations. The defaults keep
++// the interactive player's existing behaviour; headless embedders can disable
++// speculative work that would otherwise fetch a FairPlay key before playback.
++type ProviderConfig struct {
++	DisableCBCSKeyPrewarm bool
++}
++
+ // NewProviderWithCBCS returns a media.Provider backed by Apple Music with
+ // CBCS/FairPlay decryption enabled for ALAC and Atmos tracks.
+ //
+@@ -91,13 +98,28 @@ type AccountTokenSource interface {
+ // from the DRM backend instead of web MusicKit tokens — fixing auth on
+ // play.music.apple.com/subDownload.
+ func NewProviderWithCBCS(dialer fairplay.CBCSDialer, acct AccountTokenSource) media.Provider {
+-	return &appleMusicProvider{lp: fairplay.New(), cbcsDialer: dialer, acct: acct}
++	return NewProviderWithCBCSConfig(dialer, acct, ProviderConfig{})
++}
++
++// NewProviderWithCBCSConfig is NewProviderWithCBCS with explicit optional
++// optimisations.
++func NewProviderWithCBCSConfig(dialer fairplay.CBCSDialer, acct AccountTokenSource, cfg ProviderConfig) media.Provider {
++	return &appleMusicProvider{
++		lp:                    fairplay.New(),
++		cbcsDialer:            dialer,
++		acct:                  acct,
++		disableCBCSKeyPrewarm: cfg.DisableCBCSKeyPrewarm,
++		uploaded:              newUploadedAudioAdapter(),
++	}
+ }
+ 
+ type appleMusicProvider struct {
+-	lp         fairplay.LicenseProvider
+-	cbcsDialer fairplay.CBCSDialer // nil = CBCS disabled
+-	acct       AccountTokenSource  // nil = use web MusicKit tokens for subDownload
++	lp                    fairplay.LicenseProvider
++	cbcsDialer            fairplay.CBCSDialer // nil = CBCS disabled
++	acct                  AccountTokenSource  // nil = use web MusicKit tokens for subDownload
++	disableCBCSKeyPrewarm bool
++	uploaded              *uploadedAudioAdapter
++	openMaster            func(context.Context, string) (*hls.Master, error)
+ }
+ 
+ func (p *appleMusicProvider) Open(ctx context.Context, req media.OpenRequest) (*media.Session, error) {
+@@ -110,6 +132,9 @@ func (p *appleMusicProvider) Open(ctx context.Context, req media.OpenRequest) (*
+ // ── Song ──────────────────────────────────────────────────────────────────────
+ 
+ func (p *appleMusicProvider) openSong(ctx context.Context, req media.OpenRequest) (*media.Session, error) {
++	if strings.HasPrefix(req.AssetID, "i.") {
++		return p.openUploadedSong(ctx, req)
++	}
+ 	token := strings.TrimPrefix(req.Token, "Bearer ")
+ 	if token == "" {
+ 		var err error
+@@ -130,25 +155,27 @@ func (p *appleMusicProvider) openSong(ctx context.Context, req media.OpenRequest
+ 	}
+ 	a := song.Data[0].Attributes
+ 
+-	if a.ExtendedAssetUrls.EnhancedHls == "" {
+-		return nil, fmt.Errorf("no HLS URL for track %s", req.AssetID)
+-	}
+-
+ 	traits := traitSet(a.AudioTraits)
+-	var codec pipeline.Codec
+-	var hlsFilter string
+-	var sr, bd int
+-
+-	switch {
+-	case req.Atmos && traits["atmos"]:
+-		codec, hlsFilter = pipeline.CodecAtmos, "ec-3"
+-	case req.Lossless && (traits["lossless"] || traits["hi-res-lossless"]):
+-		codec, hlsFilter = pipeline.CodecALAC, "alac"
+-	default:
+-		codec, hlsFilter = pipeline.CodecAAC, "mp4a.40.2"
++	// Fetch the enhanced master only when this request can use an HLS audio
++	// format. A transport or HTTP failure is fatal: falling back after it would
++	// silently downgrade a requested lossless stream because Apple was briefly
++	// unavailable.
++	master, err := p.loadSongMaster(ctx, req, traits, a.ExtendedAssetUrls.EnhancedHls)
++	if err != nil {
++		return nil, err
++	}
++	format, err := selectSongFormat(req, traits, master, a.AudioTraits)
++	if err != nil {
++		return nil, err
++	}
++	codec := format.Codec
++	sr, bd := format.SampleRate, format.BitDepth
++	if format.FallbackToAAC {
++		log.Printf("[apple] %s: lossless requested, but the catalog/HLS master has no ALAC variant; using AAC",
++			req.AssetID)
+ 	}
+ 
+-	var playlistURL string
++	playlistURL := format.PlaylistURL
+ 	if codec == pipeline.CodecAAC {
+ 		// Standard AAC content (256 kbps) is CTR-encrypted in the webplayback
+ 		// API's "28:ctrp256" asset.  Those media playlists carry
+@@ -160,24 +187,6 @@ func (p *appleMusicProvider) openSong(ctx context.Context, req media.OpenRequest
+ 		if err != nil {
+ 			return nil, fmt.Errorf("webplayback AAC asset: %w", err)
+ 		}
+-	} else {
+-		master, err := hls.OpenMaster(ctx, a.ExtendedAssetUrls.EnhancedHls)
+-		if err != nil {
+-			return nil, fmt.Errorf("open master playlist: %w", err)
+-		}
+-		if codec == pipeline.CodecALAC {
+-			// The playlist states each rendition's real format; report that, not a guess from the catalog traits.
+-			v, ok := master.SelectALAC(req.HiRes)
+-			if !ok {
+-				return nil, fmt.Errorf("no HLS variant matching codec %q", hlsFilter)
+-			}
+-			playlistURL, sr, bd = v.URL, v.SampleRate, v.BitDepth
+-		} else {
+-			playlistURL = master.SelectByCodec(hlsFilter)
+-			if playlistURL == "" {
+-				return nil, fmt.Errorf("no HLS variant matching codec %q", hlsFilter)
+-			}
+-		}
+ 	}
+ 
+ 	lp := p.lp
+@@ -220,6 +229,27 @@ func (p *appleMusicProvider) openSong(ctx context.Context, req media.OpenRequest
+ 	}, nil
+ }
+ 
++func (p *appleMusicProvider) loadSongMaster(
++	ctx context.Context,
++	req media.OpenRequest,
++	traits map[string]bool,
++	url string,
++) (*hls.Master, error) {
++	needsMaster := req.Atmos || req.Lossless || (req.PreferAtmos && traits["atmos"])
++	if !needsMaster || url == "" {
++		return nil, nil
++	}
++	openMaster := p.openMaster
++	if openMaster == nil {
++		openMaster = hls.OpenMaster
++	}
++	master, err := openMaster(ctx, url)
++	if err != nil {
++		return nil, fmt.Errorf("open audio master playlist: %w", err)
++	}
++	return master, nil
++}
++
+ // audioFormatFields returns (bitRate bps, channelCount, codecMIMEType) for the
+ // given codec.  Values are Apple Music defaults; they are informational only and
+ // never used in the decryption path.
+@@ -618,7 +648,7 @@ func (p *appleMusicProvider) makeCBCSTrackOpener(
+ 		// Android SQLite cache by the time the CBCS pipeline needs it.  This
+ 		// overlaps the ~2 s hybris key fetch with the ~2 s CDN init-segment
+ 		// download, cutting ALAC start latency roughly in half for first plays.
+-		if firstKey := fairplay.FirstAudioKeyURI(cbcsMedia.KeyURIs); firstKey != "" {
++		if firstKey := fairplay.FirstAudioKeyURI(cbcsMedia.KeyURIs); firstKey != "" && !p.disableCBCSKeyPrewarm {
+ 			go fairplay.WarmCBCSKey(context.Background(), dialer, assetID, firstKey)
+ 		}
+ 		// The file's own length wins over the catalog's: it is stored in the moov (the player reports it) and is
+@@ -732,6 +762,115 @@ func traitSet(traits []string) map[string]bool {
+ 	return m
+ }
+ 
++func extractALACQuality(traits []string) (sampleRate, bitDepth int) {
++	for _, t := range traits {
++		lower := strings.ToLower(t)
++		if !strings.Contains(lower, "lossless") && !strings.Contains(lower, "alac") {
++			continue
++		}
++		parts := strings.FieldsFunc(t, func(r rune) bool { return r == '-' || r == '_' })
++		for i := 0; i+1 < len(parts); i++ {
++			rate, rateErr := strconv.Atoi(parts[i])
++			depth, depthErr := strconv.Atoi(parts[i+1])
++			if rateErr != nil || depthErr != nil {
++				continue
++			}
++			if rate == 44 || rate == 48 || rate == 88 || rate == 96 || rate == 176 || rate == 192 {
++				rate *= 1000
++			}
++			switch rate {
++			case 44100, 48000, 88200, 96000, 176400, 192000:
++			default:
++				continue
++			}
++			if depth != 16 && depth != 24 {
++				continue
++			}
++			return rate, depth
++		}
++	}
++	return 0, 0
++}
++
++type songFormat struct {
++	Codec         pipeline.Codec
++	PlaylistURL   string
++	SampleRate    int
++	BitDepth      int
++	FallbackToAAC bool
++}
++
++// selectSongFormat chooses from evidence present in the catalog response and
++// the successfully parsed HLS master. A nil master means the catalog supplied
++// no enhanced HLS URL. In that one content-level case a requested lossless
++// format may explicitly fall back to AAC; callers must not pass nil after an
++// HLS fetch error.
++func selectSongFormat(req media.OpenRequest, traits map[string]bool, master *hls.Master, audioTraits []string) (songFormat, error) {
++	if req.Atmos {
++		if !traits["atmos"] {
++			return songFormat{}, fmt.Errorf("atmos requested, but the catalog says the track has no Atmos format")
++		}
++		if master == nil {
++			return songFormat{}, fmt.Errorf("atmos requested, but the catalog supplied no enhanced HLS URL")
++		}
++		v, ok := master.SelectVariantByCodec("ec-3")
++		if !ok {
++			return songFormat{}, fmt.Errorf("atmos requested, but the HLS master has no ec-3 variant")
++		}
++		return songFormat{
++			Codec:       pipeline.CodecAtmos,
++			PlaylistURL: v.URL,
++			SampleRate:  v.AudioSampleRate,
++			BitDepth:    v.AudioBitDepth,
++		}, nil
++	}
++
++	if req.PreferAtmos && traits["atmos"] && master != nil {
++		if v, ok := master.SelectVariantByCodec("ec-3"); ok {
++			return songFormat{
++				Codec:       pipeline.CodecAtmos,
++				PlaylistURL: v.URL,
++				SampleRate:  v.AudioSampleRate,
++				BitDepth:    v.AudioBitDepth,
++			}, nil
++		}
++		if master.HasCodec("ec-3") {
++			return songFormat{}, fmt.Errorf("atmos preferred, but every EC-3 variant is unsupported")
++		}
++	}
++
++	if req.Lossless && master != nil {
++		v, ok := master.SelectVariantByCodec("alac")
++		if !req.HiRes {
++			// Apple Music's "Lossless" tier: the best ALAC up to 48 kHz. A master with
++			// only hi-res (or unlabelled) ALAC variants keeps the best one it has.
++			if capped, okCapped := master.SelectVariantByCodecUpTo("alac", 48000); okCapped {
++				v, ok = capped, true
++			}
++		}
++		if ok {
++			sr, bd := v.AudioSampleRate, v.AudioBitDepth
++			if sr == 0 && bd == 0 {
++				sr, bd = extractALACQuality(audioTraits)
++			}
++			return songFormat{
++				Codec:       pipeline.CodecALAC,
++				PlaylistURL: v.URL,
++				SampleRate:  sr,
++				BitDepth:    bd,
++			}, nil
++		}
++		if master.HasCodec("alac") {
++			return songFormat{}, fmt.Errorf("lossless requested, but every ALAC variant is outside the supported 24-bit/192kHz ceiling")
++		}
++	}
++	if req.Lossless && master == nil && (traits["lossless"] || traits["hi-res-lossless"]) {
++		return songFormat{}, fmt.Errorf("lossless requested and advertised, but the catalog supplied no enhanced HLS URL")
++	}
++
++	return songFormat{Codec: pipeline.CodecAAC, FallbackToAAC: req.Lossless}, nil
++}
++
+ func fmtArtwork(template string, size int) string {
+ 	s := strconv.Itoa(size)
+ 	return strings.ReplaceAll(strings.ReplaceAll(template, "{w}", s), "{h}", s)
+diff --git a/engine/core/apple/uploaded.go b/engine/core/apple/uploaded.go
+new file mode 100644
+index 0000000..e7207c3
+--- /dev/null
++++ b/engine/core/apple/uploaded.go
+@@ -0,0 +1,932 @@
++package apple
++
++import (
++	"bytes"
++	"context"
++	"encoding/json"
++	"errors"
++	"fmt"
++	"io"
++	"math"
++	"net/http"
++	"net/url"
++	"strconv"
++	"strings"
++	"time"
++
++	"github.com/itouakirai/mp4ff/mp4"
++
++	"engine/core/media"
++	"engine/core/pipeline"
++	"engine/utils/ampapi"
++)
++
++const (
++	uploadedWebPlaybackURL = "https://play.music.apple.com/WebObjects/MZPlay.woa/wa/webPlayback"
++
++	uploadedJSONLimit       = 1 << 20
++	uploadedProbeLimit      = 256 << 10
++	uploadedMoovLimit       = 8 << 20
++	uploadedAssetSizeLimit  = int64(8 << 30)
++	uploadedDurationSlackMs = int64(2000)
++)
++
++type uploadedAudioAdapter struct {
++	apiClient    *http.Client
++	streamClient *http.Client
++}
++
++func newUploadedAudioAdapter() *uploadedAudioAdapter {
++	return &uploadedAudioAdapter{
++		apiClient: &http.Client{
++			Timeout:       30 * time.Second,
++			CheckRedirect: noRedirect,
++		},
++		streamClient: &http.Client{
++			Transport: &http.Transport{
++				Proxy:                 http.ProxyFromEnvironment,
++				ResponseHeaderTimeout: 30 * time.Second,
++				IdleConnTimeout:       30 * time.Second,
++				MaxIdleConns:          8,
++				MaxIdleConnsPerHost:   4,
++			},
++			CheckRedirect: noRedirect,
++		},
++	}
++}
++
++func noRedirect(*http.Request, []*http.Request) error {
++	return http.ErrUseLastResponse
++}
++
++type uploadedWebPlaybackResponse struct {
++	FailureType    string `json:"failureType"`
++	FailureMessage string `json:"failureMessage"`
++	SongList       []struct {
++		SongID                 any                        `json:"songId"`
++		NeedsPlaybackReporting bool                       `json:"needsPlaybackReporting"`
++		Assets                 []uploadedWebPlaybackAsset `json:"assets"`
++	} `json:"songList"`
++}
++
++type uploadedWebPlaybackAsset struct {
++	URL      string                      `json:"URL"`
++	Flavor   string                      `json:"flavor"`
++	Metadata uploadedWebPlaybackMetadata `json:"metadata"`
++}
++
++type uploadedWebPlaybackMetadata struct {
++	Duration      int64  `json:"duration"`
++	FileExtension string `json:"fileExtension"`
++	SampleRate    int    `json:"sampleRate"`
++	BitRate       int    `json:"bitRate"`
++	BitDepth      int    `json:"bitDepth"`
++	ChannelCount  int    `json:"channelCount"`
++	ItemName      string `json:"itemName"`
++	ArtistName    string `json:"artistName"`
++	AlbumName     string `json:"albumName"`
++	PlaylistName  string `json:"playlistName"`
++	Genre         string `json:"genre"`
++}
++
++type uploadedAudioInfo struct {
++	Codec        pipeline.Codec
++	Container    string
++	Extension    string
++	MIMEType     string
++	SampleRate   int
++	BitDepth     int
++	BitRate      int
++	ChannelCount int
++	DurationMs   int
++	mp4Plan      *uploadedMP4Plan
++}
++
++func (p *appleMusicProvider) openUploadedSong(ctx context.Context, req media.OpenRequest) (*media.Session, error) {
++	if !strings.HasPrefix(req.AssetID, "i.") {
++		return nil, fmt.Errorf("uploaded library fallback requires an i.* library id")
++	}
++	token, mut, err := p.resolveUploadedCredentials(ctx, req)
++	if err != nil {
++		return nil, err
++	}
++	adapter := p.uploaded
++	if adapter == nil {
++		adapter = newUploadedAudioAdapter()
++	}
++
++	asset, err := adapter.fetchUploadedAsset(ctx, req.AssetID, token, mut)
++	if err != nil {
++		return nil, fmt.Errorf("uploaded library lookup: %w", err)
++	}
++	info, err := adapter.probeUploadedAudio(ctx, &asset)
++	if err != nil {
++		return nil, fmt.Errorf("uploaded library source: %w", err)
++	}
++	if info.DurationMs <= 0 {
++		return nil, fmt.Errorf("uploaded library source has no positive duration")
++	}
++
++	return &media.Session{
++		Kind: "song",
++		Metadata: media.Metadata{
++			Title:      strings.TrimSpace(asset.metadata.ItemName),
++			ArtistName: strings.TrimSpace(asset.metadata.ArtistName),
++			AlbumName:  firstNonempty(asset.metadata.AlbumName, asset.metadata.PlaylistName),
++			DurationMs: info.DurationMs,
++		},
++		Tracks: []media.Track{{
++			Kind:          pipeline.KindAudio,
++			Codec:         info.Codec,
++			SampleRate:    info.SampleRate,
++			BitDepth:      info.BitDepth,
++			BitRate:       info.BitRate,
++			ChannelCount:  info.ChannelCount,
++			CodecMIMEType: info.MIMEType,
++			Container:     info.Container,
++			Extension:     info.Extension,
++			SourceVersion: uploadedAudioSourceVersion(info),
++			Open: func(ctx context.Context) (*pipeline.Stream, error) {
++				return &pipeline.Stream{
++					Source: &uploadedAudioSource{
++						client:  adapter.streamClient,
++						url:     asset.url,
++						length:  asset.length,
++						mp4Plan: info.mp4Plan,
++					},
++					Kind:       pipeline.KindAudio,
++					Codec:      info.Codec,
++					DurationMs: info.DurationMs,
++				}, nil
++			},
++		}},
++	}, nil
++}
++
++func (p *appleMusicProvider) resolveUploadedCredentials(ctx context.Context, req media.OpenRequest) (token, mut string, err error) {
++	token = strings.TrimPrefix(strings.TrimSpace(req.Token), "Bearer ")
++	mut = strings.TrimSpace(req.MUT)
++	if (token == "" || mut == "") && p.acct != nil {
++		devToken, musicToken, accountErr := p.acct.GetMusicToken(ctx)
++		if token == "" {
++			token = strings.TrimPrefix(strings.TrimSpace(devToken), "Bearer ")
++		}
++		if mut == "" {
++			mut = strings.TrimSpace(musicToken)
++		}
++		if token == "" && mut == "" && accountErr != nil {
++			err = accountErr
++		}
++	}
++	if token == "" {
++		token, err = ampapi.GetToken()
++		if err != nil {
++			return "", "", fmt.Errorf("Apple developer token unavailable: %w", err)
++		}
++	}
++	if mut == "" {
++		if err != nil {
++			return "", "", fmt.Errorf("Apple Music account is not signed in: %w", err)
++		}
++		return "", "", fmt.Errorf("Apple Music account is not signed in")
++	}
++	return token, mut, nil
++}
++
++type resolvedUploadedAsset struct {
++	url      string
++	length   int64
++	metadata uploadedWebPlaybackMetadata
++}
++
++func (a *uploadedAudioAdapter) fetchUploadedAsset(
++	ctx context.Context,
++	libraryID, token, mut string,
++) (resolvedUploadedAsset, error) {
++	body, err := json.Marshal(map[string]any{
++		"universalLibraryId": libraryID,
++		"isLibrary":          true,
++	})
++	if err != nil {
++		return resolvedUploadedAsset{}, err
++	}
++	req, err := http.NewRequestWithContext(ctx, http.MethodPost, uploadedWebPlaybackURL, bytes.NewReader(body))
++	if err != nil {
++		return resolvedUploadedAsset{}, err
++	}
++	req.Header.Set("Content-Type", "application/json")
++	req.Header.Set("Authorization", "Bearer "+token)
++	req.Header.Set("x-apple-music-user-token", mut)
++	req.Header.Set("Origin", "https://music.apple.com")
++	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
++
++	resp, err := a.apiClient.Do(req)
++	if err != nil {
++		return resolvedUploadedAsset{}, fmt.Errorf("webPlayback request failed: %w", sanitizedTransportError(err))
++	}
++	defer resp.Body.Close()
++	if resp.StatusCode != http.StatusOK {
++		return resolvedUploadedAsset{}, fmt.Errorf("webPlayback HTTP %d", resp.StatusCode)
++	}
++	raw, err := readBounded(resp.Body, uploadedJSONLimit)
++	if err != nil {
++		return resolvedUploadedAsset{}, err
++	}
++	var payload uploadedWebPlaybackResponse
++	if err := json.Unmarshal(raw, &payload); err != nil {
++		return resolvedUploadedAsset{}, fmt.Errorf("parse webPlayback response: %w", err)
++	}
++	if payload.FailureType != "" || payload.FailureMessage != "" {
++		return resolvedUploadedAsset{}, fmt.Errorf("webPlayback refused the library item")
++	}
++	if len(payload.SongList) != 1 {
++		return resolvedUploadedAsset{}, fmt.Errorf("webPlayback returned %d songs, want 1", len(payload.SongList))
++	}
++	song := payload.SongList[0]
++	if !isNegativeOne(song.SongID) {
++		return resolvedUploadedAsset{}, fmt.Errorf("library item resolved to catalog playback; use its catalog id")
++	}
++	if song.NeedsPlaybackReporting {
++		return resolvedUploadedAsset{}, fmt.Errorf("library item unexpectedly requires playback reporting")
++	}
++	if len(song.Assets) != 1 {
++		return resolvedUploadedAsset{}, fmt.Errorf("library item has %d assets, want exactly one original asset", len(song.Assets))
++	}
++	asset := song.Assets[0]
++	if strings.TrimSpace(asset.Flavor) != "" {
++		return resolvedUploadedAsset{}, fmt.Errorf("library item exposed a DRM flavor instead of an original upload")
++	}
++	if err := validateUploadedAssetURL(asset.URL); err != nil {
++		return resolvedUploadedAsset{}, err
++	}
++	if asset.Metadata.Duration <= 0 {
++		return resolvedUploadedAsset{}, fmt.Errorf("library asset metadata has no positive duration")
++	}
++	return resolvedUploadedAsset{
++		url:      asset.URL,
++		metadata: asset.Metadata,
++	}, nil
++}
++
++func isNegativeOne(v any) bool {
++	switch value := v.(type) {
++	case float64:
++		return value == -1
++	case json.Number:
++		return value.String() == "-1"
++	case string:
++		return strings.TrimSpace(value) == "-1"
++	case int:
++		return value == -1
++	case int64:
++		return value == -1
++	default:
++		return false
++	}
++}
++
++func validateUploadedAssetURL(raw string) error {
++	u, err := url.Parse(strings.TrimSpace(raw))
++	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil ||
++		u.Opaque != "" || u.Fragment != "" {
++		return fmt.Errorf("library asset URL is invalid")
++	}
++	host := strings.ToLower(strings.TrimSuffix(u.Hostname(), "."))
++	if !strings.HasSuffix(host, ".blobstore.apple.com") {
++		return fmt.Errorf("library asset host is not an Apple blobstore")
++	}
++	return nil
++}
++
++func readBounded(r io.Reader, limit int64) ([]byte, error) {
++	body, err := io.ReadAll(io.LimitReader(r, limit+1))
++	if err != nil {
++		return nil, err
++	}
++	if int64(len(body)) > limit {
++		return nil, fmt.Errorf("response body exceeded %d bytes", limit)
++	}
++	return body, nil
++}
++
++type uploadedRangeResponse struct {
++	body  []byte
++	total int64
++}
++
++func (a *uploadedAudioAdapter) fetchUploadedRange(
++	ctx context.Context,
++	rawURL string,
++	start, end int64,
++) (uploadedRangeResponse, error) {
++	if start < 0 || end < start {
++		return uploadedRangeResponse{}, fmt.Errorf("invalid byte range")
++	}
++	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
++	if err != nil {
++		return uploadedRangeResponse{}, err
++	}
++	req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", start, end))
++	resp, err := a.apiClient.Do(req)
++	if err != nil {
++		return uploadedRangeResponse{}, fmt.Errorf("library asset probe failed: %w", sanitizedTransportError(err))
++	}
++	defer resp.Body.Close()
++	if resp.StatusCode != http.StatusPartialContent && resp.StatusCode != http.StatusOK {
++		return uploadedRangeResponse{}, fmt.Errorf("library asset probe HTTP %d", resp.StatusCode)
++	}
++	body, err := readBounded(resp.Body, end-start+1)
++	if err != nil {
++		return uploadedRangeResponse{}, err
++	}
++	total, err := contentRangeTotal(resp.Header.Get("Content-Range"), resp.StatusCode, start, int64(len(body)))
++	if err != nil {
++		if resp.StatusCode == http.StatusPartialContent {
++			return uploadedRangeResponse{}, err
++		}
++		if resp.ContentLength >= 0 {
++			total = resp.ContentLength
++		}
++	}
++	return uploadedRangeResponse{
++		body:  body,
++		total: total,
++	}, nil
++}
++
++func contentRangeTotal(value string, status int, start, got int64) (int64, error) {
++	if status == http.StatusOK {
++		return 0, nil
++	}
++	if !strings.HasPrefix(value, "bytes ") {
++		return 0, fmt.Errorf("library asset response has no Content-Range total")
++	}
++	rangePart, totalPart, ok := strings.Cut(strings.TrimPrefix(value, "bytes "), "/")
++	if !ok || totalPart == "*" {
++		return 0, fmt.Errorf("library asset response has unknown Content-Range total")
++	}
++	fromPart, toPart, ok := strings.Cut(rangePart, "-")
++	if !ok {
++		return 0, fmt.Errorf("library asset response has invalid Content-Range")
++	}
++	from, err1 := strconv.ParseInt(fromPart, 10, 64)
++	to, err2 := strconv.ParseInt(toPart, 10, 64)
++	total, err3 := strconv.ParseInt(totalPart, 10, 64)
++	if err1 != nil || err2 != nil || err3 != nil || from != start || to-from+1 != got ||
++		total <= 0 || total > uploadedAssetSizeLimit {
++		return 0, fmt.Errorf("library asset response has invalid Content-Range")
++	}
++	return total, nil
++}
++
++func (a *uploadedAudioAdapter) probeUploadedAudio(
++	ctx context.Context,
++	asset *resolvedUploadedAsset,
++) (uploadedAudioInfo, error) {
++	ext := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(asset.metadata.FileExtension)), ".")
++	if ext == "m4a" || ext == "mp4" {
++		plan, err := planUploadedMP4Clients(ctx, a.apiClient, a.streamClient, asset.url)
++		if err != nil {
++			return uploadedAudioInfo{}, err
++		}
++		info, duration, err := audioInfoFromMoov(plan.moov)
++		if err != nil {
++			return uploadedAudioInfo{}, err
++		}
++		if duration > 0 && int64(absInt(duration-int(asset.metadata.Duration))) > uploadedDurationSlackMs {
++			return uploadedAudioInfo{}, fmt.Errorf("MP4 duration disagrees with asset metadata")
++		}
++		if info.DurationMs <= 0 {
++			info.DurationMs = duration
++		}
++		if info.DurationMs <= 0 {
++			info.DurationMs = int(asset.metadata.Duration)
++		}
++		if info.DurationMs <= 0 {
++			return uploadedAudioInfo{}, fmt.Errorf("no positive duration")
++		}
++		if err := validateUploadedQuality(asset.metadata, info); err != nil {
++			return uploadedAudioInfo{}, err
++		}
++		info.Container, info.Extension = "mp4", "m4a"
++		info.BitRate = normalizeMetadataBitRate(asset.metadata.BitRate)
++		info.mp4Plan = plan
++		asset.length = plan.remote.total
++		return info, nil
++	}
++	head, err := a.fetchUploadedRange(ctx, asset.url, 0, uploadedProbeLimit-1)
++	if err != nil {
++		return uploadedAudioInfo{}, err
++	}
++	asset.length = head.total
++	info, err := detectUploadedAudio(ctx, a, asset.url, head, asset.metadata)
++	if err != nil {
++		return uploadedAudioInfo{}, err
++	}
++	if info.DurationMs <= 0 {
++		info.DurationMs = int(asset.metadata.Duration)
++	}
++	if info.DurationMs <= 0 {
++		return uploadedAudioInfo{}, fmt.Errorf("no positive duration")
++	}
++	if err := validateUploadedQuality(asset.metadata, info); err != nil {
++		return uploadedAudioInfo{}, err
++	}
++	return info, nil
++}
++
++func detectUploadedAudio(
++	ctx context.Context,
++	adapter *uploadedAudioAdapter,
++	rawURL string,
++	head uploadedRangeResponse,
++	meta uploadedWebPlaybackMetadata,
++) (uploadedAudioInfo, error) {
++	if len(head.body) == 0 {
++		return uploadedAudioInfo{}, fmt.Errorf("library asset is empty")
++	}
++	if info, ok, err := detectMP3(ctx, adapter, rawURL, head, meta); ok || err != nil {
++		return info, err
++	}
++	if info, ok, err := detectMP4(ctx, adapter, rawURL, head, meta); ok || err != nil {
++		return info, err
++	}
++	return uploadedAudioInfo{}, fmt.Errorf("library asset container is not supported")
++}
++
++func detectMP3(
++	ctx context.Context,
++	adapter *uploadedAudioAdapter,
++	rawURL string,
++	head uploadedRangeResponse,
++	meta uploadedWebPlaybackMetadata,
++) (uploadedAudioInfo, bool, error) {
++	data := head.body
++	if !bytes.HasPrefix(data, []byte("ID3")) {
++		if _, ok := parseMP3Frame(data); !ok {
++			return uploadedAudioInfo{}, false, nil
++		}
++	}
++	audioOffset, hasID3, err := id3AudioOffset(data)
++	if err != nil {
++		return uploadedAudioInfo{}, true, err
++	}
++	frameData := data
++	if hasID3 && int(audioOffset) >= len(data) {
++		more, err := adapter.fetchUploadedRange(ctx, rawURL, audioOffset, audioOffset+(63<<10))
++		if err != nil {
++			return uploadedAudioInfo{}, true, err
++		}
++		frameData = more.body
++	} else if hasID3 {
++		frameData = data[audioOffset:]
++	}
++	frame, ok := parseMP3Frame(frameData)
++	if !ok {
++		return uploadedAudioInfo{}, true, fmt.Errorf("MP3 asset has no valid audio frame after its ID3 tag")
++	}
++	infoDurationMs, hasInfoDuration := mp3InfoFrameDuration(frameData, frame)
++	audioFrame := frame
++	if hasInfoDuration {
++		audioFrame, ok = nextMP3AudioFrame(frameData, frame)
++		if !ok {
++			return uploadedAudioInfo{}, true, fmt.Errorf("MP3 Info frame has no following audio frame")
++		}
++	}
++	ext := strings.ToLower(strings.TrimSpace(meta.FileExtension))
++	if ext != "" && ext != "mp3" {
++		return uploadedAudioInfo{}, true, fmt.Errorf("asset extension %q disagrees with MP3 headers", ext)
++	}
++	if meta.BitRate > 0 && !hasInfoDuration {
++		expected := normalizeMetadataBitRate(meta.BitRate)
++		if expected != frame.bitRate {
++			return uploadedAudioInfo{}, true, fmt.Errorf(
++				"asset metadata bitrate %d disagrees with MP3 frame (%d)", expected, frame.bitRate)
++		}
++	}
++	if head.total > 0 && audioFrame.bitRate > 0 {
++		audioBytes := head.total - audioOffset
++		if audioBytes > 0 {
++			declaredMs := int(meta.Duration)
++			if hasInfoDuration {
++				declaredMs = infoDurationMs
++			}
++			estimatedMs := int(audioBytes * 8 * 1000 / int64(audioFrame.bitRate))
++			tolerance := max(10_000, declaredMs/5)
++			if absInt(estimatedMs-declaredMs) > tolerance {
++				return uploadedAudioInfo{}, true, fmt.Errorf(
++					"MP3 byte length implies %dms but the stream declares %dms", estimatedMs, declaredMs)
++			}
++		}
++	}
++	return uploadedAudioInfo{
++		Codec:        pipeline.CodecMP3,
++		Container:    "mp3",
++		Extension:    "mp3",
++		MIMEType:     "audio/mpeg",
++		SampleRate:   audioFrame.sampleRate,
++		BitRate:      audioFrame.bitRate,
++		ChannelCount: audioFrame.channels,
++		DurationMs:   infoDurationMs,
++	}, true, nil
++}
++
++func detectMP4(
++	ctx context.Context,
++	adapter *uploadedAudioAdapter,
++	rawURL string,
++	head uploadedRangeResponse,
++	meta uploadedWebPlaybackMetadata,
++) (uploadedAudioInfo, bool, error) {
++	if len(head.body) < 8 || string(head.body[4:8]) != "ftyp" {
++		return uploadedAudioInfo{}, false, nil
++	}
++	plan, err := planUploadedMP4Clients(ctx, adapter.apiClient, adapter.streamClient, rawURL)
++	if err != nil {
++		return uploadedAudioInfo{}, true, err
++	}
++	info, mediaDuration, err := audioInfoFromMoov(plan.moov)
++	if err != nil {
++		return uploadedAudioInfo{}, true, err
++	}
++	if mediaDuration > 0 {
++		declared := int(meta.Duration)
++		if int64(absInt(mediaDuration-declared)) > uploadedDurationSlackMs {
++			return uploadedAudioInfo{}, true, fmt.Errorf(
++				"MP4 duration %dms disagrees with asset metadata (%dms)", mediaDuration, declared)
++		}
++	}
++	info.Container = "mp4"
++	info.Extension = "m4a"
++	info.mp4Plan = plan
++	info.BitRate = normalizeMetadataBitRate(meta.BitRate)
++	return info, true, nil
++}
++
++func audioInfoFromMoov(moov *mp4.MoovBox) (uploadedAudioInfo, int, error) {
++	var mediaDuration int
++	if moov.Mvhd != nil {
++		mediaDuration = roundMillis(moov.Mvhd.Duration, uint64(moov.Mvhd.Timescale))
++	}
++	for _, trak := range moov.Traks {
++		if trak.Mdia == nil || trak.Mdia.Hdlr == nil || trak.Mdia.Hdlr.HandlerType != "soun" ||
++			trak.Mdia.Minf == nil || trak.Mdia.Minf.Stbl == nil || trak.Mdia.Minf.Stbl.Stsd == nil {
++			continue
++		}
++		if trak.Mdia.Mdhd != nil {
++			mediaDuration = roundMillis(trak.Mdia.Mdhd.Duration, uint64(trak.Mdia.Mdhd.Timescale))
++		}
++		for _, sampleEntry := range trak.Mdia.Minf.Stbl.Stsd.Children {
++			switch sampleEntry.Type() {
++			case "mp4a":
++				entry, ok := sampleEntry.(*mp4.AudioSampleEntryBox)
++				if !ok {
++					return uploadedAudioInfo{}, 0, fmt.Errorf("MP4 mp4a sample entry is malformed")
++				}
++				return uploadedAudioInfo{
++					Codec:        pipeline.CodecAAC,
++					MIMEType:     "audio/mp4",
++					SampleRate:   int(entry.SampleRate),
++					ChannelCount: int(entry.ChannelCount),
++				}, mediaDuration, nil
++			case "alac":
++				entry, ok := sampleEntry.(*mp4.UnknownBox)
++				if !ok {
++					return uploadedAudioInfo{}, 0, fmt.Errorf("MP4 alac sample entry is malformed")
++				}
++				info, err := parseALACSampleEntry(entry.Payload())
++				return info, mediaDuration, err
++			case "enca":
++				return uploadedAudioInfo{}, 0, fmt.Errorf("uploaded MP4 unexpectedly contains encrypted audio")
++			}
++		}
++	}
++	return uploadedAudioInfo{}, 0, fmt.Errorf("MP4 source has no supported audio sample entry")
++}
++
++func parseALACSampleEntry(payload []byte) (uploadedAudioInfo, error) {
++	// The UnknownBox payload starts after the sample-entry box header. The
++	// 28-byte ISO audio sample entry precedes the nested ALAC configuration.
++	if len(payload) < 28+12+24 {
++		return uploadedAudioInfo{}, fmt.Errorf("ALAC sample entry is truncated")
++	}
++	channelCount := int(readUint16(payload[16:18]))
++	entryRate := int(readUint32(payload[24:28]) >> 16)
++	cookieSize := int(readUint32(payload[28:32]))
++	if cookieSize < 8 || cookieSize > len(payload)-28 || string(payload[32:36]) != "alac" {
++		return uploadedAudioInfo{}, fmt.Errorf("ALAC sample entry has no ALAC configuration")
++	}
++	config := payload[36 : 28+cookieSize]
++	if len(config) < 24 {
++		return uploadedAudioInfo{}, fmt.Errorf("ALAC configuration is truncated")
++	}
++	bitDepth := int(config[5])
++	cookieChannels := int(config[9])
++	cookieRate := int(readUint32(config[20:24]))
++	if channelCount > 0 && cookieChannels > 0 && channelCount != cookieChannels {
++		return uploadedAudioInfo{}, fmt.Errorf("ALAC channel count disagrees between sample entry and configuration")
++	}
++	// The ISO audio sample-entry field stores the integer sample rate in 16
++	// bits, so hi-res ALAC rates cannot be represented there. The ALAC magic
++	// cookie is authoritative whenever the rate exceeds uint16.
++	if cookieRate > 0 && cookieRate <= 0xffff && entryRate > 0 && entryRate != cookieRate {
++		return uploadedAudioInfo{}, fmt.Errorf("ALAC sample rate disagrees between sample entry and configuration")
++	}
++	if bitDepth != 16 && bitDepth != 20 && bitDepth != 24 && bitDepth != 32 {
++		return uploadedAudioInfo{}, fmt.Errorf("ALAC configuration has unsupported bit depth %d", bitDepth)
++	}
++	return uploadedAudioInfo{
++		Codec:        pipeline.CodecALAC,
++		MIMEType:     `audio/mp4; codecs="alac"`,
++		SampleRate:   cookieRate,
++		BitDepth:     bitDepth,
++		ChannelCount: cookieChannels,
++	}, nil
++}
++
++func id3AudioOffset(data []byte) (int64, bool, error) {
++	if len(data) < 10 || !bytes.HasPrefix(data, []byte("ID3")) {
++		return 0, false, nil
++	}
++	if data[3] < 2 || data[3] > 4 || data[4] == 0xff {
++		return 0, true, fmt.Errorf("MP3 asset has unsupported ID3 version")
++	}
++	size := int64(data[6]&0x7f)<<21 | int64(data[7]&0x7f)<<14 |
++		int64(data[8]&0x7f)<<7 | int64(data[9]&0x7f)
++	offset := int64(10) + size
++	if data[5]&0x10 != 0 {
++		offset += 10
++	}
++	if offset < 10 || offset > uploadedAssetSizeLimit {
++		return 0, true, fmt.Errorf("MP3 asset has invalid ID3 size")
++	}
++	return offset, true, nil
++}
++
++type mp3FrameInfo struct {
++	sampleRate      int
++	bitRate         int
++	channels        int
++	version         int
++	frameSize       int
++	samplesPerFrame int
++}
++
++func parseMP3Frame(data []byte) (mp3FrameInfo, bool) {
++	const (
++		mpeg1  = 3
++		mpeg2  = 2
++		mpeg25 = 0
++	)
++	bitrates := map[int][15]int{
++		mpeg1:  {0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320},
++		mpeg2:  {0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160},
++		mpeg25: {0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160},
++	}
++	rates := map[int][3]int{
++		mpeg1:  {44100, 48000, 32000},
++		mpeg2:  {22050, 24000, 16000},
++		mpeg25: {11025, 12000, 8000},
++	}
++	for i := 0; i+4 <= len(data); i++ {
++		h := uint32(data[i])<<24 | uint32(data[i+1])<<16 | uint32(data[i+2])<<8 | uint32(data[i+3])
++		if h&0xffe00000 != 0xffe00000 {
++			continue
++		}
++		version := int((h >> 19) & 3)
++		layer := int((h >> 17) & 3)
++		bitrateIndex := int((h >> 12) & 0xf)
++		rateIndex := int((h >> 10) & 3)
++		if version == 1 || layer != 1 || bitrateIndex == 0 || bitrateIndex == 15 || rateIndex == 3 {
++			continue
++		}
++		bitRate := bitrates[version][bitrateIndex] * 1000
++		sampleRate := rates[version][rateIndex]
++		channels := 2
++		if ((h >> 6) & 3) == 3 {
++			channels = 1
++		}
++		padding := int((h >> 9) & 1)
++		frameSize := 72*bitRate/sampleRate + padding
++		samplesPerFrame := 576
++		if version == mpeg1 {
++			frameSize = 144*bitRate/sampleRate + padding
++			samplesPerFrame = 1152
++		}
++		return mp3FrameInfo{
++			sampleRate:      sampleRate,
++			bitRate:         bitRate,
++			channels:        channels,
++			version:         version,
++			frameSize:       frameSize,
++			samplesPerFrame: samplesPerFrame,
++		}, true
++	}
++	return mp3FrameInfo{}, false
++}
++
++func mp3InfoFrameDuration(data []byte, frame mp3FrameInfo) (int, bool) {
++	if frame.frameSize <= 4 || frame.frameSize > len(data) || frame.sampleRate <= 0 ||
++		frame.samplesPerFrame <= 0 {
++		return 0, false
++	}
++	sideInfoBytes := 17
++	if frame.version == 3 {
++		sideInfoBytes = 32
++	}
++	if frame.channels == 1 {
++		if frame.version == 3 {
++			sideInfoBytes = 17
++		} else {
++			sideInfoBytes = 9
++		}
++	}
++	firstFrame := data[:frame.frameSize]
++	for _, offset := range []int{4 + sideInfoBytes, 6 + sideInfoBytes} {
++		if offset+12 > len(firstFrame) {
++			continue
++		}
++		tag := string(firstFrame[offset : offset+4])
++		if tag != "Xing" && tag != "Info" {
++			continue
++		}
++		flags := readUint32(firstFrame[offset+4 : offset+8])
++		if flags&1 == 0 {
++			return 0, false
++		}
++		frames := uint64(readUint32(firstFrame[offset+8 : offset+12]))
++		if frames == 0 {
++			return 0, false
++		}
++		durationMs := int(math.Round(
++			float64(frames) * float64(frame.samplesPerFrame) * 1000 / float64(frame.sampleRate)))
++		return durationMs, durationMs > 0
++	}
++	return 0, false
++}
++
++func nextMP3AudioFrame(data []byte, control mp3FrameInfo) (mp3FrameInfo, bool) {
++	if control.frameSize <= 0 || control.frameSize >= len(data) {
++		return mp3FrameInfo{}, false
++	}
++	frame, ok := parseMP3Frame(data[control.frameSize:])
++	if !ok || frame.sampleRate != control.sampleRate {
++		return mp3FrameInfo{}, false
++	}
++	return frame, true
++}
++
++func validateUploadedQuality(meta uploadedWebPlaybackMetadata, info uploadedAudioInfo) error {
++	ext := strings.ToLower(strings.TrimSpace(meta.FileExtension))
++	switch info.Codec {
++	case pipeline.CodecMP3:
++		if ext != "" && ext != "mp3" {
++			return fmt.Errorf("asset extension %q disagrees with MP3 headers", ext)
++		}
++	case pipeline.CodecAAC, pipeline.CodecALAC:
++		if ext != "" && ext != "m4a" && ext != "mp4" && ext != "aac" && ext != "alac" {
++			return fmt.Errorf("asset extension %q disagrees with MP4 headers", ext)
++		}
++	default:
++		return fmt.Errorf("uploaded codec %q is unsupported", info.Codec)
++	}
++	if meta.SampleRate > 0 && info.SampleRate > 0 && meta.SampleRate != info.SampleRate {
++		return fmt.Errorf("asset metadata sample rate %d disagrees with headers (%d)", meta.SampleRate, info.SampleRate)
++	}
++	if meta.BitDepth > 0 && info.BitDepth > 0 && meta.BitDepth != info.BitDepth {
++		return fmt.Errorf("asset metadata bit depth %d disagrees with headers (%d)", meta.BitDepth, info.BitDepth)
++	}
++	return nil
++}
++
++func normalizeMetadataBitRate(value int) int {
++	if value > 0 && value < 10_000 {
++		return value * 1000
++	}
++	return value
++}
++
++type uploadedAudioSource struct {
++	client  *http.Client
++	url     string
++	length  int64
++	mp4Plan *uploadedMP4Plan
++}
++
++func uploadedAudioSourceVersion(info uploadedAudioInfo) string {
++	if info.mp4Plan != nil {
++		return info.mp4Plan.sourceVersion()
++	}
++	return ""
++}
++
++func (s *uploadedAudioSource) Stream(ctx context.Context, w io.Writer) error {
++	if s.mp4Plan != nil {
++		plan := *s.mp4Plan
++		plan.remote.client = s.client
++		return plan.Stream(ctx, w)
++	}
++	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.url, nil)
++	if err != nil {
++		return err
++	}
++	resp, err := s.client.Do(req)
++	if err != nil {
++		return fmt.Errorf("uploaded audio request failed: %w", sanitizedTransportError(err))
++	}
++	defer resp.Body.Close()
++	if resp.StatusCode != http.StatusOK {
++		return fmt.Errorf("uploaded audio HTTP %d", resp.StatusCode)
++	}
++	length := s.length
++	if resp.ContentLength >= 0 {
++		if length > 0 && resp.ContentLength != length {
++			return fmt.Errorf(
++				"uploaded audio length %d disagrees with probed length %d",
++				resp.ContentLength, length)
++		}
++		length = resp.ContentLength
++	}
++	if length > uploadedAssetSizeLimit {
++		return fmt.Errorf("uploaded audio exceeds the %d byte limit", uploadedAssetSizeLimit)
++	}
++	if hw, ok := w.(pipeline.HeaderWriter); ok {
++		if contentType := strings.TrimSpace(resp.Header.Get("Content-Type")); contentType != "" {
++			hw.SetHeader("Content-Type", contentType)
++		}
++		if length >= 0 {
++			hw.SetHeader("Content-Length", strconv.FormatInt(length, 10))
++		}
++	}
++	reader := io.Reader(resp.Body)
++	if length < 0 {
++		reader = &maxBytesReader{r: resp.Body, remaining: uploadedAssetSizeLimit + 1}
++	}
++	n, err := io.CopyBuffer(w, reader, make([]byte, 64<<10))
++	if err != nil {
++		return fmt.Errorf("uploaded audio stream: %w", err)
++	}
++	if n > uploadedAssetSizeLimit {
++		return fmt.Errorf("uploaded audio exceeds the %d byte limit", uploadedAssetSizeLimit)
++	}
++	if length >= 0 && n != length {
++		return fmt.Errorf("uploaded audio ended after %d of %d bytes", n, length)
++	}
++	return nil
++}
++
++type maxBytesReader struct {
++	r         io.Reader
++	remaining int64
++}
++
++func (r *maxBytesReader) Read(p []byte) (int, error) {
++	if r.remaining <= 0 {
++		return 0, errors.New("uploaded audio exceeds byte limit")
++	}
++	if int64(len(p)) > r.remaining {
++		p = p[:r.remaining]
++	}
++	n, err := r.r.Read(p)
++	r.remaining -= int64(n)
++	return n, err
++}
++
++func roundMillis(mediaTime, timescale uint64) int {
++	if timescale == 0 {
++		return 0
++	}
++	return int(math.Round(float64(mediaTime) * 1000 / float64(timescale)))
++}
++
++func readUint16(b []byte) uint16 {
++	return uint16(b[0])<<8 | uint16(b[1])
++}
++
++func readUint32(b []byte) uint32 {
++	return uint32(b[0])<<24 | uint32(b[1])<<16 | uint32(b[2])<<8 | uint32(b[3])
++}
++
++func absInt(v int) int {
++	if v < 0 {
++		return -v
++	}
++	return v
++}
++
++func firstNonempty(values ...string) string {
++	for _, value := range values {
++		if value = strings.TrimSpace(value); value != "" {
++			return value
++		}
++	}
++	return ""
++}
++
++func sanitizedTransportError(err error) error {
++	var urlErr *url.Error
++	if errors.As(err, &urlErr) && urlErr.Err != nil {
++		return urlErr.Err
++	}
++	return err
++}
+diff --git a/engine/core/apple/uploaded_live_probe_test.go b/engine/core/apple/uploaded_live_probe_test.go
+new file mode 100644
+index 0000000..7b28ab2
+--- /dev/null
++++ b/engine/core/apple/uploaded_live_probe_test.go
+@@ -0,0 +1,51 @@
++package apple
++
++import (
++	"context"
++	"os"
++	"strings"
++	"testing"
++
++	"engine/utils/ampapi"
++)
++
++// TestUploadedWebPlaybackLiveProbe is an opt-in, read-only source probe for
++// iCloud library uploads. It logs only public format facts and never signed
++// asset URLs or credentials.
++func TestUploadedWebPlaybackLiveProbe(t *testing.T) {
++	if os.Getenv("ADAM_LIVE_UPLOAD_PROBE") != "1" {
++		t.Skip("set ADAM_LIVE_UPLOAD_PROBE=1, ADAM_LIVE_UPLOAD_IDS, and ADAM_LIVE_MUT to probe Apple")
++	}
++	mut := strings.TrimSpace(os.Getenv("ADAM_LIVE_MUT"))
++	if mut == "" {
++		t.Fatal("ADAM_LIVE_MUT is required")
++	}
++	ids := strings.FieldsFunc(os.Getenv("ADAM_LIVE_UPLOAD_IDS"), func(r rune) bool {
++		return r == ',' || r == ';' || r == ' ' || r == '\n' || r == '\t'
++	})
++	if len(ids) == 0 {
++		t.Fatal("ADAM_LIVE_UPLOAD_IDS is required")
++	}
++	devToken, err := ampapi.GetToken()
++	if err != nil {
++		t.Fatalf("get developer token: %v", err)
++	}
++	adapter := newUploadedAudioAdapter()
++	for _, id := range ids {
++		id = strings.TrimSpace(id)
++		if !strings.HasPrefix(id, "i.") {
++			t.Fatalf("probe id is not a library id: %q", id)
++		}
++		asset, err := adapter.fetchUploadedAsset(context.Background(), id, devToken, mut)
++		if err != nil {
++			t.Fatalf("%s: %v", id, err)
++		}
++		info, err := adapter.probeUploadedAudio(context.Background(), &asset)
++		if err != nil {
++			t.Fatalf("%s: %v", id, err)
++		}
++		t.Logf("%s: codec=%s container=%s ext=%s rate=%d depth=%d bitrate=%d channels=%d durationMs=%d",
++			id, info.Codec, info.Container, info.Extension, info.SampleRate,
++			info.BitDepth, info.BitRate, info.ChannelCount, info.DurationMs)
++	}
++}
+diff --git a/engine/core/apple/uploaded_mp4.go b/engine/core/apple/uploaded_mp4.go
+new file mode 100644
+index 0000000..d9e47d0
+--- /dev/null
++++ b/engine/core/apple/uploaded_mp4.go
+@@ -0,0 +1,668 @@
++package apple
++
++// Uploaded MP4 normalization moves only the index. Compressed media is copied
++// directly from validated HTTP ranges; neither samples nor timestamps are decoded.
++import (
++	"bytes"
++	"context"
++	"encoding/binary"
++	"fmt"
++	"io"
++	"math"
++	"net/http"
++	"strconv"
++	"strings"
++
++	"github.com/itouakirai/mp4ff/mp4"
++)
++
++const (
++	uploadedMP4HeadLimit  = 8 << 10
++	uploadedMP4IndexLimit = 8 << 20
++	uploadedMP4SizeLimit  = int64(8 << 30)
++	uploadedMP4BoxLimit   = 64
++	uploadedMP4Layout     = "uploaded-mp4-faststart-v1"
++)
++
++type uploadedMP4Box struct {
++	typ                  string
++	offset, size, header int64
++}
++
++type uploadedMP4HTTP struct {
++	client         *http.Client
++	url            string
++	total          int64
++	etag, modified string
++}
++
++type uploadedMP4Plan struct {
++	remote                         uploadedMP4HTTP
++	moov                           *mp4.MoovBox
++	prefix                         []byte
++	ftypSize, moovOffset, moovSize int64
++	outputLength                   int64
++	rewritten, sequentialIndex     bool
++}
++
++func uploadedMP4HTTPError(ctx context.Context) error {
++	if err := ctx.Err(); err != nil {
++		return err
++	}
++	return fmt.Errorf("uploaded MP4 transport failed")
++}
++
++func (s *uploadedMP4HTTP) request(ctx context.Context, start, end int64, ranged bool) (*http.Response, error) {
++	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.url, nil)
++	if err != nil {
++		return nil, fmt.Errorf("uploaded MP4 request is invalid")
++	}
++	req.Header.Set("Accept-Encoding", "identity")
++	if ranged {
++		req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", start, end))
++	}
++	if s.etag != "" && !strings.HasPrefix(s.etag, "W/") {
++		if ranged {
++			req.Header.Set("If-Range", s.etag)
++		} else {
++			req.Header.Set("If-Match", s.etag)
++		}
++	} else if s.modified != "" {
++		if ranged {
++			req.Header.Set("If-Range", s.modified)
++		} else {
++			req.Header.Set("If-Unmodified-Since", s.modified)
++		}
++	}
++	resp, err := s.client.Do(req)
++	if err != nil {
++		return nil, uploadedMP4HTTPError(ctx)
++	}
++	fail := func(message string) (*http.Response, error) {
++		resp.Body.Close()
++		return nil, fmt.Errorf("uploaded MP4 %s", message)
++	}
++	if v := resp.Header.Get("Content-Encoding"); v != "" && v != "identity" {
++		return fail("unexpected content encoding")
++	}
++	if s.etag != "" && resp.Header.Get("ETag") != s.etag {
++		return fail("resource validator changed")
++	}
++	if s.etag == "" && s.modified != "" && resp.Header.Get("Last-Modified") != s.modified {
++		return fail("resource validator changed")
++	}
++	if s.etag == "" && s.modified == "" {
++		s.etag = resp.Header.Get("ETag")
++		if v := resp.Header.Get("Last-Modified"); v != "" {
++			if _, err := http.ParseTime(v); err == nil {
++				s.modified = v
++			}
++		}
++	}
++	return resp, nil
++}
++
++// A 200 is not accepted as a successful range. It is handled separately only
++// for the initial request, when a genuinely sequential source can be identified.
++func (s *uploadedMP4HTTP) checkRange(resp *http.Response, start, end int64) (int64, error) {
++	if resp.StatusCode != http.StatusPartialContent {
++		return 0, fmt.Errorf("uploaded MP4 exact range requires HTTP 206")
++	}
++	v := strings.TrimPrefix(resp.Header.Get("Content-Range"), "bytes ")
++	if v == resp.Header.Get("Content-Range") {
++		return 0, fmt.Errorf("uploaded MP4 invalid Content-Range")
++	}
++	span, totalText, ok := strings.Cut(v, "/")
++	fromText, toText, ok2 := strings.Cut(span, "-")
++	from, e1 := strconv.ParseInt(fromText, 10, 64)
++	to, e2 := strconv.ParseInt(toText, 10, 64)
++	total, e3 := strconv.ParseInt(totalText, 10, 64)
++	if !ok || !ok2 || e1 != nil || e2 != nil || e3 != nil || total <= 0 || total > uploadedMP4SizeLimit ||
++		from != start || from < 0 || to < from || to >= total || to != min(end, total-1) || (s.total > 0 && total != s.total) {
++		return 0, fmt.Errorf("uploaded MP4 invalid Content-Range")
++	}
++	n := to - from + 1
++	if resp.ContentLength >= 0 && resp.ContentLength != n {
++		return 0, fmt.Errorf("uploaded MP4 range length disagrees with Content-Range")
++	}
++	s.total = total
++	return n, nil
++}
++
++func uploadedMP4ReadExact(r io.Reader, n int64) ([]byte, error) {
++	if n < 0 || n > uploadedMP4IndexLimit {
++		return nil, fmt.Errorf("uploaded MP4 metadata exceeds limit")
++	}
++	b := make([]byte, n)
++	if _, err := io.ReadFull(r, b); err != nil {
++		return nil, fmt.Errorf("uploaded MP4 response is truncated")
++	}
++	return b, nil
++}
++
++func uploadedMP4EOF(r io.Reader) error {
++	var extra [1]byte
++	n, err := r.Read(extra[:])
++	if n != 0 || err != io.EOF {
++		return fmt.Errorf("uploaded MP4 response length is not exact")
++	}
++	return nil
++}
++
++func (s *uploadedMP4HTTP) readRange(ctx context.Context, start, end int64) ([]byte, error) {
++	resp, err := s.request(ctx, start, end, true)
++	if err != nil {
++		return nil, err
++	}
++	defer resp.Body.Close()
++	n, err := s.checkRange(resp, start, end)
++	if err != nil {
++		return nil, err
++	}
++	b, err := uploadedMP4ReadExact(resp.Body, n)
++	if err == nil {
++		err = uploadedMP4EOF(resp.Body)
++	}
++	return b, err
++}
++
++func uploadedMP4Header(b []byte, offset, total int64) (uploadedMP4Box, error) {
++	if len(b) < 8 {
++		return uploadedMP4Box{}, fmt.Errorf("uploaded MP4 box header is truncated")
++	}
++	size := uint64(binary.BigEndian.Uint32(b[:4]))
++	header := int64(8)
++	if size == 1 {
++		if len(b) < 16 {
++			return uploadedMP4Box{}, fmt.Errorf("uploaded MP4 extended header is truncated")
++		}
++		size = binary.BigEndian.Uint64(b[8:16])
++		header = 16
++	} else if size == 0 {
++		size = uint64(total - offset)
++	}
++	if offset < 0 || offset > total || size < uint64(header) || size > uint64(total-offset) {
++		return uploadedMP4Box{}, fmt.Errorf("uploaded MP4 box size is invalid")
++	}
++	return uploadedMP4Box{string(b[4:8]), offset, int64(size), header}, nil
++}
++
++// The initial prefix is deliberately small: even a short real AAC fixture must
++// not have its entire mdat consumed just to discover the trailing moov.
++func planUploadedMP4(ctx context.Context, client *http.Client, url string) (*uploadedMP4Plan, error) {
++	return planUploadedMP4Clients(ctx, client, client, url)
++}
++
++func planUploadedMP4Clients(ctx context.Context, client, streamClient *http.Client, url string) (plan *uploadedMP4Plan, err error) {
++	defer func() {
++		if recover() != nil {
++			plan = nil
++			err = fmt.Errorf("uploaded MP4 index is malformed")
++		}
++	}()
++	p := &uploadedMP4Plan{remote: uploadedMP4HTTP{client: client, url: url}}
++	resp, err := p.remote.request(ctx, 0, uploadedMP4HeadLimit-1, true)
++	if err != nil {
++		return nil, err
++	}
++	defer resp.Body.Close()
++	var n int64
++	if resp.StatusCode == http.StatusPartialContent {
++		n, err = p.remote.checkRange(resp, 0, uploadedMP4HeadLimit-1)
++	} else if resp.StatusCode == http.StatusOK {
++		if resp.ContentLength <= 0 || resp.ContentLength > uploadedMP4SizeLimit {
++			return nil, fmt.Errorf("uploaded MP4 sequential source needs a bounded length")
++		}
++		p.remote.total = resp.ContentLength
++		n = min(resp.ContentLength, uploadedMP4HeadLimit)
++	} else {
++		return nil, fmt.Errorf("uploaded MP4 initial HTTP %d", resp.StatusCode)
++	}
++	if err != nil {
++		return nil, err
++	}
++	head, err := uploadedMP4ReadExact(resp.Body, n)
++	if err != nil {
++		return nil, err
++	}
++	if len(head) < 8 || string(head[4:8]) != "ftyp" {
++		return nil, fmt.Errorf("uploaded MP4 source has no leading ftyp")
++	}
++	if resp.StatusCode == http.StatusPartialContent {
++		if err := uploadedMP4EOF(resp.Body); err != nil {
++			return nil, err
++		}
++	}
++	p.outputLength = p.remote.total
++	if resp.StatusCode == http.StatusOK {
++		// Only a source that actually ignored Range takes this sequential path.
++		// It retains the original bytes and explicitly requires completed access.
++		if streamClient != client {
++			// The metadata client's total timeout must not cover an unavoidable
++			// full sequential scan. Close its prefix response before switching.
++			resp.Body.Close()
++			p.remote.client = streamClient
++			full, requestErr := p.remote.request(ctx, 0, 0, false)
++			if requestErr != nil {
++				return nil, requestErr
++			}
++			defer full.Body.Close()
++			if full.StatusCode != http.StatusOK || (full.ContentLength >= 0 && full.ContentLength != p.remote.total) {
++				return nil, fmt.Errorf("uploaded MP4 sequential source length or status changed")
++			}
++			err = p.inspectSequential(ctx, full.Body)
++		} else {
++			err = p.inspectSequential(ctx, io.MultiReader(bytes.NewReader(head), resp.Body))
++		}
++		return p, err
++	}
++	read := func(offset, size int64) ([]byte, error) {
++		if offset < 0 || size < 0 || size > p.remote.total-offset {
++			return nil, fmt.Errorf("uploaded MP4 metadata range is invalid")
++		}
++		if offset+size <= int64(len(head)) {
++			return head[offset : offset+size], nil
++		}
++		return p.remote.readRange(ctx, offset, offset+size-1)
++	}
++	var offset int64
++	var mdat *uploadedMP4Box
++	var ftyp, moovBytes []byte
++	for count := 0; count < uploadedMP4BoxLimit && offset < p.remote.total; count++ {
++		if err := ctx.Err(); err != nil {
++			return nil, err
++		}
++		h, err := read(offset, min(16, p.remote.total-offset))
++		if err != nil {
++			return nil, err
++		}
++		box, err := uploadedMP4Header(h, offset, p.remote.total)
++		if err != nil {
++			return nil, err
++		}
++		switch box.typ {
++		case "ftyp":
++			if offset != 0 || box.size > uploadedMP4HeadLimit {
++				return nil, fmt.Errorf("uploaded MP4 invalid ftyp")
++			}
++			ftyp, err = read(offset, box.size)
++			p.ftypSize = box.size
++		case "moov":
++			if p.moov != nil || box.size > uploadedMP4IndexLimit {
++				return nil, fmt.Errorf("uploaded MP4 duplicate or oversized index")
++			}
++			moovBytes, err = read(offset, box.size)
++			if err == nil {
++				p.moov, err = uploadedMP4DecodeMoov(moovBytes)
++			}
++			p.moovOffset, p.moovSize = offset, box.size
++			if err == nil && mdat == nil {
++				return p, nil
++			} // already front-moov / fMP4
++		case "mdat":
++			if mdat != nil {
++				return nil, fmt.Errorf("uploaded MP4 multiple media boxes are unsupported for relocation")
++			}
++			copy := box
++			mdat = &copy
++		case "free", "skip", "wide":
++		default:
++			return nil, fmt.Errorf("uploaded MP4 top-level %s cannot be safely relocated", box.typ)
++		}
++		if err != nil {
++			return nil, err
++		}
++		offset += box.size
++	}
++	if offset != p.remote.total || p.moov == nil || mdat == nil || len(ftyp) == 0 {
++		return nil, fmt.Errorf("uploaded MP4 index or box-count limit is invalid")
++	}
++	if err := p.relocate(ftyp, *mdat); err != nil {
++		return nil, err
++	}
++	return p, nil
++}
++
++func (p *uploadedMP4Plan) relocate(ftyp []byte, mdat uploadedMP4Box) error {
++	encoded, err := relocateUploadedMoov(p.moov, uint64(mdat.offset+mdat.header), uint64(mdat.offset+mdat.size))
++	if err != nil {
++		return err
++	}
++	p.prefix = append(append([]byte(nil), ftyp...), encoded...)
++	p.outputLength = p.remote.total - p.moovSize + int64(len(encoded))
++	if p.outputLength > uploadedMP4SizeLimit {
++		return fmt.Errorf("uploaded MP4 normalized output exceeds limit")
++	}
++	p.rewritten = true
++	return nil
++}
++
++func uploadedMP4DecodeMoov(data []byte) (*mp4.MoovBox, error) {
++	if err := validateUploadedMP4Index(data); err != nil {
++		return nil, err
++	}
++	b, err := mp4.DecodeBox(0, bytes.NewReader(data))
++	if err != nil {
++		return nil, fmt.Errorf("uploaded MP4 index is malformed")
++	}
++	moov, ok := b.(*mp4.MoovBox)
++	if !ok {
++		return nil, fmt.Errorf("uploaded MP4 index is not moov")
++	}
++	return moov, nil
++}
++
++// Bound nesting before entering the library's recursive decoder. Table sizes
++// remain checked by mp4ff; this walk only follows known container boundaries.
++func validateUploadedMP4Index(data []byte) error {
++	count := 0
++	var walk func([]byte, int) error
++	walk = func(data []byte, depth int) error {
++		if depth > 24 {
++			return fmt.Errorf("uploaded MP4 index nesting exceeds limit")
++		}
++		for offset := int64(0); offset < int64(len(data)); {
++			count++
++			if count > 4096 {
++				return fmt.Errorf("uploaded MP4 index box count exceeds limit")
++			}
++			box, err := uploadedMP4Header(data[offset:], offset, int64(len(data)))
++			if err != nil {
++				return err
++			}
++			body := data[offset+box.header : offset+box.size]
++			skip := -1
++			switch box.typ {
++			case "moov", "trak", "edts", "mdia", "minf", "stbl", "dinf", "udta", "ilst", "mvex", "sinf", "schi", "wave":
++				skip = 0
++			case "meta":
++				skip = 4
++			case "stsd", "dref":
++				skip = 8
++			case "mp4a", "alac", "enca":
++				skip = 28
++			}
++			if skip >= 0 {
++				if len(body) < skip {
++					return fmt.Errorf("uploaded MP4 index container is truncated")
++				}
++				if err := walk(body[skip:], depth+1); err != nil {
++					return err
++				}
++			}
++			offset += box.size
++		}
++		return nil
++	}
++	return walk(data, 0)
++}
++
++// Sequential discovery is used only after a real 200 proved Range unavailable.
++// Media is discarded with a bounded buffer, never retained or decoded. The
++// downstream descriptor exposes this unavoidable non-progressive startup mode.
++func (p *uploadedMP4Plan) inspectSequential(ctx context.Context, r io.Reader) error {
++	var offset int64
++	var mdat *uploadedMP4Box
++	var ftyp []byte
++	for count := 0; count < uploadedMP4BoxLimit && offset < p.remote.total; count++ {
++		if err := ctx.Err(); err != nil {
++			return err
++		}
++		h, err := uploadedMP4ReadExact(r, 8)
++		if err != nil {
++			return err
++		}
++		if binary.BigEndian.Uint32(h[:4]) == 1 {
++			extra, err := uploadedMP4ReadExact(r, 8)
++			if err != nil {
++				return err
++			}
++			h = append(h, extra...)
++		}
++		box, err := uploadedMP4Header(h, offset, p.remote.total)
++		if err != nil {
++			return err
++		}
++		switch box.typ {
++		case "ftyp":
++			if offset != 0 || box.size > uploadedMP4HeadLimit {
++				return fmt.Errorf("uploaded MP4 invalid ftyp")
++			}
++			body, err := uploadedMP4ReadExact(r, box.size-box.header)
++			if err != nil {
++				return err
++			}
++			ftyp = append(h, body...)
++			p.ftypSize = box.size
++		case "moov":
++			if p.moov != nil {
++				return fmt.Errorf("uploaded MP4 duplicate index")
++			}
++			if box.size > uploadedMP4IndexLimit {
++				return fmt.Errorf("uploaded MP4 index exceeds limit")
++			}
++			body, err := uploadedMP4ReadExact(r, box.size-box.header)
++			if err != nil {
++				return err
++			}
++			p.moov, err = uploadedMP4DecodeMoov(append(h, body...))
++			if err != nil {
++				return err
++			}
++			p.moovOffset, p.moovSize = offset, box.size
++			if mdat == nil {
++				return nil
++			}
++		case "mdat", "free", "skip", "wide":
++			if box.typ == "mdat" {
++				if mdat != nil {
++					return fmt.Errorf("uploaded MP4 multiple media boxes are unsupported for relocation")
++				}
++				copy := box
++				mdat = &copy
++			}
++			if _, err := io.CopyN(io.Discard, r, box.size-box.header); err != nil {
++				return fmt.Errorf("uploaded MP4 sequential index scan is truncated")
++			}
++		default:
++			return fmt.Errorf("uploaded MP4 top-level %s cannot be safely relocated", box.typ)
++		}
++		offset += box.size
++	}
++	if offset != p.remote.total || p.moov == nil || mdat == nil {
++		return fmt.Errorf("uploaded MP4 index was not found within box limit")
++	}
++	if err := uploadedMP4EOF(r); err != nil {
++		return err
++	}
++	p.sequentialIndex = true
++	return p.relocate(ftyp, *mdat)
++}
++
++func relocateUploadedMoov(moov *mp4.MoovBox, payloadStart, payloadEnd uint64) ([]byte, error) {
++	if len(moov.Traks) != 1 || moov.Mvex != nil {
++		return nil, fmt.Errorf("uploaded MP4 relocation requires one non-fragmented audio track")
++	}
++	t := moov.Traks[0]
++	if t.Mdia == nil || t.Mdia.Hdlr == nil || t.Mdia.Hdlr.HandlerType != "soun" || t.Mdia.Minf == nil || t.Mdia.Minf.Stbl == nil {
++		return nil, fmt.Errorf("uploaded MP4 audio index is incomplete")
++	}
++	minf, stbl := t.Mdia.Minf, t.Mdia.Minf.Stbl
++	if minf.Dinf == nil || minf.Dinf.Dref == nil || len(minf.Dinf.Dref.Children) != 1 {
++		return nil, fmt.Errorf("uploaded MP4 data reference is unsupported")
++	}
++	u, ok := minf.Dinf.Dref.Children[0].(*mp4.URLBox)
++	if !ok || u.Flags&1 == 0 || stbl.Saio != nil || stbl.Saiz != nil {
++		return nil, fmt.Errorf("uploaded MP4 external or auxiliary data offsets are unsupported")
++	}
++	if (stbl.Stco == nil) == (stbl.Co64 == nil) {
++		return nil, fmt.Errorf("uploaded MP4 needs exactly one chunk-offset table")
++	}
++	var original []uint64
++	if stbl.Stco != nil {
++		for _, v := range stbl.Stco.ChunkOffset {
++			original = append(original, uint64(v))
++		}
++	} else {
++		original = append(original, stbl.Co64.ChunkOffset...)
++	}
++	if len(original) == 0 {
++		return nil, fmt.Errorf("uploaded MP4 chunk-offset table is empty")
++	}
++	for _, v := range original {
++		if v < payloadStart || v >= payloadEnd {
++			return nil, fmt.Errorf("uploaded MP4 chunk offset is outside media")
++		}
++	}
++	// Promotion changes moov size. Recompute from original offsets after it;
++	// never increment previously relocated offsets or truncate a 64-bit result.
++	delta := moov.Size()
++	if stbl.Stco != nil {
++		promote := false
++		for _, v := range original {
++			if v > math.MaxUint64-delta {
++				return nil, fmt.Errorf("uploaded MP4 offset overflow")
++			}
++			promote = promote || v+delta > math.MaxUint32
++		}
++		if promote {
++			old := stbl.Stco
++			large := &mp4.Co64Box{Version: old.Version, Flags: old.Flags, ChunkOffset: make([]uint64, len(original))}
++			for i, b := range stbl.Children {
++				if b == old {
++					stbl.Children[i] = large
++				}
++			}
++			stbl.Stco, stbl.Co64 = nil, large
++			delta = moov.Size()
++		}
++	}
++	for i, v := range original {
++		if v > math.MaxUint64-delta {
++			return nil, fmt.Errorf("uploaded MP4 offset overflow")
++		}
++		if stbl.Stco != nil {
++			stbl.Stco.ChunkOffset[i] = uint32(v + delta)
++		} else {
++			stbl.Co64.ChunkOffset[i] = v + delta
++		}
++	}
++	if moov.Size() > uploadedMP4IndexLimit {
++		return nil, fmt.Errorf("uploaded MP4 rewritten index exceeds limit")
++	}
++	var encoded bytes.Buffer
++	if err := moov.Encode(&encoded); err != nil {
++		return nil, fmt.Errorf("uploaded MP4 index encoding failed")
++	}
++	return encoded.Bytes(), nil
++}
++
++func (p *uploadedMP4Plan) sourceVersion() string {
++	if p.sequentialIndex {
++		return "uploaded-mp4-faststart-sequential-v1"
++	}
++	if p.rewritten {
++		return uploadedMP4Layout
++	}
++	return "uploaded-mp4-original-v1"
++}
++
++func (p *uploadedMP4Plan) Stream(ctx context.Context, w io.Writer) error {
++	// Copy the request state: concurrent session readers never mutate validators.
++	remote := p.remote
++	if p.sequentialIndex {
++		return p.streamSequential(ctx, w)
++	}
++	if !p.rewritten {
++		resp, err := remote.request(ctx, 0, 0, false)
++		if err != nil {
++			return err
++		}
++		defer resp.Body.Close()
++		if resp.StatusCode != http.StatusOK || (resp.ContentLength >= 0 && resp.ContentLength != remote.total) {
++			return fmt.Errorf("uploaded MP4 original length or status changed")
++		}
++		if hw, ok := w.(interface{ SetHeader(string, string) }); ok {
++			hw.SetHeader("Content-Length", strconv.FormatInt(remote.total, 10))
++		}
++		if _, err := io.CopyN(w, resp.Body, remote.total); err != nil {
++			return fmt.Errorf("uploaded MP4 original stream is truncated")
++		}
++		return uploadedMP4EOF(resp.Body)
++	}
++	spans := [][2]int64{{p.ftypSize, p.moovOffset - 1}, {p.moovOffset + p.moovSize, remote.total - 1}}
++	started := false
++	for _, span := range spans {
++		if span[0] > span[1] {
++			continue
++		}
++		resp, err := remote.request(ctx, span[0], span[1], true)
++		if err != nil {
++			return err
++		}
++		n, err := remote.checkRange(resp, span[0], span[1])
++		if err == nil && !started {
++			if hw, ok := w.(interface{ SetHeader(string, string) }); ok {
++				hw.SetHeader("Content-Length", strconv.FormatInt(p.outputLength, 10))
++			}
++			var written int
++			written, err = w.Write(p.prefix)
++			if err == nil && written != len(p.prefix) {
++				err = io.ErrShortWrite
++			}
++			started = true
++		}
++		if err == nil {
++			_, err = io.CopyN(w, resp.Body, n)
++		}
++		if err == nil {
++			err = uploadedMP4EOF(resp.Body)
++		}
++		resp.Body.Close()
++		if err != nil {
++			if ctx.Err() != nil {
++				return ctx.Err()
++			}
++			return fmt.Errorf("uploaded MP4 media stream failed")
++		}
++	}
++	return nil
++}
++
++// No upstream Range means discovering a tail index necessarily reads the media
++// first. After that bounded-memory scan, still send a front-index stream rather
++// than relying on an invented seek capability or a decoder-error fallback.
++func (p *uploadedMP4Plan) streamSequential(ctx context.Context, w io.Writer) error {
++	remote := p.remote
++	resp, err := remote.request(ctx, 0, 0, false)
++	if err != nil {
++		return err
++	}
++	defer resp.Body.Close()
++	if resp.StatusCode != http.StatusOK || (resp.ContentLength >= 0 && resp.ContentLength != remote.total) {
++		return fmt.Errorf("uploaded MP4 sequential source length or status changed")
++	}
++	if _, err := io.CopyN(io.Discard, resp.Body, p.ftypSize); err != nil {
++		return fmt.Errorf("uploaded MP4 sequential source is truncated")
++	}
++	if hw, ok := w.(interface{ SetHeader(string, string) }); ok {
++		hw.SetHeader("Content-Length", strconv.FormatInt(p.outputLength, 10))
++	}
++	n, err := w.Write(p.prefix)
++	if err != nil {
++		return err
++	}
++	if n != len(p.prefix) {
++		return io.ErrShortWrite
++	}
++	if _, err := io.CopyN(w, resp.Body, p.moovOffset-p.ftypSize); err != nil {
++		return fmt.Errorf("uploaded MP4 sequential media is truncated")
++	}
++	if _, err := io.CopyN(io.Discard, resp.Body, p.moovSize); err != nil {
++		return fmt.Errorf("uploaded MP4 sequential index is truncated")
++	}
++	if _, err := io.CopyN(w, resp.Body, remote.total-p.moovOffset-p.moovSize); err != nil {
++		return fmt.Errorf("uploaded MP4 sequential trailer is truncated")
++	}
++	return uploadedMP4EOF(resp.Body)
++}
+diff --git a/engine/core/apple/uploaded_mp4_contract_test.go b/engine/core/apple/uploaded_mp4_contract_test.go
+new file mode 100644
+index 0000000..c172c55
+--- /dev/null
++++ b/engine/core/apple/uploaded_mp4_contract_test.go
+@@ -0,0 +1,55 @@
++package apple
++
++import (
++	"context"
++	"encoding/json"
++	"net/http"
++	"strings"
++	"testing"
++
++	"engine/core/media"
++	"engine/core/playback"
++)
++
++func TestUploadedMP4SessionLayoutAndCompleteCapability(t *testing.T) {
++	for _, sequential := range []bool{false, true} {
++		f := &uploadedHTTPFixture{playbackBody: uploadedPlaybackJSON("i.test", 3000, 48000, 0, "m4a"), assetBody: uploadedLocalAAC(t, "aac-48.m4a"), assetType: "audio/mp4"}
++		provider := newUploadedTestProvider(f)
++		if sequential {
++			provider.uploaded.apiClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
++				if r.URL.Host == "store-001.blobstore.apple.com" {
++					r = r.Clone(r.Context())
++					r.Header.Del("Range")
++				}
++				return f.RoundTrip(r)
++			})}
++		}
++		manager := playback.NewWithProviderWithoutReaper(provider)
++		session, err := manager.Open(context.Background(), playback.OpenRequest{AssetID: "i.test", Token: "dev", MUT: "mut", RequireFullSong: true})
++		if err != nil {
++			t.Fatal(err)
++		}
++		if strings.Contains(session.SourceVersion, "sequential") != sequential || session.SourceVersion == "" || session.Capabilities.Seekable {
++			t.Fatal("Session exposed a false layout/seek capability")
++		}
++		if !sequential && session.SourceVersion != uploadedMP4Layout {
++			t.Fatal("Normalized bytes retained the old cache identity")
++		}
++		encoded, err := json.Marshal(session)
++		if err != nil {
++			t.Fatal(err)
++		}
++		if !strings.Contains(string(encoded), `"sourceVersion":`) || strings.Contains(string(encoded), `signature=`) {
++			t.Fatal("Public layout identity missing or private URL leaked")
++		}
++		manager.Release(session.ID)
++	}
++}
++
++func TestUploadedMP4NormalizationKeepsPreviewDurationGuard(t *testing.T) {
++	f := &uploadedHTTPFixture{playbackBody: uploadedPlaybackJSON("i.test", 120000, 48000, 0, "m4a"), assetBody: uploadedLocalAAC(t, "aac-48.m4a"), assetType: "audio/mp4"}
++	provider := newUploadedTestProvider(f)
++	if _, err := provider.Open(context.Background(), media.OpenRequest{AssetID: "i.test", Token: "dev", MUT: "mut"}); err == nil || !strings.Contains(err.Error(), "duration") {
++		t.Fatal("Normalized three-second source bypassed the full-song duration guard")
++	}
++}
+diff --git a/engine/core/apple/uploaded_mp4_native_test.go b/engine/core/apple/uploaded_mp4_native_test.go
+new file mode 100644
+index 0000000..cff3368
+--- /dev/null
++++ b/engine/core/apple/uploaded_mp4_native_test.go
+@@ -0,0 +1,260 @@
++package apple
++
++// This opt-in test exposes the actual normalizer, never an Apple/account API.
++// The native probe can consume its output while the original mdat's last byte
++// remains held upstream. It is skipped by every ordinary test invocation.
++import (
++	"context"
++	"crypto/rand"
++	"encoding/json"
++	"fmt"
++	"net/http"
++	"net/http/httptest"
++	"os"
++	"path/filepath"
++	"strconv"
++	"strings"
++	"sync"
++	"testing"
++	"time"
++
++	"github.com/itouakirai/mp4ff/mp4"
++)
++
++func TestUploadedMP4NativeFixture(t *testing.T) {
++	statePath := os.Getenv("GLASSWAVE_UPLOAD_MP4_FIXTURE_STATE")
++	if statePath == "" {
++		t.Skip("The native fixture is explicitly opt-in")
++	}
++	fixtureName := strings.TrimSpace(os.Getenv("GLASSWAVE_UPLOAD_MP4_FIXTURE_FILE"))
++	if fixtureName == "" {
++		fixtureName = "aac-48.m4a"
++	}
++	if fixtureName != filepath.Base(fixtureName) {
++		t.Fatal("Native fixture must be a filename under the repository .local/tests directory")
++	}
++	input := uploadedLocalAAC(t, fixtureName)
++	mdat := uploadedTestBox(t, input, "mdat")
++	gateAt := mdat.offset + mdat.header + (mdat.size-mdat.header)/2
++	if gateAt <= mdat.offset+uploadedMP4HeadLimit || gateAt >= mdat.offset+mdat.size {
++		t.Fatal("Native fixture cannot select a safe mid-mdat gate")
++	}
++	heldRemainingBytes := int64(len(input)) - gateAt
++	f := &uploadedMP4Fixture{data: input, gateAt: gateAt, release: make(chan struct{}), cancelled: make(chan struct{}, 1)}
++	upstream := httptest.NewServer(http.HandlerFunc(f.handler))
++	defer upstream.Close()
++	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
++	defer cancel()
++	p, err := planUploadedMP4(ctx, upstream.Client(), upstream.URL)
++	if err != nil {
++		t.Fatal(err)
++	}
++	if !p.rewritten || p.sequentialIndex {
++		t.Fatal("Native fixture did not use progressive tail-index normalization")
++	}
++	_, fixtureDurationMs, err := audioInfoFromMoov(p.moov)
++	if err != nil || fixtureDurationMs <= 0 {
++		t.Fatal("Native fixture could not determine its media duration")
++	}
++	token := rand.Text()
++	var release, stop sync.Once
++	done := make(chan struct{})
++	var mu sync.Mutex
++	requests, completed, failures := 0, 0, 0
++	released := false
++	var releaseUnixMs int64
++	openGate := func() {
++		release.Do(func() {
++			mu.Lock()
++			released = true
++			releaseUnixMs = time.Now().UnixMilli()
++			mu.Unlock()
++			close(f.release)
++		})
++	}
++	defer openGate()
++	mux := http.NewServeMux()
++	mux.HandleFunc("/stream", func(w http.ResponseWriter, r *http.Request) {
++		if r.Method != http.MethodGet || r.Header.Get("Range") != "" {
++			w.WriteHeader(416)
++			return
++		}
++		mu.Lock()
++		requests++
++		mu.Unlock()
++		w.Header().Set("Content-Type", "audio/mp4")
++		w.Header().Set("Accept-Ranges", "none")
++		w.Header().Set("Content-Length", strconv.FormatInt(p.outputLength, 10))
++		if err := p.Stream(r.Context(), w); err != nil {
++			mu.Lock()
++			failures++
++			mu.Unlock()
++			return
++		}
++		mu.Lock()
++		completed++
++		mu.Unlock()
++	})
++	mux.HandleFunc("/release", func(w http.ResponseWriter, r *http.Request) {
++		if r.Method != http.MethodPost {
++			w.WriteHeader(405)
++			return
++		}
++		openGate()
++		w.WriteHeader(204)
++	})
++	mux.HandleFunc("/state", func(w http.ResponseWriter, r *http.Request) {
++		mu.Lock()
++		defer mu.Unlock()
++		f.mu.Lock()
++		served := f.served
++		gateReachedUnixMs := f.gateReachedUnixMs
++		lastByteWrittenUnixMs := f.lastByteWrittenUnixMs
++		f.mu.Unlock()
++		w.Header().Set("Content-Type", "application/json")
++		json.NewEncoder(w).Encode(map[string]any{"requests": requests, "completed": completed, "failures": failures, "released": released, "releaseUnixMs": releaseUnixMs, "gateReachedUnixMs": gateReachedUnixMs, "lastByteWrittenUnixMs": lastByteWrittenUnixMs, "ready": true, "upstreamBytesServed": served, "originalBytes": len(input), "originalMdatBytes": mdat.size - mdat.header, "gateAt": gateAt, "heldRemainingBytes": heldRemainingBytes})
++	})
++	mux.HandleFunc("/stop", func(w http.ResponseWriter, r *http.Request) {
++		if r.Method != http.MethodPost {
++			w.WriteHeader(405)
++			return
++		}
++		openGate()
++		stop.Do(func() { close(done) })
++		w.WriteHeader(204)
++	})
++	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		if r.Header.Get("X-Glasswave-Fixture") != token {
++			w.WriteHeader(403)
++			return
++		}
++		mux.ServeHTTP(w, r)
++	}))
++	defer func() { openGate(); cancel(); server.Close() }()
++	state := map[string]any{
++		"schema": 1, "ready": true, "readyUnixMs": time.Now().UnixMilli(),
++		"url": server.URL, "token": token, "codec": "aac", "sampleRate": 48000,
++		"channels": 2, "durationMs": fixtureDurationMs, "sourceVersion": p.sourceVersion(),
++		"outputBytes": p.outputLength, "originalBytes": len(input),
++		"originalMdatBytes": mdat.size - mdat.header, "gateAt": gateAt,
++		"heldRemainingBytes": heldRemainingBytes, "releaseUnixMs": int64(0),
++		"gateReachedUnixMs": int64(0), "lastByteWrittenUnixMs": int64(0),
++	}
++	data, err := json.Marshal(state)
++	if err != nil {
++		t.Fatal(err)
++	}
++	if err := os.WriteFile(statePath, data, 0600); err != nil {
++		t.Fatal(err)
++	}
++	defer os.Remove(statePath)
++	select {
++	case <-done:
++	case <-ctx.Done():
++		t.Fatal("Native fixture lifetime expired")
++	}
++}
++
++// TestNormalizeUploadedMP4AACFixture prepares a deterministic container-only
++// long fixture for the opt-in native runner. It rewrites timing metadata while
++// leaving the compressed mdat payload untouched.
++func TestNormalizeUploadedMP4AACFixture(t *testing.T) {
++	inputPath := strings.TrimSpace(os.Getenv("GLASSWAVE_UPLOAD_MP4_NORMALIZE_INPUT"))
++	outputPath := strings.TrimSpace(os.Getenv("GLASSWAVE_UPLOAD_MP4_NORMALIZE_OUTPUT"))
++	if inputPath == "" && outputPath == "" {
++		t.Skip("The AAC fixture normalizer is explicitly opt-in")
++	}
++	if inputPath == "" || outputPath == "" {
++		t.Fatal("Both AAC fixture normalization paths are required")
++	}
++	if err := normalizeUploadedMP4AACFixture(inputPath, outputPath); err != nil {
++		t.Fatal(err)
++	}
++}
++
++func normalizeUploadedMP4AACFixture(inputPath, outputPath string) error {
++	const aacSamplesPerPacket = uint64(1024)
++
++	file, err := mp4.ReadMP4File(inputPath)
++	if err != nil {
++		return err
++	}
++	if file.Moov == nil || file.Moov.Mvhd == nil || len(file.Moov.Traks) != 1 {
++		return fmt.Errorf("AAC fixture must contain one movie track")
++	}
++	trak := file.Moov.Traks[0]
++	if trak.Mdia == nil || trak.Mdia.Hdlr == nil || trak.Mdia.Hdlr.HandlerType != "soun" ||
++		trak.Mdia.Mdhd == nil || trak.Mdia.Minf == nil || trak.Mdia.Minf.Stbl == nil ||
++		trak.Mdia.Minf.Stbl.Stts == nil {
++		return fmt.Errorf("AAC fixture track is incomplete")
++	}
++
++	stts := trak.Mdia.Minf.Stbl.Stts
++	var samples uint64
++	for index, count := range stts.SampleCount {
++		samples += uint64(count)
++		stts.SampleTimeDelta[index] = uint32(aacSamplesPerPacket)
++	}
++	if samples == 0 {
++		return fmt.Errorf("AAC fixture has no samples")
++	}
++	mediaDuration := samples * aacSamplesPerPacket
++	presentationDuration := mediaDuration
++	if trak.Edts != nil {
++		entries := 0
++		for _, box := range trak.Edts.Elst {
++			for index := range box.Entries {
++				entry := &box.Entries[index]
++				if entry.MediaTime > 0 {
++					skipped := uint64(entry.MediaTime)
++					if skipped > mediaDuration {
++						return fmt.Errorf("AAC fixture edit list exceeds media duration")
++					}
++					presentationDuration = mediaDuration - skipped
++				}
++				entry.SegmentDuration = rescaleDuration(
++					presentationDuration, trak.Mdia.Mdhd.Timescale, file.Moov.Mvhd.Timescale)
++				entries++
++			}
++		}
++		if entries != 1 {
++			return fmt.Errorf("AAC fixture must have one edit-list entry, found %d", entries)
++		}
++	}
++
++	trak.Mdia.Mdhd.Duration = mediaDuration
++	trak.Tkhd.Duration = rescaleDuration(
++		presentationDuration, trak.Mdia.Mdhd.Timescale, file.Moov.Mvhd.Timescale)
++	file.Moov.Mvhd.Duration = rescaleDuration(
++		presentationDuration, trak.Mdia.Mdhd.Timescale, file.Moov.Mvhd.Timescale)
++	if err := mp4.WriteToFile(file, outputPath); err != nil {
++		return err
++	}
++
++	normalized, err := mp4.ReadMP4File(outputPath)
++	if err != nil {
++		return err
++	}
++	if normalized.Moov == nil || normalized.Moov.Mvhd == nil || len(normalized.Moov.Traks) != 1 {
++		return fmt.Errorf("normalized AAC fixture lost its movie track")
++	}
++	normalizedTrack := normalized.Moov.Traks[0]
++	if normalized.Moov.Mvhd.Duration != trak.Tkhd.Duration ||
++		normalizedTrack.Tkhd.Duration != trak.Tkhd.Duration ||
++		normalizedTrack.Mdia.Mdhd.Duration != mediaDuration {
++		return fmt.Errorf("normalized AAC fixture has inconsistent duration metadata")
++	}
++	if normalizedTrack.Edts == nil || len(normalizedTrack.Edts.Elst) != 1 ||
++		len(normalizedTrack.Edts.Elst[0].Entries) != 1 ||
++		normalizedTrack.Edts.Elst[0].Entries[0].SegmentDuration != trak.Tkhd.Duration {
++		return fmt.Errorf("normalized AAC fixture has an inconsistent edit list")
++	}
++	return nil
++}
++
++func rescaleDuration(value uint64, from, to uint32) uint64 {
++	if from == 0 || to == 0 {
++		return 0
++	}
++	return value * uint64(to) / uint64(from)
++}
+diff --git a/engine/core/apple/uploaded_mp4_test.go b/engine/core/apple/uploaded_mp4_test.go
+new file mode 100644
+index 0000000..fb246ef
+--- /dev/null
++++ b/engine/core/apple/uploaded_mp4_test.go
+@@ -0,0 +1,537 @@
++package apple
++
++import (
++	"bytes"
++	"context"
++	"encoding/binary"
++	"fmt"
++	"io"
++	"math"
++	"net/http"
++	"net/http/httptest"
++	"os"
++	"path/filepath"
++	"strings"
++	"sync"
++	"testing"
++	"time"
++
++	"github.com/itouakirai/mp4ff/mp4"
++)
++
++func uploadedLocalAAC(t *testing.T, name string) []byte {
++	t.Helper()
++	dir, err := os.Getwd()
++	if err != nil {
++		t.Fatal(err)
++	}
++	for {
++		path := filepath.Join(dir, ".local", "tests", name)
++		if data, err := os.ReadFile(path); err == nil {
++			return data
++		}
++		parent := filepath.Dir(dir)
++		if parent == dir {
++			t.Fatalf("Required local AAC fixture is missing: %s", name)
++		}
++		dir = parent
++	}
++}
++
++func uploadedTestBoxes(t *testing.T, data []byte) []uploadedMP4Box {
++	t.Helper()
++	var boxes []uploadedMP4Box
++	for pos := int64(0); pos < int64(len(data)); {
++		box, err := uploadedMP4Header(data[pos:], pos, int64(len(data)))
++		if err != nil {
++			t.Fatal(err)
++		}
++		boxes = append(boxes, box)
++		pos += box.size
++	}
++	return boxes
++}
++
++func uploadedTestBox(t *testing.T, data []byte, typ string) uploadedMP4Box {
++	t.Helper()
++	for _, box := range uploadedTestBoxes(t, data) {
++		if box.typ == typ {
++			return box
++		}
++	}
++	t.Fatalf("Missing %s in fixture", typ)
++	return uploadedMP4Box{}
++}
++
++type uploadedMP4Fixture struct {
++	mu                    sync.Mutex
++	data                  []byte
++	requests              []string
++	ifRanges              []string
++	served                int64
++	ignoreRange           bool
++	truncateMedia         bool
++	mutate                func(*http.Request, *http.Response)
++	gateAt                int64
++	release               chan struct{}
++	cancelled             chan struct{}
++	gateReachedUnixMs     int64
++	lastByteWrittenUnixMs int64
++}
++
++func (f *uploadedMP4Fixture) handler(w http.ResponseWriter, r *http.Request) {
++	f.mu.Lock()
++	f.requests = append(f.requests, r.Header.Get("Range"))
++	f.ifRanges = append(f.ifRanges, r.Header.Get("If-Range"))
++	f.mu.Unlock()
++	start, end, status := int64(0), int64(len(f.data)-1), http.StatusOK
++	if value := r.Header.Get("Range"); value != "" && !f.ignoreRange {
++		if _, err := fmt.Sscanf(value, "bytes=%d-%d", &start, &end); err != nil || start < 0 || start >= int64(len(f.data)) || end < start {
++			w.WriteHeader(416)
++			return
++		}
++		end = min(end, int64(len(f.data)-1))
++		status = http.StatusPartialContent
++	}
++	resp := &http.Response{StatusCode: status, Header: make(http.Header), ContentLength: end - start + 1}
++	resp.Header.Set("ETag", `"uploaded-fixture-v1"`)
++	if status == http.StatusPartialContent {
++		resp.Header.Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, len(f.data)))
++	}
++	if f.mutate != nil {
++		f.mutate(r, resp)
++	}
++	for k, values := range resp.Header {
++		for _, value := range values {
++			w.Header().Add(k, value)
++		}
++	}
++	w.Header().Set("Content-Length", fmt.Sprint(resp.ContentLength))
++	w.WriteHeader(resp.StatusCode)
++	if f.truncateMedia && start == 28 && status == http.StatusPartialContent {
++		end--
++	}
++	write := func(b []byte) { n, _ := w.Write(b); f.mu.Lock(); f.served += int64(n); f.mu.Unlock() }
++	if f.release != nil && start <= f.gateAt && end >= f.gateAt && end-start+1 > uploadedMP4HeadLimit {
++		write(f.data[start:f.gateAt])
++		f.mu.Lock()
++		if f.gateReachedUnixMs == 0 {
++			f.gateReachedUnixMs = time.Now().UnixMilli()
++		}
++		f.mu.Unlock()
++		if flusher, ok := w.(http.Flusher); ok {
++			flusher.Flush()
++		}
++		select {
++		case <-f.release:
++		case <-r.Context().Done():
++			if f.cancelled != nil {
++				select {
++				case f.cancelled <- struct{}{}:
++				default:
++				}
++			}
++			return
++		}
++		write(f.data[f.gateAt : end+1])
++		f.mu.Lock()
++		f.lastByteWrittenUnixMs = time.Now().UnixMilli()
++		f.mu.Unlock()
++		return
++	}
++	write(f.data[start : end+1])
++}
++
++type uploadedPrefixWriter struct {
++	bytes.Buffer
++	first    chan []byte
++	gotFirst bool
++}
++
++func (w *uploadedPrefixWriter) Write(b []byte) (int, error) {
++	if !w.gotFirst {
++		w.gotFirst = true
++		w.first <- append([]byte(nil), b...)
++	}
++	return w.Buffer.Write(b)
++}
++
++func TestUploadedMP4TailAACRangeStartsBeforeMediaEOF(t *testing.T) {
++	input := uploadedLocalAAC(t, "aac-48.m4a")
++	mdat := uploadedTestBox(t, input, "mdat")
++	f := &uploadedMP4Fixture{data: input, gateAt: mdat.offset + mdat.size - 1, release: make(chan struct{})}
++	server := httptest.NewServer(http.HandlerFunc(f.handler))
++	defer server.Close()
++	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
++	defer cancel()
++	p, err := planUploadedMP4(ctx, server.Client(), server.URL)
++	if err != nil {
++		t.Fatal(err)
++	}
++	if !p.rewritten || p.sequentialIndex || p.sourceVersion() != uploadedMP4Layout {
++		t.Fatalf("Wrong optimized-source capability")
++	}
++	f.mu.Lock()
++	before := f.served
++	f.mu.Unlock()
++	if before >= int64(len(input)) {
++		t.Fatalf("Index discovery consumed the entire source: %d", before)
++	}
++	w := &uploadedPrefixWriter{first: make(chan []byte, 1)}
++	done := make(chan error, 1)
++	go func() { done <- p.Stream(ctx, w) }()
++	select {
++	case prefix := <-w.first:
++		boxes := uploadedTestBoxes(t, prefix)
++		if len(boxes) != 2 || boxes[0].typ != "ftyp" || boxes[1].typ != "moov" {
++			t.Fatal("No front index before media completion")
++		}
++	case err := <-done:
++		t.Fatalf("Completed before final-byte release: %v", err)
++	case <-ctx.Done():
++		t.Fatal(ctx.Err())
++	}
++	select {
++	case err := <-done:
++		t.Fatalf("Ignored the final-byte gate: %v", err)
++	default:
++	}
++	close(f.release)
++	if err := <-done; err != nil {
++		t.Fatal(err)
++	}
++	output := w.Bytes()
++	outMdat := uploadedTestBox(t, output, "mdat")
++	if !bytes.Equal(input[mdat.offset+mdat.header:mdat.offset+mdat.size], output[outMdat.offset+outMdat.header:outMdat.offset+outMdat.size]) {
++		t.Fatal("Encoded AAC media bytes changed")
++	}
++	if int64(len(output)) != p.outputLength {
++		t.Fatal("Transformed Content-Length is wrong")
++	}
++	oldMoov := uploadedTestBox(t, input, "moov")
++	outMoov := uploadedTestBox(t, output, "moov")
++	original, _ := uploadedMP4DecodeMoov(input[oldMoov.offset : oldMoov.offset+oldMoov.size])
++	updated, err := uploadedMP4DecodeMoov(output[outMoov.offset : outMoov.offset+outMoov.size])
++	if err != nil {
++		t.Fatal(err)
++	}
++	for i, v := range original.Trak.Mdia.Minf.Stbl.Stco.ChunkOffset {
++		if uint64(updated.Trak.Mdia.Minf.Stbl.Stco.ChunkOffset[i]) != uint64(v)+uint64(outMoov.size) {
++			t.Fatal("Chunk no longer points to original AAC sample")
++		}
++	}
++	f.mu.Lock()
++	defer f.mu.Unlock()
++	for _, validator := range f.ifRanges[1:] {
++		if validator != `"uploaded-fixture-v1"` {
++			t.Fatal("Range reads did not keep resource identity")
++		}
++	}
++}
++
++func TestUploadedMP4FrontFragmentedPassesThroughWithoutTailRanges(t *testing.T) {
++	input := uploadedLocalAAC(t, "aac-48-progressive.m4a")
++	f := &uploadedMP4Fixture{data: input}
++	server := httptest.NewServer(http.HandlerFunc(f.handler))
++	defer server.Close()
++	p, err := planUploadedMP4(context.Background(), server.Client(), server.URL)
++	if err != nil {
++		t.Fatal(err)
++	}
++	if p.rewritten || p.sequentialIndex {
++		t.Fatal("Front-init fMP4 was normalized or made non-progressive")
++	}
++	var output bytes.Buffer
++	if err := p.Stream(context.Background(), &output); err != nil {
++		t.Fatal(err)
++	}
++	if !bytes.Equal(input, output.Bytes()) {
++		t.Fatal("Passthrough fMP4 changed")
++	}
++	if len(f.requests) != 2 || f.requests[1] != "" {
++		t.Fatalf("Front-init source paid extra range requests: %v", f.requests)
++	}
++}
++
++func TestUploadedMP4OnlyProvenNonRangeTailUsesSequentialIndex(t *testing.T) {
++	for _, name := range []string{"aac-48.m4a", "aac-48-progressive.m4a"} {
++		t.Run(name, func(t *testing.T) {
++			input := uploadedLocalAAC(t, name)
++			f := &uploadedMP4Fixture{data: input, ignoreRange: true}
++			server := httptest.NewServer(http.HandlerFunc(f.handler))
++			defer server.Close()
++			p, err := planUploadedMP4(context.Background(), server.Client(), server.URL)
++			if err != nil {
++				t.Fatal(err)
++			}
++			if p.rewritten != (name == "aac-48.m4a") || p.sequentialIndex != (name == "aac-48.m4a") {
++				t.Fatal("Wrong explicit sequential-source capability")
++			}
++			var output bytes.Buffer
++			if err := p.Stream(context.Background(), &output); err != nil {
++				t.Fatal(err)
++			}
++			oldMdat := uploadedTestBox(t, input, "mdat")
++			newMdat := uploadedTestBox(t, output.Bytes(), "mdat")
++			if !bytes.Equal(input[oldMdat.offset+oldMdat.header:oldMdat.offset+oldMdat.size], output.Bytes()[newMdat.offset+newMdat.header:newMdat.offset+newMdat.size]) {
++				t.Fatal("Non-range fallback changed compressed samples")
++			}
++		})
++	}
++}
++
++func TestUploadedMP4RejectsLyingRangesAndChangedResource(t *testing.T) {
++	for _, test := range []struct {
++		name   string
++		mutate func(*http.Request, *http.Response)
++	}{
++		{"wrong start", func(_ *http.Request, r *http.Response) { r.Header.Set("Content-Range", "bytes 1-8192/92001") }},
++		{"unknown total", func(_ *http.Request, r *http.Response) { r.Header.Set("Content-Range", "bytes 0-8191/*") }},
++		{"short body", func(_ *http.Request, r *http.Response) { r.ContentLength++ }},
++		{"ignored later range", func(q *http.Request, r *http.Response) {
++			if q.Header.Get("If-Range") != "" {
++				r.StatusCode = 200
++			}
++		}},
++		{"changed ETag", func(q *http.Request, r *http.Response) {
++			if q.Header.Get("If-Range") != "" {
++				r.Header.Set("ETag", `"changed"`)
++			}
++		}},
++		{"changed total", func(q *http.Request, r *http.Response) {
++			if q.Header.Get("If-Range") != "" {
++				r.Header.Set("Content-Range", strings.ReplaceAll(r.Header.Get("Content-Range"), "/92001", "/92002"))
++			}
++		}},
++	} {
++		t.Run(test.name, func(t *testing.T) {
++			f := &uploadedMP4Fixture{data: uploadedLocalAAC(t, "aac-48.m4a"), mutate: test.mutate}
++			server := httptest.NewServer(http.HandlerFunc(f.handler))
++			defer server.Close()
++			if _, err := planUploadedMP4(context.Background(), server.Client(), server.URL); err == nil {
++				t.Fatal("Invalid range/resource was accepted")
++			}
++		})
++	}
++}
++
++func TestUploadedMP4RejectsOversizedAndTruncatedMetadata(t *testing.T) {
++	for _, size := range []uint64{1, uint64(uploadedMP4IndexLimit + 1), math.MaxUint64} {
++		t.Run(fmt.Sprint(size), func(t *testing.T) {
++			data := append([]byte(nil), uploadedLocalAAC(t, "aac-48.m4a")...)
++			box := uploadedTestBox(t, data, "moov")
++			if size == math.MaxUint64 {
++				binary.BigEndian.PutUint32(data[box.offset:], 1)
++				binary.BigEndian.PutUint64(data[box.offset+8:], size)
++			} else {
++				binary.BigEndian.PutUint32(data[box.offset:], uint32(size))
++			}
++			f := &uploadedMP4Fixture{data: data}
++			server := httptest.NewServer(http.HandlerFunc(f.handler))
++			defer server.Close()
++			if _, err := planUploadedMP4(context.Background(), server.Client(), server.URL); err == nil {
++				t.Fatal("Malformed or oversized atom accepted")
++			}
++		})
++	}
++}
++
++func TestUploadedMP4ChunkOffsetPromotionAndOverflow(t *testing.T) {
++	input := uploadedLocalAAC(t, "aac-48.m4a")
++	box := uploadedTestBox(t, input, "moov")
++	moov, err := uploadedMP4DecodeMoov(input[box.offset : box.offset+box.size])
++	if err != nil {
++		t.Fatal(err)
++	}
++	stbl := moov.Trak.Mdia.Minf.Stbl
++	for i := range stbl.Stco.ChunkOffset {
++		stbl.Stco.ChunkOffset[i] = math.MaxUint32 - 1
++	}
++	encoded, err := relocateUploadedMoov(moov, math.MaxUint32-10, math.MaxUint32+100)
++	if err != nil {
++		t.Fatal(err)
++	}
++	if stbl.Stco != nil || stbl.Co64 == nil {
++		t.Fatal("Offset overflow did not promote to co64")
++	}
++	for _, v := range stbl.Co64.ChunkOffset {
++		if v != math.MaxUint32-1+uint64(len(encoded)) {
++			t.Fatal("Promotion did not recompute final index delta")
++		}
++	}
++	for i := range stbl.Co64.ChunkOffset {
++		stbl.Co64.ChunkOffset[i] = math.MaxUint64 - 1
++	}
++	if _, err := relocateUploadedMoov(moov, math.MaxUint64-10, math.MaxUint64); err == nil {
++		t.Fatal("64-bit arithmetic overflow accepted")
++	}
++}
++
++func TestUploadedMP4CancelClosesMediaRange(t *testing.T) {
++	input := uploadedLocalAAC(t, "aac-48.m4a")
++	box := uploadedTestBox(t, input, "mdat")
++	f := &uploadedMP4Fixture{data: input, gateAt: box.offset + box.size - 1, release: make(chan struct{}), cancelled: make(chan struct{}, 1)}
++	server := httptest.NewServer(http.HandlerFunc(f.handler))
++	defer server.Close()
++	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
++	defer cancel()
++	p, err := planUploadedMP4(ctx, server.Client(), server.URL)
++	if err != nil {
++		t.Fatal(err)
++	}
++	w := &uploadedPrefixWriter{first: make(chan []byte, 1)}
++	done := make(chan error, 1)
++	go func() { done <- p.Stream(ctx, w) }()
++	select {
++	case <-w.first:
++	case <-ctx.Done():
++		t.Fatal(ctx.Err())
++	}
++	cancel()
++	select {
++	case err := <-done:
++		if err == nil {
++			t.Fatal("Cancellation reported successful EOF")
++		}
++	case <-time.After(time.Second):
++		t.Fatal("Cancellation blocked")
++	}
++	select {
++	case <-f.cancelled:
++	case <-time.After(time.Second):
++		t.Fatal("Upstream response was not cancelled/closed")
++	}
++}
++
++func TestUploadedMP4TruncatedMediaIsNotSuccessfulEOF(t *testing.T) {
++	f := &uploadedMP4Fixture{data: uploadedLocalAAC(t, "aac-48.m4a")}
++	server := httptest.NewServer(http.HandlerFunc(f.handler))
++	defer server.Close()
++	p, err := planUploadedMP4(context.Background(), server.Client(), server.URL)
++	if err != nil {
++		t.Fatal(err)
++	}
++	f.truncateMedia = true
++	if err := p.Stream(context.Background(), io.Discard); err == nil {
++		t.Fatal("A partial media response was published as complete")
++	}
++}
++
++func TestUploadedMP4ExistingCo64AndExtendedMdat(t *testing.T) {
++	input := uploadedLocalAAC(t, "aac-48.m4a")
++	mdat, index := uploadedTestBox(t, input, "mdat"), uploadedTestBox(t, input, "moov")
++	moov, err := uploadedMP4DecodeMoov(input[index.offset : index.offset+index.size])
++	if err != nil {
++		t.Fatal(err)
++	}
++	stbl := moov.Trak.Mdia.Minf.Stbl
++	old := stbl.Stco
++	large := &mp4.Co64Box{Version: old.Version, Flags: old.Flags}
++	for _, v := range old.ChunkOffset {
++		large.ChunkOffset = append(large.ChunkOffset, uint64(v)+8)
++	}
++	for i, child := range stbl.Children {
++		if child == old {
++			stbl.Children[i] = large
++		}
++	}
++	stbl.Stco, stbl.Co64 = nil, large
++	var encoded bytes.Buffer
++	if err := moov.Encode(&encoded); err != nil {
++		t.Fatal(err)
++	}
++	var extended bytes.Buffer
++	extended.Write(input[:mdat.offset])
++	var header [16]byte
++	binary.BigEndian.PutUint32(header[:], 1)
++	copy(header[4:], "mdat")
++	binary.BigEndian.PutUint64(header[8:], uint64(mdat.size+8))
++	extended.Write(header[:])
++	extended.Write(input[mdat.offset+mdat.header : mdat.offset+mdat.size])
++	extended.Write(encoded.Bytes())
++	f := &uploadedMP4Fixture{data: extended.Bytes()}
++	server := httptest.NewServer(http.HandlerFunc(f.handler))
++	defer server.Close()
++	p, err := planUploadedMP4(context.Background(), server.Client(), server.URL)
++	if err != nil {
++		t.Fatal(err)
++	}
++	var output bytes.Buffer
++	if err := p.Stream(context.Background(), &output); err != nil {
++		t.Fatal(err)
++	}
++	out := uploadedTestBox(t, output.Bytes(), "mdat")
++	if out.header != 16 || !bytes.Equal(input[mdat.offset+mdat.header:mdat.offset+mdat.size], output.Bytes()[out.offset+out.header:out.offset+out.size]) {
++		t.Fatal("64-bit mdat payload or header changed")
++	}
++}
++
++func TestUploadedMP4IndexDepthAndBoxCountAreBounded(t *testing.T) {
++	wrap := func(typ string, body []byte) []byte {
++		data := make([]byte, 8+len(body))
++		binary.BigEndian.PutUint32(data, uint32(len(data)))
++		copy(data[4:], typ)
++		copy(data[8:], body)
++		return data
++	}
++	deep := wrap("free", nil)
++	for i := 0; i < 26; i++ {
++		deep = wrap("moov", deep)
++	}
++	if err := validateUploadedMP4Index(deep); err == nil {
++		t.Fatal("Unbounded recursive metadata was accepted")
++	}
++	wide := wrap("moov", bytes.Repeat(wrap("free", nil), 4097))
++	if err := validateUploadedMP4Index(wide); err == nil {
++		t.Fatal("Unbounded metadata box count was accepted")
++	}
++}
++
++func TestUploadedMP4LastModifiedValidatorAndChunkBounds(t *testing.T) {
++	date := "Tue, 10 Nov 2026 09:00:00 GMT"
++	f := &uploadedMP4Fixture{data: uploadedLocalAAC(t, "aac-48.m4a"), mutate: func(_ *http.Request, r *http.Response) { r.Header.Del("ETag"); r.Header.Set("Last-Modified", date) }}
++	server := httptest.NewServer(http.HandlerFunc(f.handler))
++	defer server.Close()
++	p, err := planUploadedMP4(context.Background(), server.Client(), server.URL)
++	if err != nil {
++		t.Fatal(err)
++	}
++	for _, validator := range f.ifRanges[1:] {
++		if validator != date {
++			t.Fatal("Last-Modified was not used in If-Range")
++		}
++	}
++	for i := range p.moov.Trak.Mdia.Minf.Stbl.Stco.ChunkOffset {
++		p.moov.Trak.Mdia.Minf.Stbl.Stco.ChunkOffset[i] = 0
++	}
++	if _, err := relocateUploadedMoov(p.moov, 44, 90671); err == nil {
++		t.Fatal("Chunk pointing outside encoded media was accepted")
++	}
++}
++
++type mp4RoundTripFunc func(*http.Request) (*http.Response, error)
++
++func (f mp4RoundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
++
++func TestUploadedMP4NonRangeScanUsesStreamingClient(t *testing.T) {
++	f := &uploadedMP4Fixture{data: uploadedLocalAAC(t, "aac-48.m4a"), ignoreRange: true}
++	server := httptest.NewServer(http.HandlerFunc(f.handler))
++	defer server.Close()
++	transport := server.Client().Transport
++	metadataRequests, fullRequests := 0, 0
++	metadata := &http.Client{Transport: mp4RoundTripFunc(func(r *http.Request) (*http.Response, error) {
++		metadataRequests++
++		if r.Header.Get("Range") == "" {
++			t.Error("Full scan used metadata timeout")
++		}
++		return transport.RoundTrip(r)
++	})}
++	stream := &http.Client{Transport: mp4RoundTripFunc(func(r *http.Request) (*http.Response, error) { fullRequests++; return transport.RoundTrip(r) })}
++	p, err := planUploadedMP4Clients(context.Background(), metadata, stream, server.URL)
++	if err != nil {
++		t.Fatal(err)
++	}
++	if !p.sequentialIndex || metadataRequests != 1 || fullRequests != 1 {
++		t.Fatal("Non-range discovery did not switch to bounded-memory streaming")
++	}
++}
+diff --git a/engine/core/apple/uploaded_test.go b/engine/core/apple/uploaded_test.go
+new file mode 100644
+index 0000000..f544b84
+--- /dev/null
++++ b/engine/core/apple/uploaded_test.go
+@@ -0,0 +1,565 @@
++package apple
++
++import (
++	"bytes"
++	"context"
++	"encoding/binary"
++	"encoding/json"
++	"fmt"
++	"io"
++	"net/http"
++	"strconv"
++	"strings"
++	"sync"
++	"testing"
++
++	"github.com/itouakirai/mp4ff/mp4"
++
++	"engine/core/media"
++	"engine/core/pipeline"
++	"engine/core/playback"
++)
++
++const uploadedTestAssetURL = "https://store-001.blobstore.apple.com/audio/upload?signature=asset-secret"
++
++type uploadedHTTPFixture struct {
++	mu sync.Mutex
++
++	playbackStatus int
++	playbackBody   []byte
++	assetStatus    int
++	assetBody      []byte
++	assetType      string
++	assetErr       error
++
++	playbackRequest []byte
++	playbackHeaders http.Header
++	assetRequests   int
++	assetHeaders    []http.Header
++}
++
++type roundTripFunc func(*http.Request) (*http.Response, error)
++
++func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) {
++	return f(r)
++}
++
++func (f *uploadedHTTPFixture) RoundTrip(r *http.Request) (*http.Response, error) {
++	f.mu.Lock()
++	defer f.mu.Unlock()
++	switch r.URL.Host {
++	case "play.music.apple.com":
++		body, err := io.ReadAll(r.Body)
++		if err != nil {
++			return nil, err
++		}
++		f.playbackRequest = append([]byte(nil), body...)
++		f.playbackHeaders = r.Header.Clone()
++		status := f.playbackStatus
++		if status == 0 {
++			status = http.StatusOK
++		}
++		return testHTTPResponse(r, status, f.playbackBody, "application/json"), nil
++	case "store-001.blobstore.apple.com":
++		f.assetRequests++
++		f.assetHeaders = append(f.assetHeaders, r.Header.Clone())
++		if f.assetErr != nil {
++			return nil, f.assetErr
++		}
++		status := f.assetStatus
++		if status == 0 {
++			status = http.StatusOK
++		}
++		if status != http.StatusOK {
++			return testHTTPResponse(r, status, nil, ""), nil
++		}
++		body := f.assetBody
++		start, end, hasRange := parseTestRange(r.Header.Get("Range"), int64(len(body)))
++		if hasRange {
++			body = body[start : end+1]
++			status = http.StatusPartialContent
++		}
++		resp := testHTTPResponse(r, status, body, f.assetType)
++		if hasRange {
++			resp.Header.Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, f.assetRequestsLength()))
++		}
++		return resp, nil
++	default:
++		return nil, fmt.Errorf("unexpected mocked host")
++	}
++}
++
++func (f *uploadedHTTPFixture) assetRequestsLength() int {
++	return len(f.assetBody)
++}
++
++func testHTTPResponse(req *http.Request, status int, body []byte, contentType string) *http.Response {
++	resp := &http.Response{
++		StatusCode:    status,
++		Status:        http.StatusText(status),
++		Header:        make(http.Header),
++		Body:          io.NopCloser(bytes.NewReader(body)),
++		ContentLength: int64(len(body)),
++		Request:       req,
++	}
++	if contentType != "" {
++		resp.Header.Set("Content-Type", contentType)
++	}
++	return resp
++}
++
++func parseTestRange(value string, total int64) (int64, int64, bool) {
++	if !strings.HasPrefix(value, "bytes=") {
++		return 0, 0, false
++	}
++	left, right, ok := strings.Cut(strings.TrimPrefix(value, "bytes="), "-")
++	if !ok {
++		return 0, 0, false
++	}
++	start, err1 := strconv.ParseInt(left, 10, 64)
++	end, err2 := strconv.ParseInt(right, 10, 64)
++	if err1 != nil || err2 != nil || start < 0 || end < start || start >= total {
++		return 0, 0, false
++	}
++	if end >= total {
++		end = total - 1
++	}
++	return start, end, true
++}
++
++type testMetadata map[string]any
++
++func uploadedPlaybackJSON(id string, duration, sampleRate, bitRate int, extension string, assets ...map[string]any) []byte {
++	metadata := testMetadata{
++		"duration":      duration,
++		"sampleRate":    sampleRate,
++		"bitRate":       bitRate,
++		"fileExtension": extension,
++		"kind":          "song",
++		"itemName":      "Uploaded Song",
++		"artistName":    "Uploaded Artist",
++	}
++	if len(assets) == 0 {
++		assets = []map[string]any{{
++			"URL":      uploadedTestAssetURL,
++			"flavor":   "",
++			"metadata": metadata,
++		}}
++	} else if _, ok := assets[0]["metadata"]; !ok {
++		assets[0]["metadata"] = metadata
++	}
++	payload := map[string]any{
++		"songList": []any{map[string]any{
++			"songId":                 -1,
++			"needsPlaybackReporting": false,
++			"assets":                 assets,
++		}},
++	}
++	body, _ := json.Marshal(payload)
++	return body
++}
++
++func newUploadedTestProvider(f *uploadedHTTPFixture) *appleMusicProvider {
++	client := &http.Client{Transport: f, CheckRedirect: noRedirect}
++	return &appleMusicProvider{
++		uploaded: &uploadedAudioAdapter{
++			apiClient:    client,
++			streamClient: client,
++		},
++	}
++}
++
++func mp3Fixture(durationMs, bitRate, sampleRate int) []byte {
++	body := make([]byte, 10+durationMs*bitRate/8000)
++	copy(body, []byte("ID3\x04\x00\x00\x00\x00\x00\x00"))
++	bitrateIndex := byte(9) // MPEG-1 Layer III, 128 kbps
++	if bitRate == 192_000 {
++		bitrateIndex = 11
++	} else if bitRate == 320_000 {
++		bitrateIndex = 14
++	}
++	rateIndex := byte(0)
++	if sampleRate == 48000 {
++		rateIndex = 1
++	}
++	body[10] = 0xff
++	body[11] = 0xfb
++	body[12] = bitrateIndex << 4
++	body[13] = rateIndex << 2
++	return body
++}
++
++func mp3InfoFixture(infoFrames int) []byte {
++	const (
++		firstFrameSize = 192
++		audioFrameSize = 384
++		infoOffset     = 36
++	)
++	body := make([]byte, 10+firstFrameSize+infoFrames*audioFrameSize)
++	copy(body, []byte("ID3\x04\x00\x00\x00\x00\x00\x00"))
++
++	// The first MP3 frame is a 64 kbps Info frame; the following 128 kbps
++	// frames are the actual audio. This mirrors files emitted by ffmpeg.
++	copy(body[10:14], []byte{0xff, 0xfb, 0x54, 0x00})
++	copy(body[10+infoOffset:10+infoOffset+4], []byte("Info"))
++	binary.BigEndian.PutUint32(body[10+infoOffset+4:10+infoOffset+8], 1)
++	binary.BigEndian.PutUint32(body[10+infoOffset+8:10+infoOffset+12], uint32(infoFrames))
++	for i := range infoFrames {
++		offset := 10 + firstFrameSize + i*audioFrameSize
++		copy(body[offset:offset+4], []byte{0xff, 0xfb, 0x94, 0x64})
++	}
++	return body
++}
++
++func TestUploadedLibraryMP3EndToEndContract(t *testing.T) {
++	seconds := 3000
++	fixture := &uploadedHTTPFixture{
++		playbackBody: uploadedPlaybackJSON("i.test", seconds, 44100, 192, "mp3"),
++		assetBody:    mp3Fixture(seconds, 192_000, 44100),
++		assetType:    "audio/mpeg",
++	}
++	provider := newUploadedTestProvider(fixture)
++	manager := playback.NewWithProviderWithoutReaper(provider)
++
++	session, err := manager.Open(context.Background(), playback.OpenRequest{
++		AssetID:         "i.test",
++		Storefront:      "us",
++		Token:           "developer-token",
++		MUT:             "music-token",
++		PreferAtmos:     true,
++		RequireFullSong: true,
++		Private:         true,
++	})
++	if err != nil {
++		t.Fatal(err)
++	}
++	if session.Codec != "mp3" || session.SampleRate != 44100 || session.BitDepth != 0 ||
++		session.BitRate != 192_000 || session.ChannelCount != 2 ||
++		session.Container != "mp3" || session.Extension != "mp3" ||
++		session.CodecMIMEType != "audio/mpeg" || session.DurationMs != seconds {
++		t.Fatalf("uploaded session format = %+v", session)
++	}
++	if session.Capabilities.Seekable {
++		t.Fatal("a progressive source must not claim encoded-stream seek support")
++	}
++	if session.Streams.Audio != "/api/v1/playback/"+session.ID+"/audio" {
++		t.Fatalf("audio route = %q", session.Streams.Audio)
++	}
++	serialized, _ := json.Marshal(session)
++	if bytes.Contains(serialized, []byte("asset-secret")) || bytes.Contains(serialized, []byte("blobstore.apple.com")) {
++		t.Fatal("session JSON leaked the signed asset URL")
++	}
++
++	var request map[string]any
++	if err := json.Unmarshal(fixture.playbackRequest, &request); err != nil {
++		t.Fatal(err)
++	}
++	if request["universalLibraryId"] != "i.test" || request["isLibrary"] != true || len(request) != 2 {
++		t.Fatalf("webPlayback request = %#v", request)
++	}
++	if got := fixture.playbackHeaders.Get("Authorization"); got != "Bearer developer-token" {
++		t.Fatalf("Authorization header = %q", got)
++	}
++	if got := fixture.playbackHeaders.Get("x-apple-music-user-token"); got != "music-token" {
++		t.Fatalf("user token header = %q", got)
++	}
++	for _, headers := range fixture.assetHeaders {
++		if headers.Get("Authorization") != "" || headers.Get("x-apple-music-user-token") != "" {
++			t.Fatal("Apple credentials leaked to the CDN request")
++		}
++	}
++
++	var out bytes.Buffer
++	if err := manager.Stream(context.Background(), session.ID, pipeline.KindAudio, &out); err != nil {
++		t.Fatal(err)
++	}
++	if !bytes.Equal(out.Bytes(), fixture.assetBody) {
++		t.Fatalf("streamed %d bytes, want %d", out.Len(), len(fixture.assetBody))
++	}
++}
++
++func TestUploadedLibraryMP3UsesInfoFrameDuration(t *testing.T) {
++	const infoFrames = 9811
++	fixture := &uploadedHTTPFixture{
++		playbackBody: uploadedPlaybackJSON("i.test", 470_952, 48000, 64, "mp3"),
++		assetBody:    mp3InfoFixture(infoFrames),
++		assetType:    "audio/mpeg",
++	}
++	manager := playback.NewWithProviderWithoutReaper(newUploadedTestProvider(fixture))
++	session, err := manager.Open(context.Background(), playback.OpenRequest{
++		AssetID: "i.test", Token: "dev", MUT: "mut",
++		RequireFullSong: true, Private: true,
++	})
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer manager.Release(session.ID)
++	wantDurationMs := 235_464
++	if session.DurationMs != wantDurationMs || session.BitRate != 128_000 ||
++		session.SampleRate != 48000 || session.Codec != "mp3" {
++		t.Fatalf("session = %+v, want Info-frame duration %d", session, wantDurationMs)
++	}
++}
++
++func TestUploadedLibraryMP4Formats(t *testing.T) {
++	tests := []struct {
++		name       string
++		entry      string
++		sampleRate int
++		bitDepth   int
++		wantCodec  pipeline.Codec
++		wantMIME   string
++	}{
++		{name: "AAC", entry: "mp4a", sampleRate: 44100, wantCodec: pipeline.CodecAAC, wantMIME: "audio/mp4"},
++		{name: "ALAC", entry: "alac", sampleRate: 96000, bitDepth: 24, wantCodec: pipeline.CodecALAC, wantMIME: `audio/mp4; codecs="alac"`},
++	}
++	for _, tc := range tests {
++		t.Run(tc.name, func(t *testing.T) {
++			body := makeM4A(t, tc.entry, tc.sampleRate, tc.bitDepth, 3000)
++			meta := uploadedWebPlaybackMetadata{
++				Duration:      3000,
++				FileExtension: "m4a",
++				SampleRate:    tc.sampleRate,
++				BitDepth:      tc.bitDepth,
++			}
++			fixture := &uploadedHTTPFixture{
++				playbackBody: uploadedPlaybackJSON("i.test", 3000, tc.sampleRate, 0, "m4a"),
++				assetBody:    body,
++				assetType:    "audio/x-m4a",
++			}
++			provider := newUploadedTestProvider(fixture)
++			session, err := provider.Open(context.Background(), media.OpenRequest{
++				AssetID: "i.test", Token: "dev", MUT: "mut",
++			})
++			if err != nil {
++				t.Fatal(err)
++			}
++			if len(session.Tracks) != 1 {
++				t.Fatalf("tracks = %d", len(session.Tracks))
++			}
++			track := session.Tracks[0]
++			if track.Codec != tc.wantCodec || track.SampleRate != tc.sampleRate ||
++				track.BitDepth != tc.bitDepth || track.CodecMIMEType != tc.wantMIME ||
++				track.Container != "mp4" || track.Extension != "m4a" {
++				t.Fatalf("track = %+v, meta = %+v", track, meta)
++			}
++		})
++	}
++}
++
++func TestUploadedLibraryRejectsNonOriginalOrAmbiguousSources(t *testing.T) {
++	tests := []struct {
++		name string
++		body []byte
++	}{
++		{
++			name: "catalog result",
++			body: []byte(`{"songList":[{"songId":123,"assets":[{"URL":"https://store-001.blobstore.apple.com/x","flavor":"","metadata":{"duration":3000,"fileExtension":"mp3","sampleRate":44100,"bitRate":128}}]}]}`),
++		},
++		{
++			name: "multiple assets",
++			body: []byte(`{"songList":[{"songId":-1,"assets":[{"URL":"https://store-001.blobstore.apple.com/a","flavor":"","metadata":{"duration":3000,"fileExtension":"mp3","sampleRate":44100,"bitRate":128}},{"URL":"https://store-001.blobstore.apple.com/b","flavor":"","metadata":{"duration":3000}}]}]}`),
++		},
++		{
++			name: "drm flavor",
++			body: []byte(`{"songList":[{"songId":-1,"assets":[{"URL":"https://store-001.blobstore.apple.com/a","flavor":"30:cbcp256","metadata":{"duration":3000,"fileExtension":"mp3","sampleRate":44100,"bitRate":128}}]}]}`),
++		},
++		{
++			name: "foreign host",
++			body: []byte(`{"songList":[{"songId":-1,"assets":[{"URL":"https://example.com/a","flavor":"","metadata":{"duration":3000,"fileExtension":"mp3","sampleRate":44100,"bitRate":128}}]}]}`),
++		},
++		{
++			name: "userinfo",
++			body: []byte(`{"songList":[{"songId":-1,"assets":[{"URL":"https://user:pass@store-001.blobstore.apple.com/a","flavor":"","metadata":{"duration":3000,"fileExtension":"mp3","sampleRate":44100,"bitRate":128}}]}]}`),
++		},
++		{
++			name: "missing duration",
++			body: []byte(`{"songList":[{"songId":-1,"assets":[{"URL":"https://store-001.blobstore.apple.com/a","flavor":"","metadata":{"fileExtension":"mp3","sampleRate":44100,"bitRate":128}}]}]}`),
++		},
++		{
++			name: "reporting",
++			body: []byte(`{"songList":[{"songId":-1,"needsPlaybackReporting":true,"assets":[{"URL":"https://store-001.blobstore.apple.com/a","flavor":"","metadata":{"duration":3000,"fileExtension":"mp3","sampleRate":44100,"bitRate":128}}]}]}`),
++		},
++		{
++			name: "failure",
++			body: []byte(`{"failureType":"token-secret","failureMessage":"asset-secret"}`),
++		},
++	}
++	for _, tc := range tests {
++		t.Run(tc.name, func(t *testing.T) {
++			fixture := &uploadedHTTPFixture{playbackBody: tc.body}
++			provider := newUploadedTestProvider(fixture)
++			_, err := provider.Open(context.Background(), media.OpenRequest{
++				AssetID: "i.test", Token: "dev", MUT: "mut",
++			})
++			if err == nil {
++				t.Fatal("expected an error")
++			}
++			if strings.Contains(err.Error(), "token-secret") || strings.Contains(err.Error(), "asset-secret") {
++				t.Fatalf("error leaked a credential or signed URL: %v", err)
++			}
++		})
++	}
++}
++
++func TestUploadedLibraryRejectsDeclaredQualityMismatch(t *testing.T) {
++	fixture := &uploadedHTTPFixture{
++		playbackBody: uploadedPlaybackJSON("i.test", 3000, 48000, 192, "mp3"),
++		assetBody:    mp3Fixture(3000, 192_000, 44100),
++		assetType:    "audio/mpeg",
++	}
++	_, err := newUploadedTestProvider(fixture).Open(context.Background(), media.OpenRequest{
++		AssetID: "i.test", Token: "dev", MUT: "mut",
++	})
++	if err == nil || !strings.Contains(err.Error(), "sample rate") {
++		t.Fatalf("error = %v, want declared/header sample-rate mismatch", err)
++	}
++}
++
++func TestUploadedLibraryRejectsTruncatedFullSong(t *testing.T) {
++	t.Run("MP3 byte length", func(t *testing.T) {
++		fixture := &uploadedHTTPFixture{
++			playbackBody: uploadedPlaybackJSON("i.test", 30_000, 44100, 192, "mp3"),
++			assetBody:    mp3Fixture(3000, 192_000, 44100),
++			assetType:    "audio/mpeg",
++		}
++		_, err := newUploadedTestProvider(fixture).Open(context.Background(), media.OpenRequest{
++			AssetID: "i.test", Token: "dev", MUT: "mut",
++		})
++		if err == nil || !strings.Contains(err.Error(), "byte length") {
++			t.Fatalf("error = %v, want a truncated MP3 rejection", err)
++		}
++	})
++	t.Run("MP4 moov duration", func(t *testing.T) {
++		fixture := &uploadedHTTPFixture{
++			playbackBody: uploadedPlaybackJSON("i.test", 30_000, 44100, 256, "m4a"),
++			assetBody:    makeM4A(t, "mp4a", 44100, 0, 3000),
++			assetType:    "audio/x-m4a",
++		}
++		_, err := newUploadedTestProvider(fixture).Open(context.Background(), media.OpenRequest{
++			AssetID: "i.test", Token: "dev", MUT: "mut",
++		})
++		if err == nil || !strings.Contains(err.Error(), "duration") {
++			t.Fatalf("error = %v, want a truncated MP4 rejection", err)
++		}
++	})
++}
++
++func TestUploadedLibraryHTTPBoundaries(t *testing.T) {
++	t.Run("playback status", func(t *testing.T) {
++		fixture := &uploadedHTTPFixture{playbackStatus: http.StatusUnauthorized}
++		_, err := newUploadedTestProvider(fixture).Open(context.Background(), media.OpenRequest{
++			AssetID: "i.test", Token: "dev", MUT: "mut",
++		})
++		if err == nil || !strings.Contains(err.Error(), "HTTP 401") {
++			t.Fatalf("error = %v", err)
++		}
++	})
++	t.Run("oversized JSON", func(t *testing.T) {
++		fixture := &uploadedHTTPFixture{playbackBody: bytes.Repeat([]byte(" "), uploadedJSONLimit+1)}
++		_, err := newUploadedTestProvider(fixture).Open(context.Background(), media.OpenRequest{
++			AssetID: "i.test", Token: "dev", MUT: "mut",
++		})
++		if err == nil || !strings.Contains(err.Error(), "exceeded") {
++			t.Fatalf("error = %v", err)
++		}
++	})
++	t.Run("asset redirect", func(t *testing.T) {
++		fixture := &uploadedHTTPFixture{
++			playbackBody: uploadedPlaybackJSON("i.test", 3000, 44100, 192, "mp3"),
++			assetStatus:  http.StatusFound,
++			assetBody:    mp3Fixture(3000, 192_000, 44100),
++		}
++		_, err := newUploadedTestProvider(fixture).Open(context.Background(), media.OpenRequest{
++			AssetID: "i.test", Token: "dev", MUT: "mut",
++		})
++		if err == nil || !strings.Contains(err.Error(), "HTTP 302") {
++			t.Fatalf("error = %v", err)
++		}
++	})
++	t.Run("asset transport error hides signed URL", func(t *testing.T) {
++		fixture := &uploadedHTTPFixture{
++			playbackBody: uploadedPlaybackJSON("i.test", 3000, 44100, 192, "mp3"),
++			assetErr:     io.ErrUnexpectedEOF,
++			assetBody:    mp3Fixture(3000, 192_000, 44100),
++		}
++		_, err := newUploadedTestProvider(fixture).Open(context.Background(), media.OpenRequest{
++			AssetID: "i.test", Token: "dev", MUT: "mut",
++		})
++		if err == nil {
++			t.Fatal("expected a transport error")
++		}
++		if strings.Contains(err.Error(), "asset-secret") || strings.Contains(err.Error(), "blobstore.apple.com") {
++			t.Fatalf("transport error leaked the signed asset URL: %v", err)
++		}
++	})
++}
++
++func TestUploadedAudioStreamRejectsKnownLengthMismatch(t *testing.T) {
++	body := []byte("short")
++	client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
++		return testHTTPResponse(req, http.StatusOK, body, "audio/mpeg"), nil
++	})}
++	source := &uploadedAudioSource{
++		client: client,
++		url:    uploadedTestAssetURL,
++		length: int64(len(body) + 1),
++	}
++	var out bytes.Buffer
++	err := source.Stream(context.Background(), &out)
++	if err == nil || !strings.Contains(err.Error(), "probed length") {
++		t.Fatalf("error = %v, want a probed-length mismatch", err)
++	}
++	if out.Len() != 0 {
++		t.Fatalf("wrote %d bytes before rejecting the mismatched response", out.Len())
++	}
++}
++
++func TestUploadedLibraryRequiresPositiveDurationAndMusicToken(t *testing.T) {
++	provider := newUploadedTestProvider(&uploadedHTTPFixture{})
++	if _, err := provider.Open(context.Background(), media.OpenRequest{
++		AssetID: "i.test", Token: "dev",
++	}); err == nil || !strings.Contains(err.Error(), "not signed in") {
++		t.Fatalf("missing MUT error = %v", err)
++	}
++}
++
++func makeM4A(t *testing.T, entryType string, sampleRate, bitDepth, durationMs int) []byte {
++	t.Helper()
++	init := mp4.NewMP4Init()
++	init.AddChild(mp4.CreateFtyp())
++	moov := mp4.NewMoovBox()
++	init.AddChild(moov)
++	mvhd := mp4.CreateMvhd()
++	mvhd.Timescale = 1000
++	mvhd.Duration = uint64(durationMs)
++	moov.AddChild(mvhd)
++	trak := mp4.CreateEmptyTrak(1, uint32(sampleRate), "audio", "eng")
++	trak.Mdia.Mdhd.Duration = uint64(durationMs) * uint64(sampleRate) / 1000
++	stsd := trak.Mdia.Minf.Stbl.Stsd
++	if entryType == "mp4a" {
++		stsd.AddChild(mp4.CreateAudioSampleEntryBox("mp4a", 2, 16, uint16(sampleRate), nil))
++	} else {
++		payload := make([]byte, 28)
++		binary.BigEndian.PutUint16(payload[6:8], 1)
++		binary.BigEndian.PutUint16(payload[16:18], 2)
++		binary.BigEndian.PutUint16(payload[18:20], uint16(bitDepth))
++		binary.BigEndian.PutUint32(payload[24:28], uint32(sampleRate)<<16)
++		config := make([]byte, 36)
++		binary.BigEndian.PutUint32(config[0:4], 36)
++		copy(config[4:8], "alac")
++		binary.BigEndian.PutUint32(config[8:12], 4096)
++		config[13] = byte(bitDepth)
++		config[17] = 2
++		binary.BigEndian.PutUint32(config[28:32], uint32(sampleRate))
++		stsd.AddChild(mp4.CreateUnknownBox("alac", uint64(8+len(payload)+len(config)),
++			append(payload, config...)))
++	}
++	moov.AddChild(trak)
++	var out bytes.Buffer
++	if err := init.Encode(&out); err != nil {
++		t.Fatal(err)
++	}
++	out.Write(make([]byte, 32))
++	return out.Bytes()
++}

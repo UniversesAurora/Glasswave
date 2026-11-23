@@ -1,0 +1,74 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Glasswave <glasswave@local>
+Date: Mon, 23 Nov 2026 12:55:24 +0800
+Subject: [PATCH 6/8] lyrics: return typed ErrNotFound and HTTPError with
+ bounded response reads
+
+Distinguish missing lyrics (404/204/empty) from upstream HTTP errors and enforce an 8 MiB response limit without leaking upstream response bodies.
+
+diff --git a/engine/utils/lyrics/lyrics.go b/engine/utils/lyrics/lyrics.go
+index 1f1f2c9..b6023b9 100644
+--- a/engine/utils/lyrics/lyrics.go
++++ b/engine/utils/lyrics/lyrics.go
+@@ -18,6 +18,16 @@ import (
+ 
+ var lyricsClient = &http.Client{Timeout: 15 * time.Second}
+ 
++var ErrNotFound = errors.New("lyrics not found")
++
++type HTTPError struct {
++	StatusCode int
++}
++
++func (e *HTTPError) Error() string {
++	return fmt.Sprintf("failed to get lyrics: HTTP %d", e.StatusCode)
++}
++
+ type SongLyrics struct {
+ 	Data []struct {
+ 		Id         string `json:"id"`
+@@ -74,22 +84,38 @@ func getSongLyricsContext(ctx context.Context, songId string, storefront string,
+ 		return "", err
+ 	}
+ 	defer do.Body.Close()
+-	bodyBytes, err := io.ReadAll(io.LimitReader(do.Body, 8<<20))
++	bodyBytes, err := io.ReadAll(io.LimitReader(do.Body, 8<<20+1))
+ 	if err != nil {
+ 		return "", fmt.Errorf("failed to read response body: %v", err)
+ 	}
++	if len(bodyBytes) > 8<<20 {
++		return "", errors.New("lyrics response too large")
++	}
++	if do.StatusCode == http.StatusNotFound || do.StatusCode == http.StatusNoContent {
++		return "", ErrNotFound
++	}
++	if do.StatusCode < 200 || do.StatusCode >= 300 {
++		// The error reaches the HTTP client: report the status, not Apple's body.
++		return "", &HTTPError{StatusCode: do.StatusCode}
++	}
+ 
+ 	obj := new(SongLyrics)
+-	_ = json.Unmarshal(bodyBytes, &obj)
++	jsonErr := json.Unmarshal(bodyBytes, obj)
++	if jsonErr != nil {
++		return "", errors.New("invalid lyrics response")
++	}
+ 	if len(obj.Data) > 0 {
+ 		if len(obj.Data[0].Attributes.Ttml) > 0 {
+ 			return obj.Data[0].Attributes.Ttml, nil
+ 		}
+-		return obj.Data[0].Attributes.TtmlLocalizations, nil
+-	} else {
+-		// The error reaches the HTTP client: report the status, not Apple's body.
+-		return "", fmt.Errorf("failed to get lyrics: HTTP %d", do.StatusCode)
++		if obj.Data[0].Attributes.TtmlLocalizations != "" {
++			return obj.Data[0].Attributes.TtmlLocalizations, nil
++		}
++	}
++	if len(obj.Data) == 0 {
++		return "", ErrNotFound
+ 	}
++	return "", ErrNotFound
+ }
+ 
+ // cjkRanges covers all CJK, Hangul, Hiragana, Katakana, and related Unicode blocks.

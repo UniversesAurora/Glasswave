@@ -150,9 +150,20 @@ function New-PinnedStage {
     if ($LASTEXITCODE -ne 0) {
         throw "Unable to create isolated source stage at $Stage."
     }
-    & git -C $Stage apply --3way --index $Patch
-    if ($LASTEXITCODE -ne 0) {
-        throw "Pinned patch did not apply cleanly: $Patch"
+    $patchFiles = @(if (Test-Path -LiteralPath $Patch -PathType Container) {
+        Get-ChildItem -LiteralPath $Patch -Filter '*.patch' -File | Sort-Object Name | ForEach-Object { $_.FullName }
+    }
+    else {
+        $Patch
+    })
+    if ($patchFiles.Count -eq 0) {
+        throw "No patch files found at: $Patch"
+    }
+    foreach ($patchFile in $patchFiles) {
+        & git -C $Stage apply --3way --index $patchFile
+        if ($LASTEXITCODE -ne 0) {
+            throw "Pinned patch did not apply cleanly: $patchFile"
+        }
     }
 }
 
@@ -465,7 +476,7 @@ New-PinnedStage `
     -Source $paths.NightlyRoot `
     -Stage $stageSource `
     -Commit $pins.adam.commit `
-    -Patch (Join-Path $paths.RepoRoot $pins.adam.patch)
+    -Patch (Join-Path $paths.RepoRoot $pins.adam.patchDir)
 
 New-PinnedStage `
     -Source $paths.LibhybrisRoot `

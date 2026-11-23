@@ -10,7 +10,15 @@ Updated: 2026-11-23
   uncompressed ALAC escape frames (`is_not_compressed = 1`, `24,580` bytes) overwritten upstream
   with heap metadata (`0x6010` / `0x27ff`), corrupting the final right-channel sample and wiping
   out the 3-bit `ID_END` (`0b111`) terminator.
-- **Workaround (`scripts/applemusic/glasswave.patch`: `engine/utils/alacstream/alac_repair.go`,
+- **Ordered Adam patch series (`scripts/applemusic/patches/0001-*.patch` … `0008-*.patch`,
+  `scripts/applemusic/windows/source-pins.json`, `scripts/applemusic/windows/build.ps1`,
+  `scripts/applemusic/build-helper.sh`, `docs/third-party.md`)**:
+  - Replaced the monolithic 10,914-line `scripts/applemusic/glasswave.patch` with 8 orthogonal
+    `git format-patch` topic patches (`0001-drm-win32-exception-guard-and-dsid.patch` through
+    `0008-alac-repair-corrupted-escape-frames.patch`).
+  - Verified byte-for-byte identical git tree hash (`bed75eb70783249f7e732eee90109da1bb3a0822`),
+    `bash -n` on `build-helper.sh`, and clean isolated build via `build.ps1 -SkipTests`.
+- **Workaround (`scripts/applemusic/patches/0008-alac-repair-corrupted-escape-frames.patch`: `engine/utils/alacstream/alac_repair.go`,
   `alac_repair_test.go`, `engine/core/fairplay/cbcs.go`)**:
   - Added `ParseALACConfigs` and `RepairALACFragment` / `RepairALACEscapeSample` in `alacstream`,
     wired right after fragment decryption in both `cbcsSource.streamAttempt` and

@@ -31,7 +31,7 @@ script.
 
 | Name | Current Pin | Upstream & Branch | Pin File | Tracked Patch | Build Script & Output | How Glasswave Uses It | License |
 |---|---|---|---|---|---|---|---|
-| **apple-music-linux (Adam)** | `960bd8a354e9370ca8ddad69c484d7cdc41125e0` | `https://github.com/silentone12725/apple-music-linux.git` (`nightly`) | `scripts/applemusic/windows/source-pins.json` | `scripts/applemusic/glasswave.patch` | `scripts/setup-applemusic.ps1` → `.local/applemusic/engine.exe` | Native Windows Apple Music session/DRM/API/stream bridge helper. Audio decoding stays in foobar2000. | See `scripts/applemusic/licenses/` |
+| **apple-music-linux (Adam)** | `960bd8a354e9370ca8ddad69c484d7cdc41125e0` | `https://github.com/silentone12725/apple-music-linux.git` (`nightly`) | `scripts/applemusic/windows/source-pins.json` | `scripts/applemusic/patches/` (`0001-*.patch` …) | `scripts/setup-applemusic.ps1` → `.local/applemusic/engine.exe` | Native Windows Apple Music session/DRM/API/stream bridge helper. Audio decoding stays in foobar2000. | See `scripts/applemusic/licenses/` |
 | **libhybris-win** | `96125ef983874134deaa1cddd7b763f55f70c1b1` | `https://github.com/silentone12725/libhybris-win.git` (`master`) | `scripts/applemusic/windows/source-pins.json` | `scripts/applemusic/windows/libhybris-win.patch` | `scripts/setup-applemusic.ps1` (linked into `engine.exe`) | Windows compatibility shim loading Apple's unmodified Android `.so` libraries for DRM/Widevine. | Per-file upstream notices in source tree |
 | **Cavern** | `c54117222a83deabf71c3fd162ed71a4b263a55d` | `https://github.com/VoidXH/Cavern.git` (`master`) | `third_party/glasswave-cavern/source-pin.json` | `scripts/applemusic/atmos/cavern-buffer-drain.patch` | `scripts/applemusic/atmos/build-renderer.ps1` → `.local/applemusic/renderers/build/win-x64/glasswave_cavern.dll` | NativeAOT C ABI Dolby Atmos (E-AC-3 JOC) object renderer via `third_party/glasswave-cavern/NativeExports.cs`. | Custom Cavern license (`LICENSE.md`, see `third_party/glasswave-cavern/NOTICE.md`) |
 
@@ -84,18 +84,25 @@ Always choose the **lowest-coupling** level that cleanly solves the problem:
    - Example: Cavern's 5.1 → 2.0 `Lo/Ro` downmix, `ListenerAdmission` serialization, and C ABI
      exports live in `third_party/glasswave-cavern/NativeExports.cs`, leaving Cavern's own source
      untouched.
-2. **Level 2 — Minimal, isolated `git diff` patch (only when upstream internals lack a hook)**
-   - Use this only when upstream has a bug or missing internal hook (e.g., `glasswave.patch`,
+2. **Level 2 — Minimal, isolated patch or ordered patch series (only when upstream internals lack a hook)**
+   - Use this only when upstream has a bug or missing internal hook (e.g., `scripts/applemusic/patches/*.patch`,
      `libhybris-win.patch`, `cavern-buffer-drain.patch`).
-   - **Workflow to author or update a patch**:
+   - **Workflow to author or update a single patch** (small repositories such as `libhybris-win` or `Cavern`):
      1. Check out the exact pinned upstream commit in `.local/`.
      2. Apply the existing patch (`git apply`), make your minimal changes, and verify.
      3. Regenerate the patch using `git diff > <tracked-patch-path>`.
-     4. **Never** hand-edit unified diff hunk headers (`@@ -a,b +c,d @@`) or leave unexported
-        edits inside `.local/` — `.local/` is disposable and must always be reproducible from
-        `pin + tracked patch`.
-   - Document *why* each hunk exists in the commit message and keep hunks small and orthogonal so
-     individual hunks can be dropped as soon as upstream fixes them.
+   - **Workflow to author or update an ordered patch series** (`scripts/applemusic/patches/0001-*.patch` …):
+     1. Check out the exact pinned upstream commit in an isolated worktree and apply the existing
+        series as commits (`git am scripts/applemusic/patches/*.patch`).
+     2. Edit/rebase an existing topic commit or add a new commit at the tip for a new workaround.
+     3. Re-export the series cleanly with
+        `git format-patch --no-signature --zero-commit --no-stat <pin>..HEAD -o scripts/applemusic/patches`
+        and keep concise numbered topic slugs (`0001-…`, `0002-…`, …).
+   - **Never** hand-edit unified diff hunk headers (`@@ -a,b +c,d @@`) or leave unexported
+     edits inside `.local/` — `.local/` is disposable and must always be reproducible from
+     `pin + tracked patch(es)`.
+   - Document *why* each patch exists in its commit header and keep topics orthogonal so individual
+     patches can be dropped as soon as upstream fixes them.
 3. **Level 3 — Ported/copied code inside `src/` (last resort)**
    - Only when a tiny self-contained algorithm cannot reasonably be linked or patched.
    - Must satisfy license compatibility, include a short provenance header comment (upstream repo,

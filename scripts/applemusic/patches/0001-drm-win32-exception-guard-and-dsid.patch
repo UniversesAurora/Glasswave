@@ -1,0 +1,535 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Glasswave <glasswave@local>
+Date: Mon, 23 Nov 2026 12:55:20 +0800
+Subject: [PATCH 1/8] drm: add Windows ELF C++ exception guard and export
+ account DSID
+
+Load libdrm_guard.so on Windows so guest Android DWARF C++ exceptions are caught inside an ELF frame instead of unwinding across host PE stacks, and include the active account DSID in drm_get_account().
+
+diff --git a/drm/drm_hybris.c b/drm/drm_hybris.c
+index 4e308cf..a0121b4 100644
+--- a/drm/drm_hybris.c
++++ b/drm/drm_hybris.c
+@@ -23,6 +23,9 @@
+ #endif
+ 
+ extern void hybris_bind_lib_handles(void *ssc, void *apm, void *core);
++#ifdef _WIN32
++extern void hybris_bind_guard_invoke(void *invoke_fn);
++#endif
+ 
+ /* Windows loads these libraries RTLD_GLOBAL so the later symbol lookups through the
+  * wrapper see them; the Linux flags are unchanged. */
+@@ -671,6 +674,23 @@ int hybris_backend_init(
+      * forwarding layer must not open the same guest libraries a second time. */
+     hybris_bind_lib_handles(g_hybris.ssc_handle, g_hybris.appmusic_handle,
+                             g_hybris.corefp_handle);
++
++    /* Load the guest-side C++ exception barrier so Android DWARF exceptions
++     * (such as SVError from getPersistentKey) are caught inside an ELF frame
++     * rather than terminating engine.exe when unwinding hits the host PE stack. */
++    void *guard_handle = g_hybris.android_dlopen("libdrm_guard.so", RTLD_NOW);
++    void *guard_invoke = guard_handle
++                             ? g_hybris.android_dlsym(guard_handle, "drm_guard_invoke")
++                             : NULL;
++    fprintf(stderr, "[drm] libdrm_guard.so handle=%p invoke=%p\n",
++            guard_handle, guard_invoke);
++    fflush(stderr);
++    if (guard_invoke) {
++        hybris_bind_guard_invoke(guard_invoke);
++    } else {
++        fprintf(stderr, "[hybris] libdrm_guard.so unavailable; guest C++ exceptions will not be caught\n");
++        fflush(stderr);
++    }
+ #endif
+ 
+ #ifndef _WIN32
+diff --git a/drm/drm_linux.c b/drm/drm_linux.c
+index 1f5fc9d..ae6c56a 100644
+--- a/drm/drm_linux.c
++++ b/drm/drm_linux.c
+@@ -99,7 +99,7 @@ void drm_shutdown(void)
+ 
+ /*
+  * Returns a malloc'd JSON string:
+- *   {"storefront_id":"<sf>","dev_token":"","music_token":"<mt>"}
++ *   {"storefront_id":"<sf>","dev_token":"","music_token":"<mt>","dsid":<id>}
+  *
+  * The Go layer parses this as AccountInfo. DevToken is fetched separately
+  * by the Go layer, so it is left empty here.
+@@ -125,6 +125,8 @@ static char *json_escape(const char *in)
+     return out;
+ }
+ 
++extern int64_t get_active_account_dsid(void);
++
+ char *drm_get_account(void)
+ {
+     char mt_path[4096], sf_path[4096];
+@@ -158,12 +160,13 @@ char *drm_get_account(void)
+         return NULL;
+     }
+ 
+-    size_t len = 64 + strlen(mt_e) + strlen(sf_e);
++    int64_t dsid = get_active_account_dsid();
++    size_t len = 128 + strlen(mt_e) + strlen(sf_e);
+     char *json = malloc(len);
+     if (json)
+         snprintf(json, len,
+-                 "{\"storefront_id\":\"%s\",\"dev_token\":\"\",\"music_token\":\"%s\"}",
+-                 sf_e, mt_e);
++                 "{\"storefront_id\":\"%s\",\"dev_token\":\"\",\"music_token\":\"%s\",\"dsid\":%lld}",
++                 sf_e, mt_e, (long long)dsid);
+     free(mt_e);
+     free(sf_e);
+     return json;
+diff --git a/drm/native/hybris_stubs.c b/drm/native/hybris_stubs.c
+index b664911..6820f2c 100644
+--- a/drm/native/hybris_stubs.c
++++ b/drm/native/hybris_stubs.c
+@@ -12,6 +12,9 @@
+ #include <string.h>
+ #include <stdint.h>
+ #include "hybris_types.h"
++#ifdef _WIN32
++#include "../stubs/drm_guard.h"
++#endif
+ 
+ extern int drm_lib_debug_enabled(void); /* drm_lib.c: ADAM_DRM_DEBUG */
+ 
+@@ -36,6 +39,39 @@ void hybris_bind_lib_handles(void *ssc, void *apm, void *core) {
+     if (core) h_core = core;
+ }
+ 
++#ifdef _WIN32
++static int (__attribute__((sysv_abi)) *g_guard_invoke)(drm_guard_call_t *) = NULL;
++
++void hybris_bind_guard_invoke(void *invoke_fn) {
++    memcpy(&g_guard_invoke, &invoke_fn, sizeof(g_guard_invoke));
++}
++
++static int guard_call(const char *label, void *fn, int argc,
++                      void *a0, void *a1, void *a2, void *a3,
++                      void *a4, void *a5, void *a6, void *a7,
++                      void *a8, void *a9, void **out_ret) {
++    drm_guard_call_t c;
++    memset(&c, 0, sizeof(c));
++    c.fn = fn;
++    c.argc = argc;
++    c.args[0] = a0; c.args[1] = a1; c.args[2] = a2; c.args[3] = a3;
++    c.args[4] = a4; c.args[5] = a5; c.args[6] = a6; c.args[7] = a7;
++    c.args[8] = a8; c.args[9] = a9;
++    char err_buf[256] = {0};
++    c.err_buf = err_buf;
++    c.err_cap = sizeof(err_buf);
++    int rc = g_guard_invoke(&c);
++    if (rc != 0) {
++        fprintf(stderr, "[drm-guard] %s threw guest C++ exception (rc=%d): %s\n",
++                label, rc, err_buf[0] ? err_buf : "unknown");
++        fflush(stderr);
++        return rc;
++    }
++    if (out_ret) *out_ret = c.ret;
++    return 0;
++}
++#endif
++
+ /* ── vtable data arrays ──────────────────────────────────────────────────────
+  * import.h declares these as "extern void *_ZTV...;" (single pointer).
+  * main.c uses them as "&_ZTV... + 2" — taking the address of the symbol and
+@@ -487,6 +523,21 @@ void _ZN17storeservicescore14RequestContext24setFairPlayDirectoryPathERKNSt6__nd
+     fn(obj,path);
+ }
+ 
++int64_t _ZN17storeservicescore14RequestContext20preferredAccountDSIDEv(void *obj) {
++    static int64_t (SYSV *fn)(void*) = NULL;
++    static int resolution = 0; /* 0=pending, 1=resolved, -1=unavailable */
++    if (!resolution && h_ssc) {
++        void *symbol = android_dlsym(
++            h_ssc, "_ZN17storeservicescore14RequestContext20preferredAccountDSIDEv");
++        memcpy(&fn, &symbol, sizeof(fn));
++        resolution = fn ? 1 : -1;
++        if (!fn)
++            fprintf(stderr, "[hybris] preferredAccountDSID unavailable; account identity fails closed\n");
++    }
++    if (resolution != 1 || !obj) return 0;
++    return fn(obj);
++}
++
+ void _ZN14FootHillConfig6configERKNSt6__ndk112basic_stringIcNS0_11char_traitsIcEENS0_9allocatorIcEEEE(union std_string *cfg) {
+     static void (__attribute__((sysv_abi)) *fn)(union std_string*) = NULL;
+     static int by_value = 0;
+@@ -509,8 +560,24 @@ void _ZN14FootHillConfig6configERKNSt6__ndk112basic_stringIcNS0_11char_traitsIcE
+         memset(&own, 0, sizeof own);
+         own.mark = (uint8_t)(cfg->size << 1);
+         memcpy(own.str, (const void *)cfg->data, cfg->size);
++#ifdef _WIN32
++        if (g_guard_invoke) {
++            guard_call("FootHillConfig::config", (void *)fn, 1, &own, NULL, NULL, NULL,
++                       NULL, NULL, NULL, NULL, NULL, NULL, NULL);
++            return;
++        }
++#endif
+         fn(&own);
+-    } else fn(cfg);
++    } else {
++#ifdef _WIN32
++        if (g_guard_invoke) {
++            guard_call("FootHillConfig::config", (void *)fn, 1, cfg, NULL, NULL, NULL,
++                       NULL, NULL, NULL, NULL, NULL, NULL, NULL);
++            return;
++        }
++#endif
++        fn(cfg);
++    }
+ }
+ 
+ void _ZNSt6__ndk110shared_ptrIN17storeservicescore14RequestContextEE11make_sharedIJRNS_12basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEEEEES3_DpOT_(
+@@ -572,6 +639,13 @@ void _ZNSt6__ndk110shared_ptrIN17storeservicescore16AuthenticateFlowEE11make_sha
+ void _ZN17storeservicescore16AuthenticateFlow3runEv(void *obj) {
+     static void (__attribute__((sysv_abi)) *fn)(void*) = NULL;
+     if (!fn) fn = sym("_ZN17storeservicescore16AuthenticateFlow3runEv");
++#ifdef _WIN32
++    if (g_guard_invoke) {
++        guard_call("AuthenticateFlow::run", (void *)fn, 1, obj, NULL, NULL, NULL,
++                   NULL, NULL, NULL, NULL, NULL, NULL, NULL);
++        return;
++    }
++#endif
+     fn(obj);
+ }
+ 
+@@ -591,18 +665,39 @@ void _ZN22SVPlaybackLeaseManagerC2ERKNSt6__ndk18functionIFvRKiEEERKNS1_IFvRKNS0_
+     void *obj, void *endcb, void *errcb) {
+     static void (__attribute__((sysv_abi)) *fn)(void*,void*,void*) = NULL;
+     if (!fn) fn = sym("_ZN22SVPlaybackLeaseManagerC2ERKNSt6__ndk18functionIFvRKiEEERKNS1_IFvRKNS0_10shared_ptrIN17storeservicescore19StoreErrorConditionEEEEEE");
++#ifdef _WIN32
++    if (g_guard_invoke) {
++        guard_call("SVPlaybackLeaseManager::C2", (void *)fn, 3, obj, endcb, errcb, NULL,
++                   NULL, NULL, NULL, NULL, NULL, NULL, NULL);
++        return;
++    }
++#endif
+     fn(obj,endcb,errcb);
+ }
+ 
+ void _ZN22SVPlaybackLeaseManager25refreshLeaseAutomaticallyERKb(void *obj, uint8_t *flag) {
+     static void (__attribute__((sysv_abi)) *fn)(void*,uint8_t*) = NULL;
+     if (!fn) fn = sym("_ZN22SVPlaybackLeaseManager25refreshLeaseAutomaticallyERKb");
++#ifdef _WIN32
++    if (g_guard_invoke) {
++        guard_call("SVPlaybackLeaseManager::refreshLeaseAutomatically", (void *)fn, 2,
++                   obj, flag, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL);
++        return;
++    }
++#endif
+     fn(obj,flag);
+ }
+ 
+ void _ZN22SVPlaybackLeaseManager12requestLeaseERKb(void *obj, uint8_t *flag) {
+     static void (__attribute__((sysv_abi)) *fn)(void*,uint8_t*) = NULL;
+     if (!fn) fn = sym("_ZN22SVPlaybackLeaseManager12requestLeaseERKb");
++#ifdef _WIN32
++    if (g_guard_invoke) {
++        guard_call("SVPlaybackLeaseManager::requestLease", (void *)fn, 2,
++                   obj, flag, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL);
++        return;
++    }
++#endif
+     fn(obj,flag);
+ }
+ 
+@@ -621,6 +716,15 @@ void _ZN21SVFootHillSessionCtrl16getPersistentKeyERKNSt6__ndk112basic_stringIcNS
+                       union std_string*,union std_string*,union std_string*,union std_string*,
+                       union std_string*,union std_string*,union std_string*,union std_string*) = NULL;
+     if (!fn) fn = sym("_ZN21SVFootHillSessionCtrl16getPersistentKeyERKNSt6__ndk112basic_stringIcNS0_11char_traitsIcEENS0_9allocatorIcEEEES8_S8_S8_S8_S8_S8_S8_");
++#ifdef _WIN32
++    if (g_guard_invoke) {
++        if (guard_call("SVFootHillSessionCtrl::getPersistentKey", (void *)fn, 10,
++                       ret, obj, a, b, c, d, e, f, g, h, NULL) != 0) {
++            if (ret) { ret->obj = NULL; ret->ctrl_blk = NULL; }
++        }
++        return;
++    }
++#endif
+     fn(ret,obj,a,b,c,d,e,f,g,h);
+ }
+ 
+@@ -628,6 +732,15 @@ void _ZN21SVFootHillSessionCtrl14decryptContextERKNSt6__ndk112basic_stringIcNS0_
+     struct shared_ptr *ret, void *obj, union std_string *ckc) {
+     static void (__attribute__((sysv_abi)) *fn)(struct shared_ptr*,void*,union std_string*) = NULL;
+     if (!fn) fn = sym("_ZN21SVFootHillSessionCtrl14decryptContextERKNSt6__ndk112basic_stringIcNS0_11char_traitsIcEENS0_9allocatorIcEEEERKN11SVDecryptor15SVDecryptorTypeERKb");
++#ifdef _WIN32
++    if (g_guard_invoke) {
++        if (guard_call("SVFootHillSessionCtrl::decryptContext", (void *)fn, 3,
++                       ret, obj, ckc, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL) != 0) {
++            if (ret) { ret->obj = NULL; ret->ctrl_blk = NULL; }
++        }
++        return;
++    }
++#endif
+     fn(ret,obj,ckc);
+ }
+ 
+@@ -774,6 +887,13 @@ void _ZN17storeservicescore14RequestContext4initERKNSt6__ndk110shared_ptrINS_20R
+     void *obj, void *unused, struct shared_ptr *cfg) {
+     static void (__attribute__((sysv_abi)) *fn)(void*,void*,struct shared_ptr*) = NULL;
+     if (!fn) fn = sym("_ZN17storeservicescore14RequestContext4initERKNSt6__ndk110shared_ptrINS_20RequestContextConfigEEE");
++#ifdef _WIN32
++    if (g_guard_invoke) {
++        guard_call("RequestContext::init", (void *)fn, 3, obj, unused, cfg, NULL,
++                   NULL, NULL, NULL, NULL, NULL, NULL, NULL);
++        return;
++    }
++#endif
+     fn(obj,unused,cfg);
+ }
+ 
+@@ -793,6 +913,13 @@ union std_string *_ZNK17storeservicescore14RequestContext20storeFrontIdentifierE
+ void _ZN21SVFootHillSessionCtrl16resetAllContextsEv(void *obj) {
+     static void (__attribute__((sysv_abi)) *fn)(void*) = NULL;
+     if (!fn) fn = sym("_ZN21SVFootHillSessionCtrl16resetAllContextsEv");
++#ifdef _WIN32
++    if (g_guard_invoke) {
++        guard_call("SVFootHillSessionCtrl::resetAllContexts", (void *)fn, 1, obj, NULL, NULL, NULL,
++                   NULL, NULL, NULL, NULL, NULL, NULL, NULL);
++        return;
++    }
++#endif
+     fn(obj);
+ }
+ 
+@@ -852,6 +979,16 @@ void *_ZN17storeservicescore10URLRequest19setRequestParameterERKNSt6__ndk112basi
+ void *_ZN17storeservicescore10URLRequest3runEv(void *obj) {
+     static void *(__attribute__((sysv_abi)) *fn)(void*) = NULL;
+     if (!fn) fn = sym("_ZN17storeservicescore10URLRequest3runEv");
++#ifdef _WIN32
++    if (g_guard_invoke) {
++        void *ret = NULL;
++        if (guard_call("URLRequest::run", (void *)fn, 1, obj, NULL, NULL, NULL,
++                       NULL, NULL, NULL, NULL, NULL, NULL, &ret) != 0) {
++            return NULL;
++        }
++        return ret;
++    }
++#endif
+     return fn(obj);
+ }
+ struct shared_ptr *_ZNK17storeservicescore10URLRequest5errorEv(void *obj) {
+diff --git a/drm/native/import.h b/drm/native/import.h
+index 6e401ef..80ead73 100644
+--- a/drm/native/import.h
++++ b/drm/native/import.h
+@@ -249,6 +249,7 @@ extern void _ZN21RequestContextManager9configureERKNSt6__ndk110shared_ptrIN17sto
+ 	struct shared_ptr *);
+ 
+ extern union std_string *_ZNK17storeservicescore14RequestContext20storeFrontIdentifierERKNSt6__ndk110shared_ptrINS_6URLBagEEE(void *, void *, struct shared_ptr *);
++extern int64_t _ZN17storeservicescore14RequestContext20preferredAccountDSIDEv(void *);
+ 
+ extern void _ZN21SVFootHillSessionCtrl16resetAllContextsEv(void *);
+ extern int __android_log_print(int prio, const char *tag, const char *fmt, ...);
+diff --git a/drm/native/main.c b/drm/native/main.c
+index 04ee045..7162cd4 100644
+--- a/drm/native/main.c
++++ b/drm/native/main.c
+@@ -616,7 +616,7 @@ void *getKdContext(const char *const adam,
+     union std_string protocolType = new_std_string("simplified");
+     union std_string fpsCert = new_std_string(fairplayCert);
+ 
+-    struct shared_ptr persistK = {.obj = NULL};
++    struct shared_ptr persistK = {.obj = NULL, .ctrl_blk = NULL};
+     _ZN21SVFootHillSessionCtrl16getPersistentKeyERKNSt6__ndk112basic_stringIcNS0_11char_traitsIcEENS0_9allocatorIcEEEES8_S8_S8_S8_S8_S8_S8_(
+         &persistK, FHinstance, &defaultId, &defaultId, &keyUri, &keyFormat,
+         &keyFormatVer, &serverUri, &protocolType, &fpsCert);
+@@ -624,7 +624,7 @@ void *getKdContext(const char *const adam,
+     if (persistK.obj == NULL)
+         return NULL;
+ 
+-    struct shared_ptr SVFootHillPContext;
++    struct shared_ptr SVFootHillPContext = {.obj = NULL, .ctrl_blk = NULL};
+     _ZN21SVFootHillSessionCtrl14decryptContextERKNSt6__ndk112basic_stringIcNS0_11char_traitsIcEENS0_9allocatorIcEEEERKN11SVDecryptor15SVDecryptorTypeERKb(
+         &SVFootHillPContext, FHinstance, persistK.obj);
+ 
+@@ -701,6 +701,11 @@ char* get_account_storefront_id(struct shared_ptr reqCtx) {
+     return NULL;
+ }
+ 
++int64_t get_active_account_dsid(void) {
++    if (!reqCtx.obj) return 0;
++    return _ZN17storeservicescore14RequestContext20preferredAccountDSIDEv(reqCtx.obj);
++}
++
+ void write_storefront_id(void) {
+     char p[1100];
+     FILE *fp = fopen(base_path(p, sizeof(p), "/STOREFRONT_ID"), "w");
+@@ -771,10 +776,13 @@ char *get_music_user_token(char *guid, char *authToken, struct shared_ptr reqCtx
+         return NULL;
+     }
+     struct shared_ptr *urlResp = _ZNK17storeservicescore10URLRequest8responseEv(urlRequest);
++    if (!urlResp || !urlResp->obj) return NULL;
+     struct shared_ptr *resp = _ZNK17storeservicescore11URLResponse18underlyingResponseEv(urlResp->obj);
++    if (!resp || !resp->obj) return NULL;
+     void *http_message_obj = resp->obj;
+     void* data_ptr = *(void**)((char*)http_message_obj + 48);
+     char *respBody = data_ptr ? _ZNK13mediaplatform4Data5bytesEv(data_ptr) : NULL;
++    if (!respBody) return NULL;
+     cJSON *json = cJSON_Parse(respBody);
+     cJSON *token_obj = cJSON_GetObjectItemCaseSensitive(json, "music_token");
+     char *token = cJSON_GetStringValue(token_obj);
+@@ -818,11 +826,14 @@ char* get_dev_token(struct shared_ptr reqCtx) {
+         return NULL;
+     }
+     struct shared_ptr *urlResp = _ZNK17storeservicescore10URLRequest8responseEv(urlRequest);
++    if (!urlResp || !urlResp->obj) return NULL;
+     struct shared_ptr *resp = _ZNK17storeservicescore11URLResponse18underlyingResponseEv(urlResp->obj);
++    if (!resp || !resp->obj) return NULL;
+     void *http_message_obj = resp->obj;
+     void** data_ptr_location = (void**)((char*)http_message_obj + 48);
+     void* data_ptr = *data_ptr_location;
+-    char *respBody = _ZNK13mediaplatform4Data5bytesEv(data_ptr);
++    char *respBody = data_ptr ? _ZNK13mediaplatform4Data5bytesEv(data_ptr) : NULL;
++    if (!respBody) return NULL;
+     cJSON *json = cJSON_Parse(respBody);
+     cJSON *token_obj = cJSON_GetObjectItemCaseSensitive(json, "token");
+     char *token = cJSON_GetStringValue(token_obj);
+diff --git a/drm/stubs/drm_guard.cpp b/drm/stubs/drm_guard.cpp
+new file mode 100644
+index 0000000..1ff2077
+--- /dev/null
++++ b/drm/stubs/drm_guard.cpp
+@@ -0,0 +1,84 @@
++/*
++ * drm_guard.cpp — guest-side C++ exception barrier for Android ELF libraries
++ * loaded through libhybris on Windows.
++ *
++ * Apple's Android FairPlay libraries (libandroidappmusic.so, etc.) throw C++
++ * exceptions such as SVError using Bionic libc++_shared.so's DWARF unwinder.
++ * A Windows PE host frame has no ELF .eh_frame entry in the guest linker, so
++ * any exception reaching the host frame terminates the process via abort().
++ *
++ * Compiling this tiny trampoline as an x86_64 Linux ELF shared library linked
++ * against libc++_shared.so keeps the try/catch frame inside the guest linker's
++ * dl_iterate_phdr list, so DWARF unwinding runs guest destructors cleanly,
++ * captures e.what(), and returns a non-zero error code to the host caller.
++ */
++#include "drm_guard.h"
++
++namespace std {
++class exception {
++  public:
++    virtual ~exception() noexcept;
++    virtual const char *what() const noexcept;
++};
++} // namespace std
++
++static void copy_err(char *buf, unsigned long long cap, const char *msg) noexcept
++{
++    if (!buf || cap == 0) return;
++    if (!msg) msg = "unknown C++ exception";
++    unsigned long long i = 0;
++    while (i + 1 < cap && msg[i] != '\0') {
++        buf[i] = msg[i];
++        ++i;
++    }
++    buf[i] = '\0';
++}
++
++extern "C" int drm_guard_invoke(drm_guard_call_t *call)
++{
++    if (!call || !call->fn) {
++        if (call) copy_err(call->err_buf, call->err_cap, "null guard target");
++        return -3;
++    }
++    if (call->err_buf && call->err_cap > 0) call->err_buf[0] = '\0';
++    call->ret = nullptr;
++
++    try {
++        switch (call->argc) {
++        case 0:
++            call->ret = reinterpret_cast<void *(*)()>(call->fn)();
++            return 0;
++        case 1:
++            call->ret = reinterpret_cast<void *(*)(void *)>(call->fn)(call->args[0]);
++            return 0;
++        case 2:
++            call->ret = reinterpret_cast<void *(*)(void *, void *)>(call->fn)(
++                call->args[0], call->args[1]);
++            return 0;
++        case 3:
++            call->ret = reinterpret_cast<void *(*)(void *, void *, void *)>(call->fn)(
++                call->args[0], call->args[1], call->args[2]);
++            return 0;
++        case 4:
++            call->ret = reinterpret_cast<void *(*)(void *, void *, void *, void *)>(call->fn)(
++                call->args[0], call->args[1], call->args[2], call->args[3]);
++            return 0;
++        case 10:
++            call->ret = reinterpret_cast<void *(*)(
++                void *, void *, void *, void *, void *,
++                void *, void *, void *, void *, void *)>(call->fn)(
++                call->args[0], call->args[1], call->args[2], call->args[3], call->args[4],
++                call->args[5], call->args[6], call->args[7], call->args[8], call->args[9]);
++            return 0;
++        default:
++            copy_err(call->err_buf, call->err_cap, "unsupported arg count");
++            return -3;
++        }
++    } catch (const std::exception &e) {
++        copy_err(call->err_buf, call->err_cap, e.what());
++        return -1;
++    } catch (...) {
++        copy_err(call->err_buf, call->err_cap, "unknown C++ exception");
++        return -2;
++    }
++}
+diff --git a/drm/stubs/drm_guard.h b/drm/stubs/drm_guard.h
+new file mode 100644
+index 0000000..b626efd
+--- /dev/null
++++ b/drm/stubs/drm_guard.h
+@@ -0,0 +1,21 @@
++/*
++ * drm_guard.h — ABI shared between the Windows host wrapper (PE64) and the
++ * guest ELF exception barrier (libdrm_guard.so, x86_64-linux-gnu).
++ *
++ * Uses only fixed-size / ABI-identical types so LP64 guest and LLP64 host
++ * agree on every field offset.
++ */
++#ifndef DRM_GUARD_H
++#define DRM_GUARD_H
++
++typedef struct drm_guard_call {
++    void *fn;
++    void *args[10];
++    void *ret;
++    char *err_buf;
++    unsigned long long err_cap;
++    int argc;
++    int reserved;
++} drm_guard_call_t;
++
++#endif /* DRM_GUARD_H */
+diff --git a/drm/tests/test_drm_linux.c b/drm/tests/test_drm_linux.c
+index 2adaf66..70c85dd 100644
+--- a/drm/tests/test_drm_linux.c
++++ b/drm/tests/test_drm_linux.c
+@@ -11,6 +11,11 @@ char *drm_get_account(void);
+ int drm_init(const struct drm_config *cfg);
+ void drm_shutdown(void);
+ 
++int64_t get_active_account_dsid(void)
++{
++    return 9000000011;
++}
++
+ static void write_file(const char *dir, const char *name, const char *body, size_t n)
+ {
+     char p[4096];
+@@ -35,6 +40,7 @@ static void test_account_json_escaped(void)
+     assert(j);
+     assert(strstr(j, "\"music_token\":\"ab\\\"c\\\\d\"") != NULL);
+     assert(strstr(j, "\"storefront_id\":\"us\"") != NULL);
++    assert(strstr(j, "\"dsid\":9000000011") != NULL);
+     free(j);
+     drm_shutdown();
+ }

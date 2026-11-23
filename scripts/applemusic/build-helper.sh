@@ -2,7 +2,7 @@
 # Reproducibly build the pinned Adam engine used by Glasswave inside WSL.
 #
 # The source checkout is treated as read-only. Builds extract the pinned commit
-# into an isolated tree, optionally apply scripts/applemusic/glasswave.patch
+# into an isolated tree, apply scripts/applemusic/patches/*.patch in order
 # there, and never modify the upstream worktree.
 set -Eeuo pipefail
 umask 077
@@ -117,7 +117,7 @@ fi
 PROJECT_ROOT=$(realpath -e -- "$PROJECT_ROOT")
 
 readonly SOURCE_REPO="$PROJECT_ROOT/.local/applemusic/adam"
-readonly PATCH_FILE="$PROJECT_ROOT/scripts/applemusic/glasswave.patch"
+readonly PATCH_DIR="$PROJECT_ROOT/scripts/applemusic/patches"
 readonly LOCAL_TOOL_ROOT="$PROJECT_ROOT/.local/applemusic/tool"
 readonly LOCAL_BUILD_ROOT="$PROJECT_ROOT/.local/applemusic/build"
 readonly LOCAL_MISE_DATA="$LOCAL_TOOL_ROOT/mise"
@@ -321,9 +321,19 @@ lock_sha=$(git -C "$SOURCE_REPO" show "$PINNED_COMMIT:drm/fairplay-libs.lock" | 
     die "FairPlay lockfile does not match the audited hash"
 
 PATCH_SHA256="absent"
-if [[ -e "$PATCH_FILE" ]]; then
-    [[ -f "$PATCH_FILE" && -s "$PATCH_FILE" ]] || die "patch file is not a non-empty regular file: $PATCH_FILE"
-    PATCH_SHA256=$(sha256_file "$PATCH_FILE")
+PATCH_FILES=()
+if [[ -d "$PATCH_DIR" ]]; then
+    while IFS= read -r pf; do
+        [[ -f "$pf" && -s "$pf" ]] || die "patch file is not a non-empty regular file: $pf"
+        PATCH_FILES+=("$pf")
+    done < <(LC_ALL=C find "$PATCH_DIR" -maxdepth 1 -type f -name '*.patch' | LC_ALL=C sort)
+    if (( ${#PATCH_FILES[@]} > 0 )); then
+        PATCH_SHA256=$(
+            for pf in "${PATCH_FILES[@]}"; do
+                printf '%s %s\n' "$(basename -- "$pf")" "$(sha256_file "$pf")"
+            done | sha256sum | awk '{print $1}'
+        )
+    fi
 fi
 readonly PATCH_SHA256
 
@@ -547,18 +557,20 @@ note "Extracting pinned source into isolated build tree"
 git -C "$SOURCE_REPO" archive --format=tar "$PINNED_COMMIT" | tar -xf - -C "$STAGE_ROOT/src"
 
 if [[ "$PATCH_SHA256" != "absent" ]]; then
-    note "Applying Glasswave patch in isolated source tree"
+    note "Applying ${#PATCH_FILES[@]} Glasswave patch(es) in isolated source tree"
     # Without its own repository, git apply discovers Glasswave's enclosing .git
     # and treats every upstream path as outside the current prefix (silently
     # skipping the patch). Isolate patch application as well as compilation.
     git -C "$STAGE_ROOT/src" init --quiet
     (
         cd -- "$STAGE_ROOT/src"
-        git apply --check "$PATCH_FILE"
-        git apply "$PATCH_FILE"
+        for pf in "${PATCH_FILES[@]}"; do
+            git apply --check "$pf"
+            git apply "$pf"
+        done
     )
 else
-    note "No Glasswave patch present; building pinned upstream source"
+    note "No Glasswave patches present; building pinned upstream source"
 fi
 
 download_lfs_member() {
