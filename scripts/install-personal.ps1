@@ -96,6 +96,21 @@ if (-not $SkipLocalAssets) {
         }
     }
 
+    # 2b. Owner-generated @2x upscaled Win7 artwork (upscale-art.ps1 / upscale-scrollbar.ps1)
+    $hdSrc = Join-Path $Root '.local\fb2k-dev\profile\glasswave\hd'
+    if (Test-Path -LiteralPath $hdSrc -PathType Container) {
+        $hdDst = Join-Path $glasswaveDir 'hd'
+        New-Item -ItemType Directory -Force -Path $hdDst | Out-Null
+        $hdFiles = @(Get-ChildItem -LiteralPath $hdSrc -Recurse -File)
+        foreach ($file in $hdFiles) {
+            $rel = [IO.Path]::GetRelativePath($hdSrc, $file.FullName)
+            $dest = Join-Path $hdDst $rel
+            New-Item -ItemType Directory -Force -Path (Split-Path -Parent $dest) | Out-Null
+            Copy-Item -LiteralPath $file.FullName -Destination $dest -Force
+        }
+        Write-Host "Synced $($hdFiles.Count) @2x upscaled Win7 artwork files -> $hdDst"
+    }
+
     # 3. Owner-supplied Apple Music Android .so libraries (rootfs/system/lib64)
     $appleRootfsSrc = Join-Path $Root '.local\applemusic\windows\runtime\rootfs\system\lib64'
     if (Test-Path -LiteralPath $appleRootfsSrc -PathType Container) {

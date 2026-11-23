@@ -16,7 +16,7 @@ install stays isolated from `.local/fb2k-dev` see [dev-vs-prod.md](dev-vs-prod.m
 | **Owner's 3rd-party plugins** | `%APPDATA%\foobar2000-v2\user-components-x64\{foo_out_asio, foo_out_asio+dsd, foo_input_sacd, foo_input_dvda, foo_dsd_processor, foo_playcount}` | Managed independently of Glasswave releases. |
 | **Shared disk cache** | `E:\music\Glasswave\userdata\cache\v1\` | Configured in **Preferences → Display → Glasswave → Cache folder** (`cfg_var.B83BE425-E106-48B8-A2CD-9A9377FA6211`). Keeps large audio/image/list caches off `C:`. |
 | **Downloaded music** | `E:\music\Glasswave\userdata\downloads\` | Configured in **Preferences → Display → Glasswave → Download folder** (`cfg_var.6B1E4A70-2C9D-4F3B-8E51-7A2D0C9F4B11`). |
-| **Owner non-redistributable assets** | `%APPDATA%\foobar2000-v2\glasswave\` | Win7 artwork (`wmploc.dll`, `ehres.dll`, `aero.msstyles`), Apple Android `.so` (`applemusic\runtime\rootfs\system\lib64\`), community lyric scripts (`lyrics\scripts\`), ESLyric scripts (`%APPDATA%\foobar2000-v2\eslyric-data\scripts\`). |
+| **Owner non-redistributable assets** | `%APPDATA%\foobar2000-v2\glasswave\` | Win7 artwork (`wmploc.dll`, `ehres.dll`, `aero.msstyles`, plus optional `hd\{aero,ehres,wmploc}\*@2x.png` from `upscale-*.ps1`), Apple Android `.so` (`applemusic\runtime\rootfs\system\lib64\`), community lyric scripts (`lyrics\scripts\`), ESLyric scripts (`%APPDATA%\foobar2000-v2\eslyric-data\scripts\`). |
 
 Note: Production intentionally has **no** `applemusic\bridge.json`. Glasswave runs in
 auto-managed mode (dynamic free loopback port, per-process random token, auto-generated
@@ -42,7 +42,7 @@ player:
 - **Updates**:
   - Replaces `%APPDATA%\foobar2000-v2\user-components-x64\foo_ui_glasswave\` cleanly from
     `dist\foo_ui_glasswave.fb2k-component`.
-  - Re-syncs owner local Win7 artwork (`.local\refs\`), Apple Android `.so` libraries
+  - Re-syncs owner local Win7 artwork (`.local\refs\` and `.local\fb2k-dev\profile\glasswave\hd\`), Apple Android `.so` libraries
     (`.local\applemusic\windows\runtime\rootfs\system\lib64\`), and local lyric scripts
     (`.local\refs\lyrics\`). Pass `-SkipLocalAssets` to update only the component archive.
 - **Never touches**:
