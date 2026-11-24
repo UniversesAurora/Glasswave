@@ -74,9 +74,12 @@ std::wstring_view Trim(std::wstring_view s) {
     return s;
 }
 
+enum class EntryRole { Auto, Translation, Pronunciation };
+
 struct Entry {
     int time = 0;
     size_t order = 0;  // position in the file, keeps the original before its references
+    EntryRole role = EntryRole::Auto;
     std::wstring text;
     std::vector<Word> words;
     int wordsEnd = -1;  // trailing <time> with no text after it
@@ -199,11 +202,20 @@ Lyrics ParseLrc(std::wstring_view text) {
             plain.emplace_back(line);
             continue;
         }
-        const std::wstring_view body = line.substr(at);
+        std::wstring_view body = line.substr(at);
+        EntryRole role = EntryRole::Auto;
+        if (body.starts_with(L"[gw:tr]")) {
+            role = EntryRole::Translation;
+            body.remove_prefix(7);
+        } else if (body.starts_with(L"[gw:ro]")) {
+            role = EntryRole::Pronunciation;
+            body.remove_prefix(7);
+        }
         for (int t : times) {
             Entry e;
             e.time = t;
             e.order = order++;
+            e.role = role;
             ParseBody(body, t, e);
             entries.push_back(std::move(e));
         }
@@ -223,34 +235,57 @@ Lyrics ParseLrc(std::wstring_view text) {
         return a.time != b.time ? a.time < b.time : a.order < b.order;
     });
 
-    // Group by timestamp: the first non-empty entry is the line, the next ones its
-    // references. Empty entries end the line before them (instrumental gaps).
+    // Group by timestamp: explicit [gw:tr]/[gw:ro] markers assign translation/pronunciation
+    // unambiguously; unmarked lines follow ESLyric order (original, translation, romanization).
+    // Empty entries end the line before them (instrumental gaps).
     std::vector<int> gapStarts;
+    std::vector<int> romanEnds;
     for (size_t i = 0; i < entries.size();) {
         size_t j = i;
         while (j < entries.size() && entries[j].time == entries[i].time) ++j;
         Line* line = nullptr;
         Line current;
-        int refs = 0;
+        int romanEnd = -1;
+        int autoRefs = 0;
         for (size_t k = i; k < j; ++k) {
             Entry& e = entries[k];
             if (Trim(e.text).empty()) continue;
+            if (e.role == EntryRole::Translation) {
+                if (current.translation.empty()) current.translation = std::wstring(Trim(e.text));
+                continue;
+            }
+            if (e.role == EntryRole::Pronunciation) {
+                if (current.romanization.empty()) {
+                    current.romanization = std::wstring(Trim(e.text));
+                    current.romanWords = std::move(e.words);
+                    romanEnd = e.wordsEnd;
+                }
+                continue;
+            }
             if (!line) {
                 current.start = e.time;
                 current.text = std::move(e.text);
                 current.words = std::move(e.words);
                 current.end = e.wordsEnd;
                 line = &current;
-            } else if (refs == 0) {
-                current.translation = std::wstring(Trim(e.text));
-                ++refs;
-            } else if (refs == 1) {
-                current.romanization = std::wstring(Trim(e.text));
-                ++refs;
+            } else if (autoRefs == 0) {
+                if (current.translation.empty()) current.translation = std::wstring(Trim(e.text));
+                ++autoRefs;
+            } else if (autoRefs == 1) {
+                if (current.romanization.empty()) {
+                    current.romanization = std::wstring(Trim(e.text));
+                    current.romanWords = std::move(e.words);
+                    romanEnd = e.wordsEnd;
+                }
+                ++autoRefs;
             }
         }
-        if (line) out.lines.push_back(std::move(current));
-        else gapStarts.push_back(entries[i].time);
+        if (line) {
+            out.lines.push_back(std::move(current));
+            romanEnds.push_back(romanEnd);
+        } else {
+            gapStarts.push_back(entries[i].time);
+        }
         i = j;
     }
 
@@ -272,6 +307,13 @@ Lyrics ParseLrc(std::wstring_view text) {
             l.end = next == INT_MAX ? l.start + 5000 : next;
         }
         if (l.end < l.start) l.end = l.start;
+        if (!l.romanWords.empty()) {
+            const int lastStart = l.romanWords.back().start;
+            int rEnd = romanEnds[i];
+            if (rEnd <= lastStart) rEnd = std::max(lastStart, l.end);
+            for (size_t w = 0; w < l.romanWords.size(); ++w)
+                l.romanWords[w].end = w + 1 < l.romanWords.size() ? l.romanWords[w + 1].start : rEnd;
+        }
     }
 
     ApplyOffset(out, offset);
@@ -288,6 +330,16 @@ void ApplyOffset(Lyrics& lyrics, int offsetMs) {
         for (auto& w : l.words) {
             shift(w.start);
             shift(w.end);
+        }
+        for (auto& w : l.romanWords) {
+            shift(w.start);
+            shift(w.end);
+        }
+        for (auto& s : l.secondaries) {
+            for (auto& w : s.words) {
+                shift(w.start);
+                shift(w.end);
+            }
         }
     }
 }
@@ -497,17 +549,108 @@ std::vector<Word> SpreadWords(const std::wstring& text, const std::vector<Word>&
     return words;
 }
 
+std::array<TrackKind, 3> TrackSequence(DisplayOrder order) {
+    switch (order) {
+    case DisplayOrder::OriginalPronunciationTranslation:
+        return {TrackKind::Original, TrackKind::Pronunciation, TrackKind::Translation};
+    case DisplayOrder::OriginalTranslationPronunciation:
+        return {TrackKind::Original, TrackKind::Translation, TrackKind::Pronunciation};
+    case DisplayOrder::TranslationOriginalPronunciation:
+        return {TrackKind::Translation, TrackKind::Original, TrackKind::Pronunciation};
+    case DisplayOrder::TranslationPronunciationOriginal:
+        return {TrackKind::Translation, TrackKind::Pronunciation, TrackKind::Original};
+    case DisplayOrder::PronunciationOriginalTranslation:
+        return {TrackKind::Pronunciation, TrackKind::Original, TrackKind::Translation};
+    case DisplayOrder::PronunciationTranslationOriginal:
+        return {TrackKind::Pronunciation, TrackKind::Translation, TrackKind::Original};
+    }
+    return {TrackKind::Original, TrackKind::Pronunciation, TrackKind::Translation};
+}
+
+bool TrackEnabled(const DisplayOptions& options, TrackKind kind) {
+    switch (kind) {
+    case TrackKind::Original: return options.showOriginal;
+    case TrackKind::Translation: return options.showTranslation;
+    case TrackKind::Pronunciation: return options.showPronunciation;
+    }
+    return false;
+}
+
+const std::wstring& TrackText(const Line& line, TrackKind kind) {
+    switch (kind) {
+    case TrackKind::Original: return line.text;
+    case TrackKind::Translation: return line.translation;
+    case TrackKind::Pronunciation: return line.romanization;
+    }
+    return line.text;
+}
+
 }  // namespace
 
-Lyrics SwapTranslation(const Lyrics& lyrics) {
-    Lyrics swapped = lyrics;
-    for (auto& line : swapped.lines) {
-        if (line.translation.empty()) continue;
-        std::vector<Word> words = line.words.empty() ? std::vector<Word>() : SpreadWords(line.translation, line.words);
-        std::swap(line.text, line.translation);
-        line.words = std::move(words);
+Lyrics ProjectLyrics(const Lyrics& lyrics, const DisplayOptions& options) {
+    Lyrics out = lyrics;
+    const bool hasOriginal = std::any_of(lyrics.lines.begin(), lyrics.lines.end(),
+                                         [](const Line& l) { return !l.text.empty(); });
+    const bool hasTranslation = std::any_of(lyrics.lines.begin(), lyrics.lines.end(),
+                                            [](const Line& l) { return !l.translation.empty(); });
+    const bool hasPronunciation = std::any_of(lyrics.lines.begin(), lyrics.lines.end(),
+                                              [](const Line& l) { return !l.romanization.empty(); });
+    const auto songHas = [&](TrackKind kind) {
+        switch (kind) {
+        case TrackKind::Original: return hasOriginal;
+        case TrackKind::Translation: return hasTranslation;
+        case TrackKind::Pronunciation: return hasPronunciation;
+        }
+        return false;
+    };
+
+    std::vector<TrackKind> visible;
+    for (TrackKind kind : TrackSequence(options.order)) {
+        if (TrackEnabled(options, kind) && songHas(kind)) visible.push_back(kind);
     }
-    return swapped;
+    if (visible.empty()) visible.push_back(TrackKind::Original);
+
+    out.karaoke = false;
+    for (size_t i = 0; i < out.lines.size(); ++i) {
+        const Line& src = lyrics.lines[i];
+        Line& dst = out.lines[i];
+        dst.secondaries.clear();
+
+        std::vector<TrackKind> lineTracks;
+        lineTracks.reserve(visible.size());
+        for (TrackKind kind : visible) {
+            if (!TrackText(src, kind).empty()) lineTracks.push_back(kind);
+        }
+        if (lineTracks.empty()) lineTracks.push_back(TrackKind::Original);
+
+        const TrackKind mainKind = lineTracks.front();
+        dst.mainKind = mainKind;
+        dst.text = TrackText(src, mainKind);
+        if (mainKind == TrackKind::Original) {
+            dst.words = src.words;
+        } else if (mainKind == TrackKind::Pronunciation) {
+            if (!src.romanWords.empty())
+                dst.words = src.romanWords;
+            else
+                dst.words = src.words.empty() ? std::vector<Word>() : SpreadWords(src.romanization, src.words);
+        } else {
+            dst.words = src.words.empty() ? std::vector<Word>() : SpreadWords(src.translation, src.words);
+        }
+        if (!dst.words.empty()) out.karaoke = true;
+
+        for (size_t s = 1; s < lineTracks.size(); ++s) {
+            const TrackKind subKind = lineTracks[s];
+            SecondaryLine sec;
+            sec.kind = subKind;
+            sec.text = TrackText(src, subKind);
+            if (subKind == TrackKind::Original)
+                sec.words = src.words;
+            else if (subKind == TrackKind::Pronunciation)
+                sec.words = src.romanWords;
+            dst.secondaries.push_back(std::move(sec));
+        }
+    }
+    return out;
 }
 
 }  // namespace glasswave::lyrics

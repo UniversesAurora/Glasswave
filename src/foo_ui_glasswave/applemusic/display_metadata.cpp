@@ -851,6 +851,9 @@ void DisplayMetadata::ApplyArtistFallback(std::vector<stream::ArtistRef>& artist
 void DisplayMetadata::Apply(Song& song, std::wstring_view sourceStorefront) const {
     const auto target = CurrentTarget();
     if (!target) return;
+    const bool applyNames = HasAppleMusicDisplayScope(AppleMusicDisplayScope::Names);
+    const bool applyEditorial = HasAppleMusicDisplayScope(AppleMusicDisplayScope::Editorial);
+    if (!applyNames && !applyEditorial) return;
     SongDisplayNames names;
     bool foundSong = false;
     {
@@ -863,24 +866,28 @@ void DisplayMetadata::Apply(Song& song, std::wstring_view sourceStorefront) cons
         }
     }
     if (foundSong) {
-        if (!song.customTitle && !names.title.empty()) song.track.title = names.title;
-        if (!song.customAlbum) {
-            if (!names.album.empty()) song.track.album = names.album;
-            if (!names.albumId.empty()) song.track.albumId = names.albumId;
+        if (applyNames) {
+            if (!song.customTitle && !names.title.empty()) song.track.title = names.title;
+            if (!song.customAlbum) {
+                if (!names.album.empty()) song.track.album = names.album;
+                if (!names.albumId.empty()) song.track.albumId = names.albumId;
+            }
+            if (!names.coverUrl.empty()) song.coverUrl = names.coverUrl;
+            if (names.artistsAuthoritative)
+                song.track.artists = names.artists;
+            else
+                ApplyArtists(song.track.artists, names.artists);
         }
-        if (!names.coverUrl.empty()) song.coverUrl = names.coverUrl;
-        if (names.artistsAuthoritative)
-            song.track.artists = names.artists;
-        else
-            ApplyArtists(song.track.artists, names.artists);
-        if (!names.composerNames.empty()) song.composerNames = names.composerNames;
-        if (!names.composerName.empty())
-            song.composerName = names.composerName;
-        else if (!names.composerNames.empty())
-            song.composerName.clear();
-        if (!names.genreNames.empty()) song.genreNames = names.genreNames;
+        if (applyEditorial) {
+            if (!names.composerNames.empty()) song.composerNames = names.composerNames;
+            if (!names.composerName.empty())
+                song.composerName = names.composerName;
+            else if (!names.composerNames.empty())
+                song.composerName.clear();
+            if (!names.genreNames.empty()) song.genreNames = names.genreNames;
+        }
     }
-    if (!song.customAlbum && !song.track.albumId.empty() &&
+    if (applyNames && !song.customAlbum && !song.track.albumId.empty() &&
         (names.album.empty() || names.artists.empty() || names.coverUrl.empty())) {
         stream::Album album;
         album.id = song.track.albumId;
@@ -892,12 +899,13 @@ void DisplayMetadata::Apply(Song& song, std::wstring_view sourceStorefront) cons
         if (names.artists.empty()) ApplyArtists(song.track.artists, album.artists);
         if (names.coverUrl.empty() && !album.coverUrl.empty()) song.coverUrl = album.coverUrl;
     }
-    if (!names.artistsAuthoritative) ApplyArtistFallback(song.track.artists, names.artists, sourceStorefront);
+    if (applyNames && !names.artistsAuthoritative)
+        ApplyArtistFallback(song.track.artists, names.artists, sourceStorefront);
 }
 
 void DisplayMetadata::Apply(stream::Track& track, std::wstring_view sourceStorefront) const {
     const auto target = CurrentTarget();
-    if (!target) return;
+    if (!target || !HasAppleMusicDisplayScope(AppleMusicDisplayScope::Names)) return;
     SongDisplayNames names;
     bool foundSong = false;
     {
@@ -933,6 +941,9 @@ void DisplayMetadata::Apply(stream::Track& track, std::wstring_view sourceStoref
 void DisplayMetadata::Apply(stream::Album& album, std::wstring_view sourceStorefront) const {
     const auto target = CurrentTarget();
     if (!target) return;
+    const bool applyNames = HasAppleMusicDisplayScope(AppleMusicDisplayScope::Names);
+    const bool applyEditorial = HasAppleMusicDisplayScope(AppleMusicDisplayScope::Editorial);
+    if (!applyNames && !applyEditorial) return;
     AlbumDisplayNames names;
     bool foundAlbum = false;
     {
@@ -945,20 +956,28 @@ void DisplayMetadata::Apply(stream::Album& album, std::wstring_view sourceStoref
         }
     }
     if (foundAlbum) {
-        if (!names.name.empty()) album.name = names.name;
-        if (!names.description.empty()) album.description = names.description;
-        if (!names.coverUrl.empty()) album.coverUrl = names.coverUrl;
-        if (names.artistsAuthoritative)
-            album.artists = names.artists;
-        else
-            ApplyArtists(album.artists, names.artists);
+        if (applyNames) {
+            if (!names.name.empty()) album.name = names.name;
+            if (!names.coverUrl.empty()) album.coverUrl = names.coverUrl;
+            if (names.artistsAuthoritative)
+                album.artists = names.artists;
+            else
+                ApplyArtists(album.artists, names.artists);
+        }
+        if (applyEditorial) {
+            if (!names.description.empty()) album.description = names.description;
+        }
     }
-    if (!names.artistsAuthoritative) ApplyArtistFallback(album.artists, names.artists, sourceStorefront);
+    if (applyNames && !names.artistsAuthoritative)
+        ApplyArtistFallback(album.artists, names.artists, sourceStorefront);
 }
 
 void DisplayMetadata::Apply(stream::Artist& artist, std::wstring_view) const {
     const auto target = CurrentTarget();
     if (!target) return;
+    const bool applyNames = HasAppleMusicDisplayScope(AppleMusicDisplayScope::Names);
+    const bool applyEditorial = HasAppleMusicDisplayScope(AppleMusicDisplayScope::Editorial);
+    if (!applyNames && !applyEditorial) return;
     ArtistDisplayNames names;
     {
         std::lock_guard lock(m_mutex);
@@ -967,14 +986,18 @@ void DisplayMetadata::Apply(stream::Artist& artist, std::wstring_view) const {
         found->second.used = ++m_clock;
         names = found->second.names;
     }
-    if (!names.name.empty()) artist.name = names.name;
-    if (!names.bio.empty()) artist.bio = names.bio;
-    if (!names.avatarUrl.empty()) artist.avatarUrl = names.avatarUrl;
+    if (applyNames) {
+        if (!names.name.empty()) artist.name = names.name;
+        if (!names.avatarUrl.empty()) artist.avatarUrl = names.avatarUrl;
+    }
+    if (applyEditorial) {
+        if (!names.bio.empty()) artist.bio = names.bio;
+    }
 }
 
 void DisplayMetadata::Apply(stream::Playlist& playlist, std::wstring_view) const {
     const auto target = CurrentTarget();
-    if (!target || playlist.own) return;
+    if (!target || playlist.own || !HasAppleMusicDisplayScope(AppleMusicDisplayScope::Playlists)) return;
     PlaylistDisplayNames names;
     {
         std::lock_guard lock(m_mutex);

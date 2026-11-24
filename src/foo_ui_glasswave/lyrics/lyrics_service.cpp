@@ -67,6 +67,7 @@ Query MakeQuery(const metadb_handle_ptr& track) {
     if (auto* provider = stream::ProviderOf(track)) {
         q.provider = provider->Key();
         q.providerId = provider->TrackId(track);
+        q.providerLocale = provider->LyricsLocale();
     }
     if (auto info = track->get_info_ref(); info.is_valid()) {
         const file_info& fi = info->info();
@@ -106,6 +107,10 @@ std::filesystem::path CacheFile(const Query& q, bool identityOnly = false) {
         for (const auto& text : {q.title, q.artist, q.album, q.provider, std::to_wstring(q.duration)}) {
             mix(L"|");
             mix(text);
+        }
+        if (!q.providerLocale.empty()) {
+            mix(L"|l=");
+            mix(q.providerLocale);
         }
     }
     wchar_t name[32];

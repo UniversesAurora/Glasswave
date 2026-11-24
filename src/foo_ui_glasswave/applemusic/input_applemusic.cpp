@@ -317,7 +317,7 @@ class AppleInput : public stream::EncodedInputBase {
     bool NeedsDynamicInfoRefresh() const override {
         const uint64_t epoch = DisplayMetadata::Get().Epoch();
         if (epoch != m_reportedDisplayEpoch) return true;
-        return DisplayTargetFor(GetAppleMusicDisplayRegion()).has_value() && !m_reportedRegional &&
+        return RegionalNamesActive() && !m_reportedRegional &&
                DisplayMetadata::Get().HasSong(DisplayMetadata::Get().SourceStorefront(), m_id);
     }
     void PublishInfo(file_info& out, abort_callback& abort) override { get_info(out, abort); }
@@ -545,7 +545,7 @@ class AppleInput : public stream::EncodedInputBase {
     void ApplyMetadata(file_info& out) {
         m_reportedDisplayEpoch = DisplayMetadata::Get().Epoch();
         m_reportedRegional =
-            DisplayTargetFor(GetAppleMusicDisplayRegion()).has_value() &&
+            RegionalNamesActive() &&
             DisplayMetadata::Get().HasSong(DisplayMetadata::Get().SourceStorefront(), m_id);
         if (const auto song = Catalog::Get().FindSong(m_id)) {
             if (!song->track.title.empty()) out.meta_set("title", Utf8(song->track.title).c_str());

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "lyrics/lyrics.h"
+
 // Glasswave's user-tunable settings (Preferences > Display > Glasswave). Each value is
 // stored in foobar2000's configuration and clamped to its range when read, so code can
 // use it directly. Provider-specific settings live with their provider (netease/config.h).
@@ -72,35 +74,45 @@ void SetPlayHistoryRows(int rows);
 // interface font); and whether translations stand above their lines instead of below.
 inline constexpr Range kLyricSize{50, 200, 100};
 inline constexpr Range kTranslationSize{25, 150, 55};
+inline constexpr Range kPronunciationSize{25, 150, 50};
 int LyricSizePercent();
 void SetLyricSizePercent(int percent);
 int TranslationSizePercent();
 void SetTranslationSizePercent(int percent);
+int PronunciationSizePercent();
+void SetPronunciationSizePercent(int percent);
 std::wstring LyricFonts(); // as typed: names separated by commas
 void SetLyricFonts(const std::wstring& fonts);
 std::vector<std::wstring> LyricFontList();
-// The translation shown as the lyric (its size, sung word by word) and the original as the
-// smaller line under it; only the texts change places.
 // The lyrics' Copy... dialog's check boxes, as bits (metadata 1, timestamps 2, merge 4,
 // references 8, standard 16).
 int LyricsCopyOptions();
 void SetLyricsCopyOptions(int flags);
-bool SwapTranslation();
-// The small line under each lyric hidden: the translation, or the original when swapped.
-bool HideTranslation();
-void SetHideTranslation(bool hide);
-void SetSwapTranslation(bool swap);
-// Highlighting of the secondary (bottom) lyric line (translation, or original when swapped):
-// Off keeps it dim, Line highlights the whole line while active, WordProgress sweeps across
-// the secondary line in sync with the main line on word-timed lyrics (whole line otherwise).
+// Which tracks (original, translation, pronunciation) are displayed, and in what order.
+// At least one track stays enabled; DisplayOrder selects one of the 6 permutations.
+bool ShowOriginalLyric();
+void SetShowOriginalLyric(bool show);
+bool ShowTranslationLyric();
+void SetShowTranslationLyric(bool show);
+bool ShowPronunciationLyric();
+void SetShowPronunciationLyric(bool show);
+inline constexpr Range kLyricDisplayOrder{0, 5, 0};
+lyrics::DisplayOrder GetLyricDisplayOrder();
+void SetLyricDisplayOrder(lyrics::DisplayOrder order);
+lyrics::DisplayOptions GetLyricDisplayOptions();
+// Highlighting of secondary lyric lines (translation and pronunciation independently):
+// Off keeps the line dim, Line highlights the whole line while active, WordProgress sweeps
+// across the secondary line (using real syllable timing when available, else main progress).
 enum class SecondaryLyricHighlight : int {
     Off = 0,
     Line = 1,
     WordProgress = 2,
 };
 inline constexpr Range kSecondaryLyricHighlight{0, 2, 0};
-SecondaryLyricHighlight GetSecondaryLyricHighlight();
-void SetSecondaryLyricHighlight(SecondaryLyricHighlight mode);
+SecondaryLyricHighlight GetTranslationLyricHighlight();
+void SetTranslationLyricHighlight(SecondaryLyricHighlight mode);
+SecondaryLyricHighlight GetPronunciationLyricHighlight();
+void SetPronunciationLyricHighlight(SecondaryLyricHighlight mode);
 // Bumped by every change above, so views can tell their layout is out of date.
 int LyricStyleGeneration();
 

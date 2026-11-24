@@ -293,6 +293,9 @@ class Provider {
         (void)track;
         return false;
     }
+    // Effective locale used by native Lyrics() requests (empty when locale-independent).
+    // Mixed into automatic lyric cache keys so locale/language switches never collide.
+    virtual std::wstring LyricsLocale() const { return {}; }
     // An item whose album art is the cover of the given object (fed to ArtCache).
     virtual metadb_handle_ptr ArtItem(ArtKind kind, const Id& id) const {
         const Catalog* records = Records();

@@ -8,10 +8,52 @@ enum class AppleMusicDisplayRegion : int {
     China = 2,
 };
 
+enum class AppleMusicDisplayScope : int {
+    None = 0,
+    Names = 1 << 0,      // Song titles, artist names, album names (and their artwork)
+    Playlists = 1 << 1,  // Editorial/non-owned playlist names, descriptions, covers
+    Editorial = 1 << 2,  // Artist bios, album descriptions, genres, composers
+    Lyrics = 1 << 3,     // Apple Music lyrics translation & script replacement locale
+};
+
+inline constexpr int kAppleMusicDisplayScopeMask = 0x0F;
+inline constexpr int kAppleMusicDisplayScopeMetadataMask =
+    static_cast<int>(AppleMusicDisplayScope::Names) | static_cast<int>(AppleMusicDisplayScope::Playlists) |
+    static_cast<int>(AppleMusicDisplayScope::Editorial);
+inline constexpr int kAppleMusicDisplayScopeDefault = static_cast<int>(AppleMusicDisplayScope::Names);
+
 // Display names may use another catalog localization without changing the signed-in
 // account's storefront, library IDs, playback assets or audio selection.
 AppleMusicDisplayRegion GetAppleMusicDisplayRegion();
 void SetAppleMusicDisplayRegion(AppleMusicDisplayRegion region);
+
+int GetAppleMusicDisplayScope();
+void SetAppleMusicDisplayScope(int mask);
+bool HasAppleMusicDisplayScope(AppleMusicDisplayScope flag);
+void SetAppleMusicDisplayScopeFlag(AppleMusicDisplayScope flag, bool enabled);
+
+inline bool RegionalNamesActive() {
+    return GetAppleMusicDisplayRegion() != AppleMusicDisplayRegion::Account &&
+           HasAppleMusicDisplayScope(AppleMusicDisplayScope::Names);
+}
+inline bool RegionalPlaylistsActive() {
+    return GetAppleMusicDisplayRegion() != AppleMusicDisplayRegion::Account &&
+           HasAppleMusicDisplayScope(AppleMusicDisplayScope::Playlists);
+}
+inline bool RegionalEditorialActive() {
+    return GetAppleMusicDisplayRegion() != AppleMusicDisplayRegion::Account &&
+           HasAppleMusicDisplayScope(AppleMusicDisplayScope::Editorial);
+}
+inline bool RegionalLyricsActive() {
+    return GetAppleMusicDisplayRegion() != AppleMusicDisplayRegion::Account &&
+           HasAppleMusicDisplayScope(AppleMusicDisplayScope::Lyrics);
+}
+inline bool RegionalSongsActive() { return RegionalNamesActive() || RegionalEditorialActive(); }
+inline bool RegionalAlbumsActive() { return RegionalNamesActive() || RegionalEditorialActive(); }
+inline bool RegionalArtistsActive() { return RegionalNamesActive() || RegionalEditorialActive(); }
+inline bool RegionalAnyMetadataActive() {
+    return RegionalNamesActive() || RegionalPlaylistsActive() || RegionalEditorialActive();
+}
 
 // Apple Music's "Audio Quality" choices: AAC 256 kbps, ALAC up to 24-bit/48 kHz, or ALAC up to
 // 24-bit/192 kHz. Sampled when a track starts, like the Atmos settings below.

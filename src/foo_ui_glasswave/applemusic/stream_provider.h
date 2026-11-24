@@ -59,6 +59,7 @@ class StreamProvider final : public stream::Provider {
     stream::Catalog* Records() const override;
     std::optional<stream::Track> FindTrack(const stream::Id& track) const override;
     bool TrackDisplayPending(const stream::Id& track) const override;
+    std::wstring LyricsLocale() const override;
     stream::Id AlbumOfTrack(const stream::Id& track) const override;
     bool SameCover(std::wstring_view a, std::wstring_view b) const override;
 

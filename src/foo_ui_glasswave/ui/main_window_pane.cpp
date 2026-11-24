@@ -52,26 +52,17 @@ void MainWindow::OnLyrics(const lyrics::Result& result) {
         if (m_pane) m_pane->SetResult(result);
         return;
     }
-    // Every view shows the same text: with Swap original and translation on, the translation
-    // is the lyric (and is sung word by word) and the original the line under it.
-    // The owner's offset for the song (Adjust offset) moves every time first.
+    // Every view shows the same projected text: main line (with word timing) drives the
+    // transport bar, mini player, full-screen lyric line and the pane's primary line;
+    // up to two secondary lines render underneath according to the display order.
     m_lyricsResult = result;
     lyrics::Result shown = result;
     if (shown.status == lyrics::Status::Found && shown.lyrics) {
         const int offset = lyrics::Service::Get().Offset(m_lyricsTrack, *shown.lyrics);
-        const bool translated = std::any_of(shown.lyrics->lines.begin(), shown.lyrics->lines.end(),
-                                            [](const lyrics::Line& l) { return !l.translation.empty(); });
-        const bool swap = translated && settings::SwapTranslation();
-        // Hide translation hides the small line, whichever text it holds after a swap.
-        const bool hide = translated && settings::HideTranslation();
-        if (offset != 0 || swap || hide) {
-            lyrics::Lyrics adjusted = *shown.lyrics;
-            lyrics::ApplyOffset(adjusted, offset);
-            if (swap) adjusted = lyrics::SwapTranslation(adjusted);
-            if (hide)
-                for (auto& line : adjusted.lines) line.translation.clear();
-            shown.lyrics = std::make_shared<const lyrics::Lyrics>(std::move(adjusted));
-        }
+        lyrics::Lyrics adjusted = *shown.lyrics;
+        lyrics::ApplyOffset(adjusted, offset);
+        adjusted = lyrics::ProjectLyrics(adjusted, settings::GetLyricDisplayOptions());
+        shown.lyrics = std::make_shared<const lyrics::Lyrics>(std::move(adjusted));
     }
     m_npLyrics = shown.status == lyrics::Status::Found ? shown.lyrics : nullptr;
     m_npLyricLine = -2;
@@ -434,37 +425,88 @@ void MainWindow::ShowLyricsMenu(POINT screen) {
              restyle();
          }}};
     actions.push_back({Tr(L"Lyrics text size"), nullptr, std::move(size)});
-    const bool swapped = settings::SwapTranslation();
-    MenuAction swap{Tr(L"Swap original and translation"), [this, swapped] {
-                        settings::SetSwapTranslation(!swapped);
-                        OnLyrics(m_lyricsResult);
-                    }};
-    swap.checked = swapped;
-    swap.checkbox = true;
-    actions.push_back(std::move(swap));
-    // The small line under each lyric: the translation, or the original when swapped.
-    const bool hidden = settings::HideTranslation();
-    MenuAction hide{Tr(swapped ? L"Hide original" : L"Hide translation"), [this, hidden] {
-                        settings::SetHideTranslation(!hidden);
-                        OnLyrics(m_lyricsResult);
-                    }};
-    hide.checked = hidden;
-    hide.checkbox = true;
-    actions.push_back(std::move(hide));
-    const auto subHighlight = settings::GetSecondaryLyricHighlight();
-    std::vector<MenuAction> subHighlightMenu;
-    for (const auto& [mode, label] : {std::pair{settings::SecondaryLyricHighlight::Off, L"Off"},
-                                      std::pair{settings::SecondaryLyricHighlight::Line, L"Highlight whole line"},
-                                      std::pair{settings::SecondaryLyricHighlight::WordProgress,
-                                                L"Follow word-by-word progress"}}) {
-        MenuAction item{Tr(label), [mode, restyle] {
-                            settings::SetSecondaryLyricHighlight(mode);
-                            restyle();
+    const bool showOrig = settings::ShowOriginalLyric();
+    const bool showTrans = settings::ShowTranslationLyric();
+    const bool showPron = settings::ShowPronunciationLyric();
+    const int shownCount = (showOrig ? 1 : 0) + (showTrans ? 1 : 0) + (showPron ? 1 : 0);
+    std::vector<MenuAction> displayTracks;
+    {
+        MenuAction item{Tr(L"Original"), [this, showOrig] {
+                            settings::SetShowOriginalLyric(!showOrig);
+                            OnLyrics(m_lyricsResult);
                         }};
-        item.checked = subHighlight == mode;
-        subHighlightMenu.push_back(std::move(item));
+        item.checked = showOrig;
+        item.checkbox = true;
+        if (showOrig && shownCount <= 1) item.run = nullptr;
+        displayTracks.push_back(std::move(item));
     }
-    actions.push_back({Tr(L"Secondary lyric line highlight"), nullptr, std::move(subHighlightMenu)});
+    {
+        MenuAction item{Tr(L"Translation"), [this, showTrans] {
+                            settings::SetShowTranslationLyric(!showTrans);
+                            OnLyrics(m_lyricsResult);
+                        }};
+        item.checked = showTrans;
+        item.checkbox = true;
+        if (showTrans && shownCount <= 1) item.run = nullptr;
+        displayTracks.push_back(std::move(item));
+    }
+    {
+        MenuAction item{Tr(L"Pronunciation"), [this, showPron] {
+                            settings::SetShowPronunciationLyric(!showPron);
+                            OnLyrics(m_lyricsResult);
+                        }};
+        item.checked = showPron;
+        item.checkbox = true;
+        if (showPron && shownCount <= 1) item.run = nullptr;
+        displayTracks.push_back(std::move(item));
+    }
+    actions.push_back({Tr(L"Display lyrics tracks"), nullptr, std::move(displayTracks)});
+
+    const auto order = settings::GetLyricDisplayOrder();
+    std::vector<MenuAction> orderMenu;
+    for (const auto& [value, label] : {
+             std::pair{lyrics::DisplayOrder::OriginalPronunciationTranslation,
+                       L"Original -> Pronunciation -> Translation"},
+             std::pair{lyrics::DisplayOrder::OriginalTranslationPronunciation,
+                       L"Original -> Translation -> Pronunciation"},
+             std::pair{lyrics::DisplayOrder::TranslationOriginalPronunciation,
+                       L"Translation -> Original -> Pronunciation"},
+             std::pair{lyrics::DisplayOrder::TranslationPronunciationOriginal,
+                       L"Translation -> Pronunciation -> Original"},
+             std::pair{lyrics::DisplayOrder::PronunciationOriginalTranslation,
+                       L"Pronunciation -> Original -> Translation"},
+             std::pair{lyrics::DisplayOrder::PronunciationTranslationOriginal,
+                       L"Pronunciation -> Translation -> Original"},
+         }) {
+        MenuAction item{Tr(label), [this, value] {
+                            settings::SetLyricDisplayOrder(value);
+                            OnLyrics(m_lyricsResult);
+                        }};
+        item.checked = order == value;
+        orderMenu.push_back(std::move(item));
+    }
+    actions.push_back({Tr(L"Lyrics display order"), nullptr, std::move(orderMenu)});
+
+    const auto addHighlightMenu = [&](const wchar_t* title, settings::SecondaryLyricHighlight current,
+                                      std::function<void(settings::SecondaryLyricHighlight)> apply) {
+        std::vector<MenuAction> menu;
+        for (const auto& [mode, label] : {std::pair{settings::SecondaryLyricHighlight::Off, L"Off"},
+                                          std::pair{settings::SecondaryLyricHighlight::Line, L"Highlight whole line"},
+                                          std::pair{settings::SecondaryLyricHighlight::WordProgress,
+                                                    L"Follow word-by-word progress"}}) {
+            MenuAction item{Tr(label), [mode, apply, restyle] {
+                                apply(mode);
+                                restyle();
+                            }};
+            item.checked = current == mode;
+            menu.push_back(std::move(item));
+        }
+        actions.push_back({Tr(title), nullptr, std::move(menu)});
+    };
+    addHighlightMenu(L"Translation line highlight", settings::GetTranslationLyricHighlight(),
+                     settings::SetTranslationLyricHighlight);
+    addHighlightMenu(L"Pronunciation line highlight", settings::GetPronunciationLyricHighlight(),
+                     settings::SetPronunciationLyricHighlight);
     if (m_lyricsOpen && owner == m_hwnd) actions.push_back({Tr(L"Close lyrics pane"), [this] { ToggleLyrics(); }});
     ShowActionMenu(owner, screen, actions);
 }

@@ -207,33 +207,67 @@ std::vector<Section> BuildSections() {
         std::vector<Field> fields{Number(L"Lyrics text size", L"%", settings::kLyricSize, settings::LyricSizePercent,
                                          settings::SetLyricSizePercent),
                                   Number(L"Translation text size", L"%", settings::kTranslationSize,
-                                         settings::TranslationSizePercent, settings::SetTranslationSizePercent)};
+                                         settings::TranslationSizePercent, settings::SetTranslationSizePercent),
+                                  Number(L"Pronunciation text size", L"%", settings::kPronunciationSize,
+                                         settings::PronunciationSizePercent, settings::SetPronunciationSizePercent)};
         Field fonts;
         fonts.kind = Field::Kind::Text;
         fonts.label = L"Lyrics fonts, in order (comma-separated)";
         fonts.getText = [] { return settings::LyricFonts(); };
         fonts.setText = [](const std::wstring& text) { settings::SetLyricFonts(text); };
         fields.push_back(std::move(fonts));
-        Field swap;
-        swap.kind = Field::Kind::Choice;
-        swap.label = L"Original and translation";
-        swap.choices = {L"Original as the lyric, translation under it", L"Translation as the lyric, original under it"};
-        swap.get = [] { return settings::SwapTranslation() ? 1 : 0; };
-        swap.set = [](int value) {
-            if ((value == 1) == settings::SwapTranslation()) return;
-            settings::SetSwapTranslation(value == 1);
-            if (auto* window = MainWindow::Instance()) window->ReapplyLyrics();
+
+        auto makeCheck = [](const wchar_t* label, int def, std::function<bool()> get, std::function<void(bool)> set) {
+            Field f;
+            f.kind = Field::Kind::Check;
+            f.label = label;
+            f.defaultValue = def;
+            f.get = [get = std::move(get)] { return get() ? 1 : 0; };
+            f.set = [set = std::move(set)](int value) { set(value != 0); };
+            return f;
         };
-        fields.push_back(std::move(swap));
-        Field subHighlight;
-        subHighlight.kind = Field::Kind::Choice;
-        subHighlight.label = L"Secondary lyric line highlight";
-        subHighlight.choices = {L"Off", L"Highlight whole line", L"Follow word-by-word progress"};
-        subHighlight.get = [] { return static_cast<int>(settings::GetSecondaryLyricHighlight()); };
-        subHighlight.set = [](int value) {
-            settings::SetSecondaryLyricHighlight(static_cast<settings::SecondaryLyricHighlight>(value));
+        fields.push_back(makeCheck(L"Show original lyrics", 1, settings::ShowOriginalLyric,
+                                   settings::SetShowOriginalLyric));
+        fields.push_back(makeCheck(L"Show translation", 1, settings::ShowTranslationLyric,
+                                   settings::SetShowTranslationLyric));
+        fields.push_back(makeCheck(L"Show pronunciation", 0, settings::ShowPronunciationLyric,
+                                   settings::SetShowPronunciationLyric));
+
+        Field order;
+        order.kind = Field::Kind::Choice;
+        order.label = L"Lyrics display order";
+        order.choices = {
+            L"Original -> Pronunciation -> Translation",
+            L"Original -> Translation -> Pronunciation",
+            L"Translation -> Original -> Pronunciation",
+            L"Translation -> Pronunciation -> Original",
+            L"Pronunciation -> Original -> Translation",
+            L"Pronunciation -> Translation -> Original",
         };
-        fields.push_back(std::move(subHighlight));
+        order.defaultValue = settings::kLyricDisplayOrder.defaultValue;
+        order.get = [] { return static_cast<int>(settings::GetLyricDisplayOrder()); };
+        order.set = [](int value) {
+            settings::SetLyricDisplayOrder(static_cast<lyrics::DisplayOrder>(value));
+        };
+        fields.push_back(std::move(order));
+
+        auto makeHighlight = [](const wchar_t* label, std::function<settings::SecondaryLyricHighlight()> get,
+                                std::function<void(settings::SecondaryLyricHighlight)> set) {
+            Field f;
+            f.kind = Field::Kind::Choice;
+            f.label = label;
+            f.choices = {L"Off", L"Highlight whole line", L"Follow word-by-word progress"};
+            f.defaultValue = settings::kSecondaryLyricHighlight.defaultValue;
+            f.get = [get = std::move(get)] { return static_cast<int>(get()); };
+            f.set = [set = std::move(set)](int value) {
+                set(static_cast<settings::SecondaryLyricHighlight>(value));
+            };
+            return f;
+        };
+        fields.push_back(makeHighlight(L"Translation line highlight", settings::GetTranslationLyricHighlight,
+                                       settings::SetTranslationLyricHighlight));
+        fields.push_back(makeHighlight(L"Pronunciation line highlight", settings::GetPronunciationLyricHighlight,
+                                       settings::SetPronunciationLyricHighlight));
         for (auto& field : lyrics::scripts::SettingFields()) fields.push_back(std::move(field));
         sections.push_back({L"Lyrics", std::move(fields)});
     }
@@ -316,6 +350,19 @@ public:
     fb2k::hwnd_t get_wnd() override { return m_hwnd; }
 
     void apply() override {
+        // Apply newly-checked boxes before newly-unchecked boxes so swapping an exclusive
+        // group (e.g. switching from Original-only to Pronunciation-only lyrics) never trips
+        // a "keep at least one checked" guard.
+        for (int pass = 0; pass < 2; ++pass) {
+            for (const auto& row : m_rows) {
+                const Field& f = *row.field;
+                if (f.kind != Field::Kind::Check) continue;
+                const int value = SendMessageW(row.control, BM_GETCHECK, 0, 0) == BST_CHECKED ? 1 : 0;
+                if ((pass == 0 && value == 1) || (pass == 1 && value == 0)) {
+                    if (value != f.get()) f.set(value);
+                }
+            }
+        }
         for (const auto& row : m_rows) {
             const Field& f = *row.field;
             switch (f.kind) {
@@ -462,6 +509,13 @@ private:
                         SendMessageW(row.control, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(Tr(choice).c_str()));
                     break;
                 }
+                case Field::Kind::Check: {
+                    std::wstring label = Tr(field.label);
+                    if (field.restart) label += L" " + Tr(L"(after a restart)");
+                    row.control = Make(L"BUTTON", label, WS_TABSTOP | BS_AUTOCHECKBOX, controlX, y,
+                                       Px(kControlW + 80), controlH, font);
+                    break;
+                }
                 case Field::Kind::Text: {
                     std::wstring label = Tr(field.label);
                     if (field.restart) label += L" " + Tr(L"(after a restart)");
@@ -504,6 +558,10 @@ private:
             case Field::Kind::Choice:
                 SendMessageW(row.control, CB_SETCURSEL, static_cast<WPARAM>(defaults ? f.defaultValue : f.get()), 0);
                 break;
+            case Field::Kind::Check:
+                SendMessageW(row.control, BM_SETCHECK, (defaults ? f.defaultValue : f.get()) ? BST_CHECKED : BST_UNCHECKED,
+                             0);
+                break;
             case Field::Kind::Text:
                 SetWindowTextW(row.control, (defaults ? f.defaultText : f.getText()).c_str());
                 break;
@@ -512,6 +570,23 @@ private:
         }
         m_loading = false;
         RefreshNotes();
+        RefreshEnabled();
+    }
+
+    void RefreshEnabled() {
+        for (const auto& row : m_rows) {
+            if (row.field->dependsOnChoice.empty()) continue;
+            bool enabled = true;
+            for (const auto& dep : m_rows) {
+                if (dep.field->kind == Field::Kind::Choice && dep.field->label == row.field->dependsOnChoice) {
+                    const int sel = static_cast<int>(SendMessageW(dep.control, CB_GETCURSEL, 0, 0));
+                    enabled = sel > 0;
+                    break;
+                }
+            }
+            if (row.control) EnableWindow(row.control, enabled ? TRUE : FALSE);
+            if (row.label) EnableWindow(row.label, enabled ? TRUE : FALSE);
+        }
     }
 
     void RefreshNotes() {
@@ -539,8 +614,10 @@ private:
             return;
         }
         const bool edited = (f.kind == Field::Kind::Choice && code == CBN_SELCHANGE) ||
+                            (f.kind == Field::Kind::Check && code == BN_CLICKED) ||
                             ((f.kind == Field::Kind::Number || f.kind == Field::Kind::Text) && code == EN_CHANGE);
         if (!edited || m_loading) return;
+        if (f.kind == Field::Kind::Choice) RefreshEnabled();
         m_changed = true;
         if (f.restart) m_restart = true;
         m_callback->on_state_changed();

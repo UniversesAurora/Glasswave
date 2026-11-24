@@ -155,7 +155,7 @@ stream::CatalogTraits Catalog::Traits(Catalog& self) {
     traits.tags = [&self](const stream::Track& stored, file_info& info) { self.WriteTags(stored, info); };
     traits.encodeExtra = [&self](const stream::Id& id) { return self.EncodeExtra(id); };
     traits.needsRead = [&self](const stream::Id& id) {
-        if (!DisplayTargetFor(GetAppleMusicDisplayRegion()).has_value()) return false;
+        if (!RegionalSongsActive()) return false;
         if (DisplayMetadata::Get().HasSong(DisplayMetadata::Get().SourceStorefront(), id)) return false;
         std::lock_guard lock(self.m_mutex);
         const auto found = self.m_extras.find(id);
@@ -592,7 +592,7 @@ void Catalog::InstallCached(std::vector<Song> songs) {
             m_extras[id] = std::move(song);
         }
     }
-    if (DisplayTargetFor(GetAppleMusicDisplayRegion()).has_value()) {
+    if (RegionalNamesActive()) {
         // When a regional display overlay is active (e.g. Japan) and cold at startup, keep any
         // real non-placeholder tags restored by tracks/snapshot.txt instead of overwriting them
         // with raw account-storefront names; regional names will hint them once resolved/warmed.

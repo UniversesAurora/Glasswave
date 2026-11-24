@@ -17,6 +17,7 @@ namespace {
 
 glasswave::applemusic::AppleMusicDisplayRegion g_region =
     glasswave::applemusic::AppleMusicDisplayRegion::Japan;
+int g_scope = glasswave::applemusic::kAppleMusicDisplayScopeMetadataMask;
 fs::path g_testProfileDir;
 std::atomic_size_t g_checks = 0;
 
@@ -35,6 +36,25 @@ AppleMusicDisplayRegion GetAppleMusicDisplayRegion() {
 
 void SetAppleMusicDisplayRegion(AppleMusicDisplayRegion region) {
     g_region = region;
+}
+
+int GetAppleMusicDisplayScope() {
+    return g_scope;
+}
+
+void SetAppleMusicDisplayScope(int mask) {
+    g_scope = mask & kAppleMusicDisplayScopeMask;
+}
+
+bool HasAppleMusicDisplayScope(AppleMusicDisplayScope flag) {
+    return (g_scope & static_cast<int>(flag)) != 0;
+}
+
+void SetAppleMusicDisplayScopeFlag(AppleMusicDisplayScope flag, bool enabled) {
+    if (enabled)
+        g_scope |= static_cast<int>(flag);
+    else
+        g_scope &= ~static_cast<int>(flag);
 }
 
 } // namespace glasswave::applemusic
@@ -234,6 +254,71 @@ int main(int argc, char** argv) {
               "InvalidateFreshness must keep cached song available for first paint");
         Check(!dm.IsSongComplete(AppleMusicDisplayRegion::Japan, L"US", L"1544228270"),
               "InvalidateFreshness must require revalidation");
+
+        // 6. Selective scope filtering: Names-only overlays titles/artists/albums while keeping
+        // raw Chinese descriptions, genres, composers and official playlists untouched.
+        SetAppleMusicDisplayScope(static_cast<int>(AppleMusicDisplayScope::Names));
+        {
+            Song s;
+            s.track.id = L"1544228270";
+            s.track.title = L"Racing Into the Night";
+            s.composerName = L"RawComposer";
+            s.genreNames = {L"RawGenre"};
+            dm.Apply(s, L"US");
+            Check(s.track.title == L"\u591c\u306b\u99c6\u3051\u308b",
+                  "Names scope must still overlay song title");
+            Check(s.composerName == L"RawComposer",
+                  "Names-only scope must preserve raw composer");
+            Check(s.genreNames.size() == 1 && s.genreNames[0] == L"RawGenre",
+                  "Names-only scope must preserve raw genres");
+
+            Artist a;
+            a.id = L"546572536";
+            a.name = L"Kenshi Yonezu";
+            a.bio = L"Chinese Bio";
+            dm.Apply(a, L"US");
+            Check(a.name == L"\u7c73\u6d25\u7384\u5e2b", "Names scope must overlay artist name");
+            Check(a.bio == L"Chinese Bio", "Names-only scope must preserve raw artist bio");
+
+            Album al;
+            al.id = L"1521000000";
+            al.name = L"STRAY SHEEP";
+            al.description = L"Chinese Album Desc";
+            dm.Apply(al, L"US");
+            Check(al.name == L"STRAY SHEEP (\u65e5\u672c\u76e4)",
+                  "Names scope must overlay album name");
+            Check(al.description == L"Chinese Album Desc",
+                  "Names-only scope must preserve raw album description");
+
+            Playlist p;
+            p.id = L"pl.123";
+            p.name = L"Chinese Playlist";
+            p.description = L"Chinese Playlist Desc";
+            dm.Apply(p, L"US");
+            Check(p.name == L"Chinese Playlist", "Names-only scope must not overlay editorial playlist");
+            Check(p.description == L"Chinese Playlist Desc",
+                  "Names-only scope must not overlay playlist description");
+        }
+        // Enabling Editorial overlays bios/descriptions/genres without touching playlists.
+        SetAppleMusicDisplayScope(static_cast<int>(AppleMusicDisplayScope::Editorial));
+        {
+            Artist a;
+            a.id = L"546572536";
+            a.name = L"Kenshi Yonezu";
+            a.bio = L"Chinese Bio";
+            dm.Apply(a, L"US");
+            Check(a.name == L"Kenshi Yonezu", "Editorial-only scope must preserve raw artist name");
+            Check(a.bio == L"Line1\tTabbed\nLine2\\Backslash", "Editorial scope must overlay bio");
+        }
+        // Enabling Playlists overlays editorial playlists while Lyrics-only overlays no metadata.
+        SetAppleMusicDisplayScope(static_cast<int>(AppleMusicDisplayScope::Lyrics));
+        {
+            Track t;
+            t.id = L"1544228270";
+            t.title = L"Raw Title";
+            dm.Apply(t, L"US");
+            Check(t.title == L"Raw Title", "Lyrics-only scope must not overlay track title");
+        }
 
         std::cout << "apple_display_metadata_tests: " << g_checks.load() << " checks passed.\n";
         return 0;

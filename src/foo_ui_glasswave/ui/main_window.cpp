@@ -113,6 +113,13 @@ std::wstring LyricsSettingsSignature() {
         add(source->Name());
         add(std::to_wstring(reinterpret_cast<std::uintptr_t>(source.get())));
     }
+    for (const auto* provider : stream::Providers()) {
+        const std::wstring locale = provider->LyricsLocale();
+        if (!locale.empty()) {
+            add(provider->Key());
+            add(locale);
+        }
+    }
     return signature;
 }
 
@@ -2480,7 +2487,8 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
     case settings::kChangedMessage: // Preferences > Display > Glasswave applied something
         ApplyLanguage(CurrentLanguageSetting());
         ApplyTint(true);
-        if (m_pane) m_pane->RestyleLyrics(); // sizes, fonts, where translations stand
+        if (m_lyricsResult.status == lyrics::Status::Found) ReapplyLyrics();
+        if (m_pane) m_pane->RestyleLyrics(); // sizes, fonts, highlight modes
         if (std::wstring signature = LyricsSettingsSignature(); signature != m_lyricsSettingsSignature) {
             m_lyricsSettingsSignature = std::move(signature);
             if (m_lyricsTrack.is_valid()) RequestLyrics(m_lyricsTrack, false);

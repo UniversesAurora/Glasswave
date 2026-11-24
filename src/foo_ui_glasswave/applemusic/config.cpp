@@ -13,6 +13,10 @@ namespace {
 // {A2C7E6D3-3B4F-49A0-8E2D-6C5B7A1F9043}
 cfg_var_modern::cfg_int cfg_displayRegion(
     {0xa2c7e6d3, 0x3b4f, 0x49a0, {0x8e, 0x2d, 0x6c, 0x5b, 0x7a, 0x1f, 0x90, 0x43}}, 0);
+// {C4E81B52-7D3A-4F91-B520-8E4C9A1D6F37}
+cfg_var_modern::cfg_int cfg_displayScope(
+    {0xc4e81b52, 0x7d3a, 0x4f91, {0xb5, 0x20, 0x8e, 0x4c, 0x9a, 0x1d, 0x6f, 0x37}},
+    kAppleMusicDisplayScopeDefault);
 // {A2C7E6D1-3B4F-49A0-8E2D-6C5B7A1F9043}
 cfg_var_modern::cfg_int cfg_atmosEnabled(
     {0xa2c7e6d1, 0x3b4f, 0x49a0, {0x8e, 0x2d, 0x6c, 0x5b, 0x7a, 0x1f, 0x90, 0x43}}, 0);
@@ -52,6 +56,27 @@ void SetAppleMusicDisplayRegion(AppleMusicDisplayRegion region) {
         break;
     }
     cfg_displayRegion.set(static_cast<int64_t>(region));
+}
+
+int GetAppleMusicDisplayScope() {
+    return static_cast<int>(cfg_displayScope.get()) & kAppleMusicDisplayScopeMask;
+}
+
+void SetAppleMusicDisplayScope(int mask) {
+    cfg_displayScope.set(static_cast<int64_t>(mask & kAppleMusicDisplayScopeMask));
+}
+
+bool HasAppleMusicDisplayScope(AppleMusicDisplayScope flag) {
+    return (GetAppleMusicDisplayScope() & static_cast<int>(flag)) != 0;
+}
+
+void SetAppleMusicDisplayScopeFlag(AppleMusicDisplayScope flag, bool enabled) {
+    int mask = GetAppleMusicDisplayScope();
+    if (enabled)
+        mask |= static_cast<int>(flag);
+    else
+        mask &= ~static_cast<int>(flag);
+    SetAppleMusicDisplayScope(mask);
 }
 
 AudioQuality GetAudioQuality() {

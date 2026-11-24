@@ -6,17 +6,48 @@
 
 namespace glasswave::lyrics {
 
+enum class TrackKind : int {
+    Original = 0,
+    Translation = 1,
+    Pronunciation = 2,
+};
+
+enum class DisplayOrder : int {
+    OriginalPronunciationTranslation = 0,
+    OriginalTranslationPronunciation = 1,
+    TranslationOriginalPronunciation = 2,
+    TranslationPronunciationOriginal = 3,
+    PronunciationOriginalTranslation = 4,
+    PronunciationTranslationOriginal = 5,
+};
+
 struct Word {
     int start = 0, end = 0;  // ms
     std::wstring text;       // includes a trailing space where the source had one
 };
 
+struct SecondaryLine {
+    TrackKind kind = TrackKind::Translation;
+    std::wstring text;
+    std::vector<Word> words; // real per-word timing when available (Original or timed Pronunciation)
+};
+
 struct Line {
-    int start = 0, end = 0;     // ms; unsynced lyrics: both 0
-    std::wstring text;          // the whole line (the words joined when timed per word)
-    std::vector<Word> words;    // empty: timed per line only
-    std::wstring translation;   // first reference line with the same timestamp
-    std::wstring romanization;  // second reference line, if any
+    int start = 0, end = 0;         // ms; unsynced lyrics: both 0
+    std::wstring text;              // the main line (the words joined when timed per word)
+    std::vector<Word> words;        // empty: timed per line only
+    std::wstring translation;       // translation track, if any
+    std::wstring romanization;      // pronunciation / romanization track, if any
+    std::vector<Word> romanWords;   // pronunciation word timing when provided (e.g. Apple TTML)
+    TrackKind mainKind = TrackKind::Original;
+    std::vector<SecondaryLine> secondaries; // projected 0..2 secondary lines shown under main
+};
+
+struct DisplayOptions {
+    bool showOriginal = true;
+    bool showTranslation = true;
+    bool showPronunciation = false;
+    DisplayOrder order = DisplayOrder::OriginalPronunciationTranslation;
 };
 
 struct Lyrics {
@@ -44,10 +75,10 @@ Lyrics ParseLrc(std::wstring_view text);
 // for UTF-16 LE / BE); a byte order mark is skipped either way.
 std::wstring DecodeText(std::string_view bytes, unsigned codePage = 0);
 
-// The same lyrics with each line's text and translation changed places. A word-timed line
-// gives its translation word timing of its own: the translation's characters (CJK) or words
-// spread over the time the original's words are sung, pauses kept, so it fills word by word.
-Lyrics SwapTranslation(const Lyrics& lyrics);
+// Projects raw lyrics into a main line plus 0..2 secondary lines according to `options`:
+// never cross-substitutes translation and pronunciation, falls back to original when no
+// enabled track is present, and preserves real syllable timing on original / pronunciation.
+Lyrics ProjectLyrics(const Lyrics& lyrics, const DisplayOptions& options);
 
 // Moves every time by `offsetMs` the way LRC's [offset:] does: positive shows the lyrics
 // earlier. Times stop at 0.

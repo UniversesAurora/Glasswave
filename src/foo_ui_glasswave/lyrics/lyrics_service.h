@@ -27,6 +27,7 @@ struct Query {
     double duration = 0; // seconds, 0 if unknown
     std::wstring provider = L"local";
     std::wstring providerId;     // exact native provider item id, when applicable
+    std::wstring providerLocale; // effective native lyrics locale (empty when locale-independent)
     std::wstring embeddedLyrics; // first synced/most useful embedded lyric field
 };
 
@@ -97,6 +98,13 @@ inline bool IsCurrentLyricsRequest(std::uint64_t request, std::uint64_t currentR
     return request == currentRequest && track == currentTrack;
 }
 
+inline bool SameWords(const std::vector<Word>& a, const std::vector<Word>& b) {
+    if (a.size() != b.size()) return false;
+    for (size_t j = 0; j < a.size(); ++j)
+        if (a[j].start != b[j].start || a[j].end != b[j].end || a[j].text != b[j].text) return false;
+    return true;
+}
+
 // The view may keep an equal parsed document through a same-track refresh. Source labels and
 // metadata do not affect the rendered lines; timing, text and word structure do.
 inline bool SameLyricsDocument(const Lyrics& a, const Lyrics& b) {
@@ -105,12 +113,16 @@ inline bool SameLyricsDocument(const Lyrics& a, const Lyrics& b) {
         const auto& x = a.lines[i];
         const auto& y = b.lines[i];
         if (x.start != y.start || x.end != y.end || x.text != y.text || x.translation != y.translation ||
-            x.romanization != y.romanization || x.words.size() != y.words.size())
+            x.romanization != y.romanization || x.mainKind != y.mainKind ||
+            !SameWords(x.words, y.words) || !SameWords(x.romanWords, y.romanWords) ||
+            x.secondaries.size() != y.secondaries.size())
             return false;
-        for (size_t j = 0; j < x.words.size(); ++j)
-            if (x.words[j].start != y.words[j].start || x.words[j].end != y.words[j].end ||
-                x.words[j].text != y.words[j].text)
+        for (size_t s = 0; s < x.secondaries.size(); ++s) {
+            if (x.secondaries[s].kind != y.secondaries[s].kind ||
+                x.secondaries[s].text != y.secondaries[s].text ||
+                !SameWords(x.secondaries[s].words, y.secondaries[s].words))
                 return false;
+        }
     }
     return true;
 }
@@ -122,8 +134,15 @@ inline bool SameLyricsText(const Lyrics& a, const Lyrics& b) {
         const auto& x = a.lines[i];
         const auto& y = b.lines[i];
         if (x.text != y.text || x.translation != y.translation || x.romanization != y.romanization ||
-            x.words.size() != y.words.size())
+            x.mainKind != y.mainKind || x.words.size() != y.words.size() ||
+            x.romanWords.size() != y.romanWords.size() || x.secondaries.size() != y.secondaries.size())
             return false;
+        for (size_t s = 0; s < x.secondaries.size(); ++s) {
+            if (x.secondaries[s].kind != y.secondaries[s].kind ||
+                x.secondaries[s].text != y.secondaries[s].text ||
+                x.secondaries[s].words.size() != y.secondaries[s].words.size())
+                return false;
+        }
     }
     return true;
 }
