@@ -91,8 +91,9 @@ and hash-verified; the installer is never executed). Development scripts touch o
 | `userdata/` | Optional local production cache & downloads storage (gitignored) |
 | `.local/` | Dev sandbox, upstream build checkouts, local references (gitignored) |
 
-## Third-Party Notices & Licensing
+## Licensing & Third-Party Notices
 
+- **Glasswave**: Licensed under the [MIT License](LICENSE).
 - **foobar2000 SDK**: Fetched at build time under its own BSD-style license (not vendored).
 - **quickjs-ng** & **miniz**: Fetched at build time under MIT licenses.
 - **Cavern**: Built separately as `glasswave_cavern.dll`; shipped with `Cavern-LICENSE.md` and
