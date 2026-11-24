@@ -93,6 +93,8 @@ class NowPlayingPane {
     RECT TrackRect() const;       // the segmented control, client px
 
     winrt::Windows::UI::Composition::ContainerVisual m_root{nullptr};
+    winrt::Windows::UI::Composition::ContainerVisual m_headerViewport{nullptr};
+    pane::FadedLayer m_headerLayer;
     winrt::Windows::UI::Composition::SpriteVisual m_tint{nullptr}, m_header{nullptr};
     winrt::Windows::UI::Composition::SpriteVisual m_coverTint{nullptr};
     winrt::Windows::UI::Composition::CompositionColorBrush m_coverBrush{nullptr};

@@ -31,6 +31,8 @@ public:
     LyricsView& operator=(const LyricsView&) = delete;
 
     void SetBounds(const RECT& px, float scale);
+    // DIP reserved at the bottom (under a floating tab switch) for focus anchor and status text.
+    void SetBottomInset(float dip);
     // DIP: the least height that still shows the tallest line whole (translation and wrapped
     // lines included); a window keeps its lyrics at least this high.
     float MinHeight() const;
@@ -108,6 +110,7 @@ private:
     core::Signal<>::Connection m_deviceReplaced; // the context belongs to the rendering device
     RECT m_bounds{};
     float m_scale = 1.0f;
+    float m_bottomInset = 0;
     bool m_visible = false;
 
     bool m_hasTrack = false;

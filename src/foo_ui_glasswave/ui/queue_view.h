@@ -33,6 +33,8 @@ class QueueView {
     QueueView& operator=(const QueueView&) = delete;
 
     void SetBounds(const RECT& px, float scale); // client px
+    // DIP reserved at the bottom (under a floating tab switch) so the last row scrolls clear of it.
+    void SetBottomInset(float dip);
     void SetVisible(bool visible);
     const winrt::Windows::UI::Composition::ContainerVisual& Root() const { return m_root; }
 
@@ -128,6 +130,7 @@ class QueueView {
 
     // Content positions (DIP from the content top).
     float m_historyTop = 0, m_cardTop = 0, m_capsulesTop = 0, m_upNextTop = 0, m_contentH = 0;
+    float m_bottomInset = 0;
     bool m_bare = false;
 
     // Scrolling: the content offset (DIP); beyond the ends it is shown rubber-banded.

@@ -5,11 +5,13 @@
 
 namespace glasswave::ui::pane {
 
-inline constexpr float kHeaderHeight = 84;  // DIP: cover, title and artist
-inline constexpr float kCover = 52;         // DIP: header cover
-inline constexpr float kBottomBar = 64;     // DIP: the lyrics / queue switch
-inline constexpr float kSideMargin = 12;    // DIP: hover plates' inset from the pane edge
-inline constexpr float kPaneTint = 0.30f;   // black over the glass so white text reads
+inline constexpr float kHeaderHeight = 84;     // DIP: cover, title and artist
+inline constexpr float kCover = 52;            // DIP: header cover
+inline constexpr float kBottomBar = 64;        // DIP: the lyrics / queue switch
+inline constexpr float kSideMargin = 12;       // DIP: hover plates' inset from the pane edge
+inline constexpr float kPaneTint = 0.30f;      // black over the glass so white text reads
+inline constexpr float kQueueTopFade = 16;     // DIP: queue & scrolling header top edge fade
+inline constexpr float kQueueBottomFade = 40;  // DIP: queue & scrolling header bottom edge fade
 
 // Segoe UI Variable Display (else Segoe UI) in the user's locale; wrapping text.
 winrt::com_ptr<IDWriteTextFormat> Format(float size, DWRITE_FONT_WEIGHT weight);

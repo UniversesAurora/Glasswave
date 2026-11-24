@@ -96,8 +96,12 @@ NowPlayingPane::NowPlayingPane(const wuc::ContainerVisual& parent)
     m_root.Children().Remove(m_light->Root());
     m_root.Children().InsertAbove(m_light->Root(), m_tint);
     m_light->Root().Opacity(0.85f);
+    m_headerViewport = comp.CreateContainerVisual();
+    m_headerViewport.Clip(comp.CreateInsetClip());
+    m_root.Children().InsertAtTop(m_headerViewport);
+    m_headerLayer.Create(m_headerViewport);
     m_header = comp.CreateSpriteVisual();
-    m_root.Children().InsertAtTop(m_header);
+    m_headerLayer.Visual().Children().InsertAtTop(m_header);
     m_bar = comp.CreateContainerVisual();
     m_root.Children().InsertAtTop(m_bar);
     // Names for /glasswave:visuals.
@@ -105,6 +109,7 @@ NowPlayingPane::NowPlayingPane(const wuc::ContainerVisual& parent)
     m_tint.Comment(L"pane tint");
     m_coverTint.Comment(L"pane cover tint");
     m_light->Root().Comment(L"pane light");
+    m_headerViewport.Comment(L"pane header viewport");
     m_header.Comment(L"pane header");
     m_bar.Comment(L"pane switch");
     for (auto* visual : {&m_track, &m_thumb}) {
@@ -170,6 +175,7 @@ void NowPlayingPane::SetEmbedded(bool embedded, bool bare) {
     m_coverTint.IsVisible(!embedded);
     m_bar.IsVisible(!embedded);
     UpdateLight();
+    m_headerViewport.IsVisible(!bare);
     m_header.IsVisible(!bare);
     m_queue.SetBare(bare);
     m_painted = {}; // the header and the switch change with the host: paint them anew
@@ -193,18 +199,20 @@ RECT NowPlayingPane::BarRect() const {
 
 RECT NowPlayingPane::LyricsRect() const {
     const LONG header = m_bare ? 0 : static_cast<LONG>(std::lround(pane::kHeaderHeight * m_scale));
-    const RECT bar = BarRect();
-    return {m_bounds.left, std::min(bar.top, m_bounds.top + header), m_bounds.right, bar.top};
+    return {m_bounds.left, std::min(m_bounds.bottom, m_bounds.top + header), m_bounds.right, m_bounds.bottom};
 }
 
 RECT NowPlayingPane::QueueRect() const {
-    return {m_bounds.left, m_bounds.top, m_bounds.right, BarRect().top};
+    return m_bounds;
 }
 
 void NowPlayingPane::SetBounds(const RECT& px, float scale) {
     const bool positionChanged = px.left != m_bounds.left || px.top != m_bounds.top;
     m_bounds = px;
     m_scale = scale;
+    const float bottomInset = m_embedded ? 0.0f : pane::kBottomBar;
+    m_lyrics.SetBottomInset(bottomInset);
+    m_queue.SetBottomInset(bottomInset);
     m_lyrics.SetBounds(LyricsRect(), scale);
     m_queue.SetBounds(QueueRect(), scale);
     // Against what was really painted, not against the last bounds: a pane returned from the
@@ -229,6 +237,12 @@ void NowPlayingPane::LayoutGeometry() {
     m_light->Root().CenterPoint(float3{w / 2, 0, 0});
     m_light->Root().Scale(float3{-1, 1, 1});
     UpdateLight();
+    const RECT qr = QueueRect();
+    const float qw = static_cast<float>(std::max<LONG>(0, qr.right - qr.left));
+    const float qh = static_cast<float>(std::max<LONG>(0, qr.bottom - qr.top));
+    m_headerViewport.Offset(float3{static_cast<float>(qr.left), static_cast<float>(qr.top), 0});
+    m_headerViewport.Size(float2{qw, qh});
+    m_headerLayer.Visual().Size(float2{qw, qh});
     const RECT bar = BarRect();
     m_bar.Offset(float3{static_cast<float>(bar.left), static_cast<float>(bar.top), 0});
     m_bar.Size(float2{w, static_cast<float>(bar.bottom - bar.top)});
@@ -249,6 +263,9 @@ void NowPlayingPane::LayoutGeometry() {
 
 void NowPlayingPane::LayoutParts() {
     LayoutGeometry();
+    const RECT qr = QueueRect();
+    m_headerLayer.SetFades(static_cast<int>(std::max<LONG>(0, qr.bottom - qr.top)), m_scale,
+                           pane::kQueueTopFade, pane::kQueueBottomFade);
     const bool header = PaintHeader();
     PaintBar();
     if (header) {
@@ -406,10 +423,11 @@ void NowPlayingPane::ApplyTransition() {
     m_queue.Root().Opacity(queueAlpha);
     m_queue.Root().Offset(float3{0, std::round((1 - t) * kQueueRise * s), 0});
     // The header does not ride the queue's rise: switching sides it stays where it is (owner,
-    // 2026-11-13); in the queue it follows the song card as the list scrolls.
+    // 2026-11-13); in the queue it follows the song card as the list scrolls. Its offset is
+    // relative to m_headerViewport (clipped and edge-faded to QueueRect).
     const float cardY = qr.top + m_queue.CardTop() * s;
     const float headerY = static_cast<float>(m_bounds.top) * (1 - t) + cardY * t;
-    m_header.Offset(float3{static_cast<float>(m_bounds.left), std::round(headerY), 0});
+    m_header.Offset(float3{0, std::round(headerY - qr.top), 0});
     // The thumb slides with the switch; each segment's dark glyph shows where the thumb is.
     const RECT track = TrackRect(), bar = BarRect();
     const float segW = (track.right - track.left) / 2.0f, inset = kThumbInset * s;

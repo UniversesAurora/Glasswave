@@ -349,6 +349,15 @@ void LyricsView::SetBounds(const RECT& px, float scale) {
     }
 }
 
+void LyricsView::SetBottomInset(float dip) {
+    if (dip == m_bottomInset) return;
+    m_bottomInset = dip;
+    if (!m_visible) return;
+    LayoutChrome();
+    UpdateTargets(false, true, false);
+    Render();
+}
+
 void LyricsView::SetVisible(bool visible) {
     if (visible == m_visible) return;
     m_visible = visible;
@@ -517,7 +526,7 @@ float LyricsView::ContentTop() const { return 0; }
 // the room goes in turn: first below the line, until it is as much as above; then above it,
 // until none is left; then below again - the line itself always stays whole.
 float LyricsView::TopSpace(float lineH) const {
-    const float H = (m_bounds.bottom - m_bounds.top) / m_scale - ContentTop();
+    const float H = std::max(0.0f, (m_bounds.bottom - m_bounds.top) / m_scale - ContentTop() - m_bottomInset);
     const float above = kLinesAbove * m_referenceLineHeight;
     if (H >= 2 * above + lineH) return above;
     if (H >= above + lineH) return H - lineH - above;
@@ -912,7 +921,8 @@ void LyricsView::PaintMessage() {
             return;
         DWRITE_TEXT_METRICS tm{};
         layout->GetMetrics(&tm);
-        const float top = ContentTop() + (H - ContentTop() - tm.height) / 2 - 20;
+        const float usableH = std::max(0.0f, H - ContentTop() - m_bottomInset);
+        const float top = ContentTop() + (usableH - tm.height) / 2 - 20;
         dc->DrawTextLayout({20, top}, layout.get(), White(dc, 0.55f).get());
     });
     if (!drawn) return; // a surface that was not drawn holds other surfaces' pixels

@@ -38,8 +38,8 @@ constexpr float kCapsuleGap = 10;  // DIP
 constexpr float kHandleW = 18;     // DIP: the reorder handle's three lines
 constexpr float kPlateRadius = 10; // DIP
 constexpr float kHoverAlpha = 0.08f, kPressAlpha = 0.04f;
-constexpr float kTopFade = 16, kBottomFade = 40; // DIP
-constexpr float kRubber = 0.55f;                 // iOS rubber band constant
+constexpr float kTopFade = pane::kQueueTopFade, kBottomFade = pane::kQueueBottomFade; // DIP
+constexpr float kRubber = 0.55f;                                                      // iOS rubber band constant
 // Measured frame by frame from the owner's recording of Apple Music's Up Next on iOS 26
 // (.local/refs/ios/ios-menu.mp4, 60 fps): rows move on a critically damped spring of about
 // 20.5 rad/s (0.15 / 0.41 / 0.62 / 0.77 / 0.92 / 0.985 of the way at 33 / 67 / 100 / 134 /
@@ -147,11 +147,21 @@ void QueueView::SetBounds(const RECT& px, float scale) {
     if (m_visible) Render();
 }
 
+void QueueView::SetBottomInset(float dip) {
+    if (dip == m_bottomInset) return;
+    m_bottomInset = dip;
+    Layout();
+    KeepScrollInRange();
+    if (m_visible) Render();
+}
+
 void QueueView::SetVisible(bool visible) {
     if (visible == m_visible) return;
     m_visible = visible;
     m_root.IsVisible(visible);
     if (visible) {
+        const float h = static_cast<float>(std::max<LONG>(0, m_bounds.bottom - m_bounds.top));
+        m_layer.SetFades(static_cast<int>(h), m_scale, kTopFade, kBottomFade);
         Layout();
         DrawChrome();
         Render();
@@ -452,7 +462,7 @@ void QueueView::Layout() {
     // Repeat-all: Apple Music's line after the last row, which takes the empty row's place.
     m_footerTop = first + count * kRowH;
     const float rowsH = m_repeatCycle > 0 ? count * kRowH + kFooterH : std::max<size_t>(count, 1) * kRowH;
-    m_contentH = first + rowsH + 32;
+    m_contentH = first + rowsH + 32 + m_bottomInset;
 }
 
 void QueueView::ReleaseRow(RowView& r) {
@@ -642,10 +652,13 @@ void QueueView::Render() {
     const float capW = (W - 2 * kContentX - kCapsuleGap) / 2;
     place(m_shuffle, kContentX, m_capsulesTop, !m_bare);
     place(m_repeat, kContentX + capW + kCapsuleGap, m_capsulesTop, !m_bare);
+    const float viewH = (m_bounds.bottom - m_bounds.top) / s;
+    const float capY = m_capsulesTop - scroll;
+    const bool capVis = !m_bare && capY + kCapsuleH > 0 && capY < viewH;
     for (auto [glass, x] : {std::pair{&m_shuffleGlass, kContentX}, std::pair{&m_repeatGlass, kContentX + capW + kCapsuleGap}}) {
         const auto& v = glass->Visual();
-        v.IsVisible(!m_bare);
-        if (!m_bare) v.Offset(float3{std::round(x * s), std::round((m_capsulesTop - scroll) * s), 0});
+        v.IsVisible(capVis);
+        if (capVis) v.Offset(float3{std::round(x * s), std::round(capY * s), 0});
     }
     place(m_upNextTitle, 0, m_upNextTop, true);
     place(m_empty, 0, m_upNextTop + kUpNextH, m_rows.size() == m_historyCount && m_repeatCycle == 0);
@@ -679,7 +692,6 @@ void QueueView::Render() {
                 best = r.get();
             }
         }
-        const float viewH = (m_bounds.bottom - m_bounds.top) / s;
         const float shown = best ? best->y.Position() - scroll : 0;
         if (!best || shown + kRowH < 0 || shown > viewH) {
             m_plateGlass.Hide();
