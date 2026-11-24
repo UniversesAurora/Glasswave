@@ -57,7 +57,9 @@ void MainWindow::ReturnPane() {
 void MainWindow::PlayerClosed() {
     if (!m_hwnd) return;
     if (!IsWindowVisible(m_hwnd)) ShowWindow(m_hwnd, SW_SHOW);
+    m_timeMeasuredFor = -1;
     UpdateLayout();
+    RepaintNowPlaying();
     m_shadow.Sync();
     SetForegroundWindow(m_hwnd);
 }

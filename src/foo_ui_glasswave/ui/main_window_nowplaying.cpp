@@ -240,7 +240,10 @@ void MainWindow::RepaintNowPlaying() {
     const int timeW = static_cast<int>(m_timePaintedW);
     host.Repaint(m_time, m_timeBacking, timeW, PxI(20), m_scale, [&](ID2D1DeviceContext* dc) {
         if (m_length <= 0 && m_trackTitle.empty()) return;
-        std::wstring text = FormatTime(m_position);
+        const double position = m_seeking ? m_seekPreview * m_length : m_position;
+        const bool remaining = m_length > 0 && settings::PlayerTimeRemaining();
+        std::wstring text =
+            remaining ? L"-" + FormatTime(std::max(0.0, m_length - position)) : FormatTime(position);
         if (m_length > 0) text += L" / " + FormatTime(m_length);
         com_ptr<ID2D1SolidColorBrush> grey;
         dc->CreateSolidColorBrush(Hex(0x4A4A4A), grey.put());
@@ -496,6 +499,7 @@ int MainWindow::NowPlayingPartAt(POINT pt) {
     if (PtInRect(&m_npStarRect, pt)) return 4;
     if (const RECT d = DeviceRect(); PtInRect(&d, pt)) return 3;
     if (PtInRect(&m_npArtRect, pt)) return 5; // like Apple Music: the cover opens the mini player
+    if (m_length > 0 && PtInRect(&m_layout.time, pt)) return 6;
     return 0;
 }
 
@@ -556,6 +560,12 @@ void MainWindow::OnNowPlayingClick(int part) {
         UpdateFavoriteState();
         break;
     }
+    case 6: // Time progress: click to toggle elapsed / remaining (shared with mini & full-screen)
+        settings::SetPlayerTimeRemaining(!settings::PlayerTimeRemaining());
+        m_timeMeasuredFor = -1;
+        UpdateLayout();
+        RepaintNowPlaying();
+        break;
     default:
         break;
     }

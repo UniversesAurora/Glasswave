@@ -1435,9 +1435,13 @@ void MainWindow::UpdateLayout() {
     const int toggleLeft = L.client.right - PxI(10 + 28);
     // The time box is as wide as its text can get for this song ("4:56 / 4:56"; the digits
     // are tabular), not a fixed 110 DIP: the stream block starts right after it.
-    if (m_timeMeasuredFor != m_length) {
+    const bool timeRemaining = m_length > 0 && settings::PlayerTimeRemaining();
+    if (m_timeMeasuredFor != m_length || m_timeMeasuredRemaining != timeRemaining) {
         m_timeMeasuredFor = m_length;
-        const std::wstring longest = m_length > 0 ? FormatTime(m_length) + L" / " + FormatTime(m_length) : L"0:00";
+        m_timeMeasuredRemaining = timeRemaining;
+        const std::wstring longest =
+            m_length > 0 ? (timeRemaining ? L"-" : L"") + FormatTime(m_length) + L" / " + FormatTime(m_length)
+                         : L"0:00";
         DWRITE_TEXT_METRICS tm{};
         MakeText(longest, 12.0f, DWRITE_FONT_WEIGHT_NORMAL, 400, 20)->GetMetrics(&tm);
         m_timeTextW = std::ceil(tm.widthIncludingTrailingWhitespace) + 4;
@@ -2806,8 +2810,10 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
             if (m_pressed->Id() == kVolume) {
                 SetVolumeFromX(pt.x);
             } else if (m_pressed->Id() == kSeek) {
+                const int prevSec = static_cast<int>(m_seekPreview * m_length);
                 m_seekPreview = SeekFractionAt(pt.x);
                 m_pressed->Invalidate();
+                if (static_cast<int>(m_seekPreview * m_length) != prevSec) RepaintNowPlaying();
             } else {
                 m_pressed->SetPressed(m_pressed->HitTest(pt));
             }
@@ -2903,6 +2909,7 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
                 m_seeking = true;
                 m_seekPreview = SeekFractionAt(pt.x);
                 w->Invalidate();
+                RepaintNowPlaying();
             }
             return 0;
         }
@@ -3009,6 +3016,7 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
                 if (seek && m_length > 0) playback_control::get()->playback_seek(preview * m_length);
                 m_seeking = false;
                 w->Invalidate();
+                RepaintNowPlaying();
                 return 0;
             }
             const bool inside = w->HitTest(pt);

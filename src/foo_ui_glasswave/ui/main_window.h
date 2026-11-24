@@ -513,6 +513,7 @@ class MainWindow : public PageHost, public PlayerHost {
     float NowPlayingWidth() const; // DIP the song's text may use in the transport band
     float m_npPaintedWidth = -1;   // ... when it was last painted
     double m_timeMeasuredFor = -1; // the song length the time box was measured for
+    bool m_timeMeasuredRemaining = false;
     float m_timeTextW = 110;       // DIP: the widest the time's text gets for that song
     LONG m_timePaintedW = 0;       // px width the time was painted at
     bool m_win7Art = false; // original WMP 12 artwork available (ADR 0007)

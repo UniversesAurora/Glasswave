@@ -1,8 +1,52 @@
 # Status
 
-Updated: 2026-11-23
+Updated: 2026-11-24
 
-## Apple Music Atmos playback fix: drop trial-length validation (2026-11-23, latest)
+## MIT license & UI/lyrics/search/taskbar polish batch (2026-11-24, latest)
+
+- **MIT License (`LICENSE`, `README.md`)**: Added `LICENSE` (MIT, `Copyright (c) 2026 浮枕`) and
+  linked it from `README.md`.
+- **Taskbar thumbnail first-hover aspect ratio (`ui/taskbar.cpp`)**: `Taskbar::SendCoverThumbnail`
+  now allocates the 32-bpp DIB at DWM's exact requested `maxWidth × maxHeight` with transparent
+  letterboxing/pillarboxing around the aspect-preserved cover instead of returning a square bitmap
+  that DWM could stretch horizontally on the first hover.
+- **Complete "Select lyrics" candidates without opening Search (`lyrics/lyrics_service.{h,cpp}`)**:
+  Automatic lyric fetches (`SearchMode::AutomaticCollectAll`) still deliver the preferred match
+  immediately without extra latency, then let remaining sources finish into the candidate list and
+  persist a sidecar `.candidates.json` alongside automatic cache files. Cached/manual hits load the
+  persisted candidates or perform one quiet background collection pass (guarded by
+  `m_collectingIdentity`) without disturbing displayed lyrics. Verified with
+  `test-lyrics-request-state.ps1` (8/8) and `test-lyrics-priority.ps1` (19/19).
+- **Search page tab-switch caching (`ui/search_page.cpp`)**: Switched `SearchPage` lanes to
+  `ListCachePolicy::Memory` so switching between already-loaded tabs serves from `ListSession`'s
+  in-memory cache immediately; added `RefreshRequested()` override so explicit Refresh/F5 still
+  re-fetches from upstream.
+- **Artist overview marquee multi-select context menu (`ui/list_view_input.cpp`, `ui/artist_overview.cpp`)**:
+  `UpdateMarquee` now moves focus onto the first selected row when focus is unset/outside the
+  selection, `OnRButtonUp` updates focus to the right-clicked row (handling both `Part::Row` and
+  `Part::TilePlay`) without collapsing multi-selection, and `ArtistOverviewSource::ContextMenu`
+  falls back to `SelectedItems()` when focus is unset.
+- **Truncated header & song-annotation tooltips (`ui/list_view_input.cpp`, `ui/text.{h,cpp}`)**:
+  Added `MeasureTagWidth` and extended `ListView::CutTextAt` to show tooltips for truncated list
+  column headers (`Part::HeaderCell`), section/group headers (`Part::GroupHeader`, tile
+  `Line::GroupHeader`), album/link labels, badge-shifted titles, and truncated or hidden trailing
+  song annotations (`CellNote`, shown as `Title (note)`).
+- **Now Playing pane header clipping & edge-to-edge viewport (`ui/now_playing_pane.{h,cpp}`,
+  `ui/queue_view.{h,cpp}`, `ui/lyrics_view.{h,cpp}`, `ui/pane_common.h`)**:
+  Moved `m_header` into a clipped, edge-faded `m_headerViewport`/`m_headerLayer` matching
+  `QueueView`'s fades so scrolling the queue never draws the song card over the title bar or bottom
+  window border while preserving the Lyrics ↔ Queue fly-in transition. Extended `LyricsRect()` and
+  `QueueRect()` to `m_bounds.bottom` behind the floating bottom tab switch with `SetBottomInset`
+  reserving anchor/scroll clearance above the switch and retaining top/bottom edge fades.
+- **Main window time display elapsed ↔ remaining toggle (`ui/main_window.{h,cpp}`,
+  `ui/main_window_nowplaying.cpp`, `ui/main_window_player.cpp`)**:
+  Wired the main transport time readout to `settings::PlayerTimeRemaining()` (`-remaining / total`),
+  made it clickable (hand cursor, part `6`) to toggle, synchronized changes when closing the
+  Mini/Full-Screen player, and updated live time during seek-bar scrubbing.
+- **Verified**: `pwsh -File scripts/build.ps1` (`Release|x64`) succeeded with 0 warnings and 0
+  errors. Pending owner visual acceptance in the dev instance.
+
+## Apple Music Atmos playback fix: drop trial-length validation (2026-11-23)
 
 - **Symptom**: `Cure For Me` (`song_id=1640353346`) failed with `Apple Music bridge request failed
   (HTTP 500)` when "prefer Dolby Atmos" was on. Reproduced in the isolated dev helper:
