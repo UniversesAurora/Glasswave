@@ -1,0 +1,831 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Glasswave <glasswave@local>
+Date: Wed, 25 Nov 2026 02:39:04 +0800
+Subject: [PATCH] lyrics: parse TTML replacement, subtitle translation, and
+ pronunciation tracks
+
+Honor Apple Music TTML localizations cleanly: prefer ttmlLocalizations when
+present, apply locale-matched type=replacement blocks directly onto the main
+line (preserving timed <span> syllables), fix the inverted translation/original
+order and relative .// lookup in etree, emit explicit [gw:tr] and [gw:ro]
+sidecar lines without discarding CJK originals, and preserve syllable timing
+on pronunciation spans.
+
+diff --git a/engine/utils/lyrics/lyrics.go b/engine/utils/lyrics/lyrics.go
+index b6023b9..8b5d7a2 100644
+--- a/engine/utils/lyrics/lyrics.go
++++ b/engine/utils/lyrics/lyrics.go
+@@ -63,7 +63,7 @@ func GetContext(ctx context.Context, storefront, songId, lrcType, language, lrcF
+ 	case "srt":
+ 		return TtmlToSrt(ttml)
+ 	default:
+-		return TtmlToLrc(ttml)
++		return TtmlToLrcWithLocale(ttml, language)
+ 	}
+ }
+ 
+@@ -105,6 +105,9 @@ func getSongLyricsContext(ctx context.Context, songId string, storefront string,
+ 		return "", errors.New("invalid lyrics response")
+ 	}
+ 	if len(obj.Data) > 0 {
++		if loc := strings.TrimSpace(obj.Data[0].Attributes.TtmlLocalizations); loc != "" && strings.Contains(loc, "<tt") {
++			return obj.Data[0].Attributes.TtmlLocalizations, nil
++		}
+ 		if len(obj.Data[0].Attributes.Ttml) > 0 {
+ 			return obj.Data[0].Attributes.Ttml, nil
+ 		}
+@@ -118,59 +121,6 @@ func getSongLyricsContext(ctx context.Context, songId string, storefront string,
+ 	return "", ErrNotFound
+ }
+ 
+-// cjkRanges covers all CJK, Hangul, Hiragana, Katakana, and related Unicode blocks.
+-var cjkRanges = &unicode.RangeTable{
+-	R16: []unicode.Range16{
+-		{0x1100, 0x11FF, 1}, // Hangul Jamo
+-		{0x2E80, 0x2EFF, 1}, // CJK Radicals Supplement
+-		{0x2F00, 0x2FDF, 1}, // Kangxi Radicals
+-		{0x2FF0, 0x2FFF, 1}, // Ideographic Description Characters
+-		{0x3000, 0x303F, 1}, // CJK Symbols and Punctuation
+-		{0x3040, 0x309F, 1}, // Hiragana
+-		{0x30A0, 0x30FF, 1}, // Katakana
+-		{0x3130, 0x318F, 1}, // Hangul Compatibility Jamo
+-		{0x31C0, 0x31EF, 1}, // CJK Strokes
+-		{0x31F0, 0x31FF, 1}, // Katakana Phonetic Extensions
+-		{0x3200, 0x32FF, 1}, // Enclosed CJK Letters and Months
+-		{0x3300, 0x33FF, 1}, // CJK Compatibility
+-		{0x3400, 0x4DBF, 1}, // CJK Unified Ideographs Extension A
+-		{0x4E00, 0x9FFF, 1}, // CJK Unified Ideographs
+-		{0xA960, 0xA97F, 1}, // Hangul Jamo Extended-A
+-		{0xAC00, 0xD7AF, 1}, // Hangul Syllables
+-		{0xD7B0, 0xD7FF, 1}, // Hangul Jamo Extended-B
+-		{0xF900, 0xFAFF, 1}, // CJK Compatibility Ideographs
+-		{0xFE30, 0xFE4F, 1}, // CJK Compatibility Forms
+-		{0xFF65, 0xFF9F, 1}, // Halfwidth Katakana
+-		{0xFFA0, 0xFFDC, 1}, // Halfwidth Jamo
+-	},
+-	R32: []unicode.Range32{
+-		{0x1AFF0, 0x1AFFF, 1}, // Kana Extended-B
+-		{0x1B000, 0x1B0FF, 1}, // Kana Supplement
+-		{0x1B100, 0x1B12F, 1}, // Kana Extended-A
+-		{0x1B130, 0x1B16F, 1}, // Small Kana Extension
+-		{0x1F200, 0x1F2FF, 1}, // Enclosed Ideographic Supplement
+-		{0x20000, 0x2A6DF, 1}, // CJK Unified Ideographs Extension B
+-		{0x2A700, 0x2B73F, 1}, // CJK Unified Ideographs Extension C
+-		{0x2B740, 0x2B81F, 1}, // CJK Unified Ideographs Extension D
+-		{0x2B820, 0x2CEAF, 1}, // CJK Unified Ideographs Extension E
+-		{0x2CEB0, 0x2EBEF, 1}, // CJK Unified Ideographs Extension F
+-		{0x2EBF0, 0x2EE5F, 1}, // CJK Unified Ideographs Extension I
+-		{0x2F800, 0x2FA1F, 1}, // CJK Compatibility Ideographs Supplement
+-		{0x30000, 0x3134F, 1}, // CJK Unified Ideographs Extension G
+-		{0x31350, 0x323AF, 1}, // CJK Unified Ideographs Extension H
+-	},
+-	LatinOffset: 0,
+-}
+-
+-func containsCJK(s string) bool {
+-	for _, r := range s {
+-		if unicode.Is(cjkRanges, r) {
+-			return true
+-		}
+-	}
+-	return false
+-}
+-
+ // ttmlRoot returns the <tt> and <body> elements, or an error for TTML that
+ // lacks them (empty or malformed lyrics) instead of a nil dereference.
+ func ttmlRoot(doc *etree.Document) (tt, body *etree.Element, err error) {
+@@ -184,6 +134,10 @@ func ttmlRoot(doc *etree.Document) (tt, body *etree.Element, err error) {
+ }
+ 
+ func TtmlToLrc(ttml string) (string, error) {
++	return TtmlToLrcWithLocale(ttml, "")
++}
++
++func TtmlToLrcWithLocale(ttml, locale string) (string, error) {
+ 	parsedTTML := etree.NewDocument()
+ 	err := parsedTTML.ReadFromString(ttml)
+ 	if err != nil {
+@@ -194,17 +148,29 @@ func TtmlToLrc(ttml string) (string, error) {
+ 	if err != nil {
+ 		return "", err
+ 	}
++	itunesMeta := itunesMetadataElem(parsedTTML)
++	replacementTr := selectTranslation(itunesMeta, locale, "replacement")
++	subtitleTr := selectTranslation(itunesMeta, locale, "subtitle")
++	translitEl := selectTransliteration(itunesMeta, locale)
++
+ 	var lrcLines []string
+ 	timingAttr := tt.SelectAttr("itunes:timing")
+ 	if timingAttr != nil {
+ 		if timingAttr.Value == "Word" {
+-			lrc, err := conventSyllableTTMLToLRC(ttml)
+-			return lrc, err
++			return convertSyllableTTMLToLRC(parsedTTML, body, replacementTr, subtitleTr, translitEl, locale)
+ 		}
+ 		if timingAttr.Value == "None" {
+ 			for _, p := range parsedTTML.FindElements("//p") {
+-				line := p.Text()
+-				line = strings.TrimSpace(line)
++				key := p.SelectAttrValue("itunes:key", "")
++				var line string
++				if replacementTr != nil && key != "" {
++					if rep := textFor(replacementTr, ".//", key); rep != nil {
++						line = strings.TrimSpace(extractPlainText(rep))
++					}
++				}
++				if line == "" {
++					line = strings.TrimSpace(extractPlainText(p))
++				}
+ 				if line != "" {
+ 					lrcLines = append(lrcLines, line)
+ 				}
+@@ -213,7 +179,6 @@ func TtmlToLrc(ttml string) (string, error) {
+ 		}
+ 	}
+ 
+-	itunesMeta := itunesMetadataElem(parsedTTML)
+ 	for _, item := range body.ChildElements() {
+ 		for _, lyric := range item.ChildElements() {
+ 			beginAttr := lyric.SelectAttr("begin")
+@@ -224,43 +189,316 @@ func TtmlToLrc(ttml string) (string, error) {
+ 			if err != nil {
+ 				return "", err
+ 			}
+-			key := ""
+-			if kAttr := lyric.SelectAttr("itunes:key"); kAttr != nil {
+-				key = kAttr.Value
+-			}
+-			translitText := findTranslitText(itunesMeta, key)
+-			transText := findTransText(itunesMeta, key)
++			lineStamp := fmt.Sprintf("[%02d:%02d.%02d]", lm, ls, lms)
++			key := lyric.SelectAttrValue("itunes:key", "")
++
+ 			var text string
+-			if a := lyric.SelectAttr("text"); a != nil {
+-				text = a.Value
+-			} else {
+-				text = elementChildText(lyric)
++			if replacementTr != nil && key != "" {
++				if rep := textFor(replacementTr, ".//", key); rep != nil {
++					text = strings.TrimSpace(extractPlainText(rep))
++				}
++			}
++			if text == "" {
++				if a := lyric.SelectAttr("text"); a != nil {
++					text = strings.TrimSpace(a.Value)
++				} else {
++					text = strings.TrimSpace(extractPlainText(lyric))
++				}
++			}
++			if text == "" {
++				continue
++			}
++			lrcLines = append(lrcLines, lineStamp+text)
++
++			transText := extractSidecarPlain(subtitleTr, key)
++			if transText == "" {
++				transText = extractInlineRoleText(lyric, "x-translation", locale)
+ 			}
+ 			if transText != "" {
+-				lrcLines = append(lrcLines, fmt.Sprintf("[%02d:%02d.%02d]%s", lm, ls, lms, transText))
++				lrcLines = append(lrcLines, lineStamp+"[gw:tr]"+transText)
+ 			}
+-			if translitText != "" && containsCJK(text) {
+-				lrcLines = append(lrcLines, fmt.Sprintf("[%02d:%02d.%02d]%s", lm, ls, lms, translitText))
+-			} else {
+-				lrcLines = append(lrcLines, fmt.Sprintf("[%02d:%02d.%02d]%s", lm, ls, lms, text))
++
++			if roLine := formatTranslitLine(translitEl, key, lineStamp); roLine != "" {
++				lrcLines = append(lrcLines, roLine)
++			} else if inlineRo := extractInlineRoleText(lyric, "x-roman", locale); inlineRo != "" {
++				lrcLines = append(lrcLines, lineStamp+"[gw:ro]"+inlineRo)
+ 			}
+ 		}
+ 	}
+ 	return strings.Join(lrcLines, "\n"), nil
+ }
+ 
+-// elementChildText collects text from CharData and Element children of el.
+-func elementChildText(el *etree.Element) string {
+-	var parts []string
+-	for _, span := range el.Child {
+-		switch c := span.(type) {
++func normalizeLocaleParts(tag string) (lang, script, region string) {
++	tag = strings.ToLower(strings.TrimSpace(strings.ReplaceAll(tag, "_", "-")))
++	if tag == "" {
++		return "", "", ""
++	}
++	parts := strings.Split(tag, "-")
++	lang = parts[0]
++	for _, p := range parts[1:] {
++		if len(p) == 4 && script == "" {
++			script = p
++		} else if (len(p) == 2 || len(p) == 3) && region == "" {
++			region = p
++		}
++	}
++	if lang == "zh" && script == "" {
++		switch region {
++		case "cn", "sg":
++			script = "hans"
++		case "tw", "hk", "mo":
++			script = "hant"
++		}
++	}
++	return lang, script, region
++}
++
++func matchLocaleScore(candidate, wanted string) int {
++	cLang, cScript, cRegion := normalizeLocaleParts(candidate)
++	if wanted == "" {
++		return 1
++	}
++	wLang, wScript, wRegion := normalizeLocaleParts(wanted)
++	if cLang == "" || wLang == "" || cLang != wLang {
++		return 0
++	}
++	if cScript != "" && wScript != "" && cScript != wScript {
++		return 0
++	}
++	if cScript == wScript && cRegion == wRegion && cRegion != "" {
++		return 4
++	}
++	if cScript == wScript && cScript != "" {
++		return 3
++	}
++	return 2
++}
++
++func selectTranslation(itunesMeta *etree.Element, wantedLocale, wantType string) *etree.Element {
++	if itunesMeta == nil {
++		return nil
++	}
++	trs := itunesMeta.FindElement("translations")
++	if trs == nil {
++		return nil
++	}
++	var candidates []*etree.Element
++	for _, tr := range trs.FindElements("translation") {
++		trType := strings.TrimSpace(tr.SelectAttrValue("type", ""))
++		if wantType == "replacement" {
++			if !strings.EqualFold(trType, "replacement") {
++				continue
++			}
++		} else {
++			if trType != "" && !strings.EqualFold(trType, "subtitle") {
++				continue
++			}
++		}
++		candidates = append(candidates, tr)
++	}
++	if len(candidates) == 0 {
++		return nil
++	}
++	var best *etree.Element
++	bestScore := 0
++	for _, tr := range candidates {
++		lang := tr.SelectAttrValue("xml:lang", "")
++		if lang == "" {
++			lang = tr.SelectAttrValue("lang", "")
++		}
++		score := matchLocaleScore(lang, wantedLocale)
++		if score > bestScore {
++			bestScore = score
++			best = tr
++		}
++	}
++	if best != nil {
++		return best
++	}
++	if wantType != "replacement" && len(candidates) == 1 {
++		return candidates[0]
++	}
++	return nil
++}
++
++func selectTransliteration(itunesMeta *etree.Element, wantedLocale string) *etree.Element {
++	if itunesMeta == nil {
++		return nil
++	}
++	tls := itunesMeta.FindElement("transliterations")
++	if tls == nil {
++		return nil
++	}
++	candidates := tls.FindElements("transliteration")
++	if len(candidates) == 0 {
++		return nil
++	}
++	var best *etree.Element
++	bestScore := 0
++	for _, tl := range candidates {
++		lang := tl.SelectAttrValue("xml:lang", "")
++		if lang == "" {
++			lang = tl.SelectAttrValue("lang", "")
++		}
++		score := matchLocaleScore(lang, wantedLocale)
++		if score > bestScore {
++			bestScore = score
++			best = tl
++		}
++	}
++	if best != nil {
++		return best
++	}
++	return candidates[0]
++}
++
++func isAuxiliaryRole(el *etree.Element) bool {
++	role := el.SelectAttrValue("ttm:role", "")
++	if role == "" {
++		role = el.SelectAttrValue("role", "")
++	}
++	return role == "x-translation" || role == "x-roman" || role == "x-bg"
++}
++
++// extractPlainText collects visible text from CharData and Element children recursively,
++// preserving inter-span spaces while skipping inline auxiliary role spans.
++func extractPlainText(el *etree.Element) string {
++	if el == nil {
++		return ""
++	}
++	if a := el.SelectAttr("text"); a != nil {
++		return a.Value
++	}
++	var b strings.Builder
++	for _, child := range el.Child {
++		switch c := child.(type) {
+ 		case *etree.CharData:
+-			parts = append(parts, c.Data)
++			b.WriteString(c.Data)
+ 		case *etree.Element:
+-			parts = append(parts, c.Text())
++			if isAuxiliaryRole(c) {
++				continue
++			}
++			b.WriteString(extractPlainText(c))
++		}
++	}
++	return b.String()
++}
++
++func extractSidecarPlain(container *etree.Element, key string) string {
++	if container == nil || key == "" {
++		return ""
++	}
++	node := textFor(container, ".//", key)
++	if node == nil {
++		return ""
++	}
++	return strings.TrimSpace(extractPlainText(node))
++}
++
++func extractInlineRoleText(p *etree.Element, role, wantedLocale string) string {
++	var best string
++	bestScore := -1
++	for _, child := range p.ChildElements() {
++		r := child.SelectAttrValue("ttm:role", "")
++		if r == "" {
++			r = child.SelectAttrValue("role", "")
++		}
++		if r != role {
++			continue
++		}
++		txt := strings.TrimSpace(extractPlainText(child))
++		if txt == "" {
++			continue
++		}
++		lang := child.SelectAttrValue("xml:lang", "")
++		if lang == "" {
++			lang = child.SelectAttrValue("lang", "")
+ 		}
++		score := matchLocaleScore(lang, wantedLocale)
++		if score > bestScore {
++			bestScore = score
++			best = txt
++		}
++	}
++	return best
++}
++
++// buildSyllableSpans builds an enhanced-LRC line from timed <span> children of el.
++// If lineStamp is non-empty, it is used as the leading [mm:ss.cs] line timestamp so sidecar
++// tracks align identically with the main line even when individual span starts differ slightly.
++func buildSyllableSpans(el *etree.Element, lineStamp, roleTag string) (line string, firstStamp string, ok bool, err error) {
++	if el == nil {
++		return "", "", false, nil
++	}
++	var parts []string
++	var count int
++	var endTime string
++	for _, child := range el.Child {
++		if cd, isChar := child.(*etree.CharData); isChar {
++			if count > 0 && strings.ContainsAny(cd.Data, " \t\r\n") && len(parts) > 0 && parts[len(parts)-1] != " " {
++				parts = append(parts, " ")
++			}
++			continue
++		}
++		span, isElem := child.(*etree.Element)
++		if !isElem || isAuxiliaryRole(span) || span.SelectAttr("begin") == nil {
++			continue
++		}
++		beginVal := span.SelectAttrValue("begin", "")
++		endVal := span.SelectAttrValue("end", "")
++		if count == 0 {
++			firstStamp, err = parseSyllableTime(beginVal, -1)
++			if err != nil {
++				return "", "", false, err
++			}
++		}
++		wordBegin, err := parseSyllableTime(beginVal, 2)
++		if err != nil {
++			return "", "", false, err
++		}
++		if endVal != "" {
++			endTime, err = parseSyllableTime(endVal, 1)
++			if err != nil {
++				return "", "", false, err
++			}
++		}
++		var text string
++		if a := span.SelectAttr("text"); a != nil {
++			text = a.Value
++		} else {
++			text = extractPlainText(span)
++		}
++		parts = append(parts, wordBegin+text)
++		count++
++	}
++	if count == 0 {
++		return "", "", false, nil
++	}
++	for len(parts) > 0 && parts[len(parts)-1] == " " {
++		parts = parts[:len(parts)-1]
++	}
++	stamp := lineStamp
++	if stamp == "" {
++		stamp = firstStamp
++	}
++	return stamp + roleTag + strings.Join(parts, "") + endTime, stamp, true, nil
++}
++
++func formatTranslitLine(translitEl *etree.Element, key, lineStamp string) string {
++	if translitEl == nil || key == "" {
++		return ""
++	}
++	node := textFor(translitEl, ".//", key)
++	if node == nil {
++		return ""
++	}
++	if line, _, ok, err := buildSyllableSpans(node, lineStamp, "[gw:ro]"); err == nil && ok {
++		return line
+ 	}
+-	return strings.Join(parts, "")
++	if plain := strings.TrimSpace(extractPlainText(node)); plain != "" {
++		return lineStamp + "[gw:ro]" + plain
++	}
++	return ""
+ }
+ 
+ // parseLRCBeginTime parses an Apple TTML time value to (minutes, seconds,
+@@ -300,52 +538,6 @@ func itunesMetadataElem(doc *etree.Document) *etree.Element {
+ 	return meta.FindElement("iTunesMetadata")
+ }
+ 
+-// findTranslitText returns the transliteration string for the given lyric key.
+-func findTranslitText(itunesMeta *etree.Element, key string) string {
+-	if itunesMeta == nil || key == "" {
+-		return ""
+-	}
+-	tls := itunesMeta.FindElement("transliterations")
+-	if tls == nil {
+-		return ""
+-	}
+-	tl := tls.FindElement("transliteration")
+-	if tl == nil {
+-		return ""
+-	}
+-	node := textFor(tl, "", key)
+-	if node == nil {
+-		return ""
+-	}
+-	if a := node.SelectAttr("text"); a != nil {
+-		return a.Value
+-	}
+-	return elementChildText(node)
+-}
+-
+-// findTransText returns the translation string for the given lyric key.
+-func findTransText(itunesMeta *etree.Element, key string) string {
+-	if itunesMeta == nil || key == "" {
+-		return ""
+-	}
+-	trs := itunesMeta.FindElement("translations")
+-	if trs == nil {
+-		return ""
+-	}
+-	tr := trs.FindElement("translation")
+-	if tr == nil {
+-		return ""
+-	}
+-	node := textFor(tr, "//", key)
+-	if node == nil {
+-		return ""
+-	}
+-	if a := node.SelectAttr("text"); a != nil {
+-		return a.Value
+-	}
+-	return elementChildText(node)
+-}
+-
+ // TtmlToSrt converts Apple Music TTML to SubRip (SRT) subtitle format.
+ func TtmlToSrt(ttml string) (string, error) { return ttmlToSubtitle(ttml, "srt") }
+ 
+@@ -444,63 +636,45 @@ func msToSubTime(ms int, sep byte) string {
+ 	return fmt.Sprintf("%02d:%02d:%02d%c%03d", h, m, s, sep, ms)
+ }
+ 
+-func conventSyllableTTMLToLRC(ttml string) (string, error) {
+-	parsedTTML := etree.NewDocument()
+-	if err := parsedTTML.ReadFromString(ttml); err != nil {
+-		return "", err
+-	}
+-	itunesMeta := itunesMetadataElem(parsedTTML)
+-	_, body, err := ttmlRoot(parsedTTML)
+-	if err != nil {
+-		return "", err
+-	}
++func convertSyllableTTMLToLRC(parsedTTML *etree.Document, body, replacementTr, subtitleTr, translitEl *etree.Element, locale string) (string, error) {
++	_ = parsedTTML
+ 	var lrcLines []string
+-	divs := body.FindElements("div")
+-	for _, div := range divs {
++	for _, div := range body.FindElements("div") {
+ 		for _, item := range div.ChildElements() {
+-			var lrcSyllables []string
+-			var i int
+-			var endTime, translitLine, transLine string
+ 			key := item.SelectAttrValue("itunes:key", "")
+-			for _, lyrics := range item.Child {
+-				if _, ok := lyrics.(*etree.CharData); ok {
+-					if i > 0 {
+-						lrcSyllables = append(lrcSyllables, " ")
++			mainLine, lineStamp, ok, err := buildSyllableSpans(item, "", "")
++			if err != nil {
++				return "", err
++			}
++			if !ok {
++				continue
++			}
++
++			// Apply script replacement (e.g. zh-Hant -> zh-Hans) directly onto the main line,
++			// preserving its syllable timing whenever the replacement carries timed spans.
++			if replacementTr != nil && key != "" {
++				if rep := textFor(replacementTr, ".//", key); rep != nil {
++					if repLine, _, repOk, repErr := buildSyllableSpans(rep, lineStamp, ""); repErr == nil && repOk {
++						mainLine = repLine
++					} else if plain := strings.TrimSpace(extractPlainText(rep)); plain != "" {
++						mainLine = lineStamp + plain
+ 					}
+-					continue
+-				}
+-				lyric, ok := lyrics.(*etree.Element)
+-				if !ok || lyric.SelectAttr("begin") == nil {
+-					continue // comments, processing instructions, untimed spans
+-				}
+-				beginTime, err := parseSyllableTime(lyric.SelectAttrValue("begin", ""), i)
+-				if err != nil {
+-					return "", err
+-				}
+-				endTime, err = parseSyllableTime(lyric.SelectAttrValue("end", ""), 1)
+-				if err != nil {
+-					return "", err
+-				}
+-				var text string
+-				if a := lyric.SelectAttr("text"); a != nil {
+-					text = a.Value
+-				} else {
+-					text = elementChildText(lyric)
+-				}
+-				lrcSyllables = append(lrcSyllables, beginTime+text)
+-				if i == 0 {
+-					transBeginTime, _ := parseSyllableTime(lyric.SelectAttrValue("begin", ""), -1)
+-					translitLine, transLine = buildSyllabicAnnotations(itunesMeta, key, transBeginTime)
+ 				}
+-				i++
+ 			}
+-			if transLine != "" {
+-				lrcLines = append(lrcLines, transLine)
++			lrcLines = append(lrcLines, mainLine)
++
++			transText := extractSidecarPlain(subtitleTr, key)
++			if transText == "" {
++				transText = extractInlineRoleText(item, "x-translation", locale)
+ 			}
+-			if translitLine != "" && containsCJK(strings.Join(lrcSyllables, "")) {
+-				lrcLines = append(lrcLines, translitLine)
+-			} else {
+-				lrcLines = append(lrcLines, strings.Join(lrcSyllables, "")+endTime)
++			if transText != "" {
++				lrcLines = append(lrcLines, lineStamp+"[gw:tr]"+transText)
++			}
++
++			if roLine := formatTranslitLine(translitEl, key, lineStamp); roLine != "" {
++				lrcLines = append(lrcLines, roLine)
++			} else if inlineRo := extractInlineRoleText(item, "x-roman", locale); inlineRo != "" {
++				lrcLines = append(lrcLines, lineStamp+"[gw:ro]"+inlineRo)
+ 			}
+ 		}
+ 	}
+@@ -524,65 +698,6 @@ func parseSyllableTime(timeValue string, newLine int) (string, error) {
+ 	}
+ }
+ 
+-// buildSyllabicAnnotations builds translitLine and transLine for a syllabic TTML line.
+-func buildSyllabicAnnotations(itunesMeta *etree.Element, key, transBeginTime string) (translitLine, transLine string) {
+-	if itunesMeta == nil || key == "" {
+-		return "", ""
+-	}
+-	sharedTimestamp := ""
+-	// Syllabic transliteration (per-span timestamps).
+-	if tls := itunesMeta.FindElement("transliterations"); tls != nil {
+-		if tl := tls.FindElement("transliteration"); tl != nil {
+-			if node := textFor(tl, "", key); node != nil {
+-				var parts []string
+-				var transStartTime string
+-				for i, span := range node.ChildElements() {
+-					if span.Tag != "span" {
+-						continue
+-					}
+-					spanBegin := span.SelectAttrValue("begin", "")
+-					if spanBegin == "" {
+-						continue
+-					}
+-					ts, err := parseSyllableTime(spanBegin, 2)
+-					if err != nil {
+-						continue
+-					}
+-					if i == 0 {
+-						transStartTime, _ = parseSyllableTime(spanBegin, -1)
+-						sharedTimestamp = transStartTime
+-					}
+-					parts = append(parts, ts+span.Text())
+-				}
+-				translitLine = transStartTime + strings.Join(parts, " ")
+-			}
+-		}
+-	}
+-	// Translation (single text string).
+-	if trs := itunesMeta.FindElement("translations"); trs != nil {
+-		if tr := trs.FindElement("translation"); tr != nil {
+-			if node := textFor(tr, "//", key); node != nil {
+-				var transTxt string
+-				if a := node.SelectAttr("text"); a != nil {
+-					transTxt = a.Value
+-				} else {
+-					for _, span := range node.Child {
+-						if c, ok := span.(*etree.CharData); ok {
+-							transTxt += c.Data
+-						}
+-					}
+-				}
+-				prefix := sharedTimestamp
+-				if prefix == "" {
+-					prefix = transBeginTime
+-				}
+-				transLine = prefix + transTxt
+-			}
+-		}
+-	}
+-	return translitLine, transLine
+-}
+-
+ // textFor finds the <text for="key"> child of parent. The key comes from the lyrics document and is spliced into
+ // an etree path, which panics on a malformed one (an unmatched quote), so keys with path syntax are not looked up.
+ func textFor(parent *etree.Element, prefix, key string) *etree.Element {
+diff --git a/engine/utils/lyrics/lyrics_localizations_test.go b/engine/utils/lyrics/lyrics_localizations_test.go
+new file mode 100644
+index 0000000..b60b72f
+--- /dev/null
++++ b/engine/utils/lyrics/lyrics_localizations_test.go
+@@ -0,0 +1,121 @@
++package lyrics
++
++import (
++	"strings"
++	"testing"
++)
++
++func TestSyllableReplacementZhHansReplacesMainWithSpans(t *testing.T) {
++	ttml := `<tt xmlns="http://www.w3.org/ns/ttml" xmlns:itunes="http://music.apple.com/lyric-ttml-internal" xml:lang="zh-Hant" itunes:timing="Word">
++<head><metadata><iTunesMetadata xmlns="http://music.apple.com/lyric-ttml-internal">
++<translations>
++  <translation type="replacement" xml:lang="zh-Hans">
++    <text for="L1"><span begin="44.61" end="45.07">竹</span><span begin="45.07" end="45.90">林的灯</span><span begin="45.90" end="46.35">火</span> <span begin="46.35" end="46.73">岛</span><span begin="46.73" end="47.53">国的沙</span><span begin="47.53" end="47.95">漠</span></text>
++  </translation>
++</translations>
++</iTunesMetadata></metadata></head>
++<body><div>
++  <p begin="44.61" end="47.95" itunes:key="L1"><span begin="44.61" end="45.07">竹</span><span begin="45.07" end="45.90">林的燈</span><span begin="45.90" end="46.35">火</span> <span begin="46.35" end="46.73">島</span><span begin="46.73" end="47.53">國的沙</span><span begin="47.53" end="47.95">漠</span></p>
++</div></body></tt>`
++
++	got, err := TtmlToLrcWithLocale(ttml, "zh-Hans-CN")
++	if err != nil {
++		t.Fatalf("TtmlToLrcWithLocale error: %v", err)
++	}
++	want := "[00:44.61]<00:44.61>竹<00:45.07>林的灯<00:45.90>火 <00:46.35>岛<00:46.73>国的沙<00:47.53>漠<00:47.95>"
++	if got != want {
++		t.Fatalf("got:\n%s\nwant:\n%s", got, want)
++	}
++
++	// Non-matching locale (ja-JP) must NOT apply zh-Hans replacement.
++	gotJa, err := TtmlToLrcWithLocale(ttml, "ja-JP")
++	if err != nil {
++		t.Fatalf("TtmlToLrcWithLocale(ja-JP) error: %v", err)
++	}
++	if !strings.Contains(gotJa, "林的燈") || strings.Contains(gotJa, "[gw:tr]") {
++		t.Fatalf("ja-JP unexpectedly applied zh-Hans replacement or blank subtitle: %q", gotJa)
++	}
++}
++
++func TestSyllablePreservesOriginalTranslationAndPronunciation(t *testing.T) {
++	ttml := `<tt xmlns="http://www.w3.org/ns/ttml" xmlns:itunes="http://music.apple.com/lyric-ttml-internal" xml:lang="ja" itunes:timing="Word">
++<head><metadata><iTunesMetadata xmlns="http://music.apple.com/lyric-ttml-internal">
++<translations>
++  <translation type="subtitle" xml:lang="en-US">
++    <text for="L1">This is a test</text>
++  </translation>
++  <translation type="subtitle" xml:lang="zh-Hans-CN">
++    <text for="L1"><span begin="10.00" end="11.80">这是一个测试</span></text>
++  </translation>
++</translations>
++<transliterations>
++  <transliteration xml:lang="ja-Latn">
++    <text for="L1"><span begin="10.02" end="10.50">Ko</span><span begin="10.50" end="10.80">re</span> <span begin="10.80" end="11.00">wa</span> <span begin="11.20" end="11.80">tesuto</span></text>
++  </transliteration>
++</transliterations>
++</iTunesMetadata></metadata></head>
++<body><div>
++  <p begin="10.00" end="11.80" itunes:key="L1"><span begin="10.00" end="10.50">これ</span><span begin="10.50" end="10.80">は</span> <span begin="11.20" end="11.80">テスト</span></p>
++</div></body></tt>`
++
++	got, err := TtmlToLrcWithLocale(ttml, "zh-Hans-CN")
++	if err != nil {
++		t.Fatalf("TtmlToLrcWithLocale error: %v", err)
++	}
++	wantLines := []string{
++		"[00:10.00]<00:10.00>これ<00:10.50>は <00:11.20>テスト<00:11.80>",
++		"[00:10.00][gw:tr]这是一个测试",
++		"[00:10.00][gw:ro]<00:10.02>Ko<00:10.50>re <00:10.80>wa <00:11.20>tesuto<00:11.80>",
++	}
++	want := strings.Join(wantLines, "\n")
++	if got != want {
++		t.Fatalf("got:\n%s\nwant:\n%s", got, want)
++	}
++}
++
++func TestLineTimedReplacementTranslationAndPronunciation(t *testing.T) {
++	ttml := `<tt xmlns="http://www.w3.org/ns/ttml" xmlns:itunes="http://music.apple.com/lyric-ttml-internal" xml:lang="ja" itunes:timing="Line">
++<head><metadata><iTunesMetadata xmlns="http://music.apple.com/lyric-ttml-internal">
++<translations>
++  <translation type="subtitle" xml:lang="zh-Hans-CN">
++    <text for="L1">你好世界</text>
++  </translation>
++</translations>
++<transliterations>
++  <transliteration xml:lang="ja-Latn">
++    <text for="L1">Konnichiwa sekai</text>
++  </transliteration>
++</transliterations>
++</iTunesMetadata></metadata></head>
++<body><div>
++  <p begin="5.00" end="8.00" itunes:key="L1">こんにちは世界</p>
++</div></body></tt>`
++
++	got, err := TtmlToLrcWithLocale(ttml, "zh-Hans-CN")
++	if err != nil {
++		t.Fatalf("TtmlToLrcWithLocale error: %v", err)
++	}
++	want := strings.Join([]string{
++		"[00:05.00]こんにちは世界",
++		"[00:05.00][gw:tr]你好世界",
++		"[00:05.00][gw:ro]Konnichiwa sekai",
++	}, "\n")
++	if got != want {
++		t.Fatalf("got:\n%s\nwant:\n%s", got, want)
++	}
++}
++
++func TestLocaleMatchingRespectsChineseScripts(t *testing.T) {
++	if matchLocaleScore("zh-Hans", "zh-Hans-CN") <= 0 {
++		t.Fatal("zh-Hans should match zh-Hans-CN")
++	}
++	if matchLocaleScore("zh-Hant", "zh-Hans-CN") != 0 {
++		t.Fatal("zh-Hant must not match zh-Hans-CN")
++	}
++	if matchLocaleScore("zh-TW", "zh-CN") != 0 {
++		t.Fatal("zh-TW must not match zh-CN")
++	}
++	if matchLocaleScore("ja", "ja-JP") <= 0 {
++		t.Fatal("ja should match ja-JP")
++	}
++}
