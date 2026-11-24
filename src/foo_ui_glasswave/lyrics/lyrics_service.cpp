@@ -109,7 +109,7 @@ std::filesystem::path CacheFile(const Query& q, bool identityOnly = false) {
             mix(text);
         }
         if (!q.providerLocale.empty()) {
-            mix(L"|l2=");
+            mix(L"|l3=");
             mix(q.providerLocale);
         }
     }

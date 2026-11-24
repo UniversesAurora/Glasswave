@@ -1,34 +1,51 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Glasswave <glasswave@local>
 Date: Wed, 25 Nov 2026 02:39:04 +0800
-Subject: [PATCH] lyrics: request l[script]=en-Latn and parse TTML localization
- tracks
+Subject: [PATCH] lyrics: request l[script]=en-Latn, en-US fallback and parse
+ TTML tracks
 
-Request l[script]=en-Latn alongside extend=ttmlLocalizations so Apple Music
-returns official <transliterations> pronunciation tracks (e.g. ja-Latn,
-zh-Latn-pinyin) alongside <translations>. Prefer ttmlLocalizations when
-present, apply locale-matched type=replacement blocks directly onto the
-main line (preserving timed <span> syllables), fix the inverted
-translation/original order and relative .// lookup in etree, emit explicit
-[gw:tr] and [gw:ro] sidecar lines without discarding CJK originals, and
-preserve syllable timing on pronunciation spans.
+Request l=<locale>,en-US and l[script]=en-Latn alongside
+extend=ttmlLocalizations so Apple Music returns official <transliterations>
+pronunciation tracks (ja-Latn, ko-Latn, zh-Latn-pinyin) and falls back to
+en-US subtitle translations in a single HTTP request when no primary-locale
+translation exists. Prefer ttmlLocalizations when present, apply primary-
+matched type=replacement blocks directly onto the main line (preserving
+timed <span> syllables), fix the inverted translation/original order and
+relative .// lookup in etree, emit explicit [gw:tr] and [gw:ro] sidecar
+lines without discarding CJK originals, and preserve syllable timing on
+pronunciation spans.
 
 diff --git a/engine/utils/lyrics/lyrics.go b/engine/utils/lyrics/lyrics.go
-index b6023b9..22c195c 100644
+index b6023b9..1db080b 100644
 --- a/engine/utils/lyrics/lyrics.go
 +++ b/engine/utils/lyrics/lyrics.go
-@@ -63,14 +63,17 @@ func GetContext(ctx context.Context, storefront, songId, lrcType, language, lrcF
+@@ -63,14 +63,32 @@ func GetContext(ctx context.Context, storefront, songId, lrcType, language, lrcF
  	case "srt":
  		return TtmlToSrt(ttml)
  	default:
 -		return TtmlToLrc(ttml)
-+		return TtmlToLrcWithLocale(ttml, language)
++		return TtmlToLrcWithLocale(ttml, lyricsLocaleParam(language))
  	}
  }
  
++func lyricsLocaleParam(language string) string {
++	language = strings.TrimSpace(language)
++	if language == "" {
++		return "en-US"
++	}
++	if strings.Contains(language, ",") {
++		return language
++	}
++	lang, _, _ := normalizeLocaleParts(language)
++	if lang == "en" {
++		return language
++	}
++	return language + ",en-US"
++}
++
 +func lyricsRequestURL(storefront, songId, lrcType, language string) string {
 +	return fmt.Sprintf("https://amp-api.music.apple.com/v1/catalog/%s/songs/%s/%s?l=%s&l%%5Bscript%%5D=en-Latn&extend=ttmlLocalizations",
-+		url.PathEscape(storefront), url.PathEscape(songId), url.PathEscape(lrcType), url.QueryEscape(language))
++		url.PathEscape(storefront), url.PathEscape(songId), url.PathEscape(lrcType), url.QueryEscape(lyricsLocaleParam(language)))
 +}
 +
  func getSongLyricsContext(ctx context.Context, songId string, storefront string, token string, userToken string, lrcType string, language string) (string, error) {
@@ -39,7 +56,7 @@ index b6023b9..22c195c 100644
  	if err != nil {
  		return "", err
  	}
-@@ -105,6 +108,9 @@ func getSongLyricsContext(ctx context.Context, songId string, storefront string,
+@@ -105,6 +123,9 @@ func getSongLyricsContext(ctx context.Context, songId string, storefront string,
  		return "", errors.New("invalid lyrics response")
  	}
  	if len(obj.Data) > 0 {
@@ -49,7 +66,7 @@ index b6023b9..22c195c 100644
  		if len(obj.Data[0].Attributes.Ttml) > 0 {
  			return obj.Data[0].Attributes.Ttml, nil
  		}
-@@ -118,59 +124,6 @@ func getSongLyricsContext(ctx context.Context, songId string, storefront string,
+@@ -118,59 +139,6 @@ func getSongLyricsContext(ctx context.Context, songId string, storefront string,
  	return "", ErrNotFound
  }
  
@@ -109,7 +126,7 @@ index b6023b9..22c195c 100644
  // ttmlRoot returns the <tt> and <body> elements, or an error for TTML that
  // lacks them (empty or malformed lyrics) instead of a nil dereference.
  func ttmlRoot(doc *etree.Document) (tt, body *etree.Element, err error) {
-@@ -184,6 +137,10 @@ func ttmlRoot(doc *etree.Document) (tt, body *etree.Element, err error) {
+@@ -184,6 +152,10 @@ func ttmlRoot(doc *etree.Document) (tt, body *etree.Element, err error) {
  }
  
  func TtmlToLrc(ttml string) (string, error) {
@@ -120,7 +137,7 @@ index b6023b9..22c195c 100644
  	parsedTTML := etree.NewDocument()
  	err := parsedTTML.ReadFromString(ttml)
  	if err != nil {
-@@ -194,17 +151,29 @@ func TtmlToLrc(ttml string) (string, error) {
+@@ -194,17 +166,29 @@ func TtmlToLrc(ttml string) (string, error) {
  	if err != nil {
  		return "", err
  	}
@@ -154,7 +171,7 @@ index b6023b9..22c195c 100644
  				if line != "" {
  					lrcLines = append(lrcLines, line)
  				}
-@@ -213,7 +182,6 @@ func TtmlToLrc(ttml string) (string, error) {
+@@ -213,7 +197,6 @@ func TtmlToLrc(ttml string) (string, error) {
  		}
  	}
  
@@ -162,7 +179,7 @@ index b6023b9..22c195c 100644
  	for _, item := range body.ChildElements() {
  		for _, lyric := range item.ChildElements() {
  			beginAttr := lyric.SelectAttr("begin")
-@@ -224,43 +192,316 @@ func TtmlToLrc(ttml string) (string, error) {
+@@ -224,43 +207,341 @@ func TtmlToLrc(ttml string) (string, error) {
  			if err != nil {
  				return "", err
  			}
@@ -271,6 +288,30 @@ index b6023b9..22c195c 100644
 +	return 2
 +}
 +
++func matchLocaleListScore(candidate, wantedList string, allowFallback bool) int {
++	wantedList = strings.TrimSpace(wantedList)
++	if wantedList == "" {
++		return 1
++	}
++	parts := strings.Split(wantedList, ",")
++	best := 0
++	for idx, raw := range parts {
++		if idx > 0 && !allowFallback {
++			break
++		}
++		score := matchLocaleScore(candidate, raw)
++		if score == 0 {
++			continue
++		}
++		priority := max(1, 10-idx)
++		total := priority*10 + score
++		if total > best {
++			best = total
++		}
++	}
++	return best
++}
++
 +func selectTranslation(itunesMeta *etree.Element, wantedLocale, wantType string) *etree.Element {
 +	if itunesMeta == nil {
 +		return nil
@@ -296,6 +337,7 @@ index b6023b9..22c195c 100644
 +	if len(candidates) == 0 {
 +		return nil
 +	}
++	allowFallback := wantType != "replacement"
 +	var best *etree.Element
 +	bestScore := 0
 +	for _, tr := range candidates {
@@ -303,7 +345,7 @@ index b6023b9..22c195c 100644
 +		if lang == "" {
 +			lang = tr.SelectAttrValue("lang", "")
 +		}
-+		score := matchLocaleScore(lang, wantedLocale)
++		score := matchLocaleListScore(lang, wantedLocale, allowFallback)
 +		if score > bestScore {
 +			bestScore = score
 +			best = tr
@@ -337,7 +379,7 @@ index b6023b9..22c195c 100644
 +		if lang == "" {
 +			lang = tl.SelectAttrValue("lang", "")
 +		}
-+		score := matchLocaleScore(lang, wantedLocale)
++		score := matchLocaleListScore(lang, wantedLocale, true)
 +		if score > bestScore {
 +			bestScore = score
 +			best = tl
@@ -413,13 +455,12 @@ index b6023b9..22c195c 100644
 +		if lang == "" {
 +			lang = child.SelectAttrValue("lang", "")
 +		}
-+		score := matchLocaleScore(lang, wantedLocale)
++		score := matchLocaleListScore(lang, wantedLocale, true)
 +		if score > bestScore {
 +			bestScore = score
 +			best = txt
- 		}
- 	}
--	return strings.Join(parts, "")
++		}
++	}
 +	return best
 +}
 +
@@ -461,7 +502,7 @@ index b6023b9..22c195c 100644
 +			if err != nil {
 +				return "", "", false, err
 +			}
-+		}
+ 		}
 +		var text string
 +		if a := span.SelectAttr("text"); a != nil {
 +			text = a.Value
@@ -494,7 +535,8 @@ index b6023b9..22c195c 100644
 +	}
 +	if line, _, ok, err := buildSyllableSpans(node, lineStamp, "[gw:ro]"); err == nil && ok {
 +		return line
-+	}
+ 	}
+-	return strings.Join(parts, "")
 +	if plain := strings.TrimSpace(extractPlainText(node)); plain != "" {
 +		return lineStamp + "[gw:ro]" + plain
 +	}
@@ -502,7 +544,7 @@ index b6023b9..22c195c 100644
  }
  
  // parseLRCBeginTime parses an Apple TTML time value to (minutes, seconds,
-@@ -300,52 +541,6 @@ func itunesMetadataElem(doc *etree.Document) *etree.Element {
+@@ -300,52 +581,6 @@ func itunesMetadataElem(doc *etree.Document) *etree.Element {
  	return meta.FindElement("iTunesMetadata")
  }
  
@@ -555,7 +597,7 @@ index b6023b9..22c195c 100644
  // TtmlToSrt converts Apple Music TTML to SubRip (SRT) subtitle format.
  func TtmlToSrt(ttml string) (string, error) { return ttmlToSubtitle(ttml, "srt") }
  
-@@ -444,63 +639,45 @@ func msToSubTime(ms int, sep byte) string {
+@@ -444,63 +679,45 @@ func msToSubTime(ms int, sep byte) string {
  	return fmt.Sprintf("%02d:%02d:%02d%c%03d", h, m, s, sep, ms)
  }
  
@@ -606,7 +648,7 @@ index b6023b9..22c195c 100644
 -				lyric, ok := lyrics.(*etree.Element)
 -				if !ok || lyric.SelectAttr("begin") == nil {
 -					continue // comments, processing instructions, untimed spans
--				}
+ 				}
 -				beginTime, err := parseSyllableTime(lyric.SelectAttrValue("begin", ""), i)
 -				if err != nil {
 -					return "", err
@@ -625,7 +667,7 @@ index b6023b9..22c195c 100644
 -				if i == 0 {
 -					transBeginTime, _ := parseSyllableTime(lyric.SelectAttrValue("begin", ""), -1)
 -					translitLine, transLine = buildSyllabicAnnotations(itunesMeta, key, transBeginTime)
- 				}
+-				}
 -				i++
  			}
 -			if transLine != "" {
@@ -651,7 +693,7 @@ index b6023b9..22c195c 100644
  			}
  		}
  	}
-@@ -524,65 +701,6 @@ func parseSyllableTime(timeValue string, newLine int) (string, error) {
+@@ -524,65 +741,6 @@ func parseSyllableTime(timeValue string, newLine int) (string, error) {
  	}
  }
  
@@ -719,10 +761,10 @@ index b6023b9..22c195c 100644
  func textFor(parent *etree.Element, prefix, key string) *etree.Element {
 diff --git a/engine/utils/lyrics/lyrics_localizations_test.go b/engine/utils/lyrics/lyrics_localizations_test.go
 new file mode 100644
-index 0000000..33dfc67
+index 0000000..e14bf67
 --- /dev/null
 +++ b/engine/utils/lyrics/lyrics_localizations_test.go
-@@ -0,0 +1,160 @@
+@@ -0,0 +1,206 @@
 +package lyrics
 +
 +import (
@@ -847,9 +889,55 @@ index 0000000..33dfc67
 +
 +func TestLyricsRequestURLIncludesTransliterationScript(t *testing.T) {
 +	got := lyricsRequestURL("us", "1801409162", "syllable-lyrics", "zh-Hans-CN")
-+	want := "https://amp-api.music.apple.com/v1/catalog/us/songs/1801409162/syllable-lyrics?l=zh-Hans-CN&l%5Bscript%5D=en-Latn&extend=ttmlLocalizations"
++	want := "https://amp-api.music.apple.com/v1/catalog/us/songs/1801409162/syllable-lyrics?l=zh-Hans-CN%2Cen-US&l%5Bscript%5D=en-Latn&extend=ttmlLocalizations"
 +	if got != want {
 +		t.Fatalf("got:\n%s\nwant:\n%s", got, want)
++	}
++	gotEn := lyricsRequestURL("us", "1801409162", "syllable-lyrics", "en-US")
++	wantEn := "https://amp-api.music.apple.com/v1/catalog/us/songs/1801409162/syllable-lyrics?l=en-US&l%5Bscript%5D=en-Latn&extend=ttmlLocalizations"
++	if gotEn != wantEn {
++		t.Fatalf("gotEn:\n%s\nwantEn:\n%s", gotEn, wantEn)
++	}
++}
++
++func TestLocaleListPrefersPrimaryOverEnglishFallback(t *testing.T) {
++	ttmlBoth := `<tt xmlns="http://www.w3.org/ns/ttml" xmlns:itunes="http://music.apple.com/lyric-ttml-internal" xml:lang="ja" itunes:timing="Line">
++<head><metadata><iTunesMetadata xmlns="http://music.apple.com/lyric-ttml-internal">
++<translations>
++  <translation type="subtitle" xml:lang="en-US"><text for="L1">Thousands of ages</text></translation>
++  <translation type="subtitle" xml:lang="zh-Hans"><text for="L1">历经千载</text></translation>
++</translations>
++<transliterations>
++  <transliteration xml:lang="ja-Latn"><text for="L1">ikusen no toki</text></transliteration>
++</transliterations>
++</iTunesMetadata></metadata></head>
++<body><div><p begin="1.13" end="5.00" itunes:key="L1">幾千の時</p></div></body></tt>`
++
++	gotBoth, err := TtmlToLrcWithLocale(ttmlBoth, "zh-Hans-CN,en-US")
++	if err != nil {
++		t.Fatalf("TtmlToLrcWithLocale error: %v", err)
++	}
++	if !strings.Contains(gotBoth, "[00:01.13][gw:tr]历经千载") || !strings.Contains(gotBoth, "[00:01.13][gw:ro]ikusen no toki") {
++		t.Fatalf("expected primary zh-Hans translation + ro, got:\n%s", gotBoth)
++	}
++
++	ttmlEnOnly := `<tt xmlns="http://www.w3.org/ns/ttml" xmlns:itunes="http://music.apple.com/lyric-ttml-internal" xml:lang="ja" itunes:timing="Line">
++<head><metadata><iTunesMetadata xmlns="http://music.apple.com/lyric-ttml-internal">
++<translations>
++  <translation type="subtitle" xml:lang="en-US"><text for="L1">Thousands of ages</text></translation>
++</translations>
++<transliterations>
++  <transliteration xml:lang="ja-Latn"><text for="L1">ikusen no toki</text></transliteration>
++</transliterations>
++</iTunesMetadata></metadata></head>
++<body><div><p begin="1.13" end="5.00" itunes:key="L1">幾千の時</p></div></body></tt>`
++
++	gotFallback, err := TtmlToLrcWithLocale(ttmlEnOnly, "zh-Hans-CN,en-US")
++	if err != nil {
++		t.Fatalf("TtmlToLrcWithLocale fallback error: %v", err)
++	}
++	if !strings.Contains(gotFallback, "[00:01.13][gw:tr]Thousands of ages") || !strings.Contains(gotFallback, "[00:01.13][gw:ro]ikusen no toki") {
++		t.Fatalf("expected en-US fallback translation + ro, got:\n%s", gotFallback)
 +	}
 +}
 +
