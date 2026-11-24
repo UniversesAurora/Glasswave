@@ -5,7 +5,7 @@
 #include "win7/win7_resources.h"
 
 DECLARE_COMPONENT_VERSION(
-    "Glasswave", "0.1.3",
+    "Glasswave", "0.1.4",
     "Glasswave - a Windows 7 Aero Glass / Windows Media Player 12 / Windows Media Center style user interface for foobar2000.\n"
     "\n"
     "The glass is scoped to this window: Windows.UI.Composition HostBackdropBrush plus the Win7 colorization recipe.\n"
