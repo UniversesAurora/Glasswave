@@ -6,10 +6,13 @@ Updated: 2026-11-24
 
 - **MIT License (`LICENSE`, `README.md`)**: Added `LICENSE` (MIT, `Copyright (c) 2026 浮枕`) and
   linked it from `README.md`.
-- **Taskbar thumbnail first-hover aspect ratio (`ui/taskbar.cpp`)**: `Taskbar::SendCoverThumbnail`
-  now allocates the 32-bpp DIB at DWM's exact requested `maxWidth × maxHeight` with transparent
-  letterboxing/pillarboxing around the aspect-preserved cover instead of returning a square bitmap
-  that DWM could stretch horizontally on the first hover.
+- **Taskbar thumbnail square flyout & first-hover aspect ratio (`ui/taskbar.{h,cpp}`)**:
+  `Taskbar::SendCoverThumbnail` keeps a tight square `side × side` iconic bitmap so Explorer
+  shrinks the taskbar preview flyout tightly around the album art without side margins, while
+  `Taskbar::UpdateThumbnailClip` sets a 1:1 `ITaskbarList3::SetThumbnailClip` hint in
+  `UseCover(true)` / `AddButtons()` (cleared in `UseCover(false)`) so Explorer calculates a
+  square flyout on the very first hover instead of stretching the first square cover to the
+  wide window aspect ratio.
 - **Complete "Select lyrics" candidates with live menu updates & SWR refresh
   (`lyrics/lyrics_service.{h,cpp}`, `ui/win7_menu.{h,cpp}`, `ui/main_menu.{h,cpp}`,
   `ui/main_window_pane.cpp`)**:

@@ -316,11 +316,38 @@ void Taskbar::UseCover(bool on) {
     const BOOL value = on;
     DwmSetWindowAttribute(m_hwnd, DWMWA_FORCE_ICONIC_REPRESENTATION, &value, sizeof(value));
     DwmSetWindowAttribute(m_hwnd, DWMWA_HAS_ICONIC_BITMAP, &value, sizeof(value));
+    UpdateThumbnailClip();
+}
+
+void Taskbar::UpdateThumbnailClip() {
+    if (!m_hwnd) return;
+    if (!m_list) {
+        m_list = winrt::try_create_instance<ITaskbarList3>(CLSID_TaskbarList);
+        if (!m_list || FAILED(m_list->HrInit())) {
+            m_list = nullptr;
+            return;
+        }
+    }
+    if (!m_coverOn) {
+        m_list->SetThumbnailClip(m_hwnd, nullptr);
+        return;
+    }
+    // Give Explorer a 1:1 square source aspect ratio before the first hover so Windows 11's
+    // taskbar flyout shrinks tightly to a square on the very first hover instead of sizing
+    // itself to the wide main window and stretching the first square iconic bitmap.
+    RECT client{};
+    int clipSide = 128;
+    if (!IsIconic(m_hwnd) && GetClientRect(m_hwnd, &client)) {
+        const int minDim = std::min<int>(client.right - client.left, client.bottom - client.top);
+        if (minDim > 0) clipSide = std::min(minDim, 256);
+    }
+    RECT square{0, 0, clipSide, clipSide};
+    m_list->SetThumbnailClip(m_hwnd, &square);
 }
 
 void Taskbar::SendCoverThumbnail(int maxWidth, int maxHeight) {
     const int side = std::min(maxWidth, maxHeight);
-    if (maxWidth <= 0 || maxHeight <= 0 || side <= 0 || !m_coverTrack.is_valid()) return;
+    if (side <= 0 || !m_coverTrack.is_valid()) return;
     m_coverSize = side;
     winrt::com_ptr<IWICBitmapSource> art;
     const auto state = ArtCache::Get().Find(m_coverKey, m_coverTrack, side, &art);
@@ -328,27 +355,27 @@ void Taskbar::SendCoverThumbnail(int maxWidth, int maxHeight) {
         UseCover(false);
         return;
     }
-    // Always supply a transparent 32-bpp DIB matching DWM's requested maxWidth x maxHeight
-    // bounding box with the cover aspect-fitted and centred inside it. Handing DWM a narrower
-    // square DIB causes Windows 11's taskbar flyout to stretch the cover horizontally on the
-    // first hover before Explorer has cached the iconic bitmap's aspect ratio.
+    // Return a square `side x side` bitmap so Explorer shrinks the taskbar preview card tightly
+    // around the album cover (matching WMP 12 / NetEase, with no empty side margins).
+    // Combined with the 1:1 SetThumbnailClip hint in UseCover(true), the flyout opens square
+    // even on the first hover.
     UINT w = 0, h = 0;
     if (art) art->GetSize(&w, &h);
     const bool loading = !art || w <= 1 || h <= 1;
     if (!loading) m_coverVersion = ArtCache::Get().Version(m_coverKey, m_coverTrack, side);
 
     BITMAPINFO bi{};
-    bi.bmiHeader = {sizeof(BITMAPINFOHEADER), maxWidth, -maxHeight, 1, 32, BI_RGB};
+    bi.bmiHeader = {sizeof(BITMAPINFOHEADER), side, -side, 1, 32, BI_RGB};
     void* bits = nullptr;
     HBITMAP bmp = CreateDIBSection(nullptr, &bi, DIB_RGB_COLORS, &bits, nullptr, 0);
     if (!bmp) return;
-    const UINT stride = static_cast<UINT>(maxWidth) * 4;
-    std::memset(bits, 0, static_cast<size_t>(stride) * maxHeight);
+    const UINT stride = static_cast<UINT>(side) * 4;
+    std::memset(bits, 0, static_cast<size_t>(stride) * side);
     bool drawn = loading;
     if (!loading) {
-        const double fit = std::min(static_cast<double>(maxWidth) / w, static_cast<double>(maxHeight) / h);
-        const int tw = std::clamp(static_cast<int>(std::lround(w * fit)), 1, maxWidth);
-        const int th = std::clamp(static_cast<int>(std::lround(h * fit)), 1, maxHeight);
+        const double fit = std::min(static_cast<double>(side) / w, static_cast<double>(side) / h);
+        const int tw = std::clamp(static_cast<int>(std::lround(w * fit)), 1, side);
+        const int th = std::clamp(static_cast<int>(std::lround(h * fit)), 1, side);
         auto* wic = gfx::CompositionHost::Get().Wic();
         winrt::com_ptr<IWICBitmapScaler> scaler;
         winrt::com_ptr<IWICFormatConverter> conv;
@@ -358,9 +385,9 @@ void Taskbar::SendCoverThumbnail(int maxWidth, int maxHeight) {
             SUCCEEDED(conv->Initialize(scaler.get(), GUID_WICPixelFormat32bppPBGRA, WICBitmapDitherTypeNone,
                                        nullptr, 0, WICBitmapPaletteTypeCustom))) {
             const size_t offset =
-                static_cast<size_t>((maxHeight - th) / 2) * stride + static_cast<size_t>((maxWidth - tw) / 2) * 4;
+                static_cast<size_t>((side - th) / 2) * stride + static_cast<size_t>((side - tw) / 2) * 4;
             const WICRect all{0, 0, tw, th};
-            const UINT room = static_cast<UINT>(static_cast<size_t>(stride) * maxHeight - offset);
+            const UINT room = static_cast<UINT>(static_cast<size_t>(stride) * side - offset);
             drawn = SUCCEEDED(conv->CopyPixels(&all, stride, room, static_cast<BYTE*>(bits) + offset));
         }
     }
@@ -455,6 +482,7 @@ void Taskbar::AddButtons() {
             return;
         }
     }
+    UpdateThumbnailClip();
     if (!m_images) {
         // Glyph size follows the small icon size at the window's DPI.
         const int icon = GetSystemMetricsForDpi(SM_CXSMICON, GetDpiForWindow(m_hwnd));

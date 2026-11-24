@@ -32,6 +32,7 @@ public:
 private:
     void ApplyWindowIdentity();
     void ClearWindowIdentity();
+    void UpdateThumbnailClip();
     void AddButtons();
     void UpdateButtons();
     void UseCover(bool on);
