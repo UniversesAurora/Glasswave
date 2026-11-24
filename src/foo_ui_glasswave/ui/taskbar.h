@@ -25,11 +25,13 @@ public:
     // track, or one without a cover, gives the ordinary window thumbnail back.
     void SetCoverTrack(const metadb_handle_ptr& track);
 
-    // Jump list tasks. Written only when this process has no explicit AppUserModelID, i.e.
-    // the jump list belongs to this foobar2000 installation alone.
+    // Jump list tasks. Attached to Glasswave's own AppUserModelID when Win7 icon resources are
+    // present, else written only when the process has no explicit AppUserModelID.
     static void SetupJumpList();
 
 private:
+    void ApplyWindowIdentity();
+    void ClearWindowIdentity();
     void AddButtons();
     void UpdateButtons();
     void UseCover(bool on);
@@ -47,6 +49,7 @@ private:
     winrt::com_ptr<ITaskbarList3> m_list;
     HIMAGELIST m_images = nullptr;
     bool m_added = false, m_playing = false, m_paused = false, m_favorite = false;
+    bool m_identitySet = false;
     int m_starFull = -1, m_starOutline = -1;  // image list indices
 };
 

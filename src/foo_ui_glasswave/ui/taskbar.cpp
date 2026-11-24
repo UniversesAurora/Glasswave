@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "ui/taskbar.h"
+#include "core/paths.h"
 #include "media/radio.h"
 #include "win7/win7_resources.h"
 #include "gfx/composition_host.h"
@@ -8,6 +9,8 @@
 #include "ui/i18n.h"
 
 #include <commctrl.h>
+#include <cwctype>
+#include <fstream>
 #include <propsys.h>
 #pragma comment(lib, "comctl32.lib")
 
@@ -20,8 +23,199 @@ enum ButtonId : UINT { kPrev = 1, kPlayPause = 2, kNext = 3, kFavorite = 4 };
 // next, each followed by its disabled version.
 enum Glyph : int { kGlyphPrev = 0, kGlyphPlay = 2, kGlyphPause = 4, kGlyphStop = 6, kGlyphNext = 8 };
 
-// PKEY_Title (FMTID_SummaryInformation, 2), spelled out to avoid linking propsys.
+constexpr int kWmpIcon = 102;
+
+// Shell property keys spelled out to avoid linking propsys.lib.
 constexpr PROPERTYKEY kTitle{{0xF29F85E0, 0x4FF9, 0x1068, {0xAB, 0x91, 0x08, 0x00, 0x2B, 0x27, 0xB3, 0xD9}}, 2};
+constexpr GUID kAppUserModelFmtId{0x9F4C2855, 0x9F79, 0x4B39, {0xA8, 0xD0, 0xE1, 0xD4, 0x2D, 0xE1, 0xD5, 0xF3}};
+constexpr PROPERTYKEY kAppUserModelId{kAppUserModelFmtId, 5};
+constexpr PROPERTYKEY kRelaunchCommand{kAppUserModelFmtId, 2};
+constexpr PROPERTYKEY kRelaunchIconResource{kAppUserModelFmtId, 3};
+constexpr PROPERTYKEY kRelaunchDisplayName{kAppUserModelFmtId, 4};
+
+bool SetPropString(IPropertyStore* store, const PROPERTYKEY& key, std::wstring_view value) {
+    PROPVARIANT pv{};
+    pv.vt = VT_LPWSTR;
+    const size_t bytes = (value.size() + 1) * sizeof(wchar_t);
+    pv.pwszVal = static_cast<LPWSTR>(CoTaskMemAlloc(bytes));
+    if (!pv.pwszVal) return false;
+    memcpy(pv.pwszVal, value.data(), value.size() * sizeof(wchar_t));
+    pv.pwszVal[value.size()] = L'\0';
+    const HRESULT hr = store->SetValue(key, pv);
+    PropVariantClear(&pv);
+    return SUCCEEDED(hr);
+}
+
+std::wstring ExecutablePath() {
+    std::wstring buf(MAX_PATH, L'\0');
+    for (;;) {
+        const DWORD len = GetModuleFileNameW(nullptr, buf.data(), static_cast<DWORD>(buf.size()));
+        if (len == 0) return {};
+        if (len < buf.size()) {
+            buf.resize(len);
+            return buf;
+        }
+        if (buf.size() >= 32768) return {};
+        buf.resize(buf.size() * 2);
+    }
+}
+
+// Per-installation AppUserModelID so Windows 11 taskbar uses Glasswave's icon even when
+// launched via foobar2000's Start Menu shortcut, while isolating dev and production installs.
+// Empty when Win7 WMP icon resources are absent (keep foobar2000's default identity).
+const std::wstring& WindowAppUserModelId() {
+    static const std::wstring id = []() -> std::wstring {
+        HICON probe = win7::Resources::Get().Icon(win7::Module::Wmploc, kWmpIcon, 256);
+        if (!probe) return {};
+        DestroyIcon(probe);
+        const std::wstring exe = ExecutablePath();
+        std::wstring dir = std::filesystem::path(exe).parent_path().wstring();
+        std::wstring slug;
+        slug.reserve(dir.size());
+        bool dot = true;
+        for (wchar_t ch : dir) {
+            const wchar_t lo = static_cast<wchar_t>(std::towlower(ch));
+            if ((lo >= L'a' && lo <= L'z') || (lo >= L'0' && lo <= L'9')) {
+                slug.push_back(lo);
+                dot = false;
+            } else if (!dot) {
+                slug.push_back(L'.');
+                dot = true;
+            }
+        }
+        while (!slug.empty() && slug.back() == L'.') slug.pop_back();
+        const std::wstring prefix = L"Glasswave.foobar2000.";
+        constexpr size_t kMaxAumid = 120;
+        if (prefix.size() + slug.size() > kMaxAumid) {
+            slug = slug.substr(slug.size() - (kMaxAumid - prefix.size()));
+            while (!slug.empty() && slug.front() == L'.') slug.erase(slug.begin());
+        }
+        return slug.empty() ? L"Glasswave.foobar2000" : prefix + slug;
+    }();
+    return id;
+}
+
+// Build a centred 256x256 PNG-in-ICO in <profile>/glasswave/app-icon.ico from the user's
+// wmploc.dll so pinned Glasswave taskbar buttons and Jump List items show the same centred
+// WMP icon even when foobar2000 is closed.
+std::wstring EnsureCenteredAppIconResource() {
+    const auto root = core::ProfileRoot();
+    if (root.empty()) return {};
+    const auto icoPath = root / L"app-icon.ico";
+    std::error_code ec;
+    if (std::filesystem::is_regular_file(icoPath, ec) && std::filesystem::file_size(icoPath, ec) > 22)
+        return icoPath.wstring() + L",0";
+
+    const auto fallback = [&]() -> std::wstring {
+        const auto wmploc = root / L"wmploc.dll";
+        if (std::filesystem::is_regular_file(wmploc, ec)) return wmploc.wstring() + L",-102";
+        return {};
+    };
+
+    HICON big = win7::Resources::Get().Icon(win7::Module::Wmploc, kWmpIcon, 256);
+    if (!big) return fallback();
+    auto* wic = gfx::CompositionHost::Get().Wic();
+    winrt::com_ptr<IWICBitmap> src;
+    std::vector<BYTE> png;
+    if (wic && SUCCEEDED(wic->CreateBitmapFromHICON(big, src.put()))) {
+        UINT w = 0, h = 0;
+        src->GetSize(&w, &h);
+        std::vector<BYTE> px(static_cast<size_t>(w) * h * 4);
+        if (w > 0 && h > 0 && SUCCEEDED(src->CopyPixels(nullptr, w * 4, static_cast<UINT>(px.size()), px.data()))) {
+            UINT l = w, t = h, r = 0, b = 0;
+            for (UINT y = 0; y < h; ++y)
+                for (UINT x = 0; x < w; ++x)
+                    if (px[(static_cast<size_t>(y) * w + x) * 4 + 3] > 8) {
+                        l = std::min(l, x);
+                        t = std::min(t, y);
+                        r = std::max(r, x);
+                        b = std::max(b, y);
+                    }
+            if (r > l && b > t) {
+                constexpr UINT kOut = 256;
+                const UINT cw = r - l + 1, ch = b - t + 1, side = std::max(cw, ch);
+                const UINT dw = std::max<UINT>(1, kOut * cw / side), dh = std::max<UINT>(1, kOut * ch / side);
+                const WICRect rc{static_cast<INT>(l), static_cast<INT>(t), static_cast<INT>(cw), static_cast<INT>(ch)};
+                winrt::com_ptr<IWICBitmapClipper> clip;
+                winrt::com_ptr<IWICBitmapScaler> scaler;
+                if (SUCCEEDED(wic->CreateBitmapClipper(clip.put())) && SUCCEEDED(clip->Initialize(src.get(), &rc)) &&
+                    SUCCEEDED(wic->CreateBitmapScaler(scaler.put())) &&
+                    SUCCEEDED(scaler->Initialize(clip.get(), dw, dh, WICBitmapInterpolationModeHighQualityCubic))) {
+                    std::vector<BYTE> scaled(static_cast<size_t>(dw) * dh * 4);
+                    if (SUCCEEDED(
+                            scaler->CopyPixels(nullptr, dw * 4, static_cast<UINT>(scaled.size()), scaled.data()))) {
+                        std::vector<BYTE> canvas(static_cast<size_t>(kOut) * kOut * 4, 0);
+                        const UINT ox = (kOut - dw) / 2, oy = (kOut - dh) / 2;
+                        for (UINT y = 0; y < dh; ++y)
+                            std::memcpy(canvas.data() + ((static_cast<size_t>(y) + oy) * kOut + ox) * 4,
+                                        scaled.data() + static_cast<size_t>(y) * dw * 4,
+                                        static_cast<size_t>(dw) * 4);
+                        winrt::com_ptr<IStream> mem;
+                        winrt::com_ptr<IWICBitmapEncoder> encoder;
+                        winrt::com_ptr<IWICBitmapFrameEncode> frame;
+                        WICPixelFormatGUID fmt = GUID_WICPixelFormat32bppBGRA;
+                        if (SUCCEEDED(CreateStreamOnHGlobal(nullptr, TRUE, mem.put())) &&
+                            SUCCEEDED(wic->CreateEncoder(GUID_ContainerFormatPng, nullptr, encoder.put())) &&
+                            SUCCEEDED(encoder->Initialize(mem.get(), WICBitmapEncoderNoCache)) &&
+                            SUCCEEDED(encoder->CreateNewFrame(frame.put(), nullptr)) &&
+                            SUCCEEDED(frame->Initialize(nullptr)) && SUCCEEDED(frame->SetSize(kOut, kOut)) &&
+                            SUCCEEDED(frame->SetPixelFormat(&fmt)) &&
+                            SUCCEEDED(frame->WritePixels(kOut, kOut * 4, static_cast<UINT>(canvas.size()),
+                                                         canvas.data())) &&
+                            SUCCEEDED(frame->Commit()) && SUCCEEDED(encoder->Commit())) {
+                            HGLOBAL hg = nullptr;
+                            if (SUCCEEDED(GetHGlobalFromStream(mem.get(), &hg)) && hg) {
+                                const SIZE_T sz = GlobalSize(hg);
+                                if (const void* ptr = GlobalLock(hg)) {
+                                    png.assign(static_cast<const BYTE*>(ptr), static_cast<const BYTE*>(ptr) + sz);
+                                    GlobalUnlock(hg);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    DestroyIcon(big);
+    if (png.empty()) return fallback();
+
+    core::EnsureDir(root);
+    const auto tmpPath = root / L"app-icon.ico.tmp";
+    {
+        std::ofstream out(tmpPath, std::ios::binary | std::ios::trunc);
+        if (!out) return fallback();
+        const uint32_t pngSize = static_cast<uint32_t>(png.size());
+        const uint32_t offset = 22;
+        const uint8_t header[22] = {
+            0, 0,                                                       // idReserved
+            1, 0,                                                       // idType = ICON
+            1, 0,                                                       // idCount = 1
+            0,                                                          // bWidth (0 = 256)
+            0,                                                          // bHeight (0 = 256)
+            0,                                                          // bColorCount
+            0,                                                          // bReserved
+            1, 0,                                                       // wPlanes
+            32, 0,                                                      // wBitCount
+            static_cast<uint8_t>(pngSize & 0xFF),
+            static_cast<uint8_t>((pngSize >> 8) & 0xFF),
+            static_cast<uint8_t>((pngSize >> 16) & 0xFF),
+            static_cast<uint8_t>((pngSize >> 24) & 0xFF),
+            static_cast<uint8_t>(offset & 0xFF),
+            static_cast<uint8_t>((offset >> 8) & 0xFF),
+            static_cast<uint8_t>((offset >> 16) & 0xFF),
+            static_cast<uint8_t>((offset >> 24) & 0xFF),
+        };
+        out.write(reinterpret_cast<const char*>(header), sizeof(header));
+        out.write(reinterpret_cast<const char*>(png.data()), static_cast<std::streamsize>(png.size()));
+        if (!out) return fallback();
+    }
+    if (!MoveFileExW(tmpPath.c_str(), icoPath.c_str(), MOVEFILE_REPLACE_EXISTING)) {
+        DeleteFileW(tmpPath.c_str());
+        return fallback();
+    }
+    return icoPath.wstring() + L",0";
+}
 
 // A wmploc PNG scaled to `size` into the image list (premultiplied 32-bpp, as AlphaBlend
 // expects); -1 when missing.
@@ -60,6 +254,7 @@ int AddPng(HIMAGELIST list, int id, int size) {
 
 Taskbar::Taskbar(HWND hwnd) : m_hwnd(hwnd) {
     m_createdMsg = RegisterWindowMessageW(L"TaskbarButtonCreated");
+    ApplyWindowIdentity();
     // A cover that finishes loading after DWM asked replaces the thumbnail.
     m_artToken = ArtCache::Get().Subscribe([this] {
         if (!m_coverOn || !m_coverTrack.is_valid() || m_coverSize <= 0) return;
@@ -69,8 +264,40 @@ Taskbar::Taskbar(HWND hwnd) : m_hwnd(hwnd) {
 }
 
 Taskbar::~Taskbar() {
+    ClearWindowIdentity();
     if (auto* cache = ArtCache::Existing()) cache->Unsubscribe(m_artToken);
     if (m_images) ImageList_Destroy(m_images);
+}
+
+void Taskbar::ApplyWindowIdentity() {
+    if (!m_hwnd) return;
+    const std::wstring& appId = WindowAppUserModelId();
+    if (appId.empty()) return;
+    winrt::com_ptr<IPropertyStore> store;
+    if (FAILED(SHGetPropertyStoreForWindow(m_hwnd, IID_PPV_ARGS(store.put()))) || !store) return;
+    SetPropString(store.get(), kAppUserModelId, appId);
+    if (const std::wstring exe = ExecutablePath(); !exe.empty())
+        SetPropString(store.get(), kRelaunchCommand, L"\"" + exe + L"\"");
+    SetPropString(store.get(), kRelaunchDisplayName, L"Glasswave");
+    if (const std::wstring icon = EnsureCenteredAppIconResource(); !icon.empty())
+        SetPropString(store.get(), kRelaunchIconResource, icon);
+    store->Commit();
+    m_identitySet = true;
+}
+
+void Taskbar::ClearWindowIdentity() {
+    if (!m_identitySet || !m_hwnd || !IsWindow(m_hwnd)) {
+        m_identitySet = false;
+        return;
+    }
+    m_identitySet = false;
+    winrt::com_ptr<IPropertyStore> store;
+    if (FAILED(SHGetPropertyStoreForWindow(m_hwnd, IID_PPV_ARGS(store.put()))) || !store) return;
+    PROPVARIANT empty{};
+    PropVariantInit(&empty);
+    for (const auto& key : {kAppUserModelId, kRelaunchCommand, kRelaunchDisplayName, kRelaunchIconResource})
+        store->SetValue(key, empty);
+    store->Commit();
 }
 
 void Taskbar::SetCoverTrack(const metadb_handle_ptr& track) {
@@ -171,6 +398,10 @@ void Taskbar::SendLivePreview() {
 }
 
 bool Taskbar::OnMessage(UINT msg, WPARAM wp, LPARAM lp) {
+    if (msg == WM_DESTROY) {
+        ClearWindowIdentity();
+        return false;
+    }
     if (msg == m_createdMsg && m_createdMsg) {  // (re)created, e.g. after Explorer restarts
         m_added = false;
         AddButtons();
@@ -278,40 +509,47 @@ void Taskbar::UpdateButtons() {
 }
 
 void Taskbar::SetupJumpList() {
-    // An explicit AppUserModelID may be shared with other foobar2000 installations; their
-    // jump lists are not ours to change.
-    if (PWSTR id = nullptr; SUCCEEDED(GetCurrentProcessExplicitAppUserModelID(&id))) {
-        console::print("Glasswave: jump list tasks skipped (explicit AppUserModelID ", pfc::stringcvt::string_utf8_from_wide(id), ")");
-        CoTaskMemFree(id);
-        return;
+    const std::wstring& appId = WindowAppUserModelId();
+    // When using the default process identity, an explicit AppUserModelID may be shared with
+    // other foobar2000 installations; their jump lists are not ours to change.
+    if (appId.empty()) {
+        if (PWSTR id = nullptr; SUCCEEDED(GetCurrentProcessExplicitAppUserModelID(&id))) {
+            console::print("Glasswave: jump list tasks skipped (explicit AppUserModelID ",
+                           pfc::stringcvt::string_utf8_from_wide(id), ")");
+            CoTaskMemFree(id);
+            return;
+        }
     }
     try {
         auto list = winrt::create_instance<ICustomDestinationList>(CLSID_DestinationList);
+        if (!appId.empty()) winrt::check_hresult(list->SetAppID(appId.c_str()));
         UINT slots = 0;
         winrt::com_ptr<IObjectArray> removed;
         winrt::check_hresult(list->BeginList(&slots, IID_PPV_ARGS(removed.put())));
         auto tasks = winrt::create_instance<IObjectCollection>(CLSID_EnumerableObjectCollection);
-        wchar_t exe[MAX_PATH]{};
-        GetModuleFileNameW(nullptr, exe, MAX_PATH);
+        const std::wstring exe = ExecutablePath();
+        if (exe.empty()) return;
+        std::wstring iconPath = exe;
+        int iconIndex = 0;
+        if (!appId.empty()) {
+            const std::wstring res = EnsureCenteredAppIconResource();
+            if (const size_t comma = res.rfind(L','); comma != std::wstring::npos) {
+                iconPath = res.substr(0, comma);
+                iconIndex = _wtoi(res.c_str() + comma + 1);
+            }
+        }
         // foobar2000's own command-line switches.
         const std::pair<const wchar_t*, const wchar_t*> items[] = {
             {L"Play / Pause", L"/playpause"}, {L"Next track", L"/next"}, {L"Previous track", L"/prev"}, {L"Stop", L"/stop"}};
         for (const auto& [english, args] : items) {
             const wchar_t* title = TrC(english);
             auto link = winrt::create_instance<IShellLinkW>(CLSID_ShellLink);
-            link->SetPath(exe);
+            link->SetPath(exe.c_str());
             link->SetArguments(args);
-            link->SetIconLocation(exe, 0);
+            link->SetIconLocation(iconPath.c_str(), iconIndex);
             auto store = link.as<IPropertyStore>();
-            PROPVARIANT pv{};
-            pv.vt = VT_LPWSTR;
-            const size_t bytes = (wcslen(title) + 1) * sizeof(wchar_t);
-            pv.pwszVal = static_cast<LPWSTR>(CoTaskMemAlloc(bytes));
-            if (!pv.pwszVal) continue;
-            memcpy(pv.pwszVal, title, bytes);
-            store->SetValue(kTitle, pv);
+            if (!SetPropString(store.get(), kTitle, title)) continue;
             store->Commit();
-            PropVariantClear(&pv);
             tasks->AddObject(link.get());
         }
         winrt::check_hresult(list->AddUserTasks(tasks.as<IObjectArray>().get()));

@@ -43,6 +43,14 @@ Updated: 2026-11-24
   Wired the main transport time readout to `settings::PlayerTimeRemaining()` (`-remaining / total`),
   made it clickable (hand cursor, part `6`) to toggle, synchronized changes when closing the
   Mini/Full-Screen player, and updated live time during seek-bar scrubbing.
+- **Taskbar window identity & Start Menu launch icon (`ui/taskbar.{h,cpp}`)**:
+  When `wmploc.dll` is present, `Taskbar` now assigns an install-scoped `PKEY_AppUserModel_ID`
+  plus `RelaunchCommand`, `RelaunchDisplayNameResource` (`Glasswave`), and
+  `RelaunchIconResource` (a generated centred 256×256 PNG-in-ICO at
+  `<profile>/glasswave/app-icon.ico`) via `SHGetPropertyStoreForWindow` on both `MainWindow` and
+  `PlayerWindow`, clears the properties on `WM_DESTROY` / destruction, and binds
+  `Taskbar::SetupJumpList()` to the same AppID so Windows 11 shows the Glasswave icon even when
+  launched from foobar2000's Start Menu shortcut.
 - **Verified**: `pwsh -File scripts/build.ps1` (`Release|x64`) succeeded with 0 warnings and 0
   errors. Pending owner visual acceptance in the dev instance.
 
