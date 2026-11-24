@@ -205,6 +205,7 @@ class Service {
     // The automatic search in flight: its track and where its answer goes. Asking for the
     // same track again redirects the answer instead of starting another search.
     std::wstring m_activeIdentity;
+    std::wstring m_collectingIdentity;
     std::shared_ptr<std::function<void(const Result&)>> m_activeDone;
     std::shared_ptr<abort_callback_impl> m_searchAbort;
     unsigned m_searchGeneration = 0;
