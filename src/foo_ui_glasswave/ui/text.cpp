@@ -4,6 +4,23 @@
 
 namespace glasswave::ui {
 
+float MeasureTagWidth(std::wstring_view text, float x, float right, float size, float scale) {
+    constexpr float kPadX = 2.5f;
+    auto layout = MakeText(text, size, DWRITE_FONT_WEIGHT_NORMAL, 400, 40);
+    if (!layout) return 0;
+    DWRITE_TEXT_METRICS m{};
+    layout->GetMetrics(&m);
+    layout->SetMaxWidth(std::max(m.widthIncludingTrailingWhitespace, 1.0f));
+    layout->SetMaxHeight(std::max(m.height, 1.0f));
+    DWRITE_OVERHANG_METRICS o{};
+    layout->GetOverhangMetrics(&o);
+    const float inkWidth = std::max(m.widthIncludingTrailingWhitespace + o.left + o.right, 1.0f);
+    const auto snap = [scale](float v) { return std::round(v * scale) / scale; };
+    const float w = snap(inkWidth + 2 * kPadX);
+    const float left = snap(x);
+    return left + w <= right ? w : 0;
+}
+
 float DrawTag(ID2D1DeviceContext* dc, std::wstring_view text, float x, float cy, float right, D2D1_COLOR_F ink,
               float size, float scale) {
     constexpr float kPadX = 2.5f, kPadY = 1.5f; // DIP between the ink and the outline

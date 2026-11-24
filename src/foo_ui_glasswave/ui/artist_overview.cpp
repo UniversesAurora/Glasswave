@@ -311,7 +311,11 @@ void ArtistOverviewSource::PlayTile(size_t row) {
 
 void ArtistOverviewSource::ContextMenu(HWND owner, POINT screen) {
     const Entry* entry = EntryAt(Focus());
-    if (!entry) return;
+    if (!entry) {
+        metadb_handle_list items = SelectedItems();
+        if (items.get_count()) RunContextMenu(owner, items, screen);
+        return;
+    }
     if (std::holds_alternative<stream::Track>(entry->value)) {
         metadb_handle_list items = SelectedItems();
         if (!items.get_count())

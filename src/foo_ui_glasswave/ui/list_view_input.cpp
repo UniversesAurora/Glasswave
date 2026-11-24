@@ -581,10 +581,12 @@ void ListView::OnRButtonUp(HWND owner, POINT pt) {
     if (!m_source) return;
     const Hit hit = HitAt(pt);
     if (hit.part == Part::Status) return;
-    if (hit.part == Part::Row && !m_source->IsSelected(hit.row)) {
-        m_source->SelectOnly(hit.row);
+    if (hit.part == Part::Row || hit.part == Part::TilePlay) {
+        if (!m_source->IsSelected(hit.row)) {
+            m_source->SelectOnly(hit.row);
+            m_anchor = hit.row;
+        }
         m_source->SetFocus(hit.row);
-        m_anchor = hit.row;
         PaintRows();
     } else if (hit.part == Part::GroupHeader || hit.part == Part::AlbumColumn || hit.part == Part::Link) {
         const auto& g = (*m_source->Groups())[hit.group];
@@ -683,12 +685,46 @@ void ListView::ShowHeaderMenu(HWND owner, POINT pt, size_t displayCol) {
     }
 }
 
-// Text the list shows cut short under the pointer (a tile's line, a cell): its whole text and
-// where it stands, in client px, for the window's tooltip (owner, 2026-11-14).
+// Text the list shows cut short under the pointer (a column/group header, a tile's line, a cell
+// or trailing note): its whole text and where it stands, in client px, for the window's tooltip.
 bool ListView::CutTextAt(POINT pt, std::wstring* text, RECT* rect) const {
     if (!m_source || m_drag != Drag::None) return false;
     const Hit hit = HitAt(pt);
-    if (hit.part != Part::Row || hit.row >= m_source->Count()) return false;
+    const auto measureWidth = [](const std::wstring& s, float size,
+                                 DWRITE_FONT_WEIGHT weight = DWRITE_FONT_WEIGHT_NORMAL) {
+        if (s.empty()) return 0.0f;
+        DWRITE_TEXT_METRICS m{};
+        MakeText(s, size, weight, 100000, 32)->GetMetrics(&m);
+        return m.widthIncludingTrailingWhitespace;
+    };
+    const auto advanceBadges = [&](const std::vector<std::wstring>& badges, float x, float right) {
+        if (!settings::SongTagsShown()) return x;
+        for (const auto& badge : badges) {
+            const float w = MeasureTagWidth(Tr(badge), x, right, 10.0f, m_scale);
+            if (w <= 0) break;
+            x += w + 5;
+        }
+        return x;
+    };
+
+    // Column header cells sit above RowsRect().
+    if (hit.part == Part::HeaderCell && hit.col != SIZE_MAX) {
+        const auto cols = Columns(RowsWidth());
+        if (hit.col >= cols.size()) return false;
+        const auto& col = m_source->Columns()[cols[hit.col].src];
+        if (KindOf(col) == CellKind::Art || col.title.empty()) return false;
+        const std::wstring title = Tr(col.title);
+        const float boxL = cols[hit.col].x + kCellPad;
+        const float boxR = cols[hit.col].x + cols[hit.col].w - kCellPad;
+        const float cx = (pt.x - m_bounds.left) / m_scale + ScrollX();
+        if (cx < boxL || cx >= boxR || measureWidth(title, 12.0f) <= boxR - boxL - 1) return false;
+        *text = title;
+        *rect = RECT{m_bounds.left + static_cast<LONG>(std::floor((boxL - ScrollX()) * m_scale)), m_bounds.top,
+                     m_bounds.left + static_cast<LONG>(std::ceil((boxR - ScrollX()) * m_scale)),
+                     m_bounds.top + HeaderHeightPx()};
+        return true;
+    }
+
     const D2D1_POINT_2F c = ContentPoint(pt);
     const RECT rr = RowsRect();
     const auto toClient = [&](D2D1_RECT_F r) {
@@ -697,13 +733,67 @@ bool ListView::CutTextAt(POINT pt, std::wstring* text, RECT* rect) const {
                     rr.left + static_cast<LONG>(std::ceil((r.right - ScrollX()) * m_scale)),
                     rr.top + static_cast<LONG>(std::ceil((r.bottom - ContentTopDip()) * m_scale))};
     };
-    const auto check = [&](const std::wstring& t, D2D1_RECT_F box) {
+    const auto checkSized = [&](const std::wstring& t, D2D1_RECT_F box, float size,
+                                DWRITE_FONT_WEIGHT weight = DWRITE_FONT_WEIGHT_NORMAL) {
         if (t.empty() || c.x < box.left || c.x >= box.right || c.y < box.top || c.y >= box.bottom) return false;
-        if (TextWidth(t, 100000) <= box.right - box.left - 1) return false;
+        if (measureWidth(t, size, weight) <= box.right - box.left - 1) return false;
         *text = t;
         *rect = toClient(box);
         return true;
     };
+    const auto check = [&](const std::wstring& t, D2D1_RECT_F box) { return checkSized(t, box, 12.0f); };
+
+    // Section / group headers in Grouped Details and Tile-group modes.
+    if (hit.part == Part::GroupHeader && m_mode == Mode::Grouped && m_source->Groups() &&
+        hit.group < m_groupLine.size()) {
+        const auto& groups = *m_source->Groups();
+        if (hit.group >= groups.size()) return false;
+        const auto cols = Columns(RowsWidth());
+        const bool art = AlbumColumn() && !cols.empty();
+        const float albumL = art ? cols[0].x : kGutter;
+        const float titleX = art ? albumL + 8 : kGutter + 2;
+        const float viewRight = ScrollX() + RowsWidth();
+        const float maxW = std::max(40.0f, viewRight - titleX - 20);
+        const size_t gl = m_groupLine[hit.group];
+        const float y = LineTopDip(gl);
+        const float rowH = LineHeightDip(m_lines[gl]);
+        return checkSized(groups[hit.group].header, {titleX, y, titleX + maxW, y + rowH}, 12.0f);
+    }
+    if (m_mode == Mode::Tiles && m_tileGroups && hit.part == Part::Empty && hit.group != SIZE_MAX &&
+        m_source->Groups() && hit.group < m_groupLine.size()) {
+        const auto& groups = *m_source->Groups();
+        if (hit.group >= groups.size()) return false;
+        const auto& g = groups[hit.group];
+        const size_t gl = m_groupLine[hit.group];
+        const float y = LineTopDip(gl);
+        const float lineH = LineHeightDip(m_lines[gl]);
+        const float titleX = kTilePad + 2, baseY = y + lineH - 22;
+        float right = RowsWidth() - 8;
+        if (ShowsMore(hit.group)) {
+            if (g.carousel)
+                right -= kShowAll + 6;
+            else
+                right -= TextWidth(g.more, 200) + 10;
+        }
+        return checkSized(g.header, {titleX, baseY - 1, std::max(titleX + 40.0f, right), baseY + 19}, 14.0f);
+    }
+    if ((hit.part == Part::AlbumColumn || (hit.part == Part::Link && hit.line != kMoreLink)) && AlbumColumn() &&
+        m_source->Groups() && hit.group < m_groupLine.size()) {
+        const auto& groups = *m_source->Groups();
+        if (hit.group >= groups.size()) return false;
+        const auto cols = Columns(RowsWidth());
+        if (cols.empty()) return false;
+        const float albumL = cols[0].x, albumR = cols[0].x + cols[0].w;
+        const float tx = AlbumTextLeft(albumL);
+        const float albumRowH = RowHeightPx() / m_scale;
+        const float top = LineTopDip(m_groupLine[hit.group] + 1);
+        const auto& g = groups[hit.group];
+        for (size_t k = 0; k < g.lines.size(); ++k)
+            if (check(g.lines[k], {tx, top + k * albumRowH, albumR - 4, top + (k + 1) * albumRowH})) return true;
+        return false;
+    }
+
+    if (hit.part != Part::Row || hit.row >= m_source->Count()) return false;
     const size_t line = LineOfRow(hit.row);
     const float y = LineTopDip(line);
     if (m_mode == Mode::Tiles) {
@@ -719,14 +809,18 @@ bool ListView::CutTextAt(POINT pt, std::wstring* text, RECT* rect) const {
         const D2D1_SIZE_F ts = TileSizeOf(style);
         const media::TileInfo info = m_source->Tile(hit.row);
         if (style == media::TileStyle::Song) {
-            const float tx = x + 8 + kSongTileArt + 10, mid = y + ts.height / 2;
-            return check(info.lines[0], {tx, mid - 18, x + ts.width - 6, mid}) ||
-                   check(info.lines[1], {tx, mid, x + ts.width - 6, mid + 18});
+            const float tx = x + 8 + kSongTileArt + 10, mid = y + ts.height / 2, right = x + ts.width - 6;
+            const float tx1 = advanceBadges(info.badges, tx, right);
+            return check(info.lines[0], {tx, mid - 18, right, mid}) ||
+                   check(info.lines[1], {tx1, mid, right, mid + 18});
         }
         if (style == media::TileStyle::Artist) {
-            const float a = kArtistTileArt, ay = y + (ts.height - a) / 2, tx = x + 10 + a + 12;
-            for (size_t k = 0; k < info.lines.size(); ++k)
-                if (check(info.lines[k], {tx, ay + 2 + k * 18, x + ts.width - 6, ay + 2 + (k + 1) * 18})) return true;
+            const float a = kArtistTileArt, ay = y + (ts.height - a) / 2, tx = x + 10 + a + 12,
+                        right = x + ts.width - 6;
+            for (size_t k = 0; k < info.lines.size(); ++k) {
+                const float left = k == 1 ? advanceBadges(info.badges, tx, right) : tx;
+                if (check(info.lines[k], {left, ay + 2 + k * 18, right, ay + 2 + (k + 1) * 18})) return true;
+            }
             return false;
         }
         const float a = kAlbumTileArt, ay = y + 10;
@@ -735,11 +829,32 @@ bool ListView::CutTextAt(POINT pt, std::wstring* text, RECT* rect) const {
                 return true;
         return false;
     }
-    const float rowH = m_mode == Mode::Grouped && line < m_lines.size() ? LineHeightDip(m_lines[line]) : RowHeightPx() / m_scale;
+    const float rowH =
+        m_mode == Mode::Grouped && line < m_lines.size() ? LineHeightDip(m_lines[line]) : RowHeightPx() / m_scale;
     for (const Col& col : Columns(RowsWidth())) {
         if (c.x < col.x || c.x >= col.x + col.w) continue;
-        if (KindOf(m_source->Columns()[col.src]) != CellKind::Text) return false;
-        return check(m_source->Cell(hit.row, col.src), {col.x + kCellPad, y, col.x + col.w - kCellPad, y + rowH});
+        const auto& srcCol = m_source->Columns()[col.src];
+        if (KindOf(srcCol) != CellKind::Text) return false;
+        D2D1_RECT_F box{col.x + kCellPad, y, col.x + col.w - kCellPad, y + rowH};
+        if (!srcCol.rightAlign) box.left = advanceBadges(m_source->CellBadges(hit.row, col.src), box.left, box.right);
+        if (c.x < box.left || c.x >= box.right || c.y < box.top || c.y >= box.bottom) return false;
+        const DWRITE_FONT_WEIGHT weight =
+            m_source->IsPlaying(hit.row) && srcCol.flex ? DWRITE_FONT_WEIGHT_SEMI_BOLD : DWRITE_FONT_WEIGHT_NORMAL;
+        const std::wstring cellText = m_source->Cell(hit.row, col.src);
+        const std::wstring note = srcCol.rightAlign ? std::wstring() : m_source->CellNote(hit.row, col.src);
+        if (note.empty()) return checkSized(cellText, box, 12.0f, weight);
+
+        const float titleW = measureWidth(cellText, 12.0f, weight);
+        const float avail = box.right - box.left;
+        const bool titleCut = !cellText.empty() && titleW > avail - 1;
+        const std::wstring noteShown = L"(" + note + L")";
+        const float noteX = box.left + titleW + 4.0f;
+        const bool noteHidden = noteX + 12.0f >= box.right;
+        const bool noteCut = titleCut || noteHidden || (measureWidth(noteShown, 12.0f) > box.right - noteX - 1);
+        if (!titleCut && !noteCut) return false;
+        *text = cellText.empty() ? noteShown : (cellText + L" " + noteShown);
+        *rect = toClient(box);
+        return true;
     }
     return false;
 }
@@ -789,6 +904,13 @@ void ListView::UpdateMarquee() {
     std::sort(rows.begin(), rows.end());
     rows.erase(std::unique(rows.begin(), rows.end()), rows.end());
     m_source->SetSelection(rows);
+    if (!rows.empty()) {
+        const size_t cur = m_source->Focus();
+        if (cur == SIZE_MAX || !std::binary_search(rows.begin(), rows.end(), cur)) {
+            m_source->SetFocus(rows.front());
+            m_anchor = rows.front();
+        }
+    }
 }
 
 void ListView::OnWheel(int delta, bool horizontal) {
