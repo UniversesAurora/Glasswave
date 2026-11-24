@@ -192,13 +192,14 @@ class StreamProvider final : public stream::Provider {
     AlbumRequest ResolveAlbumRequest(const stream::Id& id) const;
     stream::Id CatalogIdForArtist(const stream::Id& id) const;
     stream::Id CatalogIdForPlaylist(const stream::Id& id) const;
-    void ResolveSongDisplayNames(std::vector<Song>& songs, uint64_t generation, abort_callback& abort);
-    void ResolveAlbumDisplayNames(std::vector<stream::Album>& albums, uint64_t generation,
+    bool ResolveSongDisplayNames(std::vector<Song>& songs, uint64_t generation, abort_callback& abort);
+    bool ResolveAlbumDisplayNames(std::vector<stream::Album>& albums, uint64_t generation,
                                   abort_callback& abort);
-    void ResolveArtistDisplayNames(std::vector<stream::Artist>& artists, uint64_t generation,
+    bool ResolveArtistDisplayNames(std::vector<stream::Artist>& artists, uint64_t generation,
                                    abort_callback& abort);
-    void ResolvePlaylistDisplayNames(std::vector<stream::Playlist>& playlists, uint64_t generation,
+    bool ResolvePlaylistDisplayNames(std::vector<stream::Playlist>& playlists, uint64_t generation,
                                      abort_callback& abort);
+    void WarmLibraryDisplayNamesAsync(uint64_t generation);
     void ApplyArtistPreferenceOverlay(stream::Artist& artist, uint64_t capturedEpoch) const;
     void ApplyArtistPreferenceOverlayLocked(stream::Artist& artist, uint64_t capturedEpoch) const;
     void ApplyCreatedPlaylistMutationsLocked(std::vector<stream::Playlist>& playlists, bool addCreated) const;

@@ -376,6 +376,8 @@ bool EncodedInputBase::decode_get_dynamic_info(file_info& out, double& delta) {
         if (m_reportWhenKnown && SongKnown()) {
             m_reportWhenKnown = false;
             m_report = true;
+        } else if (NeedsDynamicInfoRefresh()) {
+            m_report = true;
         }
         if (m_report) {
             m_report = false;

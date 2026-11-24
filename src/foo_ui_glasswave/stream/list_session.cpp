@@ -1103,12 +1103,27 @@ void Read::Enriched(const std::shared_ptr<EnrichmentWork>& work, ListPage page, 
     --activeEnrichments;
     // A failed/invalid optional response cannot replace or hide usable song rows. Keep
     // their original metadata and finish this attempt rather than holding layouts forever.
-    const bool changed =
+    const bool rowsChanged =
         error.empty() && SameOccurrences(work->page.rows, page.rows) && work->page.rows != page.rows;
-    if (changed) work->page.rows = std::move(page.rows);
+    const bool headerChanged =
+        error.empty() && ((page.playlist && work->page.playlist != page.playlist) ||
+                          (page.album && work->page.album != page.album) ||
+                          (page.artist && work->page.artist != page.artist));
+    const bool changed = rowsChanged || headerChanged;
+    if (rowsChanged) work->page.rows = std::move(page.rows);
+    if (headerChanged) {
+        if (page.playlist) work->page.playlist = std::move(page.playlist);
+        if (page.album) work->page.album = std::move(page.album);
+        if (page.artist) work->page.artist = std::move(page.artist);
+    }
     work->page.enrichmentPending = false;
     auto& target = shadow ? *shadow : state.page;
     if (ReplaceMetadata(target, work->offset, work->page)) {
+        if (headerChanged) {
+            if (work->page.playlist) target.playlist = work->page.playlist;
+            if (work->page.album) target.album = work->page.album;
+            if (work->page.artist) target.artist = work->page.artist;
+        }
         MarkMetadataReady(work->offset, RowCount(work->page));
         target.enrichmentPending = metadataFrontier < RowCount(target);
         if (shadow) {

@@ -42,6 +42,9 @@ struct CatalogTraits {
     // What the provider keeps of a song beside the track, as one tab- and newline-free text for
     // the restart cache; empty when it keeps nothing. Called on the thread that saves.
     std::function<std::wstring(const Id& song)> encodeExtra;
+    // Optional predicate called outside the catalog lock in FlushWanted: returns true when an
+    // already-linked song still needs a provider read (e.g. missing regional display names).
+    std::function<bool(const Id& song)> needsRead;
 };
 
 // A song as a provider hands it over. `cover` is the song's own picture; `retag` says that what

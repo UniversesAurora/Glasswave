@@ -28,7 +28,12 @@ std::optional<cache::Key> KeyOf(const stream::Provider& provider) {
     if (providerKey.empty()) return std::nullopt;
     const std::string scope = cache::AccountScope(providerKey);
     if (scope.empty()) return std::nullopt;
-    return cache::Key{cache::Kind::Data, providerKey, scope, "home", std::to_string(kFormat)};
+    std::string version = std::to_string(kFormat);
+    if (const std::string context = provider.ListCacheContext({}); !context.empty()) {
+        version.push_back(';');
+        version += context;
+    }
+    return cache::Key{cache::Kind::Data, providerKey, scope, "home", std::move(version)};
 }
 
 // ---- writing ----

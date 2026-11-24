@@ -1,9 +1,15 @@
 #include "pch.h"
 #include "applemusic/display_metadata.h"
-#include "core/text.h"
 #include "applemusic/config.h"
+#include "core/file.h"
+#include "core/paths.h"
+#include "core/text.h"
+#include "core/tsv.h"
 
 #include <algorithm>
+#include <chrono>
+#include <cstdlib>
+#include <filesystem>
 #include <iterator>
 #include <limits>
 
@@ -23,7 +29,11 @@ std::optional<DisplayTarget> DisplayTargetFor(AppleMusicDisplayRegion region) {
 
 namespace {
 
-constexpr auto kDisplayMetadataFreshness = std::chrono::minutes(15);
+constexpr int64_t kDisplayMetadataFreshnessSec = 7ll * 24 * 3600;
+constexpr std::string_view kCacheHeader = "# glasswave apple music display v1";
+constexpr size_t kCacheFileLimit = 32u * 1024u * 1024u;
+constexpr size_t kCacheLineLimit = 64'000;
+constexpr char kListSep = '\x1f';
 
 constexpr size_t kMaxSongEntries = 16'000;
 constexpr size_t kMaxAlbumEntries = 8'000;
@@ -31,19 +41,125 @@ constexpr size_t kMaxArtistEntries = 8'000;
 constexpr size_t kMaxPlaylistEntries = 4'000;
 constexpr uint64_t kAnyEpoch = std::numeric_limits<uint64_t>::max();
 
+using core::Utf8;
+using core::Wide;
+
+int64_t NowEpochSec() {
+    return std::chrono::duration_cast<std::chrono::seconds>(
+               std::chrono::system_clock::now().time_since_epoch())
+        .count();
+}
+
 void Part(std::string& key, std::string_view value) {
     key += std::to_string(value.size());
     key.push_back(':');
     key.append(value);
 }
 
-using core::Utf8;
-
 std::wstring UpperAscii(std::wstring_view value) {
     std::wstring out(value);
     for (auto& c : out)
         if (c >= L'a' && c <= L'z') c = static_cast<wchar_t>(c + L'A' - L'a');
     return out;
+}
+
+std::string EscapeField(std::wstring_view text) {
+    const std::string utf8 = Utf8(text);
+    std::string out;
+    out.reserve(utf8.size());
+    for (char c : utf8) {
+        switch (c) {
+        case '\\': out += "\\\\"; break;
+        case '\t': out += "\\t"; break;
+        case '\r': out += "\\r"; break;
+        case '\n': out += "\\n"; break;
+        default: out.push_back(c); break;
+        }
+    }
+    return out;
+}
+
+std::wstring UnescapeField(std::string_view text) {
+    std::string out;
+    out.reserve(text.size());
+    for (size_t i = 0; i < text.size(); ++i) {
+        if (text[i] == '\\' && i + 1 < text.size()) {
+            switch (text[++i]) {
+            case '\\': out.push_back('\\'); break;
+            case 't': out.push_back('\t'); break;
+            case 'r': out.push_back('\r'); break;
+            case 'n': out.push_back('\n'); break;
+            default: out.push_back(text[i]); break;
+            }
+        } else {
+            out.push_back(text[i]);
+        }
+    }
+    return Wide(out);
+}
+
+std::string PackStrings(const std::vector<std::wstring>& items) {
+    std::string out;
+    for (size_t i = 0; i < items.size(); ++i) {
+        if (i) out.push_back(kListSep);
+        out += EscapeField(items[i]);
+    }
+    return out;
+}
+
+std::vector<std::wstring> UnpackStrings(std::string_view text) {
+    std::vector<std::wstring> out;
+    if (text.empty()) return out;
+    for (const auto part : core::tsv::Split(text, kListSep)) {
+        std::wstring value = UnescapeField(part);
+        if (!value.empty()) out.push_back(std::move(value));
+    }
+    return out;
+}
+
+void PackArtists(const std::vector<stream::ArtistRef>& artists, std::string& namesOut, std::string& idsOut) {
+    namesOut.clear();
+    idsOut.clear();
+    for (size_t i = 0; i < artists.size(); ++i) {
+        if (i) {
+            namesOut.push_back(kListSep);
+            idsOut.push_back(kListSep);
+        }
+        namesOut += EscapeField(artists[i].name);
+        idsOut += EscapeField(artists[i].id);
+    }
+}
+
+std::vector<stream::ArtistRef> UnpackArtists(std::string_view namesField, std::string_view idsField) {
+    std::vector<stream::ArtistRef> out;
+    if (namesField.empty()) return out;
+    const auto names = core::tsv::Split(namesField, kListSep);
+    const auto ids = core::tsv::Split(idsField, kListSep);
+    out.reserve(names.size());
+    for (size_t i = 0; i < names.size(); ++i) {
+        std::wstring name = UnescapeField(names[i]);
+        if (name.empty()) continue;
+        std::wstring id = i < ids.size() ? UnescapeField(ids[i]) : std::wstring();
+        out.push_back({std::move(id), std::move(name)});
+    }
+    return out;
+}
+
+int64_t ParseInt64(std::string_view text) {
+    if (text.empty()) return 0;
+    std::string copy(text);
+    return _strtoi64(copy.c_str(), nullptr, 10);
+}
+
+std::optional<AppleMusicDisplayRegion> ParseRegion(std::string_view text) {
+    const int64_t raw = ParseInt64(text);
+    const auto region = static_cast<AppleMusicDisplayRegion>(raw);
+    return DisplayTargetFor(region) ? std::optional<AppleMusicDisplayRegion>(region) : std::nullopt;
+}
+
+std::filesystem::path CacheFile() {
+    const auto dir = core::ProfileDir(L"applemusic");
+    return dir.empty() ? std::filesystem::path() : dir / L"cache" / L"display.tsv";
 }
 
 void ApplyArtists(std::vector<stream::ArtistRef>& target, const std::vector<stream::ArtistRef>& names) {
@@ -56,15 +172,10 @@ void ApplyArtists(std::vector<stream::ArtistRef>& target, const std::vector<stre
     }
 }
 
-bool HasSongDisplayNames(const SongDisplayNames& names) {
-    return !names.title.empty() || !names.album.empty() || !names.albumId.empty() || !names.coverUrl.empty() ||
-           !names.artists.empty() ||
-           !names.composerName.empty() || !names.composerNames.empty() || !names.genreNames.empty();
-}
-
 template <typename Entry> bool IsFresh(const Entry& entry) {
-    const auto now = std::chrono::steady_clock::now();
-    return entry.complete && now >= entry.validatedAt && now - entry.validatedAt <= kDisplayMetadataFreshness;
+    if (!entry.complete || entry.validatedAt <= 0) return false;
+    const int64_t now = NowEpochSec();
+    return now >= entry.validatedAt && (now - entry.validatedAt) <= kDisplayMetadataFreshnessSec;
 }
 
 template <typename Entries> void TrimEntries(Entries& entries, size_t limit) {
@@ -88,12 +199,20 @@ DisplayMetadata& DisplayMetadata::Get() {
 }
 
 void DisplayMetadata::Clear() {
-    std::lock_guard lock(m_mutex);
-    ++m_epoch;
-    m_songs.clear();
-    m_albums.clear();
-    m_artists.clear();
-    m_playlists.clear();
+    {
+        std::lock_guard lock(m_mutex);
+        ++m_epoch;
+        m_songs.clear();
+        m_albums.clear();
+        m_artists.clear();
+        m_playlists.clear();
+        m_saveDirty = false;
+    }
+    std::lock_guard saving(m_saveMutex);
+    if (const auto path = CacheFile(); !path.empty()) {
+        std::error_code ec;
+        std::filesystem::remove(path, ec);
+    }
 }
 
 void DisplayMetadata::BeginTransition() {
@@ -105,19 +224,19 @@ void DisplayMetadata::InvalidateFreshness() {
     std::lock_guard lock(m_mutex);
     for (auto& [key, entry] : m_songs) {
         (void)key;
-        entry.validatedAt = {};
+        entry.validatedAt = 0;
     }
     for (auto& [key, entry] : m_albums) {
         (void)key;
-        entry.validatedAt = {};
+        entry.validatedAt = 0;
     }
     for (auto& [key, entry] : m_artists) {
         (void)key;
-        entry.validatedAt = {};
+        entry.validatedAt = 0;
     }
     for (auto& [key, entry] : m_playlists) {
         (void)key;
-        entry.validatedAt = {};
+        entry.validatedAt = 0;
     }
 }
 
@@ -136,29 +255,227 @@ std::wstring DisplayMetadata::SourceStorefront() const {
     return m_sourceStorefront;
 }
 
-std::string DisplayMetadata::Key(const DisplayTarget& target, std::wstring_view kind,
-                                 std::wstring_view sourceStorefront, const stream::Id& id) const {
-    std::string key = "apple-display-v2;";
+std::string DisplayMetadata::Key(const DisplayTarget& target, std::wstring_view kind, const stream::Id& id) {
+    std::string key = "apple-display-v3;";
     Part(key, std::to_string(static_cast<int>(target.region)));
     Part(key, Utf8(kind));
     Part(key, Utf8(target.storefront));
     Part(key, Utf8(target.locale));
-    Part(key, Utf8(UpperAscii(sourceStorefront)));
     Part(key, Utf8(id));
     return key;
+}
+
+void DisplayMetadata::LoadCache() {
+    m_saveClosed = false;
+    const auto path = CacheFile();
+    if (path.empty()) return;
+    const auto bytes = core::ReadFileLimited(path, kCacheFileLimit);
+    if (!bytes) return;
+    Deserialize(*bytes);
+}
+
+void DisplayMetadata::QueueSave() {
+    if (m_saveClosed) return;
+    m_saveDirty = true;
+#ifdef GLASSWAVE_DISPLAY_METADATA_STANDALONE
+    return;
+#else
+    if (m_savePosted.exchange(true)) return;
+    const auto schedule = [this] {
+        fb2k::callLater(2.0, [this] {
+            m_savePosted = false;
+            if (m_saveClosed) return;
+            fb2k::splitTask([this] {
+                std::lock_guard saving(m_saveMutex);
+                if (!m_saveClosed && m_saveDirty.exchange(false)) SaveLocked();
+            });
+        });
+    };
+    if (core_api::is_main_thread())
+        schedule();
+    else
+        fb2k::inMainThread(schedule);
+#endif
+}
+
+void DisplayMetadata::FlushPendingSave() {
+    std::lock_guard saving(m_saveMutex);
+    m_saveClosed = true;
+    if (m_saveDirty.exchange(false)) SaveLocked();
+}
+
+void DisplayMetadata::SaveLocked() const {
+    const auto path = CacheFile();
+    if (path.empty()) return;
+    const std::string data = Serialize();
+    if (data.empty()) return;
+    try {
+        core::WriteFileAtomic(path, data);
+    } catch (const std::exception&) {
+    }
+}
+
+std::string DisplayMetadata::Serialize() const {
+    std::vector<SongEntry> songs;
+    std::vector<AlbumEntry> albums;
+    std::vector<ArtistEntry> artists;
+    std::vector<PlaylistEntry> playlists;
+    {
+        std::lock_guard lock(m_mutex);
+        songs.reserve(m_songs.size());
+        for (const auto& [k, v] : m_songs) songs.push_back(v);
+        albums.reserve(m_albums.size());
+        for (const auto& [k, v] : m_albums) albums.push_back(v);
+        artists.reserve(m_artists.size());
+        for (const auto& [k, v] : m_artists) artists.push_back(v);
+        playlists.reserve(m_playlists.size());
+        for (const auto& [k, v] : m_playlists) playlists.push_back(v);
+    }
+    if (songs.empty() && albums.empty() && artists.empty() && playlists.empty()) return {};
+
+    std::string out(kCacheHeader);
+    out.push_back('\n');
+    std::string artistNames, artistIds;
+
+    for (const auto& e : songs) {
+        if (e.id.empty() || !DisplayTargetFor(e.region)) continue;
+        PackArtists(e.names.artists, artistNames, artistIds);
+        out += "S\t" + std::to_string(static_cast<int>(e.region)) + '\t' + EscapeField(e.id) + '\t' +
+               (e.complete ? "1" : "0") + '\t' + std::to_string(e.validatedAt) + '\t' +
+               EscapeField(e.names.title) + '\t' + EscapeField(e.names.album) + '\t' +
+               EscapeField(e.names.albumId) + '\t' + EscapeField(e.names.coverUrl) + '\t' + artistNames +
+               '\t' + artistIds + '\t' + (e.names.artistsAuthoritative ? "1" : "0") + '\t' +
+               EscapeField(e.names.composerName) + '\t' + PackStrings(e.names.composerNames) + '\t' +
+               PackStrings(e.names.genreNames) + '\n';
+    }
+    for (const auto& e : albums) {
+        if (e.id.empty() || !DisplayTargetFor(e.region)) continue;
+        PackArtists(e.names.artists, artistNames, artistIds);
+        out += "A\t" + std::to_string(static_cast<int>(e.region)) + '\t' + EscapeField(e.id) + '\t' +
+               (e.complete ? "1" : "0") + '\t' + std::to_string(e.validatedAt) + '\t' +
+               EscapeField(e.names.name) + '\t' + EscapeField(e.names.description) + '\t' +
+               EscapeField(e.names.coverUrl) + '\t' + artistNames + '\t' + artistIds + '\t' +
+               (e.names.artistsAuthoritative ? "1" : "0") + '\n';
+    }
+    for (const auto& e : artists) {
+        if (e.id.empty() || !DisplayTargetFor(e.region)) continue;
+        out += "R\t" + std::to_string(static_cast<int>(e.region)) + '\t' + EscapeField(e.id) + '\t' +
+               (e.complete ? "1" : "0") + '\t' + std::to_string(e.validatedAt) + '\t' +
+               EscapeField(e.names.name) + '\t' + EscapeField(e.names.bio) + '\t' +
+               EscapeField(e.names.avatarUrl) + '\n';
+    }
+    for (const auto& e : playlists) {
+        if (e.id.empty() || !DisplayTargetFor(e.region)) continue;
+        out += "P\t" + std::to_string(static_cast<int>(e.region)) + '\t' + EscapeField(e.id) + '\t' +
+               (e.complete ? "1" : "0") + '\t' + std::to_string(e.validatedAt) + '\t' +
+               EscapeField(e.names.name) + '\t' + EscapeField(e.names.description) + '\t' +
+               EscapeField(e.names.coverUrl) + '\n';
+    }
+    return out;
+}
+
+size_t DisplayMetadata::Deserialize(std::string_view bytes) {
+    size_t lines = 0;
+    size_t loaded = 0;
+    bool headerSeen = false;
+    std::lock_guard lock(m_mutex);
+    for (const auto raw : core::tsv::Split(bytes, '\n')) {
+        std::string_view line = raw;
+        if (!line.empty() && line.back() == '\r') line.remove_suffix(1);
+        if (++lines > kCacheLineLimit) break;
+        if (!headerSeen) {
+            if (line.empty()) continue;
+            if (line != kCacheHeader) return 0;
+            headerSeen = true;
+            continue;
+        }
+        if (line.empty() || line[0] == '#') continue;
+        const auto f = core::tsv::Split(line, '\t');
+        if (f.size() < 5) continue;
+        const auto region = ParseRegion(f[1]);
+        if (!region) continue;
+        const auto target = DisplayTargetFor(*region);
+        if (!target) continue;
+        const std::wstring id = UnescapeField(f[2]);
+        if (id.empty()) continue;
+        const bool complete = f[3] == "1";
+        const int64_t validatedAt = ParseInt64(f[4]);
+
+        if (f[0] == "S" && f.size() == 15) {
+            auto& entry = m_songs[Key(*target, L"song", id)];
+            if (entry.complete && !complete) continue;
+            entry.region = *region;
+            entry.id = id;
+            entry.complete = complete;
+            entry.validatedAt = validatedAt;
+            entry.used = ++m_clock;
+            entry.names.title = UnescapeField(f[5]);
+            entry.names.album = UnescapeField(f[6]);
+            entry.names.albumId = UnescapeField(f[7]);
+            entry.names.coverUrl = UnescapeField(f[8]);
+            entry.names.artists = UnpackArtists(f[9], f[10]);
+            entry.names.artistsAuthoritative = f[11] == "1";
+            entry.names.composerName = UnescapeField(f[12]);
+            entry.names.composerNames = UnpackStrings(f[13]);
+            entry.names.genreNames = UnpackStrings(f[14]);
+            ++loaded;
+        } else if (f[0] == "A" && f.size() == 11) {
+            auto& entry = m_albums[Key(*target, L"album", id)];
+            if (entry.complete && !complete) continue;
+            entry.region = *region;
+            entry.id = id;
+            entry.complete = complete;
+            entry.validatedAt = validatedAt;
+            entry.used = ++m_clock;
+            entry.names.name = UnescapeField(f[5]);
+            entry.names.description = UnescapeField(f[6]);
+            entry.names.coverUrl = UnescapeField(f[7]);
+            entry.names.artists = UnpackArtists(f[8], f[9]);
+            entry.names.artistsAuthoritative = f[10] == "1";
+            ++loaded;
+        } else if (f[0] == "R" && f.size() == 8) {
+            auto& entry = m_artists[Key(*target, L"artist", id)];
+            if (entry.complete && !complete) continue;
+            entry.region = *region;
+            entry.id = id;
+            entry.complete = complete;
+            entry.validatedAt = validatedAt;
+            entry.used = ++m_clock;
+            entry.names.name = UnescapeField(f[5]);
+            entry.names.bio = UnescapeField(f[6]);
+            entry.names.avatarUrl = UnescapeField(f[7]);
+            ++loaded;
+        } else if (f[0] == "P" && f.size() == 8) {
+            auto& entry = m_playlists[Key(*target, L"playlist", id)];
+            if (entry.complete && !complete) continue;
+            entry.region = *region;
+            entry.id = id;
+            entry.complete = complete;
+            entry.validatedAt = validatedAt;
+            entry.used = ++m_clock;
+            entry.names.name = UnescapeField(f[5]);
+            entry.names.description = UnescapeField(f[6]);
+            entry.names.coverUrl = UnescapeField(f[7]);
+            ++loaded;
+        }
+    }
+    TrimEntries(m_songs, kMaxSongEntries);
+    TrimEntries(m_albums, kMaxAlbumEntries);
+    TrimEntries(m_artists, kMaxArtistEntries);
+    TrimEntries(m_playlists, kMaxPlaylistEntries);
+    return loaded;
 }
 
 bool DisplayMetadata::HasSong(std::wstring_view sourceStorefront, const stream::Id& id) const {
     return HasSong(GetAppleMusicDisplayRegion(), sourceStorefront, id);
 }
 
-bool DisplayMetadata::HasSong(AppleMusicDisplayRegion region, std::wstring_view sourceStorefront,
-                              const stream::Id& id) const {
+bool DisplayMetadata::HasSong(AppleMusicDisplayRegion region, std::wstring_view, const stream::Id& id) const {
     if (region != GetAppleMusicDisplayRegion()) return false;
     const auto target = DisplayTargetFor(region);
     if (!target) return false;
     std::lock_guard lock(m_mutex);
-    const auto found = m_songs.find(Key(*target, L"song", sourceStorefront, id));
+    const auto found = m_songs.find(Key(*target, L"song", id));
     if (found == m_songs.end()) return false;
     found->second.used = ++m_clock;
     return true;
@@ -168,13 +485,13 @@ bool DisplayMetadata::HasAlbum(std::wstring_view sourceStorefront, const stream:
     return HasAlbum(GetAppleMusicDisplayRegion(), sourceStorefront, id);
 }
 
-bool DisplayMetadata::HasAlbum(AppleMusicDisplayRegion region, std::wstring_view sourceStorefront,
+bool DisplayMetadata::HasAlbum(AppleMusicDisplayRegion region, std::wstring_view,
                                const stream::Id& id) const {
     if (region != GetAppleMusicDisplayRegion()) return false;
     const auto target = DisplayTargetFor(region);
     if (!target) return false;
     std::lock_guard lock(m_mutex);
-    const auto found = m_albums.find(Key(*target, L"album", sourceStorefront, id));
+    const auto found = m_albums.find(Key(*target, L"album", id));
     if (found == m_albums.end()) return false;
     found->second.used = ++m_clock;
     return true;
@@ -184,13 +501,13 @@ bool DisplayMetadata::HasArtist(std::wstring_view sourceStorefront, const stream
     return HasArtist(GetAppleMusicDisplayRegion(), sourceStorefront, id);
 }
 
-bool DisplayMetadata::HasArtist(AppleMusicDisplayRegion region, std::wstring_view sourceStorefront,
+bool DisplayMetadata::HasArtist(AppleMusicDisplayRegion region, std::wstring_view,
                                 const stream::Id& id) const {
     if (region != GetAppleMusicDisplayRegion()) return false;
     const auto target = DisplayTargetFor(region);
     if (!target) return false;
     std::lock_guard lock(m_mutex);
-    const auto found = m_artists.find(Key(*target, L"artist", sourceStorefront, id));
+    const auto found = m_artists.find(Key(*target, L"artist", id));
     if (found == m_artists.end()) return false;
     found->second.used = ++m_clock;
     return true;
@@ -200,228 +517,335 @@ bool DisplayMetadata::HasPlaylist(std::wstring_view sourceStorefront, const stre
     return HasPlaylist(GetAppleMusicDisplayRegion(), sourceStorefront, id);
 }
 
-bool DisplayMetadata::HasPlaylist(AppleMusicDisplayRegion region, std::wstring_view sourceStorefront,
+bool DisplayMetadata::HasPlaylist(AppleMusicDisplayRegion region, std::wstring_view,
                                   const stream::Id& id) const {
     if (region != GetAppleMusicDisplayRegion()) return false;
     const auto target = DisplayTargetFor(region);
     if (!target) return false;
     std::lock_guard lock(m_mutex);
-    const auto found = m_playlists.find(Key(*target, L"playlist", sourceStorefront, id));
+    const auto found = m_playlists.find(Key(*target, L"playlist", id));
     if (found == m_playlists.end()) return false;
     found->second.used = ++m_clock;
     return true;
 }
 
-bool DisplayMetadata::IsSongComplete(AppleMusicDisplayRegion region, std::wstring_view sourceStorefront,
+bool DisplayMetadata::IsSongComplete(AppleMusicDisplayRegion region, std::wstring_view,
                                      const stream::Id& id) const {
     if (region != GetAppleMusicDisplayRegion()) return false;
     const auto target = DisplayTargetFor(region);
     if (!target) return false;
     std::lock_guard lock(m_mutex);
-    const auto found = m_songs.find(Key(*target, L"song", sourceStorefront, id));
+    const auto found = m_songs.find(Key(*target, L"song", id));
     if (found == m_songs.end()) return false;
     found->second.used = ++m_clock;
     return IsFresh(found->second);
 }
 
-bool DisplayMetadata::IsAlbumComplete(AppleMusicDisplayRegion region, std::wstring_view sourceStorefront,
+bool DisplayMetadata::IsAlbumComplete(AppleMusicDisplayRegion region, std::wstring_view,
                                       const stream::Id& id) const {
     if (region != GetAppleMusicDisplayRegion()) return false;
     const auto target = DisplayTargetFor(region);
     if (!target) return false;
     std::lock_guard lock(m_mutex);
-    const auto found = m_albums.find(Key(*target, L"album", sourceStorefront, id));
+    const auto found = m_albums.find(Key(*target, L"album", id));
     if (found == m_albums.end()) return false;
     found->second.used = ++m_clock;
     return IsFresh(found->second);
 }
 
-bool DisplayMetadata::IsArtistComplete(AppleMusicDisplayRegion region, std::wstring_view sourceStorefront,
+bool DisplayMetadata::IsArtistComplete(AppleMusicDisplayRegion region, std::wstring_view,
                                        const stream::Id& id) const {
     if (region != GetAppleMusicDisplayRegion()) return false;
     const auto target = DisplayTargetFor(region);
     if (!target) return false;
     std::lock_guard lock(m_mutex);
-    const auto found = m_artists.find(Key(*target, L"artist", sourceStorefront, id));
+    const auto found = m_artists.find(Key(*target, L"artist", id));
     if (found == m_artists.end()) return false;
     found->second.used = ++m_clock;
     return IsFresh(found->second);
 }
 
-bool DisplayMetadata::IsPlaylistComplete(AppleMusicDisplayRegion region, std::wstring_view sourceStorefront,
+bool DisplayMetadata::IsPlaylistComplete(AppleMusicDisplayRegion region, std::wstring_view,
                                          const stream::Id& id) const {
     if (region != GetAppleMusicDisplayRegion()) return false;
     const auto target = DisplayTargetFor(region);
     if (!target) return false;
     std::lock_guard lock(m_mutex);
-    const auto found = m_playlists.find(Key(*target, L"playlist", sourceStorefront, id));
+    const auto found = m_playlists.find(Key(*target, L"playlist", id));
     if (found == m_playlists.end()) return false;
     found->second.used = ++m_clock;
     return IsFresh(found->second);
 }
 
-void DisplayMetadata::PutSong(std::wstring_view sourceStorefront, const stream::Id& id,
+bool DisplayMetadata::PutSong(std::wstring_view sourceStorefront, const stream::Id& id,
                               SongDisplayNames names) {
-    PutSongFor(GetAppleMusicDisplayRegion(), sourceStorefront, id, std::move(names), true);
+    return PutSongFor(GetAppleMusicDisplayRegion(), sourceStorefront, id, std::move(names), true);
 }
 
-void DisplayMetadata::PutSongFor(AppleMusicDisplayRegion region, std::wstring_view sourceStorefront,
+bool DisplayMetadata::PutSongFor(AppleMusicDisplayRegion region, std::wstring_view sourceStorefront,
                                  const stream::Id& id, SongDisplayNames names) {
-    PutSongFor(region, sourceStorefront, id, std::move(names), false);
+    return PutSongFor(region, sourceStorefront, id, std::move(names), false);
 }
 
-void DisplayMetadata::PutSongFor(AppleMusicDisplayRegion region, std::wstring_view sourceStorefront,
+bool DisplayMetadata::PutSongFor(AppleMusicDisplayRegion region, std::wstring_view sourceStorefront,
                                  const stream::Id& id, SongDisplayNames names, bool complete) {
-    PutSongFor(region, sourceStorefront, id, std::move(names), complete, kAnyEpoch);
+    return PutSongFor(region, sourceStorefront, id, std::move(names), complete, kAnyEpoch);
 }
 
-void DisplayMetadata::PutSongFor(AppleMusicDisplayRegion region, std::wstring_view sourceStorefront,
-                                 const stream::Id& id, SongDisplayNames names, bool complete,
-                                 uint64_t expectedEpoch) {
+bool DisplayMetadata::PutSongFor(AppleMusicDisplayRegion region, std::wstring_view, const stream::Id& id,
+                                 SongDisplayNames names, bool complete, uint64_t expectedEpoch) {
     if (id.empty() || region == AppleMusicDisplayRegion::Account || region != GetAppleMusicDisplayRegion())
-        return;
+        return false;
     const auto target = DisplayTargetFor(region);
-    if (!target) return;
-    std::lock_guard lock(m_mutex);
-    if (expectedEpoch != kAnyEpoch && m_epoch != expectedEpoch) return;
-    auto& entry = m_songs[Key(*target, L"song", sourceStorefront, id)];
-    if (!complete && entry.complete) {
+    if (!target) return false;
+    bool changed = false;
+    bool persist = false;
+    {
+        std::lock_guard lock(m_mutex);
+        if (expectedEpoch != kAnyEpoch && m_epoch != expectedEpoch) return false;
+        auto& entry = m_songs[Key(*target, L"song", id)];
+        if (!complete && entry.complete) {
+            entry.used = ++m_clock;
+            return false;
+        }
+        const bool wasComplete = entry.complete;
+        entry.region = region;
+        entry.id = id;
+        if (!names.title.empty() && entry.names.title != names.title) {
+            entry.names.title = std::move(names.title);
+            changed = true;
+        }
+        if (!names.album.empty() && entry.names.album != names.album) {
+            entry.names.album = std::move(names.album);
+            changed = true;
+        }
+        if (!names.albumId.empty() && entry.names.albumId != names.albumId) {
+            entry.names.albumId = std::move(names.albumId);
+            changed = true;
+        }
+        if (!names.coverUrl.empty() && entry.names.coverUrl != names.coverUrl) {
+            entry.names.coverUrl = std::move(names.coverUrl);
+            changed = true;
+        }
+        if (!names.artists.empty() &&
+            (entry.names.artists != names.artists ||
+             entry.names.artistsAuthoritative != names.artistsAuthoritative)) {
+            entry.names.artists = std::move(names.artists);
+            entry.names.artistsAuthoritative = names.artistsAuthoritative;
+            changed = true;
+        }
+        if (!names.composerName.empty() && entry.names.composerName != names.composerName) {
+            entry.names.composerName = std::move(names.composerName);
+            changed = true;
+        }
+        if (!names.composerNames.empty() && entry.names.composerNames != names.composerNames) {
+            entry.names.composerNames = std::move(names.composerNames);
+            changed = true;
+        }
+        if (!names.genreNames.empty() && entry.names.genreNames != names.genreNames) {
+            entry.names.genreNames = std::move(names.genreNames);
+            changed = true;
+        }
+        entry.complete = entry.complete || complete;
+        if (complete) entry.validatedAt = NowEpochSec();
         entry.used = ++m_clock;
-        return;
+        persist = changed || (complete && !wasComplete);
+        TrimEntries(m_songs, kMaxSongEntries);
     }
-    if (!names.title.empty()) entry.names.title = std::move(names.title);
-    if (!names.album.empty()) entry.names.album = std::move(names.album);
-    if (!names.albumId.empty()) entry.names.albumId = std::move(names.albumId);
-    if (!names.coverUrl.empty()) entry.names.coverUrl = std::move(names.coverUrl);
-    if (!names.artists.empty()) {
-        entry.names.artists = std::move(names.artists);
-        entry.names.artistsAuthoritative = names.artistsAuthoritative;
-    }
-    if (!names.composerName.empty()) entry.names.composerName = std::move(names.composerName);
-    if (!names.composerNames.empty()) entry.names.composerNames = std::move(names.composerNames);
-    if (!names.genreNames.empty()) entry.names.genreNames = std::move(names.genreNames);
-    entry.complete = entry.complete || complete;
-    if (complete) entry.validatedAt = std::chrono::steady_clock::now();
-    entry.used = ++m_clock;
-    TrimEntries(m_songs, kMaxSongEntries);
+    if (persist) QueueSave();
+    return changed;
 }
 
-void DisplayMetadata::PutAlbum(std::wstring_view sourceStorefront, const stream::Id& id,
+bool DisplayMetadata::PutAlbum(std::wstring_view sourceStorefront, const stream::Id& id,
                                AlbumDisplayNames names) {
-    PutAlbumFor(GetAppleMusicDisplayRegion(), sourceStorefront, id, std::move(names), true);
+    return PutAlbumFor(GetAppleMusicDisplayRegion(), sourceStorefront, id, std::move(names), true);
 }
 
-void DisplayMetadata::PutAlbumFor(AppleMusicDisplayRegion region, std::wstring_view sourceStorefront,
+bool DisplayMetadata::PutAlbumFor(AppleMusicDisplayRegion region, std::wstring_view sourceStorefront,
                                   const stream::Id& id, AlbumDisplayNames names) {
-    PutAlbumFor(region, sourceStorefront, id, std::move(names), false);
+    return PutAlbumFor(region, sourceStorefront, id, std::move(names), false);
 }
 
-void DisplayMetadata::PutAlbumFor(AppleMusicDisplayRegion region, std::wstring_view sourceStorefront,
+bool DisplayMetadata::PutAlbumFor(AppleMusicDisplayRegion region, std::wstring_view sourceStorefront,
                                   const stream::Id& id, AlbumDisplayNames names, bool complete) {
-    PutAlbumFor(region, sourceStorefront, id, std::move(names), complete, kAnyEpoch);
+    return PutAlbumFor(region, sourceStorefront, id, std::move(names), complete, kAnyEpoch);
 }
 
-void DisplayMetadata::PutAlbumFor(AppleMusicDisplayRegion region, std::wstring_view sourceStorefront,
-                                  const stream::Id& id, AlbumDisplayNames names, bool complete,
-                                  uint64_t expectedEpoch) {
+bool DisplayMetadata::PutAlbumFor(AppleMusicDisplayRegion region, std::wstring_view, const stream::Id& id,
+                                  AlbumDisplayNames names, bool complete, uint64_t expectedEpoch) {
     if (id.empty() || region == AppleMusicDisplayRegion::Account || region != GetAppleMusicDisplayRegion())
-        return;
+        return false;
     const auto target = DisplayTargetFor(region);
-    if (!target) return;
-    std::lock_guard lock(m_mutex);
-    if (expectedEpoch != kAnyEpoch && m_epoch != expectedEpoch) return;
-    auto& entry = m_albums[Key(*target, L"album", sourceStorefront, id)];
-    if (!complete && entry.complete) {
+    if (!target) return false;
+    bool changed = false;
+    bool persist = false;
+    {
+        std::lock_guard lock(m_mutex);
+        if (expectedEpoch != kAnyEpoch && m_epoch != expectedEpoch) return false;
+        auto& entry = m_albums[Key(*target, L"album", id)];
+        if (!complete && entry.complete) {
+            entry.used = ++m_clock;
+            return false;
+        }
+        const bool wasComplete = entry.complete;
+        entry.region = region;
+        entry.id = id;
+        if (!names.name.empty() && entry.names.name != names.name) {
+            entry.names.name = std::move(names.name);
+            changed = true;
+        }
+        if (!names.description.empty() && entry.names.description != names.description) {
+            entry.names.description = std::move(names.description);
+            changed = true;
+        }
+        if (!names.coverUrl.empty() && entry.names.coverUrl != names.coverUrl) {
+            entry.names.coverUrl = std::move(names.coverUrl);
+            changed = true;
+        }
+        if (!names.artists.empty() &&
+            (entry.names.artists != names.artists ||
+             entry.names.artistsAuthoritative != names.artistsAuthoritative)) {
+            entry.names.artists = std::move(names.artists);
+            entry.names.artistsAuthoritative = names.artistsAuthoritative;
+            changed = true;
+        }
+        entry.complete = entry.complete || complete;
+        if (complete) entry.validatedAt = NowEpochSec();
         entry.used = ++m_clock;
-        return;
+        persist = changed || (complete && !wasComplete);
+        TrimEntries(m_albums, kMaxAlbumEntries);
     }
-    if (!names.name.empty()) entry.names.name = std::move(names.name);
-    if (!names.description.empty()) entry.names.description = std::move(names.description);
-    if (!names.coverUrl.empty()) entry.names.coverUrl = std::move(names.coverUrl);
-    if (!names.artists.empty()) {
-        entry.names.artists = std::move(names.artists);
-        entry.names.artistsAuthoritative = names.artistsAuthoritative;
-    }
-    entry.complete = entry.complete || complete;
-    if (complete) entry.validatedAt = std::chrono::steady_clock::now();
-    entry.used = ++m_clock;
-    TrimEntries(m_albums, kMaxAlbumEntries);
+    if (persist) QueueSave();
+    return changed;
 }
 
-void DisplayMetadata::PutArtist(std::wstring_view sourceStorefront, const stream::Id& id,
+bool DisplayMetadata::PutArtist(std::wstring_view sourceStorefront, const stream::Id& id,
                                 ArtistDisplayNames names) {
-    PutArtistFor(GetAppleMusicDisplayRegion(), sourceStorefront, id, std::move(names), true);
+    return PutArtistFor(GetAppleMusicDisplayRegion(), sourceStorefront, id, std::move(names), true);
 }
 
-void DisplayMetadata::PutArtistFor(AppleMusicDisplayRegion region, std::wstring_view sourceStorefront,
+bool DisplayMetadata::PutArtistFor(AppleMusicDisplayRegion region, std::wstring_view sourceStorefront,
                                    const stream::Id& id, ArtistDisplayNames names) {
-    PutArtistFor(region, sourceStorefront, id, std::move(names), false);
+    return PutArtistFor(region, sourceStorefront, id, std::move(names), false);
 }
 
-void DisplayMetadata::PutArtistFor(AppleMusicDisplayRegion region, std::wstring_view sourceStorefront,
+bool DisplayMetadata::PutArtistFor(AppleMusicDisplayRegion region, std::wstring_view sourceStorefront,
                                    const stream::Id& id, ArtistDisplayNames names, bool complete) {
-    PutArtistFor(region, sourceStorefront, id, std::move(names), complete, kAnyEpoch);
+    return PutArtistFor(region, sourceStorefront, id, std::move(names), complete, kAnyEpoch);
 }
 
-void DisplayMetadata::PutArtistFor(AppleMusicDisplayRegion region, std::wstring_view sourceStorefront,
-                                   const stream::Id& id, ArtistDisplayNames names, bool complete,
-                                   uint64_t expectedEpoch) {
+bool DisplayMetadata::PutArtistFor(AppleMusicDisplayRegion region, std::wstring_view, const stream::Id& id,
+                                   ArtistDisplayNames names, bool complete, uint64_t expectedEpoch) {
     if (id.empty() || region == AppleMusicDisplayRegion::Account || region != GetAppleMusicDisplayRegion())
-        return;
+        return false;
     const auto target = DisplayTargetFor(region);
-    if (!target) return;
-    std::lock_guard lock(m_mutex);
-    if (expectedEpoch != kAnyEpoch && m_epoch != expectedEpoch) return;
-    auto& entry = m_artists[Key(*target, L"artist", sourceStorefront, id)];
-    if (!complete && entry.complete) {
+    if (!target) return false;
+    bool changed = false;
+    bool persist = false;
+    {
+        std::lock_guard lock(m_mutex);
+        if (expectedEpoch != kAnyEpoch && m_epoch != expectedEpoch) return false;
+        auto& entry = m_artists[Key(*target, L"artist", id)];
+        if (!complete && entry.complete) {
+            entry.used = ++m_clock;
+            return false;
+        }
+        const bool wasComplete = entry.complete;
+        entry.region = region;
+        entry.id = id;
+        if (!names.name.empty() && entry.names.name != names.name) {
+            entry.names.name = std::move(names.name);
+            changed = true;
+        }
+        if (!names.bio.empty() && entry.names.bio != names.bio) {
+            entry.names.bio = std::move(names.bio);
+            changed = true;
+        }
+        if (!names.avatarUrl.empty() && entry.names.avatarUrl != names.avatarUrl) {
+            entry.names.avatarUrl = std::move(names.avatarUrl);
+            changed = true;
+        }
+        entry.complete = entry.complete || complete;
+        if (complete) entry.validatedAt = NowEpochSec();
         entry.used = ++m_clock;
-        return;
+        persist = changed || (complete && !wasComplete);
+        TrimEntries(m_artists, kMaxArtistEntries);
     }
-    if (!names.name.empty()) entry.names.name = std::move(names.name);
-    if (!names.bio.empty()) entry.names.bio = std::move(names.bio);
-    if (!names.avatarUrl.empty()) entry.names.avatarUrl = std::move(names.avatarUrl);
-    entry.complete = entry.complete || complete;
-    if (complete) entry.validatedAt = std::chrono::steady_clock::now();
-    entry.used = ++m_clock;
-    TrimEntries(m_artists, kMaxArtistEntries);
+    if (persist) QueueSave();
+    return changed;
 }
 
-void DisplayMetadata::PutPlaylist(std::wstring_view sourceStorefront, const stream::Id& id,
+bool DisplayMetadata::PutPlaylist(std::wstring_view sourceStorefront, const stream::Id& id,
                                   PlaylistDisplayNames names) {
-    PutPlaylistFor(GetAppleMusicDisplayRegion(), sourceStorefront, id, std::move(names), true);
+    return PutPlaylistFor(GetAppleMusicDisplayRegion(), sourceStorefront, id, std::move(names), true);
 }
 
-void DisplayMetadata::PutPlaylistFor(AppleMusicDisplayRegion region, std::wstring_view sourceStorefront,
+bool DisplayMetadata::PutPlaylistFor(AppleMusicDisplayRegion region, std::wstring_view sourceStorefront,
                                      const stream::Id& id, PlaylistDisplayNames names) {
-    PutPlaylistFor(region, sourceStorefront, id, std::move(names), false);
+    return PutPlaylistFor(region, sourceStorefront, id, std::move(names), false);
 }
 
-void DisplayMetadata::PutPlaylistFor(AppleMusicDisplayRegion region, std::wstring_view sourceStorefront,
+bool DisplayMetadata::PutPlaylistFor(AppleMusicDisplayRegion region, std::wstring_view sourceStorefront,
                                      const stream::Id& id, PlaylistDisplayNames names, bool complete) {
-    PutPlaylistFor(region, sourceStorefront, id, std::move(names), complete, kAnyEpoch);
+    return PutPlaylistFor(region, sourceStorefront, id, std::move(names), complete, kAnyEpoch);
 }
 
-void DisplayMetadata::PutPlaylistFor(AppleMusicDisplayRegion region, std::wstring_view sourceStorefront,
-                                     const stream::Id& id, PlaylistDisplayNames names, bool complete,
-                                     uint64_t expectedEpoch) {
+bool DisplayMetadata::PutPlaylistFor(AppleMusicDisplayRegion region, std::wstring_view, const stream::Id& id,
+                                     PlaylistDisplayNames names, bool complete, uint64_t expectedEpoch) {
     if (id.empty() || region == AppleMusicDisplayRegion::Account || region != GetAppleMusicDisplayRegion())
-        return;
+        return false;
     const auto target = DisplayTargetFor(region);
-    if (!target) return;
-    std::lock_guard lock(m_mutex);
-    if (expectedEpoch != kAnyEpoch && m_epoch != expectedEpoch) return;
-    auto& entry = m_playlists[Key(*target, L"playlist", sourceStorefront, id)];
-    if (!complete && entry.complete) {
+    if (!target) return false;
+    bool changed = false;
+    bool persist = false;
+    {
+        std::lock_guard lock(m_mutex);
+        if (expectedEpoch != kAnyEpoch && m_epoch != expectedEpoch) return false;
+        auto& entry = m_playlists[Key(*target, L"playlist", id)];
+        if (!complete && entry.complete) {
+            entry.used = ++m_clock;
+            return false;
+        }
+        const bool wasComplete = entry.complete;
+        entry.region = region;
+        entry.id = id;
+        if (!names.name.empty() && entry.names.name != names.name) {
+            entry.names.name = std::move(names.name);
+            changed = true;
+        }
+        if (!names.description.empty() && entry.names.description != names.description) {
+            entry.names.description = std::move(names.description);
+            changed = true;
+        }
+        if (!names.coverUrl.empty() && entry.names.coverUrl != names.coverUrl) {
+            entry.names.coverUrl = std::move(names.coverUrl);
+            changed = true;
+        }
+        entry.complete = entry.complete || complete;
+        if (complete) entry.validatedAt = NowEpochSec();
         entry.used = ++m_clock;
-        return;
+        persist = changed || (complete && !wasComplete);
+        TrimEntries(m_playlists, kMaxPlaylistEntries);
     }
-    if (!names.name.empty()) entry.names.name = std::move(names.name);
-    if (!names.description.empty()) entry.names.description = std::move(names.description);
-    if (!names.coverUrl.empty()) entry.names.coverUrl = std::move(names.coverUrl);
-    entry.complete = entry.complete || complete;
-    if (complete) entry.validatedAt = std::chrono::steady_clock::now();
-    entry.used = ++m_clock;
-    TrimEntries(m_playlists, kMaxPlaylistEntries);
+    if (persist) QueueSave();
+    return changed;
+}
+
+void DisplayMetadata::ApplyArtistFallback(std::vector<stream::ArtistRef>& artists,
+                                          const std::vector<stream::ArtistRef>& explicitNames,
+                                          std::wstring_view sourceStorefront) const {
+    for (auto& artist : artists) {
+        const bool namedExplicitly = std::any_of(
+            explicitNames.begin(), explicitNames.end(), [&artist](const stream::ArtistRef& candidate) {
+                return !artist.id.empty() && candidate.id == artist.id && !candidate.name.empty();
+            });
+        if (namedExplicitly) continue;
+        stream::Artist display;
+        display.id = artist.id;
+        display.name = artist.name;
+        Apply(display, sourceStorefront);
+        if (!display.name.empty()) artist.name = display.name;
+    }
 }
 
 void DisplayMetadata::Apply(Song& song, std::wstring_view sourceStorefront) const {
@@ -431,34 +855,44 @@ void DisplayMetadata::Apply(Song& song, std::wstring_view sourceStorefront) cons
     bool foundSong = false;
     {
         std::lock_guard lock(m_mutex);
-        const auto found = m_songs.find(Key(*target, L"song", sourceStorefront, song.track.id));
+        const auto found = m_songs.find(Key(*target, L"song", song.track.id));
         if (found != m_songs.end()) {
             found->second.used = ++m_clock;
             names = found->second.names;
             foundSong = true;
         }
     }
-    if (!foundSong || !HasSongDisplayNames(names)) {
-        Apply(song.track, sourceStorefront);
-        return;
+    if (foundSong) {
+        if (!song.customTitle && !names.title.empty()) song.track.title = names.title;
+        if (!song.customAlbum) {
+            if (!names.album.empty()) song.track.album = names.album;
+            if (!names.albumId.empty()) song.track.albumId = names.albumId;
+        }
+        if (!names.coverUrl.empty()) song.coverUrl = names.coverUrl;
+        if (names.artistsAuthoritative)
+            song.track.artists = names.artists;
+        else
+            ApplyArtists(song.track.artists, names.artists);
+        if (!names.composerNames.empty()) song.composerNames = names.composerNames;
+        if (!names.composerName.empty())
+            song.composerName = names.composerName;
+        else if (!names.composerNames.empty())
+            song.composerName.clear();
+        if (!names.genreNames.empty()) song.genreNames = names.genreNames;
     }
-    if (!song.customTitle && !names.title.empty()) song.track.title = names.title;
-    if (!song.customAlbum) {
-        if (!names.album.empty()) song.track.album = names.album;
-        if (!names.albumId.empty()) song.track.albumId = names.albumId;
+    if (!song.customAlbum && !song.track.albumId.empty() &&
+        (names.album.empty() || names.artists.empty() || names.coverUrl.empty())) {
+        stream::Album album;
+        album.id = song.track.albumId;
+        album.name = song.track.album;
+        album.artists = song.track.artists;
+        album.coverUrl = song.coverUrl;
+        Apply(album, sourceStorefront);
+        if (names.album.empty() && !album.name.empty()) song.track.album = album.name;
+        if (names.artists.empty()) ApplyArtists(song.track.artists, album.artists);
+        if (names.coverUrl.empty() && !album.coverUrl.empty()) song.coverUrl = album.coverUrl;
     }
-    if (!names.coverUrl.empty()) song.coverUrl = names.coverUrl;
-    if (names.artistsAuthoritative)
-        song.track.artists = names.artists;
-    else
-        ApplyArtists(song.track.artists, names.artists);
-    if (!names.composerNames.empty()) {
-        song.composerNames = std::move(names.composerNames);
-        song.composerName.clear();
-    } else if (!names.composerName.empty()) {
-        song.composerName = std::move(names.composerName);
-    }
-    if (!names.genreNames.empty()) song.genreNames = std::move(names.genreNames);
+    if (!names.artistsAuthoritative) ApplyArtistFallback(song.track.artists, names.artists, sourceStorefront);
 }
 
 void DisplayMetadata::Apply(stream::Track& track, std::wstring_view sourceStorefront) const {
@@ -468,7 +902,7 @@ void DisplayMetadata::Apply(stream::Track& track, std::wstring_view sourceStoref
     bool foundSong = false;
     {
         std::lock_guard lock(m_mutex);
-        const auto found = m_songs.find(Key(*target, L"song", sourceStorefront, track.id));
+        const auto found = m_songs.find(Key(*target, L"song", track.id));
         if (found != m_songs.end()) {
             found->second.used = ++m_clock;
             names = found->second.names;
@@ -493,47 +927,42 @@ void DisplayMetadata::Apply(stream::Track& track, std::wstring_view sourceStoref
         if (names.album.empty() && !album.name.empty()) track.album = album.name;
         if (names.artists.empty()) ApplyArtists(track.artists, album.artists);
     }
-    for (auto& artist : track.artists) {
-        const bool songNamed = std::any_of(
-            names.artists.begin(), names.artists.end(), [&artist](const stream::ArtistRef& candidate) {
-                return !artist.id.empty() && candidate.id == artist.id && !candidate.name.empty();
-            });
-        if (songNamed) continue;
-        stream::Artist display;
-        display.id = artist.id;
-        display.name = artist.name;
-        Apply(display, sourceStorefront);
-        if (!display.name.empty()) artist.name = display.name;
-    }
+    if (!names.artistsAuthoritative) ApplyArtistFallback(track.artists, names.artists, sourceStorefront);
 }
 
 void DisplayMetadata::Apply(stream::Album& album, std::wstring_view sourceStorefront) const {
     const auto target = CurrentTarget();
     if (!target) return;
     AlbumDisplayNames names;
+    bool foundAlbum = false;
     {
         std::lock_guard lock(m_mutex);
-        const auto found = m_albums.find(Key(*target, L"album", sourceStorefront, album.id));
-        if (found == m_albums.end()) return;
-        found->second.used = ++m_clock;
-        names = found->second.names;
+        const auto found = m_albums.find(Key(*target, L"album", album.id));
+        if (found != m_albums.end()) {
+            found->second.used = ++m_clock;
+            names = found->second.names;
+            foundAlbum = true;
+        }
     }
-    if (!names.name.empty()) album.name = names.name;
-    if (!names.description.empty()) album.description = names.description;
-    if (!names.coverUrl.empty()) album.coverUrl = names.coverUrl;
-    if (names.artistsAuthoritative)
-        album.artists = names.artists;
-    else
-        ApplyArtists(album.artists, names.artists);
+    if (foundAlbum) {
+        if (!names.name.empty()) album.name = names.name;
+        if (!names.description.empty()) album.description = names.description;
+        if (!names.coverUrl.empty()) album.coverUrl = names.coverUrl;
+        if (names.artistsAuthoritative)
+            album.artists = names.artists;
+        else
+            ApplyArtists(album.artists, names.artists);
+    }
+    if (!names.artistsAuthoritative) ApplyArtistFallback(album.artists, names.artists, sourceStorefront);
 }
 
-void DisplayMetadata::Apply(stream::Artist& artist, std::wstring_view sourceStorefront) const {
+void DisplayMetadata::Apply(stream::Artist& artist, std::wstring_view) const {
     const auto target = CurrentTarget();
     if (!target) return;
     ArtistDisplayNames names;
     {
         std::lock_guard lock(m_mutex);
-        const auto found = m_artists.find(Key(*target, L"artist", sourceStorefront, artist.id));
+        const auto found = m_artists.find(Key(*target, L"artist", artist.id));
         if (found == m_artists.end()) return;
         found->second.used = ++m_clock;
         names = found->second.names;
@@ -543,13 +972,13 @@ void DisplayMetadata::Apply(stream::Artist& artist, std::wstring_view sourceStor
     if (!names.avatarUrl.empty()) artist.avatarUrl = names.avatarUrl;
 }
 
-void DisplayMetadata::Apply(stream::Playlist& playlist, std::wstring_view sourceStorefront) const {
+void DisplayMetadata::Apply(stream::Playlist& playlist, std::wstring_view) const {
     const auto target = CurrentTarget();
     if (!target || playlist.own) return;
     PlaylistDisplayNames names;
     {
         std::lock_guard lock(m_mutex);
-        const auto found = m_playlists.find(Key(*target, L"playlist", sourceStorefront, playlist.id));
+        const auto found = m_playlists.find(Key(*target, L"playlist", playlist.id));
         if (found == m_playlists.end()) return;
         found->second.used = ++m_clock;
         names = found->second.names;

@@ -380,6 +380,7 @@
     <ClInclude Include="media\playback_schedule.h" />
     <ClInclude Include="media\playback_scheduler.h" />
     <ClInclude Include="applemusic\catalog.h" />
+    <ClInclude Include="applemusic\song.h" />
     <ClInclude Include="applemusic\ids.h" />
     <ClInclude Include="applemusic\playback_identity.h" />
     <ClInclude Include="applemusic\config.h" />

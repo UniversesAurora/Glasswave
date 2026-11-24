@@ -314,6 +314,12 @@ class AppleInput : public stream::EncodedInputBase {
     std::string_view Label() const override { return "Apple Music"; }
     std::string SongIdentity() const override { return Utf8(m_id); }
     bool SongKnown() const override { return Catalog::Get().FindSong(m_id).has_value(); }
+    bool NeedsDynamicInfoRefresh() const override {
+        const uint64_t epoch = DisplayMetadata::Get().Epoch();
+        if (epoch != m_reportedDisplayEpoch) return true;
+        return DisplayTargetFor(GetAppleMusicDisplayRegion()).has_value() && !m_reportedRegional &&
+               DisplayMetadata::Get().HasSong(DisplayMetadata::Get().SourceStorefront(), m_id);
+    }
     void PublishInfo(file_info& out, abort_callback& abort) override { get_info(out, abort); }
 
     std::string BeginOpen(abort_callback&) override {
@@ -537,6 +543,10 @@ class AppleInput : public stream::EncodedInputBase {
     }
 
     void ApplyMetadata(file_info& out) {
+        m_reportedDisplayEpoch = DisplayMetadata::Get().Epoch();
+        m_reportedRegional =
+            DisplayTargetFor(GetAppleMusicDisplayRegion()).has_value() &&
+            DisplayMetadata::Get().HasSong(DisplayMetadata::Get().SourceStorefront(), m_id);
         if (const auto song = Catalog::Get().FindSong(m_id)) {
             if (!song->track.title.empty()) out.meta_set("title", Utf8(song->track.title).c_str());
             const auto artists = stream::JoinArtists(song->track.artists);
@@ -561,6 +571,8 @@ class AppleInput : public stream::EncodedInputBase {
 
     stream::Id m_id;
     bool m_confirmedUnavailable = false;
+    uint64_t m_reportedDisplayEpoch = 0;
+    bool m_reportedRegional = false;
     // What this opening read at its start (BeginOpen) and the session said.
     std::optional<Song> m_song;
     stream::Id m_asset;

@@ -1223,8 +1223,9 @@ bool HasCompleteArtistNames(const std::vector<stream::ArtistRef>& artists) {
            });
 }
 
-void StoreSongDisplayNames(AppleMusicDisplayRegion region, uint64_t displayEpoch, const Song& source,
+bool StoreSongDisplayNames(AppleMusicDisplayRegion region, uint64_t displayEpoch, const Song& source,
                            const Song& localized, std::wstring_view sourceStorefront) {
+    bool changed = false;
     SongDisplayNames names;
     if (!source.customTitle) names.title = localized.track.title;
     if (!source.customAlbum) {
@@ -1239,8 +1240,9 @@ void StoreSongDisplayNames(AppleMusicDisplayRegion region, uint64_t displayEpoch
         names.artists = localized.track.artists;
         names.artistsAuthoritative = true;
         for (const auto& artist : names.artists) {
-            DisplayMetadata::Get().PutArtistFor(region, sourceStorefront, artist.id, {artist.name}, false,
-                                                displayEpoch);
+            if (DisplayMetadata::Get().PutArtistFor(region, sourceStorefront, artist.id, {artist.name}, false,
+                                                    displayEpoch))
+                changed = true;
         }
     } else {
         const bool sameCardinality = source.track.artists.size() == localized.track.artists.size();
@@ -1250,14 +1252,16 @@ void StoreSongDisplayNames(AppleMusicDisplayRegion region, uint64_t displayEpoch
                 LocalizedArtistName(artist, localized.track.artists, i, sameCardinality);
             if (!name.empty()) {
                 artist.name = name;
-                DisplayMetadata::Get().PutArtistFor(region, sourceStorefront, artist.id, {artist.name}, false,
-                                                    displayEpoch);
+                if (DisplayMetadata::Get().PutArtistFor(region, sourceStorefront, artist.id, {artist.name},
+                                                        false, displayEpoch))
+                    changed = true;
             }
             names.artists.push_back(std::move(artist));
         }
     }
-    DisplayMetadata::Get().PutSongFor(region, sourceStorefront, source.track.id, std::move(names), true,
-                                      displayEpoch);
+    if (DisplayMetadata::Get().PutSongFor(region, sourceStorefront, source.track.id, std::move(names), true,
+                                          displayEpoch))
+        changed = true;
 
     if (!source.track.albumId.empty() && (!localized.track.album.empty() || !source.track.artists.empty())) {
         AlbumDisplayNames album;
@@ -1276,23 +1280,27 @@ void StoreSongDisplayNames(AppleMusicDisplayRegion region, uint64_t displayEpoch
                 album.artists.push_back(std::move(artist));
             }
         }
-        DisplayMetadata::Get().PutAlbumFor(region, sourceStorefront, source.track.albumId, std::move(album),
-                                           false, displayEpoch);
+        if (DisplayMetadata::Get().PutAlbumFor(region, sourceStorefront, source.track.albumId,
+                                               std::move(album), false, displayEpoch))
+            changed = true;
         if (!localized.track.albumId.empty() && localized.track.albumId != source.track.albumId) {
             AlbumDisplayNames displayAlbum;
             if (!source.customAlbum) displayAlbum.name = localized.track.album;
             displayAlbum.coverUrl = localized.coverUrl;
             displayAlbum.artists = localized.track.artists;
             displayAlbum.artistsAuthoritative = HasCompleteArtistNames(localized.track.artists);
-            DisplayMetadata::Get().PutAlbumFor(region, sourceStorefront, localized.track.albumId,
-                                               std::move(displayAlbum), false, displayEpoch);
+            if (DisplayMetadata::Get().PutAlbumFor(region, sourceStorefront, localized.track.albumId,
+                                                   std::move(displayAlbum), false, displayEpoch))
+                changed = true;
         }
     }
+    return changed;
 }
 
-void StoreAlbumDisplayNames(AppleMusicDisplayRegion region, uint64_t displayEpoch,
+bool StoreAlbumDisplayNames(AppleMusicDisplayRegion region, uint64_t displayEpoch,
                             const stream::Album& source, const stream::Album& localized,
                             std::wstring_view sourceStorefront) {
+    bool changed = false;
     AlbumDisplayNames names;
     names.name = localized.name;
     names.description = localized.description;
@@ -1301,8 +1309,9 @@ void StoreAlbumDisplayNames(AppleMusicDisplayRegion region, uint64_t displayEpoc
         names.artists = localized.artists;
         names.artistsAuthoritative = true;
         for (const auto& artist : names.artists) {
-            DisplayMetadata::Get().PutArtistFor(region, sourceStorefront, artist.id, {artist.name}, false,
-                                                displayEpoch);
+            if (DisplayMetadata::Get().PutArtistFor(region, sourceStorefront, artist.id, {artist.name}, false,
+                                                    displayEpoch))
+                changed = true;
         }
     } else {
         const bool sameCardinality = source.artists.size() == localized.artists.size();
@@ -1311,33 +1320,41 @@ void StoreAlbumDisplayNames(AppleMusicDisplayRegion region, uint64_t displayEpoc
             const std::wstring name = LocalizedArtistName(artist, localized.artists, i, sameCardinality);
             if (!name.empty()) {
                 artist.name = name;
-                DisplayMetadata::Get().PutArtistFor(region, sourceStorefront, artist.id, {artist.name}, false,
-                                                    displayEpoch);
+                if (DisplayMetadata::Get().PutArtistFor(region, sourceStorefront, artist.id, {artist.name},
+                                                        false, displayEpoch))
+                    changed = true;
             }
             names.artists.push_back(std::move(artist));
         }
     }
     if (!localized.id.empty() && localized.id != source.id) {
-        DisplayMetadata::Get().PutAlbumFor(region, sourceStorefront, localized.id, names, true,
-                                           displayEpoch);
+        if (DisplayMetadata::Get().PutAlbumFor(region, sourceStorefront, localized.id, names, true,
+                                               displayEpoch))
+            changed = true;
     }
-    DisplayMetadata::Get().PutAlbumFor(region, sourceStorefront, source.id, std::move(names), true,
-                                       displayEpoch);
+    if (DisplayMetadata::Get().PutAlbumFor(region, sourceStorefront, source.id, std::move(names), true,
+                                           displayEpoch))
+        changed = true;
+    return changed;
 }
 
-void StoreArtistDisplayNames(AppleMusicDisplayRegion region, uint64_t displayEpoch,
+bool StoreArtistDisplayNames(AppleMusicDisplayRegion region, uint64_t displayEpoch,
                              const stream::Artist& source, const stream::Artist& localized,
                              std::wstring_view sourceStorefront) {
+    bool changed = false;
     ArtistDisplayNames names;
     names.name = localized.name;
     names.bio = localized.bio;
     names.avatarUrl = localized.avatarUrl;
     if (!localized.id.empty() && localized.id != source.id) {
-        DisplayMetadata::Get().PutArtistFor(region, sourceStorefront, localized.id, names, true,
-                                            displayEpoch);
+        if (DisplayMetadata::Get().PutArtistFor(region, sourceStorefront, localized.id, names, true,
+                                                displayEpoch))
+            changed = true;
     }
-    DisplayMetadata::Get().PutArtistFor(region, sourceStorefront, source.id, std::move(names), true,
-                                        displayEpoch);
+    if (DisplayMetadata::Get().PutArtistFor(region, sourceStorefront, source.id, std::move(names), true,
+                                            displayEpoch))
+        changed = true;
+    return changed;
 }
 
 void ApplyPageDisplayNames(stream::ListPage& page, bool applyTracks = true) {
@@ -2292,7 +2309,12 @@ void StreamProvider::Start() {
     // a stand-in title the player then kept in metadb (owner, 2026-11-21). The file is small
     // (about 0.5 MB for 1700 songs) and only this account's (cache::AccountScope) is read.
     try {
-        if (!cache::AccountScope("apple").empty()) Catalog::Get().InstallCached(Catalog::Get().ReadCacheFile());
+        if (!cache::AccountScope("apple").empty()) {
+            // Load persisted regional display names before Catalog::InstallCached hints metadb,
+            // so restored Now Playing / Queue items render in the chosen region from frame one.
+            DisplayMetadata::Get().LoadCache();
+            Catalog::Get().InstallCached(Catalog::Get().ReadCacheFile());
+        }
     } catch (...) {
     }
     RefreshAccountAsync(generation, {});
@@ -2315,6 +2337,7 @@ void StreamProvider::Shutdown() {
     m_artistVerificationCondition.notify_all();
     m_exec.Join();
     Catalog::Get().FlushPendingSave(); // a write still waiting for its burst to end
+    DisplayMetadata::Get().FlushPendingSave();
     {
         std::lock_guard lock(m_mutex);
         m_artistExistence.clear();
@@ -2889,11 +2912,11 @@ stream::Id StreamProvider::CatalogIdForPlaylist(const stream::Id& id) const {
     return found == m_playlistLibraryIds.end() ? stream::Id() : found->first;
 }
 
-void StreamProvider::ResolveSongDisplayNames(std::vector<Song>& songs, uint64_t generation,
+bool StreamProvider::ResolveSongDisplayNames(std::vector<Song>& songs, uint64_t generation,
                                              abort_callback& abort) {
     const AppleMusicDisplayRegion region = GetAppleMusicDisplayRegion();
     const auto target = DisplayTargetFor(region);
-    if (!target) return;
+    if (!target) return false;
     const uint64_t displayEpoch = DisplayMetadata::Get().Epoch();
     const std::wstring sourceStorefront = DisplayMetadata::Get().SourceStorefront();
     const auto canCommit = [this, generation, region] {
@@ -2906,9 +2929,10 @@ void StreamProvider::ResolveSongDisplayNames(std::vector<Song>& songs, uint64_t 
         stream::Id metadataId;
     };
     std::vector<Pending> pending;
+    std::set<stream::Id> seenSources;
     pending.reserve(songs.size());
     for (auto& song : songs) {
-        if (song.track.id.empty() ||
+        if (song.track.id.empty() || !seenSources.insert(song.track.id).second ||
             DisplayMetadata::Get().IsSongComplete(region, sourceStorefront, song.track.id))
             continue;
         const stream::Id metadataId = !song.reportingId.empty() ? song.reportingId : song.catalogId;
@@ -2916,14 +2940,17 @@ void StreamProvider::ResolveSongDisplayNames(std::vector<Song>& songs, uint64_t 
         pending.push_back({&song, metadataId});
     }
 
+    bool anyChanged = false;
+    std::vector<stream::Id> changedSongIds;
     for (size_t first = 0; first < pending.size(); first += kDisplayMetadataBatch) {
         abort.check();
-        if (!canCommit()) return;
+        if (!canCommit()) return anyChanged;
         const size_t last = std::min(pending.size(), first + kDisplayMetadataBatch);
         std::vector<stream::Id> ids;
+        std::set<stream::Id> batchIds;
         ids.reserve(last - first);
         for (size_t i = first; i < last; ++i)
-            ids.push_back(pending[i].metadataId);
+            if (batchIds.insert(pending[i].metadataId).second) ids.push_back(pending[i].metadataId);
         try {
             const Object response =
                 Apple(L"/v1/catalog/" + target->storefront + L"/songs?ids=" + Encode(JoinedIds(ids)) +
@@ -2933,16 +2960,18 @@ void StreamProvider::ResolveSongDisplayNames(std::vector<Song>& songs, uint64_t 
             if (const auto data = json::GetArray(response, L"data"))
                 for (auto& song : ParseSongs(json::Objects(*data)))
                     localized[song.track.id] = song;
-            if (!canCommit()) return;
+            if (!canCommit()) return anyChanged;
             for (size_t i = first; i < last; ++i) {
-                if (!canCommit()) return;
+                if (!canCommit()) return anyChanged;
                 Song* source = pending[i].source;
                 const auto found = localized.find(pending[i].metadataId);
                 if (found == localized.end()) {
                     DisplayMetadata::Get().PutSongFor(region, sourceStorefront, source->track.id, {}, true,
                                                       displayEpoch);
-                } else {
-                    StoreSongDisplayNames(region, displayEpoch, *source, found->second, sourceStorefront);
+                } else if (StoreSongDisplayNames(region, displayEpoch, *source, found->second,
+                                                 sourceStorefront)) {
+                    anyChanged = true;
+                    changedSongIds.push_back(source->track.id);
                 }
             }
         } catch (const exception_aborted&) {
@@ -2957,13 +2986,21 @@ void StreamProvider::ResolveSongDisplayNames(std::vector<Song>& songs, uint64_t 
             core::Log(L"Apple Music regional song names failed.");
         }
     }
+    if (!changedSongIds.empty()) {
+        // Push localized tags to foobar2000 metadb so Now Playing / Queue / playlist rows
+        // displaying these songs update immediately without waiting for playback.
+        m_exec.PostMain(generation, [ids = std::move(changedSongIds)] {
+            Catalog::Get().Records().Hint(ids);
+        });
+    }
+    return anyChanged;
 }
 
-void StreamProvider::ResolveAlbumDisplayNames(std::vector<stream::Album>& albums, uint64_t generation,
+bool StreamProvider::ResolveAlbumDisplayNames(std::vector<stream::Album>& albums, uint64_t generation,
                                               abort_callback& abort) {
     const AppleMusicDisplayRegion region = GetAppleMusicDisplayRegion();
     const auto target = DisplayTargetFor(region);
-    if (!target) return;
+    if (!target) return false;
     const uint64_t displayEpoch = DisplayMetadata::Get().Epoch();
     const std::wstring sourceStorefront = DisplayMetadata::Get().SourceStorefront();
     const auto canCommit = [this, generation, region] {
@@ -2976,8 +3013,10 @@ void StreamProvider::ResolveAlbumDisplayNames(std::vector<stream::Album>& albums
         stream::Id catalogId;
     };
     std::vector<Pending> pending;
+    std::set<stream::Id> seenSources;
     for (auto& album : albums) {
-        if (album.id.empty() || DisplayMetadata::Get().IsAlbumComplete(region, sourceStorefront, album.id))
+        if (album.id.empty() || !seenSources.insert(album.id).second ||
+            DisplayMetadata::Get().IsAlbumComplete(region, sourceStorefront, album.id))
             continue;
         const stream::Id catalogId = CatalogIdForAlbum(album.id);
         if (!catalogId.empty()) {
@@ -2985,14 +3024,16 @@ void StreamProvider::ResolveAlbumDisplayNames(std::vector<stream::Album>& albums
         }
     }
 
+    bool anyChanged = false;
     for (size_t first = 0; first < pending.size(); first += kDisplayMetadataBatch) {
         abort.check();
-        if (!canCommit()) return;
+        if (!canCommit()) return anyChanged;
         const size_t last = std::min(pending.size(), first + kDisplayMetadataBatch);
         std::vector<stream::Id> ids;
+        std::set<stream::Id> batchIds;
         ids.reserve(last - first);
         for (size_t i = first; i < last; ++i)
-            ids.push_back(pending[i].catalogId);
+            if (batchIds.insert(pending[i].catalogId).second) ids.push_back(pending[i].catalogId);
         try {
             const Object response =
                 Apple(L"/v1/catalog/" + target->storefront + L"/albums?ids=" + Encode(JoinedIds(ids)) +
@@ -3002,17 +3043,17 @@ void StreamProvider::ResolveAlbumDisplayNames(std::vector<stream::Album>& albums
             if (const auto data = json::GetArray(response, L"data"))
                 for (auto& album : ParseAlbums(json::Objects(*data)))
                     localized[album.id] = album;
-            if (!canCommit()) return;
+            if (!canCommit()) return anyChanged;
             for (size_t i = first; i < last; ++i) {
-                if (!canCommit()) return;
+                if (!canCommit()) return anyChanged;
                 const Pending& item = pending[i];
                 const auto found = localized.find(item.catalogId);
                 if (found == localized.end()) {
                     DisplayMetadata::Get().PutAlbumFor(region, sourceStorefront, item.source->id, {}, true,
                                                        displayEpoch);
-                } else {
-                    StoreAlbumDisplayNames(region, displayEpoch, *item.source, found->second,
-                                           sourceStorefront);
+                } else if (StoreAlbumDisplayNames(region, displayEpoch, *item.source, found->second,
+                                                  sourceStorefront)) {
+                    anyChanged = true;
                 }
             }
         } catch (const exception_aborted&) {
@@ -3028,13 +3069,14 @@ void StreamProvider::ResolveAlbumDisplayNames(std::vector<stream::Album>& albums
             core::Log(L"Apple Music regional album names failed.");
         }
     }
+    return anyChanged;
 }
 
-void StreamProvider::ResolveArtistDisplayNames(std::vector<stream::Artist>& artists, uint64_t generation,
+bool StreamProvider::ResolveArtistDisplayNames(std::vector<stream::Artist>& artists, uint64_t generation,
                                                abort_callback& abort) {
     const AppleMusicDisplayRegion region = GetAppleMusicDisplayRegion();
     const auto target = DisplayTargetFor(region);
-    if (!target) return;
+    if (!target) return false;
     const uint64_t displayEpoch = DisplayMetadata::Get().Epoch();
     const std::wstring sourceStorefront = DisplayMetadata::Get().SourceStorefront();
     const auto canCommit = [this, generation, region] {
@@ -3047,8 +3089,10 @@ void StreamProvider::ResolveArtistDisplayNames(std::vector<stream::Artist>& arti
         stream::Id catalogId;
     };
     std::vector<Pending> pending;
+    std::set<stream::Id> seenSources;
     for (auto& artist : artists) {
-        if (artist.id.empty() || DisplayMetadata::Get().IsArtistComplete(region, sourceStorefront, artist.id))
+        if (artist.id.empty() || !seenSources.insert(artist.id).second ||
+            DisplayMetadata::Get().IsArtistComplete(region, sourceStorefront, artist.id))
             continue;
         const stream::Id catalogId = CatalogIdForArtist(artist.id);
         if (!catalogId.empty()) {
@@ -3056,14 +3100,16 @@ void StreamProvider::ResolveArtistDisplayNames(std::vector<stream::Artist>& arti
         }
     }
 
+    bool anyChanged = false;
     for (size_t first = 0; first < pending.size(); first += kDisplayMetadataBatch) {
         abort.check();
-        if (!canCommit()) return;
+        if (!canCommit()) return anyChanged;
         const size_t last = std::min(pending.size(), first + kDisplayMetadataBatch);
         std::vector<stream::Id> ids;
+        std::set<stream::Id> batchIds;
         ids.reserve(last - first);
         for (size_t i = first; i < last; ++i)
-            ids.push_back(pending[i].catalogId);
+            if (batchIds.insert(pending[i].catalogId).second) ids.push_back(pending[i].catalogId);
         try {
             const Object response = Apple(L"/v1/catalog/" + target->storefront + L"/artists?ids=" +
                                               Encode(JoinedIds(ids)) +
@@ -3075,17 +3121,17 @@ void StreamProvider::ResolveArtistDisplayNames(std::vector<stream::Artist>& arti
             if (const auto data = json::GetArray(response, L"data"))
                 for (auto& artist : ParseArtists(json::Objects(*data)))
                     localized[artist.id] = artist;
-            if (!canCommit()) return;
+            if (!canCommit()) return anyChanged;
             for (size_t i = first; i < last; ++i) {
-                if (!canCommit()) return;
+                if (!canCommit()) return anyChanged;
                 const Pending& item = pending[i];
                 const auto found = localized.find(item.catalogId);
                 if (found == localized.end()) {
                     DisplayMetadata::Get().PutArtistFor(region, sourceStorefront, item.source->id, {}, true,
                                                         displayEpoch);
-                } else {
-                    StoreArtistDisplayNames(region, displayEpoch, *item.source, found->second,
-                                            sourceStorefront);
+                } else if (StoreArtistDisplayNames(region, displayEpoch, *item.source, found->second,
+                                                   sourceStorefront)) {
+                    anyChanged = true;
                 }
             }
         } catch (const exception_aborted&) {
@@ -3101,13 +3147,14 @@ void StreamProvider::ResolveArtistDisplayNames(std::vector<stream::Artist>& arti
             core::Log(L"Apple Music regional artist names failed.");
         }
     }
+    return anyChanged;
 }
 
-void StreamProvider::ResolvePlaylistDisplayNames(std::vector<stream::Playlist>& playlists,
+bool StreamProvider::ResolvePlaylistDisplayNames(std::vector<stream::Playlist>& playlists,
                                                  uint64_t generation, abort_callback& abort) {
     const AppleMusicDisplayRegion region = GetAppleMusicDisplayRegion();
     const auto target = DisplayTargetFor(region);
-    if (!target) return;
+    if (!target) return false;
     const uint64_t displayEpoch = DisplayMetadata::Get().Epoch();
     const std::wstring sourceStorefront = DisplayMetadata::Get().SourceStorefront();
     const auto canCommit = [this, generation, region] {
@@ -3120,8 +3167,9 @@ void StreamProvider::ResolvePlaylistDisplayNames(std::vector<stream::Playlist>& 
         stream::Id catalogId;
     };
     std::vector<Pending> pending;
+    std::set<stream::Id> seenSources;
     for (auto& playlist : playlists) {
-        if (playlist.id.empty() || playlist.own ||
+        if (playlist.id.empty() || playlist.own || !seenSources.insert(playlist.id).second ||
             DisplayMetadata::Get().IsPlaylistComplete(region, sourceStorefront, playlist.id))
             continue;
         const stream::Id catalogId = CatalogIdForPlaylist(playlist.id);
@@ -3130,20 +3178,21 @@ void StreamProvider::ResolvePlaylistDisplayNames(std::vector<stream::Playlist>& 
         }
     }
 
+    bool anyChanged = false;
     for (size_t first = 0; first < pending.size(); first += kDisplayMetadataBatch) {
         abort.check();
-        if (!canCommit()) return;
+        if (!canCommit()) return anyChanged;
         const size_t last = std::min(pending.size(), first + kDisplayMetadataBatch);
-        std::wstring joined;
-        for (size_t i = first; i < last; ++i) {
-            if (!joined.empty()) joined += L',';
-            joined += pending[i].catalogId;
-        }
+        std::vector<stream::Id> ids;
+        std::set<stream::Id> batchIds;
+        ids.reserve(last - first);
+        for (size_t i = first; i < last; ++i)
+            if (batchIds.insert(pending[i].catalogId).second) ids.push_back(pending[i].catalogId);
         try {
             const Object response = Apple(L"/v1/catalog/" + target->storefront + L"/playlists?ids=" +
-                                              Encode(joined) + L"&l=" + target->locale,
+                                              Encode(JoinedIds(ids)) + L"&l=" + target->locale,
                                           abort);
-            if (!canCommit()) return;
+            if (!canCommit()) return anyChanged;
             std::unordered_map<stream::Id, stream::Playlist> localizedById;
             if (const auto data = json::GetArray(response, L"data")) {
                 for (const auto& obj : json::Objects(*data)) {
@@ -3163,11 +3212,13 @@ void StreamProvider::ResolvePlaylistDisplayNames(std::vector<stream::Playlist>& 
                     names.description = found->second.description;
                     names.coverUrl = found->second.coverUrl;
                     if (!found->second.id.empty() && found->second.id != item.source->id) {
-                        DisplayMetadata::Get().PutPlaylistFor(region, sourceStorefront, found->second.id, names,
-                                                              true, displayEpoch);
+                        if (DisplayMetadata::Get().PutPlaylistFor(region, sourceStorefront, found->second.id,
+                                                                  names, true, displayEpoch))
+                            anyChanged = true;
                     }
-                    DisplayMetadata::Get().PutPlaylistFor(region, sourceStorefront, item.source->id,
-                                                          std::move(names), true, displayEpoch);
+                    if (DisplayMetadata::Get().PutPlaylistFor(region, sourceStorefront, item.source->id,
+                                                              std::move(names), true, displayEpoch))
+                        anyChanged = true;
                 }
             }
         } catch (const exception_aborted&) {
@@ -3184,6 +3235,47 @@ void StreamProvider::ResolvePlaylistDisplayNames(std::vector<stream::Playlist>& 
             core::Log(L"Apple Music regional playlist names failed.");
         }
     }
+    return anyChanged;
+}
+
+void StreamProvider::WarmLibraryDisplayNamesAsync(uint64_t generation) {
+    const AppleMusicDisplayRegion region = GetAppleMusicDisplayRegion();
+    if (!DisplayTargetFor(region)) return;
+    const std::wstring sourceStorefront = DisplayMetadata::Get().SourceStorefront();
+    std::vector<stream::Playlist> playlists;
+    std::vector<stream::Album> albums;
+    std::vector<stream::Artist> artists;
+    {
+        std::lock_guard lock(m_mutex);
+        if (!m_started || generation != m_exec.Generation() || !m_account.signedIn) return;
+        for (const auto& item : m_savedPlaylists)
+            if (!item.own && !item.id.empty() &&
+                !DisplayMetadata::Get().IsPlaylistComplete(region, sourceStorefront, item.id))
+                playlists.push_back(item);
+        for (const auto& item : m_savedAlbums)
+            if (!item.id.empty() && !DisplayMetadata::Get().IsAlbumComplete(region, sourceStorefront, item.id))
+                albums.push_back(item);
+        for (const auto& item : m_libraryArtists)
+            if (!item.id.empty() &&
+                !DisplayMetadata::Get().IsArtistComplete(region, sourceStorefront, item.id))
+                artists.push_back(item);
+    }
+    if (playlists.empty() && albums.empty() && artists.empty()) return;
+    m_exec.Post(kBackground, generation,
+                [this, generation, playlists = std::move(playlists), albums = std::move(albums),
+                 artists = std::move(artists)]() mutable {
+                    bool changed = false;
+                    try {
+                        if (ResolvePlaylistDisplayNames(playlists, generation, m_exec.Abort())) changed = true;
+                        if (ResolveAlbumDisplayNames(albums, generation, m_exec.Abort())) changed = true;
+                        if (ResolveArtistDisplayNames(artists, generation, m_exec.Abort())) changed = true;
+                    } catch (const exception_aborted&) {
+                        return;
+                    } catch (...) {
+                    }
+                    if (!changed) return;
+                    m_exec.PostMain(generation, [this] { NotifyLibraryChanged(); });
+                });
 }
 
 void StreamProvider::ApplyArtistPreferenceOverlay(stream::Artist& artist, uint64_t capturedEpoch) const {
@@ -3224,10 +3316,12 @@ void StreamProvider::OnDisplayMetadataChanged() {
 }
 
 void StreamProvider::ApplyDisplayMetadataChange() {
+    uint64_t current = 0;
     {
         std::lock_guard lock(m_mutex);
         m_displayChangePosted = false;
         if (!m_started) return;
+        current = m_exec.Generation();
     }
 
     // The account snapshot, library records, IDs and detail records are region-independent.
@@ -3236,6 +3330,7 @@ void StreamProvider::ApplyDisplayMetadataChange() {
     Catalog::Get().Records().ClearSettled();
     Catalog::Get().RefreshHints();
     NotifyDisplayChanged();
+    WarmLibraryDisplayNamesAsync(current);
     m_snapshots.Queue();
 }
 
@@ -3886,6 +3981,7 @@ void StreamProvider::CompleteRefresh(uint64_t generation, Snapshot snapshot, std
         }
         if (!favoritesKnown) RefreshFavoriteSongs();
         EnrichArtistCountsAsync(current);
+        WarmLibraryDisplayNamesAsync(current);
     }
 }
 
@@ -3988,10 +4084,9 @@ std::optional<stream::Track> StreamProvider::FindTrack(const stream::Id& track) 
     const auto song = Catalog::Get().FindSong(track);
     bool want = !song || stream::LacksLinks(song->track);
     if (!want && RegionalDisplayEnabled() &&
-        (!song->catalogId.empty() || !song->reportingId.empty())) {
-        const std::wstring sourceStorefront = DisplayMetadata::Get().SourceStorefront();
-        if (!sourceStorefront.empty() && !DisplayMetadata::Get().HasSong(sourceStorefront, track)) want = true;
-    }
+        (!song->catalogId.empty() || !song->reportingId.empty()) &&
+        !DisplayMetadata::Get().HasSong(DisplayMetadata::Get().SourceStorefront(), track))
+        want = true;
     if (want) Catalog::Get().Records().Want(track);
     return song ? std::optional<stream::Track>(song->track) : std::nullopt;
 }
@@ -4962,6 +5057,54 @@ void StreamProvider::FetchHome(HomeDone done) {
             if (!PutIfCurrent(generation, albums)) return;
             for (const auto& playlist : playlists)
                 if (!PutIfCurrent(generation, playlist)) return;
+            if (RegionalDisplayEnabled()) {
+                ResolveAlbumDisplayNames(albums, generation, m_exec.Abort());
+                ResolvePlaylistDisplayNames(playlists, generation, m_exec.Abort());
+                const std::wstring sourceStorefront = DisplayMetadata::Get().SourceStorefront();
+                const auto applyCard = [&sourceStorefront](stream::HomeCard& card) {
+                    if (!card.target) return;
+                    std::visit(
+                        [&](auto& value) {
+                            using T = std::decay_t<decltype(value)>;
+                            if constexpr (std::is_same_v<T, stream::Album>) {
+                                const std::wstring rawName = value.name;
+                                const std::wstring rawArtist = stream::JoinArtists(value.artists);
+                                DisplayMetadata::Get().Apply(value, sourceStorefront);
+                                if (!value.name.empty() && card.title == rawName) card.title = value.name;
+                                const std::wstring localizedArtist = stream::JoinArtists(value.artists);
+                                if (!localizedArtist.empty() && card.subtitle == rawArtist)
+                                    card.subtitle = localizedArtist;
+                            } else if constexpr (std::is_same_v<T, stream::Playlist>) {
+                                const std::wstring rawName = value.name;
+                                DisplayMetadata::Get().Apply(value, sourceStorefront);
+                                if (!value.name.empty() && card.title == rawName) card.title = value.name;
+                            } else if constexpr (std::is_same_v<T, stream::Artist>) {
+                                const std::wstring rawName = value.name;
+                                DisplayMetadata::Get().Apply(value, sourceStorefront);
+                                if (!value.name.empty() && card.title == rawName) card.title = value.name;
+                            } else if constexpr (std::is_same_v<T, stream::Track>) {
+                                DisplayMetadata::Get().Apply(value, sourceStorefront);
+                            }
+                        },
+                        *card.target);
+                };
+                for (auto& card : home.cards)
+                    applyCard(card);
+                for (auto& row : home.shelves) {
+                    for (auto& card : row.cards)
+                        applyCard(card);
+                    for (auto& item : row.items) {
+                        std::visit(
+                            [&](auto& value) {
+                                using T = std::decay_t<decltype(value)>;
+                                if constexpr (std::is_same_v<T, stream::Album> ||
+                                              std::is_same_v<T, stream::Playlist>)
+                                    DisplayMetadata::Get().Apply(value, sourceStorefront);
+                            },
+                            item);
+                    }
+                }
+            }
         } catch (const exception_aborted&) {
             return;
         } catch (const std::exception& exception) {
@@ -4978,11 +5121,12 @@ void StreamProvider::FetchHome(HomeDone done) {
 void StreamProvider::FetchStationTracks(const stream::Id& station, TracksDone done) {
     done = stream::GuardDone(std::move(done));
     uint64_t generation = 0;
+    const std::wstring storefront = Storefront();
     {
         std::lock_guard lock(m_mutex);
         generation = m_exec.Generation();
     }
-    m_exec.Post(kTasks, generation, [this, generation, station, done = std::move(done)]() mutable {
+    m_exec.Post(kTasks, generation, [this, generation, station, storefront, done = std::move(done)]() mutable {
         std::vector<Song> songs;
         std::wstring error;
         try {
@@ -4997,15 +5141,41 @@ void StreamProvider::FetchStationTracks(const stream::Id& station, TracksDone do
         } catch (const std::exception& exception) {
             error = Wide(exception.what());
         }
-        std::vector<stream::Track> tracks;
-        for (const auto& song : songs)
-            tracks.push_back(song.track);
+        std::vector<Song> enrichBatch = songs;
+        std::vector<stream::Track> tracks = DisplayTracks(songs);
         m_exec.PostMain(generation, [done = std::move(done), songs = std::move(songs),
                                      tracks = std::move(tracks), error = std::move(error)]() mutable {
             // Their titles reach foobar2000 before they are queued, or the queue shows addresses.
             if (!songs.empty()) Catalog::Get().PutAndHint(songs);
             if (done) done(std::move(tracks), std::move(error));
         });
+        if (error.empty() && !enrichBatch.empty()) {
+            // Pre-hydrate album/artist links and regional display names for the entire 5-track
+            // station batch right after handing the tracks to radio so playback starts with zero
+            // extra latency while upcoming radio tracks arrive fully linked and localized.
+            m_exec.Post(kTasks, generation,
+                        [this, generation, storefront, songs = std::move(enrichBatch)]() mutable {
+                            try {
+                                if (HasSongAlbumHydrationWork(songs))
+                                    HydrateSongAlbums(songs, storefront, m_exec.Abort());
+                                if (RegionalDisplayEnabled())
+                                    ResolveSongDisplayNames(songs, generation, m_exec.Abort());
+                            } catch (const exception_aborted&) {
+                                return;
+                            } catch (...) {
+                            }
+                            if (!PutIfCurrent(generation, songs)) return;
+                            m_exec.PostMain(generation, [this, songs = std::move(songs)]() mutable {
+                                std::vector<stream::Id> ids;
+                                ids.reserve(songs.size());
+                                for (const auto& song : songs)
+                                    if (!song.track.id.empty()) ids.push_back(song.track.id);
+                                Catalog::Get().PutAndHint(songs, true);
+                                if (!ids.empty()) Catalog::Get().Records().Settle(ids);
+                                NotifyLibraryChanged();
+                            });
+                        });
+        }
     });
 }
 
@@ -5024,7 +5194,9 @@ void StreamProvider::FetchSongDetails(const stream::Id& track, SongDetailsDone d
         try {
             const auto known = Catalog::Get().FindSong(track);
             if (known) details.track = known->track;
-            const std::wstring catalogId = known && !known->catalogId.empty() ? known->catalogId : track;
+            const std::wstring catalogId = PreferredCatalogAssetId(
+                track, known ? known->catalogId : std::wstring_view{},
+                known ? known->reportingId : std::wstring_view{});
             if (!IsCatalogResourceId(catalogId)) {
                 error = L"This song is not in the Apple Music catalog.";
             } else {
@@ -5035,19 +5207,30 @@ void StreamProvider::FetchSongDetails(const stream::Id& track, SongDetailsDone d
                 const auto attributes = item ? json::GetObject(*item, L"attributes") : std::nullopt;
                 if (!item || !attributes) throw std::runtime_error("Apple Music returned no song.");
                 if (const auto song = ParseSong(*item)) {
-                    stream::Track parsed = song->track;
-                    parsed.id = track; // the identity the caller plays
-                    details.track = std::move(parsed);
-                    details.composer = song->composerName;
+                    Song localized = *song;
+                    localized.track.id = track; // the identity the caller plays
+                    if (known && localized.reportingId.empty()) localized.reportingId = known->reportingId;
+                    if (known && localized.catalogId.empty()) localized.catalogId = known->catalogId;
                     read = *song;
+                    if (RegionalDisplayEnabled()) {
+                        std::vector<Song> one{localized};
+                        ResolveSongDisplayNames(one, generation, m_exec.Abort());
+                        DisplayMetadata::Get().Apply(localized, DisplayMetadata::Get().SourceStorefront());
+                    }
+                    details.track = std::move(localized.track);
+                    details.composer = localized.composerName;
+                    for (auto& genre : localized.genreNames)
+                        if (genre != L"Music" && genre != L"音乐") details.genres.push_back(std::move(genre));
                 }
                 details.disc = json::GetInt(*attributes, L"discNumber");
                 details.number = json::GetInt(*attributes, L"trackNumber");
                 details.released = json::GetString(*attributes, L"releaseDate");
                 details.isrc = json::GetString(*attributes, L"isrc");
                 details.language = json::GetString(*attributes, L"audioLocale");
-                for (auto& genre : StringArray(*attributes, L"genreNames"))
-                    if (genre != L"Music" && genre != L"音乐") details.genres.push_back(std::move(genre));
+                if (details.genres.empty()) {
+                    for (auto& genre : StringArray(*attributes, L"genreNames"))
+                        if (genre != L"Music" && genre != L"音乐") details.genres.push_back(std::move(genre));
+                }
                 details.lyrics = json::GetBool(*attributes, L"hasTimeSyncedLyrics") ? L"Synced"
                                  : json::GetBool(*attributes, L"hasLyrics")         ? L"Unsynced"
                                                                                     : L"";
@@ -5963,6 +6146,14 @@ void StreamProvider::ReadSavedAlbumsPage(ListLoad& load) {
     }
     const Object response = Apple(request, abort);
     std::vector<Object> objects = ObjectsOf(response);
+    {
+        std::lock_guard lock(m_mutex);
+        for (const auto& object : objects) {
+            const std::wstring albumId = json::GetString(object, L"id");
+            if (const auto catalogId = CatalogIdFrom(object); !albumId.empty() && catalogId)
+                m_albumLibraryIds[*catalogId] = albumId;
+        }
+    }
     page.rows = ParseAlbums(objects);
     ApplyAlbumMutations(std::get<std::vector<stream::Album>>(page.rows), cursorState.path.empty());
     page.total = CollectionTotal(response);
@@ -5986,6 +6177,14 @@ void StreamProvider::ReadFollowedArtistsPage(ListLoad& load) {
     }
     const Object response = Apple(request, abort);
     std::vector<Object> objects = ObjectsOf(response);
+    {
+        std::lock_guard lock(m_mutex);
+        for (const auto& object : objects) {
+            const std::wstring artistId = json::GetString(object, L"id");
+            if (const auto catalogId = CatalogIdFrom(object); !artistId.empty() && catalogId)
+                m_artistCatalogIds[artistId] = *catalogId;
+        }
+    }
     page.rows = ParseArtists(objects);
     page.total = CollectionTotal(response);
     load.SetNext(response, expected, load.LimitAndQueryBinder(parameters), objects.size());
@@ -6015,6 +6214,14 @@ void StreamProvider::ReadPlaylistsPage(ListLoad& load) {
     const Object response = Apple(request, abort);
     std::vector<Object> objects = ObjectsOf(response);
     std::vector<stream::Playlist> rows;
+    {
+        std::lock_guard lock(m_mutex);
+        for (const auto& object : objects) {
+            const std::wstring playlistId = json::GetString(object, L"id");
+            if (const auto catalogId = CatalogIdFrom(object); !playlistId.empty() && catalogId)
+                m_playlistLibraryIds[*catalogId] = playlistId;
+        }
+    }
     for (const auto& object : objects) {
         if (IsFavoriteSystemPlaylist(object)) continue;
         auto playlist = ParsePlaylist(object);
@@ -6149,7 +6356,10 @@ void StreamProvider::FinishListPage(uint64_t preferenceEpoch, stream::ListPage p
                     if (const auto existing = Catalog::Get().FindSongRaw(track->id))
                         song = MergeSongRecord(*existing, song);
                     song.track.id = track->id;
-                    *track = song.track;
+                    Song displayed = song;
+                    if (RegionalDisplayEnabled())
+                        DisplayMetadata::Get().Apply(displayed, DisplayMetadata::Get().SourceStorefront());
+                    *track = std::move(displayed.track);
                     topTracks.push_back(std::move(song));
                 } else if (auto* playlist = std::get_if<stream::Playlist>(&item)) {
                     Catalog::Get().Put(*playlist);
@@ -7578,6 +7788,13 @@ void StreamProvider::RefreshKnownPlaylist(const stream::Id& id, Done done, bool 
                     try {
                         data = LoadPlaylist(id, storefront, true, m_exec.Abort());
                         if (!PutIfCurrent(generation, data.info)) return;
+                        if (RegionalDisplayEnabled()) {
+                            if (!data.info.own) {
+                                std::vector<stream::Playlist> one{data.info};
+                                ResolvePlaylistDisplayNames(one, generation, m_exec.Abort());
+                            }
+                            ResolveSongDisplayNames(data.songs, generation, m_exec.Abort());
+                        }
                     } catch (const exception_aborted&) {
                         return;
                     } catch (const std::exception& exception) {
@@ -7675,6 +7892,11 @@ void StreamProvider::RefreshKnownAlbum(const stream::Id& id) {
         try {
             data = LoadAlbum(request.id, storefront, request.library, m_exec.Abort());
             if (!PutIfCurrent(generation, data.info)) return;
+            if (RegionalDisplayEnabled()) {
+                std::vector<stream::Album> one{data.info};
+                ResolveAlbumDisplayNames(one, generation, m_exec.Abort());
+                ResolveSongDisplayNames(data.songs, generation, m_exec.Abort());
+            }
         } catch (const exception_aborted&) {
             return;
         } catch (...) {

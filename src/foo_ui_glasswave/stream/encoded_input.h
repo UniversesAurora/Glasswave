@@ -81,6 +81,9 @@ class EncodedInputBase : public input_stubs {
     virtual std::string SongIdentity() const = 0;
     // True when the source's record of the song is known (what the tags are written from).
     virtual bool SongKnown() const = 0;
+    // True when the song's projected display tags changed (e.g. regional display overlay arrived
+    // or region setting changed) and dynamic info should be republished.
+    virtual bool NeedsDynamicInfoRefresh() const { return false; }
     // The core asks for the playing info again: call get_info.
     virtual void PublishInfo(file_info& out, abort_callback& abort) = 0;
 

@@ -692,14 +692,22 @@ void Catalog::FlushWanted() {
     }
     // A list or a page's enrichment may have brought a song in meanwhile.
     std::vector<Id> batch;
+    std::vector<Id> checkProvider;
     {
         std::lock_guard lock(m_mutex);
         std::unordered_set<Id> seen;
         for (auto& id : wanted) {
             if (!seen.insert(id).second) continue;
             const auto found = m_tracks.find(id);
-            if (found == m_tracks.end() || LacksLinks(found->second.track)) batch.push_back(std::move(id));
+            if (found == m_tracks.end() || LacksLinks(found->second.track))
+                batch.push_back(std::move(id));
+            else if (m_traits.needsRead)
+                checkProvider.push_back(std::move(id));
         }
+    }
+    if (m_traits.needsRead) {
+        for (auto& id : checkProvider)
+            if (m_traits.needsRead(id)) batch.push_back(std::move(id));
     }
     if (!batch.empty()) read(std::move(batch));
 }

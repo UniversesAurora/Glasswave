@@ -141,7 +141,16 @@ void MainWindow::OnProviderDisplay(stream::Provider& provider) {
     // Drop cached page objects from the old projection, but keep account, library and artwork
     // caches. The current page reopens from canonical IDs and publishes its cached prefix first.
     InvalidateRemotePageCache(providerKey);
-    if ((m_view.IsRemote() && m_view.provider == providerKey) || m_view.kind == View::Kind::AllFavorites) {
+    RefreshProviderSections();
+    auto refresh = [&provider, &providerKey](View& view) {
+        if (view.IsRemote() && view.provider == providerKey)
+            view = NormalizeRemoteView(provider, std::move(view), true);
+    };
+    refresh(m_view);
+    for (auto& view : m_history)
+        refresh(view);
+    if ((m_view.IsRemote() && m_view.provider == providerKey) || m_view.kind == View::Kind::AllFavorites ||
+        m_view.kind == View::Kind::Home) {
         m_forcePageRefresh = true;
         Navigate(m_view, false);
     } else if (m_list) {

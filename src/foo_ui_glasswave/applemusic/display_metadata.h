@@ -1,11 +1,11 @@
 #pragma once
 
-#include "applemusic/catalog.h"
 #include "applemusic/config.h"
+#include "applemusic/song.h"
 
-#include <chrono>
-#include <mutex>
+#include <atomic>
 #include <cstdint>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -54,8 +54,10 @@ struct PlaylistDisplayNames {
     std::wstring coverUrl;
 };
 
-// Catalog records remain authoritative and unmodified. This cache only overlays display
-// names on copies, keyed by the display mode, source storefront, locale and stable ID.
+// Persisted regional display overlay for Apple Music. Canonical Catalog records stay raw
+// (account storefront); this cache overlays localized names on copies, keyed solely by
+// (display target storefront, locale, kind, stable ID) so account-storefront startup
+// transitions never split or orphan cached regional entries.
 class DisplayMetadata {
   public:
     static DisplayMetadata& Get();
@@ -64,12 +66,20 @@ class DisplayMetadata {
     // Starts a new region projection without discarding other regions' warm display entries.
     // Pending writes from the old projection fail their epoch check.
     void BeginTransition();
-    // Keeps stale names available for first paint while forcing the next legitimate page read
-    // to perform a bounded background refresh.
+    // Keeps cached names available for first paint while forcing the next read to revalidate.
     void InvalidateFreshness();
     uint64_t Epoch() const;
     void SetSourceStorefront(std::wstring storefront);
     std::wstring SourceStorefront() const;
+
+    // Restart cache (<profile>/glasswave/applemusic/cache/display.tsv). LoadCache runs
+    // synchronously on startup; writes are debounced and flushed on shutdown.
+    void LoadCache();
+    void FlushPendingSave();
+
+    // Pure serialization helpers (also used by unit tests).
+    std::string Serialize() const;
+    size_t Deserialize(std::string_view bytes);
 
     bool HasSong(std::wstring_view sourceStorefront, const stream::Id& id) const;
     bool HasAlbum(std::wstring_view sourceStorefront, const stream::Id& id) const;
@@ -92,33 +102,34 @@ class DisplayMetadata {
     bool IsPlaylistComplete(AppleMusicDisplayRegion region, std::wstring_view sourceStorefront,
                             const stream::Id& id) const;
 
-    void PutSong(std::wstring_view sourceStorefront, const stream::Id& id, SongDisplayNames names);
-    void PutAlbum(std::wstring_view sourceStorefront, const stream::Id& id, AlbumDisplayNames names);
-    void PutArtist(std::wstring_view sourceStorefront, const stream::Id& id, ArtistDisplayNames names);
-    void PutPlaylist(std::wstring_view sourceStorefront, const stream::Id& id, PlaylistDisplayNames names);
-    void PutSongFor(AppleMusicDisplayRegion region, std::wstring_view sourceStorefront, const stream::Id& id,
+    // Return true when visible display fields changed.
+    bool PutSong(std::wstring_view sourceStorefront, const stream::Id& id, SongDisplayNames names);
+    bool PutAlbum(std::wstring_view sourceStorefront, const stream::Id& id, AlbumDisplayNames names);
+    bool PutArtist(std::wstring_view sourceStorefront, const stream::Id& id, ArtistDisplayNames names);
+    bool PutPlaylist(std::wstring_view sourceStorefront, const stream::Id& id, PlaylistDisplayNames names);
+    bool PutSongFor(AppleMusicDisplayRegion region, std::wstring_view sourceStorefront, const stream::Id& id,
                     SongDisplayNames names);
-    void PutSongFor(AppleMusicDisplayRegion region, std::wstring_view sourceStorefront, const stream::Id& id,
+    bool PutSongFor(AppleMusicDisplayRegion region, std::wstring_view sourceStorefront, const stream::Id& id,
                     SongDisplayNames names, bool complete);
-    void PutSongFor(AppleMusicDisplayRegion region, std::wstring_view sourceStorefront, const stream::Id& id,
+    bool PutSongFor(AppleMusicDisplayRegion region, std::wstring_view sourceStorefront, const stream::Id& id,
                     SongDisplayNames names, bool complete, uint64_t expectedEpoch);
-    void PutAlbumFor(AppleMusicDisplayRegion region, std::wstring_view sourceStorefront, const stream::Id& id,
+    bool PutAlbumFor(AppleMusicDisplayRegion region, std::wstring_view sourceStorefront, const stream::Id& id,
                      AlbumDisplayNames names);
-    void PutAlbumFor(AppleMusicDisplayRegion region, std::wstring_view sourceStorefront, const stream::Id& id,
+    bool PutAlbumFor(AppleMusicDisplayRegion region, std::wstring_view sourceStorefront, const stream::Id& id,
                      AlbumDisplayNames names, bool complete);
-    void PutAlbumFor(AppleMusicDisplayRegion region, std::wstring_view sourceStorefront, const stream::Id& id,
+    bool PutAlbumFor(AppleMusicDisplayRegion region, std::wstring_view sourceStorefront, const stream::Id& id,
                      AlbumDisplayNames names, bool complete, uint64_t expectedEpoch);
-    void PutArtistFor(AppleMusicDisplayRegion region, std::wstring_view sourceStorefront,
+    bool PutArtistFor(AppleMusicDisplayRegion region, std::wstring_view sourceStorefront,
                       const stream::Id& id, ArtistDisplayNames names);
-    void PutArtistFor(AppleMusicDisplayRegion region, std::wstring_view sourceStorefront,
+    bool PutArtistFor(AppleMusicDisplayRegion region, std::wstring_view sourceStorefront,
                       const stream::Id& id, ArtistDisplayNames names, bool complete);
-    void PutArtistFor(AppleMusicDisplayRegion region, std::wstring_view sourceStorefront,
+    bool PutArtistFor(AppleMusicDisplayRegion region, std::wstring_view sourceStorefront,
                       const stream::Id& id, ArtistDisplayNames names, bool complete, uint64_t expectedEpoch);
-    void PutPlaylistFor(AppleMusicDisplayRegion region, std::wstring_view sourceStorefront,
+    bool PutPlaylistFor(AppleMusicDisplayRegion region, std::wstring_view sourceStorefront,
                         const stream::Id& id, PlaylistDisplayNames names);
-    void PutPlaylistFor(AppleMusicDisplayRegion region, std::wstring_view sourceStorefront,
+    bool PutPlaylistFor(AppleMusicDisplayRegion region, std::wstring_view sourceStorefront,
                         const stream::Id& id, PlaylistDisplayNames names, bool complete);
-    void PutPlaylistFor(AppleMusicDisplayRegion region, std::wstring_view sourceStorefront,
+    bool PutPlaylistFor(AppleMusicDisplayRegion region, std::wstring_view sourceStorefront,
                         const stream::Id& id, PlaylistDisplayNames names, bool complete,
                         uint64_t expectedEpoch);
 
@@ -130,35 +141,48 @@ class DisplayMetadata {
 
   private:
     struct SongEntry {
+        AppleMusicDisplayRegion region = AppleMusicDisplayRegion::Account;
+        stream::Id id;
         SongDisplayNames names;
-        std::chrono::steady_clock::time_point validatedAt{};
+        int64_t validatedAt = 0;
         uint64_t used = 0;
         bool complete = false;
     };
     struct AlbumEntry {
+        AppleMusicDisplayRegion region = AppleMusicDisplayRegion::Account;
+        stream::Id id;
         AlbumDisplayNames names;
-        std::chrono::steady_clock::time_point validatedAt{};
+        int64_t validatedAt = 0;
         uint64_t used = 0;
         bool complete = false;
     };
     struct ArtistEntry {
+        AppleMusicDisplayRegion region = AppleMusicDisplayRegion::Account;
+        stream::Id id;
         ArtistDisplayNames names;
-        std::chrono::steady_clock::time_point validatedAt{};
+        int64_t validatedAt = 0;
         uint64_t used = 0;
         bool complete = false;
     };
     struct PlaylistEntry {
+        AppleMusicDisplayRegion region = AppleMusicDisplayRegion::Account;
+        stream::Id id;
         PlaylistDisplayNames names;
-        std::chrono::steady_clock::time_point validatedAt{};
+        int64_t validatedAt = 0;
         uint64_t used = 0;
         bool complete = false;
     };
 
     DisplayMetadata() = default;
-    std::string Key(const DisplayTarget& target, std::wstring_view kind, std::wstring_view sourceStorefront,
-                    const stream::Id& id) const;
+    static std::string Key(const DisplayTarget& target, std::wstring_view kind, const stream::Id& id);
+    void QueueSave();
+    void SaveLocked() const;
+    void ApplyArtistFallback(std::vector<stream::ArtistRef>& artists,
+                             const std::vector<stream::ArtistRef>& explicitNames,
+                             std::wstring_view sourceStorefront) const;
 
     mutable std::mutex m_mutex;
+    mutable std::mutex m_saveMutex;
     std::wstring m_sourceStorefront;
     mutable uint64_t m_clock = 0;
     mutable uint64_t m_epoch = 0;
@@ -166,6 +190,9 @@ class DisplayMetadata {
     mutable std::unordered_map<std::string, AlbumEntry> m_albums;
     mutable std::unordered_map<std::string, ArtistEntry> m_artists;
     mutable std::unordered_map<std::string, PlaylistEntry> m_playlists;
+    std::atomic_bool m_saveDirty = false;
+    std::atomic_bool m_savePosted = false;
+    std::atomic_bool m_saveClosed = false;
 };
 
 } // namespace glasswave::applemusic

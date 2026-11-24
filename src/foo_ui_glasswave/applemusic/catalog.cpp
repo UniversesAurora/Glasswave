@@ -154,6 +154,14 @@ stream::CatalogTraits Catalog::Traits(Catalog& self) {
     traits.cacheHeader = "# glasswave apple music songs v7";
     traits.tags = [&self](const stream::Track& stored, file_info& info) { self.WriteTags(stored, info); };
     traits.encodeExtra = [&self](const stream::Id& id) { return self.EncodeExtra(id); };
+    traits.needsRead = [&self](const stream::Id& id) {
+        if (!DisplayTargetFor(GetAppleMusicDisplayRegion()).has_value()) return false;
+        if (DisplayMetadata::Get().HasSong(DisplayMetadata::Get().SourceStorefront(), id)) return false;
+        std::lock_guard lock(self.m_mutex);
+        const auto found = self.m_extras.find(id);
+        if (found == self.m_extras.end()) return !IsLibraryId(id);
+        return !found->second.catalogId.empty() || !found->second.reportingId.empty();
+    };
     return traits;
 }
 
