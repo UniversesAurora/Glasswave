@@ -120,6 +120,9 @@ class EncodedInputBase : public input_stubs {
     void MarkReady();
     // Releases the decoder, the source and the transfer; forgets the song's length.
     void ReleaseDecoder() noexcept;
+    // Marks the current stream unavailable for this playback epoch and returns true when
+    // realtime playback should silently advance (never during prefetch, conversion, or tests).
+    bool TrySkipUnavailable(std::wstring_view reason, abort_callback& abort) const;
     // The bytes were rejected by a decoder: they are never offered again and the remembered
     // source that led to them is forgotten.
     void InvalidateCache() noexcept;
@@ -159,6 +162,7 @@ class EncodedInputBase : public input_stubs {
     bool m_complete = true;
     bool m_persistent = true;
     unsigned m_flags = 0;
+    uint64_t m_playbackEpoch = 0;
     bool m_report = false;          // the playing info is published again (the decoder is new)
     bool m_reportWhenKnown = false; // it was published without the song's record
 

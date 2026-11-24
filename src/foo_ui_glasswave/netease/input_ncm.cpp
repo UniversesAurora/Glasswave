@@ -154,7 +154,6 @@ class NcmInput : public stream::EncodedInputBase {
     void PublishInfo(file_info& out, abort_callback& abort) override { get_info(out, abort); }
 
     std::string BeginOpen(abort_callback&) override {
-        m_epoch = stream::SourcePlaybackEpoch();
         core::Log(L"input: decoding song " + std::to_wstring(m_id));
         if (!Session::Get().LoggedIn()) // started by the component's initquit, on the main thread
             throw exception_io_data("Please sign in to NetEase Cloud Music before playing this track.");
@@ -185,11 +184,9 @@ class NcmInput : public stream::EncodedInputBase {
             if (result == stream::SourceStatus::Failed && requestError.empty()) requestError = error;
         }
         if (status != stream::SourceStatus::Playable) {
-            if (status == stream::SourceStatus::Unavailable && !cache::audio::IsPrefetchThread() &&
-                stream::SkipUnavailableSource(m_epoch, m_path, error, m_flags, abort)) {
+            if (status == stream::SourceStatus::Unavailable && TrySkipUnavailable(error, abort)) {
                 // No CDN request or audio decoder is created for an unavailable source. EOF lets
                 // the core choose the next item in its native playback order.
-                core::Log(L"input: skipped unavailable song " + std::to_wstring(m_id));
                 return std::nullopt;
             }
             if (!requestError.empty()) error = requestError;
@@ -262,7 +259,6 @@ class NcmInput : public stream::EncodedInputBase {
     }
 
     int64_t m_id = 0;
-    uint64_t m_epoch = 0; // the playback attempt this opened in (stream::SourceAvailability)
 };
 
 #pragma warning(push)

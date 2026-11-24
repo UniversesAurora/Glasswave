@@ -1,5 +1,7 @@
 #include "pch.h"
 #include "stream/playback_source.h"
+#include "core/log.h"
+#include "core/text.h"
 
 #include <SDK/skipTrack.h>
 
@@ -71,6 +73,8 @@ bool SkipUnavailableSource(uint64_t epoch, std::string_view path, std::wstring_v
     const std::string location(path);
     const auto message = pfc::stringcvt::string_utf8_from_wide(reason.data(), reason.size());
     console::print("Glasswave: skipped unavailable stream ", location.c_str(), " (", message.get_ptr(), ")");
+    core::Log(L"input: skipped unavailable stream " + core::Wide(location) +
+              (reason.empty() ? std::wstring() : L" (" + std::wstring(reason) + L")"));
     return true;
 }
 

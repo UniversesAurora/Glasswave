@@ -150,6 +150,10 @@ class Catalog {
     // Want and Settle are for any thread, StartReading and StopReading for the main thread.
     using Reader = std::function<void(std::vector<Id> songs)>;
     void Want(const Id& song);
+    // Clears any prior settled/cooldown state and queues the song for reading again.
+    void Rewant(const Id& song);
+    // Clears all settled/cooldown markers (e.g. when the display region changes).
+    void ClearSettled();
     // The provider read these songs and put what the service returned.
     void Settle(const std::vector<Id>& songs);
     // `read` runs on the main thread with each batch. The provider puts what it read and settles

@@ -2,9 +2,11 @@
 #include "applemusic/catalog.h"
 #include "applemusic/client.h"
 #include "applemusic/display_metadata.h"
+#include "applemusic/playback_identity.h"
 #include "core/file.h"
 #include "core/paths.h"
 #include "core/text.h"
+#include "stream/track_snapshot.h"
 
 #include <SDK/file_info_impl.h>
 
@@ -222,27 +224,74 @@ void Catalog::PutMeasuredLength(const stream::Id& songId, int durationMs) {
     }
 }
 
+namespace {
+
+bool IsRealSongId(std::wstring_view id) {
+    return IsCatalogId(id) || IsLibraryId(id);
+}
+
+bool HasDurableIdentity(const SongExtra& extra) {
+    return !extra.libraryId.empty() ||
+           (IsCatalogSongId(extra.reportingId) && extra.reportingId != extra.catalogId) ||
+           !extra.isrc.empty();
+}
+
+bool SameIdentity(const SongExtra& a, const SongExtra& b) {
+    return a.catalogId == b.catalogId && a.libraryId == b.libraryId &&
+           a.libraryAlbumId == b.libraryAlbumId && a.reportingId == b.reportingId && a.isrc == b.isrc;
+}
+
+void PreserveKnownIdentity(Song& song, const SongExtra& known) {
+    if (song.catalogId.empty()) song.catalogId = known.catalogId;
+    if (song.libraryId.empty()) song.libraryId = known.libraryId;
+    if (song.libraryAlbumId.empty()) song.libraryAlbumId = known.libraryAlbumId;
+    if (song.reportingId.empty()) song.reportingId = known.reportingId;
+    if (song.isrc.empty()) song.isrc = known.isrc;
+}
+
+} // namespace
+
 // ---- records -------------------------------------------------------------------------------
+
+bool Catalog::PutSongs(const std::vector<Song>& songs) {
+    std::vector<stream::TrackRecord> records;
+    records.reserve(songs.size());
+    bool identityDirty = false;
+    {
+        std::lock_guard lock(m_mutex);
+        for (const auto& incoming : songs) {
+            if (incoming.track.id.empty()) continue;
+            Song song = incoming;
+            ApplyMeasuredLocked(song);
+            const auto known = m_extras.find(song.track.id);
+            const bool realSong = IsRealSongId(song.track.id);
+            if (realSong && known != m_extras.end()) PreserveKnownIdentity(song, known->second);
+            if (realSong && HasDurableIdentity(song) &&
+                (known == m_extras.end() || !SameIdentity(known->second, song))) {
+                identityDirty = true;
+            }
+            const bool retag = known == m_extras.end() || !SameExtraTags(known->second, song);
+            m_extras[song.track.id] = song;
+            if (!song.track.albumId.empty()) m_songAlbums[song.track.id] = song.track.albumId;
+            records.push_back({std::move(song.track), std::move(song.coverUrl), retag});
+        }
+    }
+    m_records.Put(records);
+    return identityDirty;
+}
 
 void Catalog::Put(const Song& song) {
     Put(std::vector<Song>{song});
 }
 
 void Catalog::Put(const std::vector<Song>& songs) {
-    std::vector<stream::TrackRecord> records;
-    records.reserve(songs.size());
-    std::lock_guard lock(m_mutex);
-    for (const auto& incoming : songs) {
-        if (incoming.track.id.empty()) continue;
-        Song song = incoming;
-        ApplyMeasuredLocked(song);
-        const auto known = m_extras.find(song.track.id);
-        const bool retag = known == m_extras.end() || !SameExtraTags(known->second, song);
-        m_extras[song.track.id] = song;
-        if (!song.track.albumId.empty()) m_songAlbums[song.track.id] = song.track.albumId;
-        records.push_back({std::move(song.track), std::move(song.coverUrl), retag});
+    if (PutSongs(songs)) {
+        if (core_api::is_main_thread()) {
+            m_records.QueueSave();
+        } else {
+            fb2k::inMainThread([this] { m_records.QueueSave(); });
+        }
     }
-    m_records.Put(records);
 }
 
 void Catalog::Put(const stream::Station& station) {
@@ -306,6 +355,35 @@ std::optional<Song> Catalog::FindSong(const stream::Id& id) const {
     auto song = FindSongRaw(id);
     if (song) DisplayMetadata::Get().Apply(*song, DisplayMetadata::Get().SourceStorefront());
     return song;
+}
+
+stream::Id Catalog::FindReportingId(const stream::Id& songId) const {
+    if (songId.empty()) return {};
+    std::lock_guard lock(m_mutex);
+    const auto found = m_extras.find(songId);
+    return found != m_extras.end() && IsCatalogSongId(found->second.reportingId) ? found->second.reportingId
+                                                                                 : stream::Id();
+}
+
+void Catalog::RememberReportingId(const stream::Id& songId, const stream::Id& reportingId) {
+    if (!IsRealSongId(songId) || !IsCatalogSongId(reportingId)) return;
+    bool changed = false;
+    {
+        std::lock_guard lock(m_mutex);
+        auto& extra = m_extras[songId];
+        if (extra.catalogId.empty() && IsCatalogId(songId)) extra.catalogId = songId;
+        if (extra.libraryId.empty() && IsLibraryId(songId) && songId[0] == L'i') extra.libraryId = songId;
+        if (extra.reportingId != reportingId) {
+            extra.reportingId = reportingId;
+            changed = true;
+        }
+    }
+    if (!changed) return;
+    if (m_records.FindTrack(songId)) {
+        m_records.QueueSave();
+    } else {
+        m_records.Rewant(songId);
+    }
 }
 
 std::optional<stream::Playlist> Catalog::FindPlaylistRaw(const stream::Id& id) const {
@@ -399,9 +477,9 @@ std::wstring Catalog::CoverUrl(stream::ArtKind kind, const stream::Id& id) const
 }
 
 void Catalog::PutAndHint(const std::vector<Song>& songs, bool persist) {
-    Put(songs);
+    const bool identityDirty = PutSongs(songs);
     m_records.FlushHints(); // at once (main thread), with whatever else was waiting
-    if (persist) m_records.QueueSave();
+    if (persist || identityDirty) m_records.QueueSave();
 }
 
 // ---- metadb tags and the restart cache -----------------------------------------------------
@@ -497,8 +575,38 @@ void Catalog::InstallCached(std::vector<Song> songs) {
             entries.push_back({song.track, song.coverUrl, {}});
         }
         installed = m_records.InstallMissing(std::move(entries));
-        for (const auto& id : installed)
-            m_extras[id] = *byId.at(id);
+        for (const auto& id : installed) {
+            Song song = *byId.at(id);
+            if (IsRealSongId(id)) {
+                if (const auto prev = m_extras.find(id); prev != m_extras.end())
+                    PreserveKnownIdentity(song, prev->second);
+            }
+            m_extras[id] = std::move(song);
+        }
+    }
+    if (DisplayTargetFor(GetAppleMusicDisplayRegion()).has_value()) {
+        // When a regional display overlay is active (e.g. Japan) and cold at startup, keep any
+        // real non-placeholder tags restored by tracks/snapshot.txt instead of overwriting them
+        // with raw account-storefront names; regional names will hint them once resolved/warmed.
+        const std::wstring sourceStorefront = DisplayMetadata::Get().SourceStorefront();
+        std::vector<stream::Id> toHint;
+        toHint.reserve(installed.size());
+        for (const auto& id : installed) {
+            if (!DisplayMetadata::Get().HasSong(sourceStorefront, id)) {
+                const auto handle = m_records.Handle(id);
+                if (handle.is_valid()) {
+                    const auto info = handle->get_info_ref();
+                    if (info.is_valid()) {
+                        const char* title = info->info().meta_get("title", 0);
+                        const bool placeholder = info->info().info_get(stream::kPlaceholderInfo) != nullptr;
+                        if (title && *title && !placeholder) continue;
+                    }
+                }
+            }
+            toHint.push_back(id);
+        }
+        m_records.Hint(toHint);
+        return;
     }
     m_records.Hint(installed);
 }

@@ -381,6 +381,7 @@
     <ClInclude Include="media\playback_scheduler.h" />
     <ClInclude Include="applemusic\catalog.h" />
     <ClInclude Include="applemusic\ids.h" />
+    <ClInclude Include="applemusic\playback_identity.h" />
     <ClInclude Include="applemusic\config.h" />
     <ClInclude Include="applemusic\display_metadata.h" />
     <ClInclude Include="applemusic\artist_preference.h" />

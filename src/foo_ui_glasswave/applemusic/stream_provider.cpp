@@ -994,6 +994,10 @@ Song BaselineSong(const stream::Track& track) {
     return song;
 }
 
+stream::Id SongCatalogReadId(const Song& song) {
+    return IsCatalogSongId(song.reportingId) ? song.reportingId : song.catalogId;
+}
+
 // Songs read again by their library and catalog ids, with their album and artists. A batch
 // that failed answers for none of its ids.
 struct SongsRead {
@@ -1002,17 +1006,17 @@ struct SongsRead {
     std::set<stream::Id> answered;
     size_t batches = 0;
 
-    // What was read for `song`: by its library id when it has one, else by its catalog id.
+    // What was read for `song`: by its library id when it has one, else by its effective catalog id.
     const Song* For(const Song& song) const {
         const bool inLibrary = !song.libraryId.empty();
-        const stream::Id& key = inLibrary ? song.libraryId : song.catalogId;
+        const stream::Id key = inLibrary ? song.libraryId : SongCatalogReadId(song);
         if (key.empty()) return nullptr;
         for (const auto& read : inLibrary ? library : catalog)
             if ((inLibrary ? read.libraryId : read.catalogId) == key) return &read;
         return nullptr;
     }
     bool Answered(const Song& song) const {
-        return answered.contains(song.libraryId.empty() ? song.catalogId : song.libraryId);
+        return answered.contains(song.libraryId.empty() ? SongCatalogReadId(song) : song.libraryId);
     }
 };
 
@@ -1066,7 +1070,7 @@ SongsRead ReadSongsByIds(const std::vector<stream::Id>& libraryIds, const std::v
                                             L"&include=catalog,albums,artists&include[songs]=albums"
                                             L"&platform=web"
                                       : L"/v1/catalog/" + storefront + L"/songs?ids=" + Encode(joined) +
-                                            L"&include=albums,artists&platform=web";
+                                            L"&include=albums,artists";
                     try {
                         const Object response = Apple(path, abort);
                         if (const auto data = json::GetArray(response, L"data"))
@@ -1102,8 +1106,9 @@ void SongReadIds(const std::vector<Song>& songs, std::vector<stream::Id>& librar
     for (const auto& song : songs) {
         if (!song.libraryId.empty()) {
             if (seenLibrary.emplace(song.libraryId).second) libraryIds.push_back(song.libraryId);
-        } else if (!song.catalogId.empty() && seenCatalog.emplace(song.catalogId).second) {
-            catalogIds.push_back(song.catalogId);
+        } else if (const stream::Id catalogId = SongCatalogReadId(song);
+                   !catalogId.empty() && seenCatalog.emplace(catalogId).second) {
+            catalogIds.push_back(catalogId);
         }
     }
 }
@@ -1132,6 +1137,10 @@ Song JoinWithRecord(const stream::Id& id, const Song& read) {
     if (const auto known = Catalog::Get().FindSongRaw(id)) {
         song = *known;
         MergeHydratedSong(song, read);
+    }
+    if (!IsLibraryId(id) && IsCatalogSongId(read.catalogId) && read.catalogId != id) {
+        if (song.reportingId.empty()) song.reportingId = read.catalogId;
+        song.catalogId = id;
     }
     song.track.id = id;
     return song;
@@ -2918,7 +2927,7 @@ void StreamProvider::ResolveSongDisplayNames(std::vector<Song>& songs, uint64_t 
         try {
             const Object response =
                 Apple(L"/v1/catalog/" + target->storefront + L"/songs?ids=" + Encode(JoinedIds(ids)) +
-                          L"&include=albums,artists&platform=web&l=" + target->locale,
+                          L"&include=albums,artists&l=" + target->locale,
                       abort);
             std::unordered_map<stream::Id, Song> localized;
             if (const auto data = json::GetArray(response, L"data"))
@@ -2987,7 +2996,7 @@ void StreamProvider::ResolveAlbumDisplayNames(std::vector<stream::Album>& albums
         try {
             const Object response =
                 Apple(L"/v1/catalog/" + target->storefront + L"/albums?ids=" + Encode(JoinedIds(ids)) +
-                          L"&include=artists&platform=web&l=" + target->locale,
+                          L"&include=artists&l=" + target->locale,
                       abort);
             std::unordered_map<stream::Id, stream::Album> localized;
             if (const auto data = json::GetArray(response, L"data"))
@@ -3132,7 +3141,7 @@ void StreamProvider::ResolvePlaylistDisplayNames(std::vector<stream::Playlist>& 
         }
         try {
             const Object response = Apple(L"/v1/catalog/" + target->storefront + L"/playlists?ids=" +
-                                              Encode(joined) + L"&platform=web&l=" + target->locale,
+                                              Encode(joined) + L"&l=" + target->locale,
                                           abort);
             if (!canCommit()) return;
             std::unordered_map<stream::Id, stream::Playlist> localizedById;
@@ -3224,6 +3233,8 @@ void StreamProvider::ApplyDisplayMetadataChange() {
     // The account snapshot, library records, IDs and detail records are region-independent.
     // Rotate only the display epoch so old async jobs cannot publish into the new projection.
     DisplayMetadata::Get().BeginTransition();
+    Catalog::Get().Records().ClearSettled();
+    Catalog::Get().RefreshHints();
     NotifyDisplayChanged();
     m_snapshots.Queue();
 }
@@ -3947,8 +3958,19 @@ std::wstring StreamProvider::Lyrics(const stream::Id& track, abort_callback& abo
     }
     lyrics_protocol::Request request;
     request.mode = lyrics_protocol::Mode::Direct;
-    request.trackId = track;
-    request.trackType = TrackResourceType(track);
+    const auto song = Catalog::Get().FindSongRaw(track);
+    const stream::Id reportingId =
+        song && !song->reportingId.empty() ? song->reportingId : Catalog::Get().FindReportingId(track);
+    if (IsCatalogSongId(reportingId)) {
+        request.trackId = reportingId;
+        request.trackType = L"songs";
+    } else if (song && !song->libraryId.empty()) {
+        request.trackId = song->libraryId;
+        request.trackType = L"library-songs";
+    } else {
+        request.trackId = track;
+        request.trackType = TrackResourceType(track);
+    }
     request.locale = locale.empty() ? L"en-US" : std::move(locale);
     const Object response =
         Request(L"/api/v1/glasswave/lyrics", abort, L"POST", lyrics_protocol::BuildRequestBody(request));
@@ -3964,7 +3986,13 @@ stream::Catalog* StreamProvider::Records() const {
 
 std::optional<stream::Track> StreamProvider::FindTrack(const stream::Id& track) const {
     const auto song = Catalog::Get().FindSong(track);
-    if (!song || stream::LacksLinks(song->track)) Catalog::Get().Records().Want(track);
+    bool want = !song || stream::LacksLinks(song->track);
+    if (!want && RegionalDisplayEnabled() &&
+        (!song->catalogId.empty() || !song->reportingId.empty())) {
+        const std::wstring sourceStorefront = DisplayMetadata::Get().SourceStorefront();
+        if (!sourceStorefront.empty() && !DisplayMetadata::Get().HasSong(sourceStorefront, track)) want = true;
+    }
+    if (want) Catalog::Get().Records().Want(track);
     return song ? std::optional<stream::Track>(song->track) : std::nullopt;
 }
 
@@ -3983,45 +4011,87 @@ void StreamProvider::ReadSongs(std::vector<stream::Id> ids) {
     }
     const std::wstring storefront = Storefront();
     m_exec.Post(kTasks, generation, [this, generation, storefront, ids = std::move(ids)] {
-        // Each song is read by its library id when its record has one, else by its catalog id;
-        // one never seen by the id it is asked for.
-        std::vector<Song> wanted;
-        wanted.reserve(ids.size());
+        // Each song missing from the catalog or lacking links is read by its library id when
+        // known, else by its effective catalog id. Songs already complete in the catalog skip
+        // the account-storefront read and only resolve regional display names when needed.
+        std::vector<Song> needRaw;
+        std::vector<Song> regionalOnly;
+        needRaw.reserve(ids.size());
         for (const auto& id : ids) {
-            Song song;
             if (const auto known = Catalog::Get().FindSongRaw(id)) {
-                song = *known;
+                Song song = *known;
+                song.track.id = id;
+                if (stream::LacksLinks(song.track))
+                    needRaw.push_back(std::move(song));
+                else
+                    regionalOnly.push_back(std::move(song));
             } else {
                 stream::Track track;
                 track.id = id;
-                song = BaselineSong(track);
+                Song song = BaselineSong(track);
+                song.reportingId = Catalog::Get().FindReportingId(id);
+                song.track.id = id;
+                needRaw.push_back(std::move(song));
             }
-            song.track.id = id;
-            wanted.push_back(std::move(song));
         }
-        std::vector<stream::Id> libraryIds;
-        std::vector<stream::Id> catalogIds;
-        SongReadIds(wanted, libraryIds, catalogIds);
         SongsRead read;
-        try {
-            read = ReadSongsByIds(libraryIds, catalogIds, storefront, m_exec.Abort());
-        } catch (const exception_aborted&) {
-            return;
+        if (!needRaw.empty()) {
+            std::vector<stream::Id> libraryIds;
+            std::vector<stream::Id> catalogIds;
+            SongReadIds(needRaw, libraryIds, catalogIds);
+            try {
+                read = ReadSongsByIds(libraryIds, catalogIds, storefront, m_exec.Abort());
+            } catch (const exception_aborted&) {
+                return;
+            }
         }
         std::vector<std::pair<stream::Id, Song>> found;
         std::vector<stream::Id> answered;
-        for (const auto& song : wanted) {
+        std::vector<Song> regionalBatch;
+        for (const auto& song : needRaw) {
             if (!read.Answered(song)) continue; // a failed batch: asked again after the pause
             answered.push_back(song.track.id);
-            if (const Song* songRead = read.For(song)) found.emplace_back(song.track.id, *songRead);
+            if (const Song* songRead = read.For(song)) {
+                found.emplace_back(song.track.id, *songRead);
+                Song forDisplay = *songRead;
+                forDisplay.track.id = song.track.id;
+                if (forDisplay.reportingId.empty()) forDisplay.reportingId = song.reportingId;
+                if (forDisplay.catalogId.empty()) forDisplay.catalogId = song.catalogId;
+                regionalBatch.push_back(std::move(forDisplay));
+            }
         }
-        m_exec.PostMain(generation, [found = std::move(found), answered = std::move(answered)] {
+        std::vector<stream::Id> regionalOnlyIds;
+        regionalOnlyIds.reserve(regionalOnly.size());
+        for (auto& song : regionalOnly) {
+            regionalOnlyIds.push_back(song.track.id);
+            regionalBatch.push_back(std::move(song));
+        }
+        const bool regional = RegionalDisplayEnabled();
+        if (regional && !regionalBatch.empty()) {
+            try {
+                ResolveSongDisplayNames(regionalBatch, generation, m_exec.Abort());
+            } catch (const exception_aborted&) {
+                return;
+            }
+        }
+        const std::wstring sourceStorefront = DisplayMetadata::Get().SourceStorefront();
+        std::vector<stream::Id> hintRegionalIds;
+        hintRegionalIds.reserve(regionalOnlyIds.size());
+        for (const auto& id : regionalOnlyIds) {
+            if (!regional || DisplayMetadata::Get().HasSong(sourceStorefront, id)) {
+                answered.push_back(id);
+                hintRegionalIds.push_back(id);
+            }
+        }
+        m_exec.PostMain(generation, [found = std::move(found), hintRegionalIds = std::move(hintRegionalIds),
+                                     answered = std::move(answered)] {
             std::vector<Song> songs;
             songs.reserve(found.size());
             for (const auto& [id, songRead] : found)
                 songs.push_back(JoinWithRecord(id, songRead));
             // Persisted with the restart catalog: a queue restored next time has its names at once.
             if (!songs.empty()) Catalog::Get().PutAndHint(songs, true);
+            if (!hintRegionalIds.empty()) Catalog::Get().Records().Hint(hintRegionalIds);
             Catalog::Get().Records().Settle(answered);
         });
     });
@@ -5084,8 +5154,11 @@ void StreamProvider::RestoreListRecords(const stream::ListPage& page) {
         // show them as "Apple Music <id>" until something read them again.
         if (const auto* tracks = std::get_if<std::vector<stream::Track>>(&page.rows)) {
             std::vector<Song> songs;
+            std::vector<stream::Id> alreadyKnown;
             songs.reserve(tracks->size());
+            alreadyKnown.reserve(tracks->size());
             for (const auto& track : *tracks) {
+                if (Catalog::Get().FindSongRaw(track.id)) alreadyKnown.push_back(track.id);
                 Song song;
                 song.track = track;
                 if (IsLibraryId(track.id) && track.id[0] == L'i')
@@ -5095,6 +5168,7 @@ void StreamProvider::RestoreListRecords(const stream::ListPage& page) {
                 songs.push_back(std::move(song));
             }
             Catalog::Get().InstallCached(std::move(songs));
+            if (!alreadyKnown.empty()) Catalog::Get().Records().Hint(alreadyKnown);
         }
         return;
     }
@@ -6347,10 +6421,12 @@ void StreamProvider::WriteFavorite(const stream::Id& track, bool favorite, Done 
     }
 
     const auto song = Catalog::Get().FindSong(track);
+    const stream::Id knownReporting =
+        song && !song->reportingId.empty() ? song->reportingId : Catalog::Get().FindReportingId(track);
     stream::Id requestId;
     std::wstring resourceType;
-    if (song && !song->reportingId.empty()) {
-        requestId = song->reportingId;
+    if (IsCatalogSongId(knownReporting)) {
+        requestId = knownReporting;
         resourceType = L"songs";
     } else if (song && !song->catalogId.empty()) {
         requestId = song->catalogId;
@@ -6375,13 +6451,31 @@ void StreamProvider::WriteFavorite(const stream::Id& track, bool favorite, Done 
         std::lock_guard lock(m_mutex);
         generation = m_exec.Generation();
     }
-    const stream::Id libraryId = song ? song->libraryId : stream::Id();
-    const stream::Id catalogId = song ? song->catalogId : stream::Id();
+    SongIdentityHint hint;
+    hint.trackId = track;
+    if (song) {
+        hint.catalogId = song->catalogId;
+        hint.libraryId = song->libraryId;
+        hint.reportingId = knownReporting;
+        hint.isrc = song->isrc;
+        hint.match.title = song->track.title;
+        hint.match.album = song->track.album;
+        hint.match.contentRating = song->contentRating;
+        hint.match.durationMs = song->track.durationMs;
+    } else {
+        if (IsCatalogSongId(track))
+            hint.catalogId = track;
+        else if (IsLibraryId(track) && track[0] == L'i')
+            hint.libraryId = track;
+        hint.reportingId = knownReporting;
+    }
+    const std::wstring storefront = Storefront();
     // On the write queue, so a favorite never waits behind page reads.
     m_exec.Post(kMutations, generation,
-                [this, generation, track, requestId, resourceType, favorite, libraryId, catalogId,
-                 done = std::move(done)]() mutable {
+                [this, generation, track, requestId, resourceType, favorite, hint = std::move(hint),
+                 storefront, done = std::move(done)]() mutable {
                     std::wstring error;
+                    stream::Id resolvedReporting;
                     const auto request = [&](const stream::Id& id, const std::wstring& type) {
                         const std::wstring path =
                             L"/v1/me/favorites?ids[" + type + L"]=" + Encode(id) + L"&platform=web";
@@ -6391,19 +6485,48 @@ void StreamProvider::WriteFavorite(const stream::Id& track, bool favorite, Done 
                         try {
                             request(requestId, resourceType);
                         } catch (const BridgeHttpError& exception) {
-                            if (exception.status() != 404 || libraryId.empty() || catalogId.empty()) throw;
-                            const auto mapping =
-                                ResolveLibraryPlaybackMapping(libraryId, catalogId, m_exec.Abort());
-                            if (!mapping || mapping->reportingId.empty()) throw;
-                            request(mapping->reportingId, L"songs");
+                            if (exception.status() != 404) throw;
+                            RecoveryCallbacks callbacks;
+                            callbacks.tryOpen = [&](const std::wstring& candidate) -> bool {
+                                try {
+                                    request(candidate, L"songs");
+                                    return true;
+                                } catch (const BridgeHttpError& retryError) {
+                                    if (retryError.status() == 404) return false;
+                                    throw;
+                                }
+                            };
+                            callbacks.fromLibrary = [&](std::wstring_view libraryId,
+                                                        const std::set<std::wstring>& exclude)
+                                -> std::optional<std::wstring> {
+                                const auto mapping = ResolveLibraryPlaybackMapping(libraryId, hint.catalogId,
+                                                                                   m_exec.Abort(), exclude);
+                                return mapping ? std::optional<std::wstring>(mapping->reportingId)
+                                               : std::nullopt;
+                            };
+                            callbacks.fromEquivalents = [&](std::wstring_view catalogId,
+                                                            const std::set<std::wstring>& exclude) {
+                                return ResolveCatalogEquivalents(storefront, catalogId, hint.match, exclude,
+                                                                 m_exec.Abort());
+                            };
+                            callbacks.fromIsrc = [&](std::wstring_view isrc,
+                                                     const std::set<std::wstring>& exclude) {
+                                return ResolveCatalogByIsrc(storefront, isrc, hint.match, exclude,
+                                                            m_exec.Abort());
+                            };
+                            const auto recovered = RecoverAfterNotFound(hint, requestId, true, callbacks);
+                            if (!recovered) throw;
+                            resolvedReporting = *recovered;
                         }
                     } catch (const exception_aborted&) {
                         return;
                     } catch (const std::exception& exception) {
                         error = Wide(exception.what());
                     }
-                    m_exec.PostMain(generation, [this, track, favorite, done = std::move(done),
-                                                 error = std::move(error)]() mutable {
+                    m_exec.PostMain(generation, [this, track, favorite, resolvedReporting,
+                                                 done = std::move(done), error = std::move(error)]() mutable {
+                        if (!resolvedReporting.empty())
+                            Catalog::Get().RememberReportingId(track, resolvedReporting);
                         if (!error.empty()) {
                             if (done) done(std::move(error));
                             return;

@@ -1,8 +1,11 @@
 #include "pch.h"
 #include "applemusic/catalog.h"
+#include "core/log.h"
 #include "core/text.h"
 #include "applemusic/client.h"
 #include "applemusic/config.h"
+#include "applemusic/display_metadata.h"
+#include "applemusic/playback_identity.h"
 #include "applemusic/playback_log.h"
 #include "applemusic/stream_provider.h"
 #include "cache/audio.h"
@@ -32,6 +35,19 @@ using core::Wide;
 
 std::string Lower(std::wstring_view text) {
     return core::LowerAscii(Utf8(text));
+}
+
+std::wstring CurrentStorefront(abort_callback& abort) {
+    std::wstring storefront = DisplayMetadata::Get().SourceStorefront();
+    if (storefront.size() == 2) return storefront;
+    try {
+        const AccountState account = GetAccount(abort);
+        if (account.signedIn && account.storefront.size() == 2) return account.storefront;
+    } catch (const exception_aborted&) {
+        throw;
+    } catch (...) {
+    }
+    return L"US";
 }
 
 // Ends playback sessions on a worker. A session is released by whichever thread drops the last
@@ -301,10 +317,12 @@ class AppleInput : public stream::EncodedInputBase {
     void PublishInfo(file_info& out, abort_callback& abort) override { get_info(out, abort); }
 
     std::string BeginOpen(abort_callback&) override {
-        m_epoch = stream::SourcePlaybackEpoch();
+        m_confirmedUnavailable = false;
         m_song = Catalog::Get().FindSongRaw(m_id);
-        m_asset = m_id;
-        if (m_song && !m_song->catalogId.empty()) m_asset = m_song->catalogId;
+        const std::wstring knownReporting =
+            m_song && !m_song->reportingId.empty() ? m_song->reportingId : Catalog::Get().FindReportingId(m_id);
+        const std::wstring knownCatalog = m_song ? m_song->catalogId : std::wstring();
+        m_asset = PreferredCatalogAssetId(m_id, knownCatalog, knownReporting);
         if (IsLibraryId(m_asset) && m_asset[0] != L'i')
             throw exception_io_data("This Apple Music library item is not a song");
         m_quality = GetAudioQuality();
@@ -332,12 +350,12 @@ class AppleInput : public stream::EncodedInputBase {
         try {
             return OpenSession(abort);
         } catch (const BridgeHttpError& error) {
-            // Apple will not play this song here: it opens as an empty track, so the list plays
-            // on to the next one without an error every time it comes round.
-            // Not from a prefetch thread: that is no playback, and must not spend the skip budget
-            // of the real one (a refused prefetch fails and is tried again when it plays).
-            if (error.refused() && !cache::audio::IsPrefetchThread() &&
-                stream::SkipUnavailableSource(m_epoch, m_path, Wide(error.what()), m_flags, abort)) {
+            // Apple confirmed this song is unavailable here (either webPlayback refused the
+            // library item or a 404 survived every live replacement check without lookup errors):
+            // open as an empty track so realtime playback advances without an error dialog.
+            // Prefetch, conversion and integrity tests never skip (TrySkipUnavailable returns false).
+            const bool unavailable = error.refused() || (error.status() == 404 && m_confirmedUnavailable);
+            if (unavailable && TrySkipUnavailable(Wide(error.what()), abort)) {
                 playback_log::Skipped(m_id, error.what());
                 return std::nullopt;
             }
@@ -403,19 +421,78 @@ class AppleInput : public stream::EncodedInputBase {
 
     // Opens a playback session with the service and describes what it delivers.
     stream::EncodedSource OpenSession(abort_callback& abort) {
+        m_confirmedUnavailable = false;
         stream::Id asset = m_asset;
         Object session;
         try {
             session = OpenPlayback(asset, abort);
         } catch (const BridgeHttpError& error) {
-            if (error.status() != 404 || !m_song || m_song->libraryId.empty() || m_song->catalogId.empty() ||
-                asset != m_song->catalogId) {
+            if (error.status() != 404) throw;
+
+            SongIdentityHint hint;
+            hint.trackId = m_id;
+            if (m_song) {
+                hint.catalogId = m_song->catalogId;
+                hint.libraryId = m_song->libraryId;
+                hint.reportingId = m_song->reportingId;
+                hint.isrc = m_song->isrc;
+                hint.match.title = m_song->track.title;
+                hint.match.album = m_song->track.album;
+                hint.match.contentRating = m_song->contentRating;
+                hint.match.durationMs = m_song->track.durationMs;
+            } else {
+                if (IsCatalogSongId(m_id))
+                    hint.catalogId = m_id;
+                else if (IsLibraryId(m_id) && m_id[0] == L'i')
+                    hint.libraryId = m_id;
+                hint.reportingId = Catalog::Get().FindReportingId(m_id);
+            }
+
+            std::wstring storefront;
+            const auto ensureStorefront = [&]() -> const std::wstring& {
+                if (storefront.empty()) storefront = CurrentStorefront(abort);
+                return storefront;
+            };
+
+            bool lookupFailed = false;
+            RecoveryCallbacks callbacks;
+            callbacks.tryOpen = [&](const std::wstring& candidate) -> bool {
+                try {
+                    session = OpenPlayback(candidate, abort);
+                    return true;
+                } catch (const BridgeHttpError& retryError) {
+                    if (retryError.status() == 404) return false;
+                    throw;
+                }
+            };
+            callbacks.fromLibrary = [&](std::wstring_view libraryId,
+                                        const std::set<std::wstring>& exclude) -> std::optional<std::wstring> {
+                const auto mapping =
+                    ResolveLibraryPlaybackMapping(libraryId, hint.catalogId, abort, exclude, &lookupFailed);
+                return mapping ? std::optional<std::wstring>(mapping->reportingId) : std::nullopt;
+            };
+            callbacks.fromEquivalents = [&](std::wstring_view catalogId,
+                                            const std::set<std::wstring>& exclude) {
+                return ResolveCatalogEquivalents(ensureStorefront(), catalogId, hint.match, exclude, abort,
+                                                 &lookupFailed);
+            };
+            callbacks.fromIsrc = [&](std::wstring_view isrc, const std::set<std::wstring>& exclude) {
+                return ResolveCatalogByIsrc(ensureStorefront(), isrc, hint.match, exclude, abort,
+                                            &lookupFailed);
+            };
+
+            const auto recovered = RecoverAfterNotFound(hint, asset, m_transactionTag.empty(), callbacks);
+            if (!recovered) {
+                m_confirmedUnavailable = !lookupFailed;
                 throw;
             }
-            const auto mapping = ResolveLibraryPlaybackMapping(m_song->libraryId, m_song->catalogId, abort);
-            if (!mapping) throw;
-            asset = mapping->reportingId;
-            session = OpenPlayback(asset, abort);
+            asset = *recovered;
+            core::Log(L"Apple Music: resolved stale song " + m_id + L" -> " + asset);
+            if (m_transactionTag.empty()) {
+                fb2k::inMainThread([id = m_id, resolved = asset] {
+                    Catalog::Get().RememberReportingId(id, resolved);
+                });
+            }
         }
         const std::wstring sessionId = json::GetString(session, L"sessionId");
         std::wstring bridge;
@@ -483,7 +560,7 @@ class AppleInput : public stream::EncodedInputBase {
     }
 
     stream::Id m_id;
-    uint64_t m_epoch = 0;
+    bool m_confirmedUnavailable = false;
     // What this opening read at its start (BeginOpen) and the session said.
     std::optional<Song> m_song;
     stream::Id m_asset;

@@ -1,9 +1,11 @@
 #pragma once
 
+#include "applemusic/playback_identity.h"
 #include "core/json.h"
 #include "net/json_client.h"
 
 #include <optional>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -84,10 +86,24 @@ std::vector<Object> Collection(std::wstring_view path, abort_callback& abort);
 void SetAppleLocale(bool chinese);
 
 // Resolves the current catalog identity explicitly supplied by Apple for one library
-// song. This is used only when the library item's stored catalogId no longer resolves.
+// song. Used when the stored catalogId or a cached reportingId no longer resolves.
+// When `lookupFailed` is provided, it is set to true on transport/non-404 errors (never on 404/empty).
 std::optional<LibraryPlaybackMapping> ResolveLibraryPlaybackMapping(std::wstring_view libraryId,
                                                                     std::wstring_view catalogId,
-                                                                    abort_callback& abort);
+                                                                    abort_callback& abort,
+                                                                    const std::set<std::wstring>& exclude = {},
+                                                                    bool* lookupFailed = nullptr);
+
+// Fetches replacement catalog song ids in `storefront` via Apple's filter[equivalents].
+std::vector<std::wstring> ResolveCatalogEquivalents(std::wstring_view storefront, std::wstring_view catalogId,
+                                                    const MatchHints& hints,
+                                                    const std::set<std::wstring>& exclude,
+                                                    abort_callback& abort, bool* lookupFailed = nullptr);
+
+// Fetches replacement catalog song ids in `storefront` sharing the same ISRC recording code.
+std::vector<std::wstring> ResolveCatalogByIsrc(std::wstring_view storefront, std::wstring_view isrc,
+                                               const MatchHints& hints, const std::set<std::wstring>& exclude,
+                                               abort_callback& abort, bool* lookupFailed = nullptr);
 
 // Both throw when <profile>/glasswave/applemusic/bridge.json is missing or invalid.
 std::wstring BridgeUrl();

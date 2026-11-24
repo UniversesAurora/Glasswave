@@ -704,6 +704,22 @@ void Catalog::FlushWanted() {
     if (!batch.empty()) read(std::move(batch));
 }
 
+void Catalog::Rewant(const Id& song) {
+    if (song.empty()) return;
+    {
+        std::lock_guard lock(m_readMutex);
+        m_settled.erase(song);
+        m_asked.erase(song);
+    }
+    Want(song);
+}
+
+void Catalog::ClearSettled() {
+    std::lock_guard lock(m_readMutex);
+    m_settled.clear();
+    m_asked.clear();
+}
+
 void Catalog::Settle(const std::vector<Id>& songs) {
     std::lock_guard lock(m_readMutex);
     for (const auto& id : songs) {

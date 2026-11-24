@@ -3,6 +3,8 @@
 #include "core/text.h"
 #include "applemusic/catalog.h"
 #include "applemusic/client.h"
+#include "applemusic/display_metadata.h"
+#include "applemusic/playback_identity.h"
 #include "cache/images.h"
 #include "stream/art_extractor.h"
 
@@ -106,6 +108,8 @@ class ArtworkSearch {
 };
 
 std::wstring Storefront(abort_callback& abort) {
+    const std::wstring known = DisplayMetadata::Get().SourceStorefront();
+    if (known.size() == 2) return known;
     try {
         const AccountState account = GetAccount(abort);
         if (account.signedIn && account.storefront.size() == 2) return account.storefront;
@@ -118,36 +122,67 @@ std::wstring Storefront(abort_callback& abort) {
 
 std::wstring FetchCoverUrl(stream::ArtKind kind, const std::wstring& id, abort_callback& abort) {
     std::wstring path;
+    std::wstring storefront;
+    const auto ensureStorefront = [&]() -> const std::wstring& {
+        if (storefront.empty()) storefront = Storefront(abort);
+        return storefront;
+    };
+    const auto fetchUrl = [&](const std::wstring& requestPath) -> std::wstring {
+        const Object response = Apple(requestPath, abort);
+        const auto item = FirstObject(response, L"data");
+        return item ? ArtworkSearch(response).Find(*item) : std::wstring();
+    };
     switch (kind) {
-    case stream::ArtKind::Track:
-        if (IsLibraryId(id) && id[0] == L'i') {
+    case stream::ArtKind::Track: {
+        const auto song = Catalog::Get().FindSongRaw(id);
+        const stream::Id reportingId =
+            song && !song->reportingId.empty() ? song->reportingId : Catalog::Get().FindReportingId(id);
+        if (IsCatalogSongId(reportingId)) {
+            path = L"/v1/catalog/" + ensureStorefront() + L"/songs/" + Encode(reportingId) + L"?include=albums";
+        } else if (IsLibraryId(id) && id[0] == L'i') {
             path = L"/v1/me/library/songs/" + Encode(id) + L"?include=catalog";
+        } else if (song && !song->libraryId.empty()) {
+            path = L"/v1/me/library/songs/" + Encode(song->libraryId) + L"?include=catalog";
         } else {
-            path = L"/v1/catalog/" + Storefront(abort) + L"/songs/" + Encode(id) + L"?include=albums";
+            path = L"/v1/catalog/" + ensureStorefront() + L"/songs/" + Encode(id) + L"?include=albums";
         }
-        break;
+        try {
+            return fetchUrl(path);
+        } catch (const BridgeHttpError& error) {
+            if (error.status() != 404 || !IsCatalogSongId(id)) throw;
+            MatchHints hints;
+            if (song) {
+                hints.title = song->track.title;
+                hints.album = song->track.album;
+                hints.contentRating = song->contentRating;
+                hints.durationMs = song->track.durationMs;
+            }
+            const auto equivalents = ResolveCatalogEquivalents(ensureStorefront(), id, hints, {id}, abort);
+            if (equivalents.empty()) throw;
+            return fetchUrl(L"/v1/catalog/" + ensureStorefront() + L"/songs/" + Encode(equivalents.front()) +
+                            L"?include=albums");
+        }
+    }
     case stream::ArtKind::Album:
         path = IsLibraryId(id) && id[0] == L'l'
                    ? L"/v1/me/library/albums/" + Encode(id) + L"?include=catalog"
-                   : L"/v1/catalog/" + Storefront(abort) + L"/albums/" + Encode(id);
+                   : L"/v1/catalog/" + ensureStorefront() + L"/albums/" + Encode(id);
         break;
     case stream::ArtKind::Artist:
         path = IsLibraryId(id) && id[0] == L'r'
                    ? L"/v1/me/library/artists/" + Encode(id) + L"?include=catalog"
-                   : L"/v1/catalog/" + Storefront(abort) + L"/artists/" + Encode(id);
+                   : L"/v1/catalog/" + ensureStorefront() + L"/artists/" + Encode(id);
         break;
     case stream::ArtKind::Playlist:
         path = IsLibraryId(id) && id[0] == L'p'
                    ? L"/v1/me/library/playlists/" + Encode(id)
-                   : L"/v1/catalog/" + Storefront(abort) + L"/playlists/" + Encode(id);
+                   : L"/v1/catalog/" + ensureStorefront() + L"/playlists/" + Encode(id);
         break;
     case stream::ArtKind::Station:
-        path = L"/v1/catalog/" + Storefront(abort) + L"/stations/" + Encode(id);
+        path = L"/v1/catalog/" + ensureStorefront() + L"/stations/" + Encode(id);
         break;
     }
-    const Object response = Apple(path, abort);
-    const auto item = FirstObject(response, L"data");
-    return item ? ArtworkSearch(response).Find(*item) : std::wstring();
+    return fetchUrl(path);
 }
 
 std::wstring ResizeArtwork(std::wstring url, const Artwork& artwork) {

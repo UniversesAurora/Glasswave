@@ -58,6 +58,10 @@ class Catalog {
 
     std::optional<Song> FindSong(const stream::Id& id) const;
     std::optional<Song> FindSongRaw(const stream::Id& id) const;
+    stream::Id FindReportingId(const stream::Id& songId) const;
+    // Main thread: records a newly resolved live catalog id for `songId` (e.g. after a 404
+    // recovery) and schedules restart-cache persistence when the track is in the catalog.
+    void RememberReportingId(const stream::Id& songId, const stream::Id& reportingId);
     std::optional<stream::Playlist> FindPlaylist(const stream::Id& id) const;
     std::optional<stream::Playlist> FindPlaylistRaw(const stream::Id& id) const;
     std::optional<stream::Album> FindAlbum(const stream::Id& id) const;
@@ -118,6 +122,7 @@ class Catalog {
     void LoadMeasuredLocked() const;
     void ApplyMeasuredLocked(Song& song) const;
     void SaveMeasuredLocked() const;
+    bool PutSongs(const std::vector<Song>& songs);
 
     stream::Catalog m_records;
     mutable std::mutex m_mutex;

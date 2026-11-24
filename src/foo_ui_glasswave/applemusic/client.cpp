@@ -94,15 +94,6 @@ bool ValidJsonToken(std::wstring_view token) {
     return true;
 }
 
-bool ValidCatalogId(std::wstring_view id) {
-    if (id.empty() || id.size() > 256 || HasControl(id) || id.find(L'/') != std::wstring_view::npos ||
-        id.find(L'\\') != std::wstring_view::npos || id.find(L'?') != std::wstring_view::npos ||
-        id.find(L'#') != std::wstring_view::npos) {
-        return false;
-    }
-    return std::all_of(id.begin(), id.end(), [](wchar_t c) { return c >= L'0' && c <= L'9'; });
-}
-
 int PickLoopbackPort() {
     return net::PickLoopbackPort();
 }
@@ -473,10 +464,35 @@ Object Request(std::wstring_view path, abort_callback& abort, std::wstring_view 
     return BridgeRequest(path, abort, method, std::move(body), {}, {});
 }
 
+std::vector<CatalogSongCandidate> ParseCatalogCandidates(const Object& response) {
+    std::vector<CatalogSongCandidate> candidates;
+    const auto data = json::GetArray(response, L"data");
+    if (!data) return candidates;
+    for (const auto& item : json::Objects(*data)) {
+        if (json::GetString(item, L"type") != L"songs") continue;
+        CatalogSongCandidate candidate;
+        candidate.id = json::GetString(item, L"id");
+        if (const auto attributes = json::GetObject(item, L"attributes")) {
+            candidate.title = json::GetString(*attributes, L"name");
+            candidate.album = json::GetString(*attributes, L"albumName");
+            candidate.contentRating = json::GetString(*attributes, L"contentRating");
+            candidate.durationMs = json::GetInt(*attributes, L"durationInMillis");
+            if (const auto play = json::GetObject(*attributes, L"playParams")) {
+                candidate.playable = !json::GetString(*play, L"id").empty();
+                candidate.reportingId = json::GetString(*play, L"reportingId");
+            }
+        }
+        candidates.push_back(std::move(candidate));
+    }
+    return candidates;
+}
+
 std::optional<LibraryPlaybackMapping> ResolveLibraryPlaybackMapping(std::wstring_view libraryId,
                                                                     std::wstring_view catalogId,
-                                                                    abort_callback& abort) {
-    if (libraryId.empty() || catalogId.empty()) return std::nullopt;
+                                                                    abort_callback& abort,
+                                                                    const std::set<std::wstring>& exclude,
+                                                                    bool* lookupFailed) {
+    if (libraryId.empty()) return std::nullopt;
     try {
         const Object response =
             Apple(L"/v1/me/library/songs/" + Encode(libraryId) + L"?include=catalog", abort);
@@ -486,29 +502,87 @@ std::optional<LibraryPlaybackMapping> ResolveLibraryPlaybackMapping(std::wstring
         if (items.size() != 1) return std::nullopt;
 
         const Object& item = items.front();
-        if (json::GetString(item, L"id") != libraryId || json::GetString(item, L"type") != L"library-songs") {
-            return std::nullopt;
+        LibrarySongIdentity identity;
+        identity.id = json::GetString(item, L"id");
+        identity.type = json::GetString(item, L"type");
+        if (const auto attributes = json::GetObject(item, L"attributes")) {
+            if (const auto playback = json::GetObject(*attributes, L"playParams")) {
+                identity.playParamsPresent = true;
+                identity.isLibrary = json::GetBool(*playback, L"isLibrary");
+                identity.reporting = json::GetBool(*playback, L"reporting");
+                identity.playParamsId = json::GetString(*playback, L"id");
+                identity.playParamsKind = json::GetString(*playback, L"kind");
+                identity.playParamsCatalogId = json::GetString(*playback, L"catalogId");
+                identity.playParamsReportingId = json::GetString(*playback, L"reportingId");
+            }
         }
-        const auto attributes = json::GetObject(item, L"attributes");
-        const auto playback = attributes ? json::GetObject(*attributes, L"playParams") : std::nullopt;
-        if (!playback || !json::GetBool(*playback, L"isLibrary") ||
-            json::GetString(*playback, L"id") != libraryId ||
-            json::GetString(*playback, L"kind") != L"song" ||
-            json::GetString(*playback, L"catalogId") != catalogId ||
-            !json::GetBool(*playback, L"reporting")) {
-            return std::nullopt;
+        if (const auto relationships = json::GetObject(item, L"relationships")) {
+            if (const auto catalog = json::GetObject(*relationships, L"catalog")) {
+                if (const auto relData = json::GetArray(*catalog, L"data")) {
+                    for (const auto& entry : json::Objects(*relData)) {
+                        const std::wstring relId = json::GetString(entry, L"id");
+                        if (!relId.empty()) {
+                            identity.embeddedCatalogId = relId;
+                            break;
+                        }
+                    }
+                }
+            }
         }
 
-        const std::wstring reportingId = json::GetString(*playback, L"reportingId");
-        if (!ValidCatalogId(reportingId) || reportingId == catalogId ||
-            (reportingId.size() > 2 && reportingId[1] == L'.')) {
-            return std::nullopt;
-        }
-        return LibraryPlaybackMapping{std::wstring(libraryId), std::wstring(catalogId), reportingId};
+        std::set<std::wstring> effectiveExclude = exclude;
+        if (!catalogId.empty()) effectiveExclude.emplace(catalogId);
+        const auto resolved = SelectLibraryReplacementId(identity, libraryId, effectiveExclude);
+        if (!resolved) return std::nullopt;
+        return LibraryPlaybackMapping{std::wstring(libraryId), std::wstring(catalogId), *resolved};
     } catch (const exception_aborted&) {
         throw;
-    } catch (...) {
+    } catch (const BridgeHttpError& error) {
+        if (error.status() != 404 && lookupFailed) *lookupFailed = true;
         return std::nullopt;
+    } catch (...) {
+        if (lookupFailed) *lookupFailed = true;
+        return std::nullopt;
+    }
+}
+
+std::vector<std::wstring> ResolveCatalogEquivalents(std::wstring_view storefront, std::wstring_view catalogId,
+                                                    const MatchHints& hints,
+                                                    const std::set<std::wstring>& exclude,
+                                                    abort_callback& abort, bool* lookupFailed) {
+    if (storefront.size() != 2 || !IsCatalogSongId(catalogId)) return {};
+    try {
+        const Object response =
+            Apple(L"/v1/catalog/" + Encode(storefront) + L"/songs?filter[equivalents]=" + Encode(catalogId),
+                  abort);
+        return RankCatalogCandidates(ParseCatalogCandidates(response), hints, exclude);
+    } catch (const exception_aborted&) {
+        throw;
+    } catch (const BridgeHttpError& error) {
+        if (error.status() != 404 && lookupFailed) *lookupFailed = true;
+        return {};
+    } catch (...) {
+        if (lookupFailed) *lookupFailed = true;
+        return {};
+    }
+}
+
+std::vector<std::wstring> ResolveCatalogByIsrc(std::wstring_view storefront, std::wstring_view isrc,
+                                               const MatchHints& hints, const std::set<std::wstring>& exclude,
+                                               abort_callback& abort, bool* lookupFailed) {
+    if (storefront.size() != 2 || isrc.empty()) return {};
+    try {
+        const Object response =
+            Apple(L"/v1/catalog/" + Encode(storefront) + L"/songs?filter[isrc]=" + Encode(isrc), abort);
+        return RankCatalogCandidates(ParseCatalogCandidates(response), hints, exclude);
+    } catch (const exception_aborted&) {
+        throw;
+    } catch (const BridgeHttpError& error) {
+        if (error.status() != 404 && lookupFailed) *lookupFailed = true;
+        return {};
+    } catch (...) {
+        if (lookupFailed) *lookupFailed = true;
+        return {};
     }
 }
 

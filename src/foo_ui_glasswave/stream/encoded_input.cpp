@@ -136,8 +136,14 @@ void EncodedInputBase::decode_initialize(unsigned flags, abort_callback& abort) 
     }
 }
 
+bool EncodedInputBase::TrySkipUnavailable(std::wstring_view reason, abort_callback& abort) const {
+    return !cache::audio::IsPrefetchThread() &&
+           SkipUnavailableSource(m_playbackEpoch, m_path, reason, m_flags, abort);
+}
+
 void EncodedInputBase::OpenFresh(unsigned flags, abort_callback& abort) {
     if (OpenOffline(flags, abort)) return;
+    m_playbackEpoch = SourcePlaybackEpoch();
     m_sourceRequest = BeginOpen(abort);
 
     // A song that is already in the cache starts from it at once: the service is asked which

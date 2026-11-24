@@ -2,7 +2,24 @@
 
 Updated: 2026-11-24
 
-## MIT license & UI/lyrics/search/taskbar polish batch (2026-11-24, latest)
+## Apple Music stale catalog ID recovery, unified unavailable-track skip & catalog 400 fix (2026-11-24, latest)
+
+- **Multi-tier stale catalog ID resolution (`applemusic/playback_identity.h`, `applemusic/client.{h,cpp}`, `applemusic/input_applemusic.cpp`, `applemusic/stream_provider.cpp`, `applemusic/album_art_applemusic.cpp`)**:
+  - Root cause of `Colors of Happiness` (`apple://song/1237064886` -> live `1865440142`) failing with HTTP 404 after restart: `FinishListPage` skipped `songs.tsv` persistence (`persist = false`), dropping Apple-specific `libraryId` / `reportingId` across restarts; `Catalog::Put` could overwrite known identity fields on catalog-only reads; and `input_applemusic.cpp` neither started with cached `reportingId` nor recovered without `libraryId` or when a cached `reportingId` later changed again.
+  - Added pure, unit-tested `playback_identity.h` (`IsCatalogSongId`, `PreferredCatalogAssetId`, `SelectLibraryReplacementId`, `RankCatalogCandidates`, `RecoverAfterNotFound`) covering 4 ordered recovery tiers on 404: (1) live `/v1/me/library/songs/{libraryId}?include=catalog` (`playParams.reportingId`, `relationships.catalog`, updated `playParams.catalogId`), (2) official `/v1/catalog/{storefront}/songs?filter[equivalents]={id}`, (3) `/v1/catalog/{storefront}/songs?filter[isrc]={isrc}`, and (4) original `catalogId` fallback when a cached `reportingId` goes stale. Every candidate is attempted at most once; non-404 errors propagate immediately; fixture probe transactions disable catalog discovery and keep `Catalog` read-only.
+  - `Catalog::Put` (`applemusic/catalog.{h,cpp}`) now preserves known `libraryId` / `libraryAlbumId` / `reportingId` / `isrc` on real songs while accepting newer non-empty values, and automatically triggers debounced `QueueSave()` whenever durable identity mappings change. Added `Catalog::RememberReportingId` / `FindReportingId` and `stream::Catalog::Rewant` so live 404 recoveries persist across restarts and hydrate full metadata.
+  - Aligned `StreamProvider::ReadSongs`, `StreamProvider::Lyrics`, `StreamProvider::WriteFavorite`, and `album_art_applemusic.cpp` to prefer known `reportingId` / `libraryId` and recover on 404.
+- **Unified confirmed-unavailable track skipping (`stream/encoded_input.{h,cpp}`, `stream/playback_source.cpp`, `netease/input_ncm.cpp`, `applemusic/input_applemusic.cpp`)**:
+  - Lifted `m_playbackEpoch` and `TrySkipUnavailable` into `EncodedInputBase` and added `core::Log` persistence inside `stream::SkipUnavailableSource` so every provider logs skipped tracks to both foobar2000's console and `glasswave.log` (with Apple Music also writing `event=playback_skipped` to `applemusic/playback.log`).
+  - `AppleInput` now tracks whether recovery lookups hit transport/non-404 errors (`lookupFailed`); only a confirmed-unavailable 404 (all recovery tiers completed cleanly with no playable replacement) or `webPlayback` refusal triggers `TrySkipUnavailable`, never during prefetch, conversion, or integrity probes.
+- **Eliminated startup `/v1/catalog/` HTTP 400 burst (`applemusic/stream_provider.cpp`)**:
+  - Removed `&platform=web` from the four public `/v1/catalog/` endpoints (`ReadSongsByIds`, `ResolveSongDisplayNames`, `ResolveAlbumDisplayNames`, `ResolvePlaylistDisplayNames`) that the bridge routes to `api.music.apple.com` (which always rejects `platform=web` with 400).
+- **Consistent regional display names in Now Playing across restarts (`applemusic/catalog.cpp`, `applemusic/stream_provider.cpp`, `stream/catalog.{h,cpp}`)**:
+  - `Catalog::InstallCached` no longer overwrites real non-placeholder metadb tags (restored by `tracks/snapshot.txt`) with raw account-storefront names while a regional display overlay (e.g. Japan) is active and still cold at startup.
+  - `StreamProvider::FindTrack` and `ReadSongs` now also resolve missing regional display names (via `ResolveSongDisplayNames`) and push metadb hints for catalog-backed tracks even when raw records are already cached; `RestoreListRecords` now hints already-known tracks after warming `DisplayMetadata` from cached list pages; and `ApplyDisplayMetadataChange` clears settled markers and refreshes hints immediately.
+- **Verified**: `pwsh -File scripts/test-apple-playback-mapping.ps1` passed; `pwsh -File scripts/build.ps1` (`Release|x64`) succeeded with 0 warnings and 0 errors.
+
+## MIT license & UI/lyrics/search/taskbar polish batch (2026-11-24)
 
 - **MIT License (`LICENSE`, `README.md`)**: Added `LICENSE` (MIT, `Copyright (c) 2026 浮枕`) and
   linked it from `README.md`.
