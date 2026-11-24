@@ -81,8 +81,12 @@ $stageDir = Join-Path ([IO.Path]::GetTempPath()) ("glasswave-pkg-" + [guid]::New
 try {
     New-Item -ItemType Directory -Force -Path $stageDir | Out-Null
 
-    # 1. Core component & Cavern Atmos renderer
+    # 1. Core component, MIT license & Cavern Atmos renderer
     Copy-Item -LiteralPath $dllPath -Destination (Join-Path $stageDir 'foo_ui_glasswave.dll') -Force
+    $glasswaveLicense = Join-Path $Root 'LICENSE'
+    if (Test-Path -LiteralPath $glasswaveLicense -PathType Leaf) {
+        Copy-Item -LiteralPath $glasswaveLicense -Destination (Join-Path $stageDir 'LICENSE') -Force
+    }
     Copy-Item -LiteralPath $cavernDll -Destination (Join-Path $stageDir 'glasswave_cavern.dll') -Force
     Copy-Item -LiteralPath $cavernLicense -Destination (Join-Path $stageDir 'Cavern-LICENSE.md') -Force
     Copy-Item -LiteralPath $cavernNotice -Destination (Join-Path $stageDir 'Cavern-NOTICE.md') -Force
