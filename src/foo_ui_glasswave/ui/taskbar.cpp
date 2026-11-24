@@ -93,7 +93,7 @@ void Taskbar::UseCover(bool on) {
 
 void Taskbar::SendCoverThumbnail(int maxWidth, int maxHeight) {
     const int side = std::min(maxWidth, maxHeight);
-    if (side <= 0 || !m_coverTrack.is_valid()) return;
+    if (maxWidth <= 0 || maxHeight <= 0 || side <= 0 || !m_coverTrack.is_valid()) return;
     m_coverSize = side;
     winrt::com_ptr<IWICBitmapSource> art;
     const auto state = ArtCache::Get().Find(m_coverKey, m_coverTrack, side, &art);
@@ -101,27 +101,27 @@ void Taskbar::SendCoverThumbnail(int maxWidth, int maxHeight) {
         UseCover(false);
         return;
     }
-    // DWM sizes the thumbnail frame from the first bitmap it gets and stretches every later
-    // one into it, so each answer is the same square: the cover fitted in it, centred. While
-    // the cover loads (nothing yet, or the cache's 1x1 clear stand-in) the square stays clear;
-    // the subscription asks DWM again once it is there.
+    // Always supply a transparent 32-bpp DIB matching DWM's requested maxWidth x maxHeight
+    // bounding box with the cover aspect-fitted and centred inside it. Handing DWM a narrower
+    // square DIB causes Windows 11's taskbar flyout to stretch the cover horizontally on the
+    // first hover before Explorer has cached the iconic bitmap's aspect ratio.
     UINT w = 0, h = 0;
     if (art) art->GetSize(&w, &h);
     const bool loading = !art || w <= 1 || h <= 1;
     if (!loading) m_coverVersion = ArtCache::Get().Version(m_coverKey, m_coverTrack, side);
 
     BITMAPINFO bi{};
-    bi.bmiHeader = {sizeof(BITMAPINFOHEADER), side, -side, 1, 32, BI_RGB};
+    bi.bmiHeader = {sizeof(BITMAPINFOHEADER), maxWidth, -maxHeight, 1, 32, BI_RGB};
     void* bits = nullptr;
     HBITMAP bmp = CreateDIBSection(nullptr, &bi, DIB_RGB_COLORS, &bits, nullptr, 0);
     if (!bmp) return;
-    const UINT stride = static_cast<UINT>(side) * 4;
-    std::memset(bits, 0, static_cast<size_t>(stride) * side);
+    const UINT stride = static_cast<UINT>(maxWidth) * 4;
+    std::memset(bits, 0, static_cast<size_t>(stride) * maxHeight);
     bool drawn = loading;
     if (!loading) {
-        const double fit = std::min(static_cast<double>(side) / w, static_cast<double>(side) / h);
-        const int tw = std::clamp(static_cast<int>(std::lround(w * fit)), 1, side);
-        const int th = std::clamp(static_cast<int>(std::lround(h * fit)), 1, side);
+        const double fit = std::min(static_cast<double>(maxWidth) / w, static_cast<double>(maxHeight) / h);
+        const int tw = std::clamp(static_cast<int>(std::lround(w * fit)), 1, maxWidth);
+        const int th = std::clamp(static_cast<int>(std::lround(h * fit)), 1, maxHeight);
         auto* wic = gfx::CompositionHost::Get().Wic();
         winrt::com_ptr<IWICBitmapScaler> scaler;
         winrt::com_ptr<IWICFormatConverter> conv;
@@ -130,9 +130,10 @@ void Taskbar::SendCoverThumbnail(int maxWidth, int maxHeight) {
             SUCCEEDED(wic->CreateFormatConverter(conv.put())) &&
             SUCCEEDED(conv->Initialize(scaler.get(), GUID_WICPixelFormat32bppPBGRA, WICBitmapDitherTypeNone,
                                        nullptr, 0, WICBitmapPaletteTypeCustom))) {
-            const size_t offset = static_cast<size_t>((side - th) / 2) * stride + static_cast<size_t>((side - tw) / 2) * 4;
+            const size_t offset =
+                static_cast<size_t>((maxHeight - th) / 2) * stride + static_cast<size_t>((maxWidth - tw) / 2) * 4;
             const WICRect all{0, 0, tw, th};
-            const UINT room = static_cast<UINT>(static_cast<size_t>(stride) * side - offset);
+            const UINT room = static_cast<UINT>(static_cast<size_t>(stride) * maxHeight - offset);
             drawn = SUCCEEDED(conv->CopyPixels(&all, stride, room, static_cast<BYTE*>(bits) + offset));
         }
     }
