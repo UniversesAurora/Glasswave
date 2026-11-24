@@ -491,7 +491,7 @@ class SearchPage final : public Page {
                 stream::ListQuery query;
                 query.kind = kind;
                 query.search = m_term;
-                query.cache = stream::ListCachePolicy::None;
+                query.cache = stream::ListCachePolicy::Memory;
                 Lane* raw = lane.get();
                 lane->session = stream::ListSession::Open(*source, std::move(query),
                                                           Guard([this, raw](const stream::ListState& state) {
@@ -561,6 +561,10 @@ class SearchPage final : public Page {
     }
 
     bool CanRefresh() const override { return true; }
+    void RefreshRequested() override {
+        for (auto& lane : m_lanes)
+            if (lane->session) lane->session->Refresh();
+    }
 
     void AddSongActions(std::vector<MenuAction>& actions, const metadb_handle_list& items) override {
         if (!m_songs || items.get_count() != 1) return;
