@@ -506,39 +506,73 @@ void MainWindow::AddLyricsDocumentActions(std::vector<MenuAction>& actions, HWND
                                   !found || !lyrics_tools::CanSave(now, target)));
     actions.push_back(disabled({Tr(L"Save lyrics to"), nullptr, std::move(saveTo)}, !found));
 
-    // Select lyrics: what the searches for this song found, the shown one checked.
-    std::vector<MenuAction> select;
-    for (const auto& c : lyrics::Service::Get().Candidates(now)) {
-        std::wstring label = c.title.empty() ? Tr(L"(untitled)") : c.title;
-        if (!c.artist.empty()) label += L" - " + c.artist;
-        if (label.size() > 60) label = label.substr(0, 57) + L"...";
-        label += L"  (" + Tr(c.source) + L")";
-        MenuAction pick{std::move(label), [this, now, c, alive] {
-                            if (alive.expired() || lyrics::Service::TrackIdentity(now) != m_lyricsTrackIdentity) return;
-                            OnLyrics(lyrics::Service::Get().Select(now, c));
-                        }};
-        pick.checked = found && found->document == c.lrc;
-        select.push_back(std::move(pick));
-    }
-    if (select.empty()) select.push_back(disabled({Tr(L"No other lyrics found yet"), nullptr}, true));
-    {
-        // None at all, until "Use automatic lyrics" (owner, 2026-11-14).
-        MenuAction none{Tr(L"No lyrics"), [this, now, alive] {
-                            if (alive.expired() || lyrics::Service::TrackIdentity(now) != m_lyricsTrackIdentity) return;
-                            OnLyrics(lyrics::Service::Get().SelectNone(now));
-                        }};
-        none.checked = current && m_lyricsResult.status == lyrics::Status::NotFound;
-        select.push_back(std::move(none));
-    }
-    select.push_back({});
-    select.push_back({Tr(L"Search lyrics..."), [this, now, owner, alive] {
-                          ShowLyricsSearch(owner, now, L"", [this, now, alive](const lyrics::Candidate& candidate) {
-                              if (alive.expired() || lyrics::Service::TrackIdentity(now) != m_lyricsTrackIdentity)
-                                  return;
-                              OnLyrics(lyrics::Service::Get().Select(now, candidate));
-                          });
-                      }});
-    actions.push_back({Tr(L"Select lyrics"), nullptr, std::move(select)});
+    // Select lyrics: what the searches for this song found, the shown one checked. Updates
+    // live while the menu is open as remaining lyric sources finish in the background.
+    const auto buildSelect = [this, now, owner, alive, disabled]() -> std::vector<MenuAction> {
+        const bool isCurrent = !alive.expired() && lyrics::Service::TrackIdentity(now) == m_lyricsTrackIdentity;
+        const auto curFound =
+            isCurrent && m_lyricsResult.status == lyrics::Status::Found ? m_lyricsResult.lyrics : nullptr;
+        std::vector<MenuAction> select;
+        for (const auto& c : lyrics::Service::Get().Candidates(now)) {
+            std::wstring label = c.title.empty() ? Tr(L"(untitled)") : c.title;
+            if (!c.artist.empty()) label += L" - " + c.artist;
+            if (label.size() > 60) label = label.substr(0, 57) + L"...";
+            label += L"  (" + Tr(c.source) + L")";
+            MenuAction pick{std::move(label), [this, now, c, alive] {
+                                if (alive.expired() || lyrics::Service::TrackIdentity(now) != m_lyricsTrackIdentity)
+                                    return;
+                                OnLyrics(lyrics::Service::Get().Select(now, c));
+                            }};
+            pick.checked = curFound && curFound->document == c.lrc;
+            select.push_back(std::move(pick));
+        }
+        if (select.empty()) select.push_back(disabled({Tr(L"No other lyrics found yet"), nullptr}, true));
+        {
+            // None at all, until "Use automatic lyrics" (owner, 2026-11-14).
+            MenuAction none{Tr(L"No lyrics"), [this, now, alive] {
+                                if (alive.expired() || lyrics::Service::TrackIdentity(now) != m_lyricsTrackIdentity)
+                                    return;
+                                OnLyrics(lyrics::Service::Get().SelectNone(now));
+                            }};
+            none.checked = isCurrent && m_lyricsResult.status == lyrics::Status::NotFound;
+            select.push_back(std::move(none));
+        }
+        select.push_back({});
+        select.push_back({Tr(L"Search lyrics..."), [this, now, owner, alive] {
+                              ShowLyricsSearch(owner, now, L"", [this, now, alive](const lyrics::Candidate& candidate) {
+                                  if (alive.expired() || lyrics::Service::TrackIdentity(now) != m_lyricsTrackIdentity)
+                                      return;
+                                  OnLyrics(lyrics::Service::Get().Select(now, candidate));
+                              });
+                          }});
+        return select;
+    };
+    MenuAction selectMenu{Tr(L"Select lyrics"), nullptr, buildSelect()};
+    const auto signatureOf = [](const std::vector<MenuAction>& list) {
+        std::vector<std::tuple<std::wstring, bool, bool>> sig;
+        sig.reserve(list.size());
+        for (const auto& a : list) sig.emplace_back(a.label, a.checked, a.disabled);
+        return sig;
+    };
+    auto lastSig = std::make_shared<std::vector<std::tuple<std::wstring, bool, bool>>>(signatureOf(selectMenu.children));
+    selectMenu.onLiveSubmenu = [this, now, alive, buildSelect, signatureOf, lastSig](
+                                   std::function<void(std::vector<MenuAction>)> update) -> std::function<void()> {
+        auto conn = std::make_shared<core::Signal<>::Connection>(
+            lyrics::Service::Get().OnCandidatesChanged(
+                [this, now, alive, buildSelect, signatureOf, lastSig, update = std::move(update)] {
+                    if (alive.expired() || lyrics::Service::TrackIdentity(now) != m_lyricsTrackIdentity) return;
+                    auto fresh = buildSelect();
+                    auto sig = signatureOf(fresh);
+                    if (sig == *lastSig) return;
+                    *lastSig = std::move(sig);
+                    update(std::move(fresh));
+                }));
+        // Stale-while-revalidate: cached candidates showed immediately above; quietly refresh
+        // in the background so newly available upstream lyrics stream right into this submenu.
+        lyrics::Service::Get().RefreshCandidates(now);
+        return [conn] { conn->Disconnect(); };
+    };
+    actions.push_back(std::move(selectMenu));
 
     // Copy: with the remembered options at once, or choosing them first. The times are the
     // ones shown (offset applied), the lines the original's.

@@ -443,11 +443,20 @@ void Service::Request(const metadb_handle_ptr& track, std::function<void(const R
     Start(track, true, std::move(done));
 }
 
+constexpr auto kCandidatesFreshWindow = std::chrono::minutes(5);
+
+namespace {
+std::wstring CandidatesKey(const Query& query) {
+    return query.path + L"\037" + std::to_wstring(query.subsong);
+}
+} // namespace
+
 void Service::Research(const metadb_handle_ptr& track, std::function<void(const Result&)> done) {
     if (track.is_valid()) {
+        const Query q = MakeQuery(track);
+        m_candidatesFreshAt.erase(CandidatesKey(q));
         std::lock_guard lock(g_cacheMutex);
         std::error_code ec;
-        const Query q = MakeQuery(track);
         std::filesystem::remove(CacheFile(q), ec);
         std::filesystem::remove(CandidatesFile(q), ec);
     }
@@ -507,11 +516,6 @@ Result FromCandidate(const Candidate& candidate) {
     return {Status::Found, std::move(lyrics)};
 }
 
-// Path and subsong: whose candidates Service keeps.
-std::wstring CandidatesKey(const Query& query) {
-    return query.path + L"\037" + std::to_wstring(query.subsong);
-}
-
 enum class SearchMode {
     FirstMatch,
     AutomaticCollectAll,
@@ -519,12 +523,13 @@ enum class SearchMode {
 };
 
 // Search concurrently, but automatic selection respects source order. A slow fallback
-// cannot delay a successful preferred source. In AutomaticCollectAll mode, the preferred
-// winner is delivered immediately while remaining searchers finish populating Select lyrics.
+// cannot delay a successful preferred source. In AutomaticCollectAll mode, every source's
+// candidates stream incrementally for Select lyrics as soon as it responds, while the
+// preferred winner is delivered immediately with `deliverBest = true` once decided.
 // All children are joined before returning. Returns whether every source answered.
 bool SearchAll(const Query& query, const std::vector<std::shared_ptr<Searcher>>& searchers, abort_callback& abort,
                SearchMode mode,
-               const std::function<void(std::vector<Candidate>, bool)>& update) {
+               const std::function<void(std::vector<Candidate>, bool deliverBest, bool finished)>& update) {
     bool complete = false;
     struct Slot {
         bool finished = false;
@@ -584,22 +589,28 @@ bool SearchAll(const Query& query, const std::vector<std::shared_ptr<Searcher>>&
                     if (const Candidate* best = BestCandidate(query, slot.candidates)) {
                         chosenBest = *best;
                         if (mode == SearchMode::FirstMatch) {
-                            update(withBest(*chosenBest), true);
+                            update(withBest(*chosenBest), true, true);
                             childrenAbort.abort();
                         } else {
-                            update(withBest(*chosenBest), finished == slots.size());
+                            update(withBest(*chosenBest), true, finished == slots.size());
                             reported = finished;
                         }
                         break;
                     }
                 }
                 if (childrenAbort.is_aborting()) break;
+                // Faster lower-priority sources still stream into Select lyrics while higher
+                // priority sources are in flight (without delivering a premature winner).
+                if (!chosenBest && mode == SearchMode::AutomaticCollectAll && finished != reported && !all.empty()) {
+                    update(all, false, false);
+                    reported = finished;
+                }
             } else if (finished != reported) {
-                update(withBest(*chosenBest), finished == slots.size());
+                update(withBest(*chosenBest), false, finished == slots.size());
                 reported = finished;
             }
         } else if (finished != reported) {
-            update(all, finished == slots.size());
+            update(all, false, finished == slots.size());
             reported = finished;
         }
         if (finished == slots.size() || std::chrono::steady_clock::now() >= deadline) {
@@ -610,12 +621,12 @@ bool SearchAll(const Query& query, const std::vector<std::shared_ptr<Searcher>>&
                     const Candidate* best = nullptr;
                     for (const auto& slot : slots)
                         if ((best = BestCandidate(query, slot.candidates))) break;
-                    update(best ? withBest(*best) : std::vector<Candidate>{}, true);
+                    update(best ? withBest(*best) : std::vector<Candidate>{}, true, true);
                 } else if (finished != reported) {
-                    update(withBest(*chosenBest), true);
+                    update(withBest(*chosenBest), false, true);
                 }
             } else if (finished != slots.size()) {
-                update(std::move(all), true);
+                update(std::move(all), false, true);
             }
             break;
         }
@@ -717,35 +728,9 @@ void Service::Start(const metadb_handle_ptr& track, bool useAutomaticCache,
         if (cachedCandidates) Remember(query, *cachedCandidates);
         done(known->result);
         // Backfill candidates once in the background for tracks cached before candidate lists
-        // were persisted, without changing the displayed lyrics.
-        if (!cachedCandidates && m_collectingIdentity != identity) {
-            const auto searchers = scripts::Ordered(query.provider);
-            const unsigned generation = m_generation;
-            auto abort = std::make_shared<abort_callback_impl>();
-            m_abort = abort;
-            m_collectingIdentity = identity;
-            Run(abort, [this, generation, identity, query, searchers, abort] {
-                try {
-                    SearchAll(query, searchers, *abort, SearchMode::AllCandidates,
-                              [&](std::vector<Candidate> candidates, bool finished) {
-                                  if (abort->is_aborting()) return;
-                                  if (finished && !candidates.empty()) {
-                                      std::lock_guard lock(g_cacheMutex);
-                                      if (!abort->is_aborting()) PersistCandidates(query, candidates);
-                                  }
-                                  fb2k::inMainThread([this, generation, identity, query,
-                                                      candidates = std::move(candidates), finished] {
-                                      if (generation != m_generation) return;
-                                      Remember(query, candidates);
-                                      if (finished && m_collectingIdentity == identity) m_collectingIdentity.clear();
-                                  });
-                              });
-                } catch (const exception_aborted&) {
-                } catch (const std::exception& error) {
-                    console::printf("Glasswave lyrics: %s", error.what());
-                }
-            });
-        }
+        // were persisted, without changing the displayed lyrics. Cached tracks with an existing
+        // .candidates.json defer background revalidation until Select lyrics is opened.
+        if (!cachedCandidates) RefreshCandidates(track);
         return;
     }
 
@@ -767,52 +752,135 @@ void Service::Start(const metadb_handle_ptr& track, bool useAutomaticCache,
             });
     };
     auto deliverNeutral = [deliver](Result result) { deliver(std::move(result), std::nullopt); };
-    auto remember = [this, generation, identity, query](std::vector<Candidate> candidates, bool finished) {
-        fb2k::inMainThread([this, generation, identity, query, candidates = std::move(candidates), finished] {
-            if (generation != m_generation) return;
-            Remember(query, candidates);
-            if (finished && m_collectingIdentity == identity) m_collectingIdentity.clear();
-        });
+    auto remember = [this, generation, identity, query](std::vector<Candidate> candidates, bool finished,
+                                                        bool markFresh) {
+        fb2k::inMainThread(
+            [this, generation, identity, query, candidates = std::move(candidates), finished, markFresh] {
+                if (generation != m_generation) return;
+                Remember(query, candidates);
+                if (markFresh) m_candidatesFreshAt[CandidatesKey(query)] = std::chrono::steady_clock::now();
+                if (finished && m_collectingIdentity == identity) m_collectingIdentity.clear();
+            });
     };
     done({Status::Searching, nullptr});
     Run(abort, [=] {
         try {
             bool nothing = false;
             bool delivered = false;
+            std::vector<Candidate> latestCandidates;
             const bool complete = SearchAll(
                 query, searchers, *abort, SearchMode::AutomaticCollectAll,
-                [&](std::vector<Candidate> candidates, bool finished) {
+                [&](std::vector<Candidate> candidates, bool deliverBest, bool finished) {
                     if (abort->is_aborting()) return;
-                    if (candidates.empty()) {
-                        if (!delivered) {
+                    if (!candidates.empty()) latestCandidates = candidates;
+                    if (deliverBest && !delivered) {
+                        if (candidates.empty()) {
                             nothing = true;
                             delivered = true;
                             deliverNeutral({Status::NotFound, nullptr});
+                            remember({}, finished, false);
+                            return;
                         }
-                        return;
+                        const auto& best = candidates.front();
+                        if (CandidateCurrent(best)) {
+                            {
+                                std::lock_guard lock(g_cacheMutex);
+                                if (abort->is_aborting() || !CandidateCurrent(best)) return;
+                                PersistAutomatic(query, searchers, best);
+                            }
+                            if (CandidateCurrent(best)) {
+                                delivered = true;
+                                // Deliver displayed lyrics before emitting candidate updates so
+                                // an open Select lyrics submenu checks the winning item live.
+                                deliver(FromCandidate(best), BindingFor(best));
+                            }
+                        }
                     }
-                    remember(candidates, finished);
-                    if (finished) {
-                        std::lock_guard lock(g_cacheMutex);
-                        if (!abort->is_aborting()) PersistCandidates(query, candidates);
-                    }
-                    if (delivered) return;
-                    const auto& best = candidates.front();
-                    if (!CandidateCurrent(best)) return;
-                    {
-                        std::lock_guard lock(g_cacheMutex);
-                        if (abort->is_aborting() || !CandidateCurrent(best)) return;
-                        PersistAutomatic(query, searchers, best);
-                    }
-                    if (!CandidateCurrent(best)) return;
-                    delivered = true;
-                    deliver(FromCandidate(best), BindingFor(best));
+                    if (!candidates.empty() || finished) remember(std::move(candidates), finished, false);
                 });
-            if (complete && nothing && !abort->is_aborting()) PersistNotFound(query);
+            if (!abort->is_aborting()) {
+                if (complete && nothing) PersistNotFound(query);
+                if (!latestCandidates.empty()) {
+                    std::lock_guard lock(g_cacheMutex);
+                    if (!abort->is_aborting()) PersistCandidates(query, latestCandidates);
+                }
+                if (complete) remember({}, true, true);
+            }
         } catch (const exception_aborted&) {
         } catch (const std::exception& error) {
             console::printf("Glasswave lyrics: %s", error.what());
             if (!abort->is_aborting()) deliverNeutral({Status::NotFound, nullptr});
+        }
+    });
+}
+
+void Service::RefreshCandidates(const metadb_handle_ptr& track) {
+    if (!track.is_valid() || !media::ItemIdentified(track)) return;
+    const Query query = MakeQuery(track);
+    const std::wstring identity = TrackIdentity(track);
+    const std::wstring key = CandidatesKey(query);
+    if (m_collectingIdentity == identity || (m_activeDone && m_activeIdentity == identity)) return;
+    const auto now = std::chrono::steady_clock::now();
+    if (const auto it = m_candidatesFreshAt.find(key); it != m_candidatesFreshAt.end() &&
+        now - it->second < kCandidatesFreshWindow)
+        return;
+
+    const auto searchers = scripts::Ordered(query.provider);
+    if (searchers.empty()) return;
+    const unsigned generation = m_generation;
+    auto abort = std::make_shared<abort_callback_impl>();
+    m_abort = abort;
+    m_collectingIdentity = identity;
+    std::optional<Candidate> pinned;
+    if (const auto known = Known(query, true, true)) pinned = known->candidate;
+
+    Run(abort, [this, generation, identity, query, searchers, abort, pinned = std::move(pinned)] {
+        try {
+            std::vector<Candidate> latest;
+            const bool complete = SearchAll(
+                query, searchers, *abort, SearchMode::AllCandidates,
+                [&](std::vector<Candidate> candidates, bool, bool finished) {
+                    if (abort->is_aborting()) return;
+                    if (!candidates.empty()) latest = candidates;
+                    if (!finished && !candidates.empty()) {
+                        fb2k::inMainThread(
+                            [this, generation, query, candidates = std::move(candidates)] {
+                                if (generation != m_generation) return;
+                                Remember(query, candidates);
+                            });
+                    }
+                });
+            if (abort->is_aborting()) return;
+            if (complete && !latest.empty()) {
+                std::vector<Candidate> persisted;
+                if (pinned) persisted.push_back(*pinned);
+                for (const auto& c : latest) {
+                    const bool dup = std::any_of(persisted.begin(), persisted.end(), [&](const Candidate& k) {
+                        return k.lrc == c.lrc && k.sourceKey == c.sourceKey;
+                    });
+                    if (!dup) persisted.push_back(c);
+                }
+                {
+                    std::lock_guard lock(g_cacheMutex);
+                    if (!abort->is_aborting()) PersistCandidates(query, persisted);
+                }
+            }
+            fb2k::inMainThread([this, generation, identity, query, latest = std::move(latest),
+                                pinned = std::move(pinned), complete] {
+                if (generation != m_generation) return;
+                if (complete && !latest.empty()) {
+                    ReplaceCandidates(query, latest, pinned);
+                    m_candidatesFreshAt[CandidatesKey(query)] = std::chrono::steady_clock::now();
+                } else if (!latest.empty()) {
+                    Remember(query, latest);
+                } else if (complete) {
+                    m_candidatesFreshAt[CandidatesKey(query)] = std::chrono::steady_clock::now();
+                }
+                if (m_collectingIdentity == identity) m_collectingIdentity.clear();
+            });
+        } catch (const exception_aborted&) {
+        } catch (const std::exception& error) {
+            console::printf("Glasswave lyrics: %s", error.what());
         }
     });
 }
@@ -832,7 +900,8 @@ void Service::Lookup(const metadb_handle_ptr& track, std::function<void(const Re
         try {
             bool nothing = false;
             const bool complete = SearchAll(
-                query, searchers, *abort, SearchMode::FirstMatch, [&](std::vector<Candidate> candidates, bool) {
+                query, searchers, *abort, SearchMode::FirstMatch,
+                [&](std::vector<Candidate> candidates, bool, bool) {
                     if (candidates.empty()) {
                         nothing = true;
                         return;
@@ -868,15 +937,18 @@ void Service::FindCandidates(Query query, std::wstring source,
     Run(abort,
         [this, query = std::move(query), searchers = std::move(searchers), abort, done, generation, allSources] {
             SearchAll(query, searchers, *abort, SearchMode::AllCandidates,
-                      [&](std::vector<Candidate> candidates, bool finished) {
+                      [&](std::vector<Candidate> candidates, bool, bool finished) {
                           if (allSources && finished && !candidates.empty() && !abort->is_aborting()) {
                               std::lock_guard lock(g_cacheMutex);
                               if (!abort->is_aborting()) PersistCandidates(query, candidates);
                           }
                           fb2k::inMainThread(
-                              [this, generation, done, query, candidates = std::move(candidates), finished] {
+                              [this, generation, done, query, candidates = std::move(candidates), finished,
+                               allSources] {
                                   if (generation != m_searchGeneration) return;
                                   Remember(query, candidates);
+                                  if (allSources && finished)
+                                      m_candidatesFreshAt[CandidatesKey(query)] = std::chrono::steady_clock::now();
                                   done(candidates, finished);
                               });
                       });
@@ -889,12 +961,43 @@ void Service::Remember(const Query& query, const std::vector<Candidate>& candida
         m_candidatesFor = key;
         m_candidates.clear();
     }
+    bool added = false;
     for (const auto& c : candidates) {
         const bool known = std::any_of(m_candidates.begin(), m_candidates.end(), [&](const Candidate& k) {
             return k.lrc == c.lrc && k.sourceKey == c.sourceKey;
         });
-        if (!known) m_candidates.push_back(c);
+        if (!known) {
+            m_candidates.push_back(c);
+            added = true;
+        }
     }
+    if (added) m_candidatesChanged.Emit();
+}
+
+void Service::ReplaceCandidates(const Query& query, const std::vector<Candidate>& fresh,
+                                const std::optional<Candidate>& pin) {
+    const auto key = CandidatesKey(query);
+    std::vector<Candidate> next;
+    if (pin) next.push_back(*pin);
+    for (const auto& c : fresh) {
+        const bool dup = std::any_of(next.begin(), next.end(), [&](const Candidate& k) {
+            return k.lrc == c.lrc && k.sourceKey == c.sourceKey;
+        });
+        if (!dup) next.push_back(c);
+    }
+    const bool same = key == m_candidatesFor && m_candidates.size() == next.size() &&
+                      std::equal(m_candidates.begin(), m_candidates.end(), next.begin(),
+                                 [](const Candidate& a, const Candidate& b) {
+                                     return a.sourceKey == b.sourceKey && a.lrc == b.lrc && a.title == b.title &&
+                                            a.artist == b.artist && a.source == b.source;
+                                 });
+    m_candidatesFor = key;
+    m_candidates = std::move(next);
+    if (!same) m_candidatesChanged.Emit();
+}
+
+core::Signal<>::Connection Service::OnCandidatesChanged(std::function<void()> listener) {
+    return m_candidatesChanged.Connect(std::move(listener));
 }
 
 std::vector<Candidate> Service::Candidates(const metadb_handle_ptr& track) const {
@@ -1014,6 +1117,7 @@ void Service::UseAutomatic(const metadb_handle_ptr& track) {
 
 void Service::ClearCache() {
     Cancel();
+    m_candidatesFreshAt.clear();
     std::lock_guard lock(g_cacheMutex);
     std::error_code ec;
     for (const auto& file : std::filesystem::directory_iterator(CacheFolder(), ec)) {

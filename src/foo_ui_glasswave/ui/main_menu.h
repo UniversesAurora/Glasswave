@@ -9,6 +9,9 @@ struct MenuAction {
     bool checked = false;              // radio-style check mark
     bool checkbox = false;             // checked draws a check mark instead of a bullet
     bool disabled = false;             // greyed: shown, not chosen
+    // Optional: subscribes while the menu is open; call the updater with fresh submenu actions
+    // whenever items change, and return a cleanup callback run when the menu closes.
+    std::function<std::function<void()>(std::function<void(std::vector<MenuAction>)>)> onLiveSubmenu;
 };
 
 // Ends a group of actions: a separator, unless there is nothing before it or a separator already.
@@ -22,12 +25,20 @@ class MenuBuilder {
   public:
     explicit MenuBuilder(UINT base) : m_base(base) {}
     void Append(HMENU menu, const std::vector<MenuAction>& actions); // submenus included
+    // Activates any onLiveSubmenu subscriptions; returns a cleanup handle to call before DestroyMenu.
+    std::function<void()> AttachLiveSubmenus();
     // Runs the action behind `cmd`: false when `cmd` is not one of these.
     bool Run(UINT cmd) const;
 
   private:
+    struct LiveSubmenu {
+        HMENU parent = nullptr;
+        HMENU sub = nullptr;
+        decltype(MenuAction::onLiveSubmenu) subscribe;
+    };
     UINT m_base;
     std::vector<std::function<void()>> m_runs; // per id from m_base
+    std::vector<LiveSubmenu> m_live;
 };
 
 // Pop up a menu at screen point pt: optional custom actions first, then the complete

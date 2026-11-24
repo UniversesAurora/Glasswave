@@ -262,6 +262,7 @@ void MenuBuilder::Append(HMENU menu, const std::vector<MenuAction>& actions) {
         if (!a.children.empty()) {
             HMENU sub = CreatePopupMenu();
             Append(sub, a.children);
+            if (a.onLiveSubmenu) m_live.push_back({menu, sub, a.onLiveSubmenu});
             AppendMenuW(menu, MF_POPUP | MF_STRING | (a.disabled ? MF_GRAYED : 0u), reinterpret_cast<UINT_PTR>(sub),
                         a.label.c_str());
             continue;
@@ -274,6 +275,29 @@ void MenuBuilder::Append(HMENU menu, const std::vector<MenuAction>& actions) {
         else if (a.checked)
             CheckMenuRadioItem(menu, id, id, id, MF_BYCOMMAND);
     }
+}
+
+std::function<void()> MenuBuilder::AttachLiveSubmenus() {
+    if (m_live.empty()) return {};
+    auto open = std::make_shared<bool>(true);
+    auto cleanups = std::make_shared<std::vector<std::function<void()>>>();
+    for (const auto& entry : m_live) {
+        if (!entry.subscribe) continue;
+        auto cleanup = entry.subscribe([this, open, parent = entry.parent, sub = entry.sub](
+                                           std::vector<MenuAction> fresh) {
+            if (!*open || !IsMenu(sub)) return;
+            while (GetMenuItemCount(sub) > 0) DeleteMenu(sub, 0, MF_BYPOSITION);
+            Append(sub, fresh);
+            RefreshWin7Submenu(parent, sub);
+        });
+        if (cleanup) cleanups->push_back(std::move(cleanup));
+    }
+    return [open, cleanups] {
+        *open = false;
+        for (auto& fn : *cleanups)
+            if (fn) fn();
+        cleanups->clear();
+    };
 }
 
 bool MenuBuilder::Run(UINT cmd) const {
@@ -295,8 +319,10 @@ void ShowActions(HWND owner, POINT pt, const RECT* anchor, const std::vector<Men
         DestroyMenu(menu);
         return;
     }
+    auto detach = builder.AttachLiveSubmenus();
     const UINT cmd = TrackWin7Menu(menu, TPM_RETURNCMD | TPM_NONOTIFY | TPM_LEFTALIGN | TPM_TOPALIGN | TPM_VERTICAL,
                                    pt.x, pt.y, owner, nullptr, anchor);
+    if (detach) detach();
     DestroyMenu(menu);
     builder.Run(cmd);
 }

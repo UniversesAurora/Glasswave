@@ -10,12 +10,17 @@ Updated: 2026-11-24
   now allocates the 32-bpp DIB at DWM's exact requested `maxWidth × maxHeight` with transparent
   letterboxing/pillarboxing around the aspect-preserved cover instead of returning a square bitmap
   that DWM could stretch horizontally on the first hover.
-- **Complete "Select lyrics" candidates without opening Search (`lyrics/lyrics_service.{h,cpp}`)**:
-  Automatic lyric fetches (`SearchMode::AutomaticCollectAll`) still deliver the preferred match
-  immediately without extra latency, then let remaining sources finish into the candidate list and
-  persist a sidecar `.candidates.json` alongside automatic cache files. Cached/manual hits load the
-  persisted candidates or perform one quiet background collection pass (guarded by
-  `m_collectingIdentity`) without disturbing displayed lyrics. Verified with
+- **Complete "Select lyrics" candidates with live menu updates & SWR refresh
+  (`lyrics/lyrics_service.{h,cpp}`, `ui/win7_menu.{h,cpp}`, `ui/main_menu.{h,cpp}`,
+  `ui/main_window_pane.cpp`)**:
+  Automatic lyric fetches (`SearchMode::AutomaticCollectAll`) stream every source's candidates
+  incrementally as soon as that source responds while delivering the preferred match immediately
+  in source priority order, and persist `.candidates.json` alongside automatic cache files.
+  Added `MenuAction::onLiveSubmenu`, `RefreshWin7Submenu`, and `lyrics::Service::OnCandidatesChanged`
+  + `RefreshCandidates` so opening "Select lyrics" displays cached candidates instantaneously and
+  silently revalidates in the background (5-minute freshness window, non-destructive on offline or
+  timeout, full reconciliation + `.candidates.json` persistence on complete), updating the open
+  submenu live without flicker whenever items or checkmarks actually change. Verified with
   `test-lyrics-request-state.ps1` (8/8) and `test-lyrics-priority.ps1` (19/19).
 - **Search page tab-switch caching (`ui/search_page.cpp`)**: Switched `SearchPage` lanes to
   `ListCachePolicy::Memory` so switching between already-loaded tabs serves from `ListSession`'s

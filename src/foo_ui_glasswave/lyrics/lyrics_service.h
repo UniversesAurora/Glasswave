@@ -171,6 +171,11 @@ class Service {
     // Every candidate the searches for `track` have turned up so far in this session (the
     // automatic lookup's and the search dialog's), for Select lyrics. Main thread.
     std::vector<Candidate> Candidates(const metadb_handle_ptr& track) const;
+    // Silently refreshes the candidate list for `track` in the background (stale-while-revalidate)
+    // without changing the displayed lyrics. No-op when already collecting or freshly validated.
+    void RefreshCandidates(const metadb_handle_ptr& track);
+    // Fires on the main thread whenever new candidates arrive for the current track.
+    core::Signal<>::Connection OnCandidatesChanged(std::function<void()> listener);
 
     // The owner's timing correction for one lyric of a track (as found, before any offset), in
     // ms, kept across sessions: positive shows it earlier, as LRC's [offset:]. Each lyric of a
@@ -187,10 +192,14 @@ class Service {
     Service() = default;
     void NotifyChanged(const metadb_handle_ptr& track);
     core::Signal<const metadb_handle_ptr&> m_changeListeners;
+    core::Signal<> m_candidatesChanged;
     void Start(const metadb_handle_ptr& track, bool useCache, std::function<void(const Result&)> done);
     void Remember(const Query& query, const std::vector<Candidate>& candidates);
+    void ReplaceCandidates(const Query& query, const std::vector<Candidate>& fresh,
+                           const std::optional<Candidate>& pin);
     std::wstring m_candidatesFor; // the track the candidates are for (path and subsong)
     std::vector<Candidate> m_candidates;
+    std::map<std::wstring, std::chrono::steady_clock::time_point> m_candidatesFreshAt;
     void Run(std::shared_ptr<abort_callback_impl> abort, std::function<void()> work);
 
     struct Worker {

@@ -96,6 +96,7 @@ struct ItemData {
 struct MenuState {
     std::vector<std::unique_ptr<ItemData>> items;
     std::set<const ItemData*> mine;
+    std::vector<HWND> popups;  // active #32768 popup windows on this thread
     UINT dpi = 96;
     HFONT font = nullptr, bold = nullptr;  // bold: the default item (e.g. the current view)
     HBRUSH back = nullptr;
@@ -332,7 +333,10 @@ LRESULT CALLBACK PopupProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp, UINT_PTR i
         ReleaseDC(hwnd, dc);
         return 0;
     }
-    if (msg == WM_NCDESTROY) RemoveWindowSubclass(hwnd, PopupProc, id);
+    if (msg == WM_NCDESTROY) {
+        if (g_menu) std::erase(g_menu->popups, hwnd);
+        RemoveWindowSubclass(hwnd, PopupProc, id);
+    }
     return DefSubclassProc(hwnd, msg, wp, lp);
 }
 
@@ -347,6 +351,7 @@ LRESULT CALLBACK HookProc(int code, WPARAM wp, LPARAM lp) {
                 DwmSetWindowAttribute(cwp->hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, &corner, sizeof(corner));
                 COLORREF none = DWMWA_COLOR_NONE;
                 DwmSetWindowAttribute(cwp->hwnd, DWMWA_BORDER_COLOR, &none, sizeof(none));
+                if (g_menu) g_menu->popups.push_back(cwp->hwnd);
                 SetWindowSubclass(cwp->hwnd, PopupProc, 1, 0);
             }
         }
@@ -386,6 +391,26 @@ UINT TrackWin7Menu(HMENU menu, UINT flags, int x, int y, HWND owner, const std::
     DeleteObject(state.bold);
     DeleteObject(state.back);
     return result;
+}
+
+void RefreshWin7Submenu(HMENU parentMenu, HMENU submenu) {
+    if (!g_menu || !submenu) return;
+    Convert(submenu, *g_menu);
+    constexpr UINT kMnOpenHierarchy = 0x01E3;
+    constexpr UINT kMnCloseHierarchy = 0x01E4;
+    auto findPopup = [](HMENU target) -> HWND {
+        if (!target || !g_menu) return nullptr;
+        for (HWND w : g_menu->popups) {
+            if (!IsWindow(w) || !IsWindowVisible(w)) continue;
+            if (reinterpret_cast<HMENU>(SendMessageW(w, MN_GETHMENU, 0, 0)) == target) return w;
+        }
+        return nullptr;
+    };
+    if (!findPopup(submenu)) return;  // not open on screen yet; will measure cleanly on hover
+    if (HWND parentWnd = findPopup(parentMenu)) {
+        SendMessageW(parentWnd, kMnCloseHierarchy, 0, 0);
+        SendMessageW(parentWnd, kMnOpenHierarchy, 0, 0);
+    }
 }
 
 namespace {

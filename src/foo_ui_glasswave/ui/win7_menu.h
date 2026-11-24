@@ -22,6 +22,10 @@ namespace glasswave::ui {
 // screen px) is an area the menu must not cover (TPMPARAMS::rcExclude).
 UINT TrackWin7Menu(HMENU menu, UINT flags, int x, int y, HWND owner, const std::map<UINT, int>* icons = nullptr,
                    const RECT* exclude = nullptr);
+// Converts newly added items in `submenu` to Win7 owner-drawn items and, when `submenu` is
+// already visible on screen under `parentMenu`, re-opens it in place so Windows recalculates
+// its size and repaints it cleanly.
+void RefreshWin7Submenu(HMENU parentMenu, HMENU submenu);
 
 // foobar2000's context menu for `items` at screen point `pt`, as a Win7 menu. One song also
 // offers "Save album art...". nowPlaying: the playing song's own menu (on its title and cover),
