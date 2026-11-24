@@ -12,7 +12,9 @@
 
 #include <algorithm>
 #include <climits>
+#include <cwctype>
 #include <memory>
+#include <vector>
 
 namespace glasswave::applemusic::lyrics_source {
 namespace {
@@ -21,6 +23,42 @@ constexpr wchar_t kUniversalKey[] = L"applemusic";
 
 using core::Utf8;
 using core::Wide;
+
+bool SameLocaleIgnoreCase(std::wstring_view a, std::wstring_view b) {
+    if (a.size() != b.size()) return false;
+    for (size_t i = 0; i < a.size(); ++i) {
+        if (std::towlower(a[i]) != std::towlower(b[i])) return false;
+    }
+    return true;
+}
+
+} // namespace
+
+std::wstring EffectiveLyricsLocale() {
+    std::vector<std::wstring> locales;
+    auto pushUnique = [&](std::wstring tag) {
+        if (tag.empty() || locales.size() >= 4) return;
+        for (const auto& existing : locales) {
+            if (SameLocaleIgnoreCase(existing, tag)) return;
+        }
+        locales.push_back(std::move(tag));
+    };
+    if (RegionalLyricsActive()) {
+        if (const auto target = DisplayTargetFor(GetAppleMusicDisplayRegion())) {
+            pushUnique(target->locale);
+        }
+    }
+    for (auto& tag : ui::PreferredLocales()) pushUnique(std::move(tag));
+    if (locales.empty()) locales.push_back(L"en-US");
+    std::wstring joined;
+    for (size_t i = 0; i < locales.size(); ++i) {
+        if (i > 0) joined.push_back(L',');
+        joined += locales[i];
+    }
+    return joined;
+}
+
+namespace {
 
 struct CacheScope {
     std::wstring value;
@@ -49,14 +87,7 @@ class AppleMusicSearcher final : public lyrics::Searcher {
         request.title = query.title;
         request.artist = query.artist;
         request.album = query.album;
-        if (RegionalLyricsActive()) {
-            if (const auto target = DisplayTargetFor(GetAppleMusicDisplayRegion())) {
-                request.locale = target->locale;
-            }
-        }
-        if (request.locale.empty()) {
-            request.locale = ui::UsingChinese() ? L"zh-Hans-CN" : L"en-US";
-        }
+        request.locale = EffectiveLyricsLocale();
         request.durationMs =
             static_cast<int>(std::clamp(query.duration * 1000.0, 0.0, static_cast<double>(INT_MAX)));
         request.mode = lyrics_protocol::Mode::Search;

@@ -19,6 +19,9 @@ enum class Language { Auto, English, Chinese };
 Language CurrentLanguageSetting();
 void SetLanguageSetting(Language language);  // reloads the table; the caller repaints
 bool UsingChinese();
+// Ordered BCP-47 preferred language tags combining Glasswave's explicit language override
+// (if any) with Windows' user preferred UI language list, deduplicated and capped at 4.
+std::vector<std::wstring> PreferredLocales();
 
 // Translation of `english` (the English text itself when there is none).
 const std::wstring& Tr(const std::wstring& english);

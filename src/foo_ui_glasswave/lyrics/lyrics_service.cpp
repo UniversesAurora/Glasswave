@@ -899,6 +899,126 @@ void Service::RefreshCandidates(const metadb_handle_ptr& track) {
     });
 }
 
+bool Service::CanRefetchCurrent(const metadb_handle_ptr& track, const Lyrics& shown) {
+    if (!track.is_valid()) return false;
+    if (!shown.file.empty()) return true;
+    const Query query = MakeQuery(track);
+    for (const auto& searcher : scripts::Ordered(query.provider)) {
+        if ((!shown.sourceKey.empty() && searcher->Key() == shown.sourceKey) ||
+            (shown.sourceKey.empty() && !shown.source.empty() && searcher->Name() == shown.source))
+            return true;
+    }
+    return false;
+}
+
+void Service::RefetchCurrent(const metadb_handle_ptr& track, const std::shared_ptr<const Lyrics>& shown,
+                             std::function<void(const Result&)> done) {
+    if (!track.is_valid() || !shown) {
+        done({Status::NotFound, nullptr});
+        return;
+    }
+    if (!shown->file.empty()) {
+        const auto reloaded = LoadFile(track, shown->file, shown->codePage);
+        done(reloaded.status == Status::Found ? reloaded : Result{Status::Found, shown});
+        return;
+    }
+    const Query query = MakeQuery(track);
+    std::shared_ptr<Searcher> target;
+    for (const auto& searcher : scripts::Ordered(query.provider)) {
+        if ((!shown->sourceKey.empty() && searcher->Key() == shown->sourceKey) ||
+            (shown->sourceKey.empty() && !shown->source.empty() && searcher->Name() == shown->source)) {
+            target = searcher;
+            break;
+        }
+    }
+    if (!target) {
+        done({Status::Found, shown});
+        return;
+    }
+
+    const std::wstring identity = TrackIdentity(track);
+    if (identity == m_prefetchIdentity) CancelPrefetch();
+    Cancel();
+
+    const unsigned generation = m_generation;
+    auto abort = std::make_shared<abort_callback_impl>();
+    m_abort = abort;
+    auto slot = std::make_shared<std::function<void(const Result&)>>(std::move(done));
+    m_activeDone = slot;
+    m_activeIdentity = identity;
+    m_collectingIdentity = identity;
+    (*slot)({Status::Searching, nullptr});
+
+    std::vector<std::shared_ptr<Searcher>> one{target};
+    Run(abort, [this, generation, identity, track, query, one = std::move(one), shown, abort, slot] {
+        try {
+            std::vector<Candidate> latest;
+            SearchAll(query, one, *abort, SearchMode::AllCandidates,
+                      [&](std::vector<Candidate> candidates, bool, bool) {
+                          if (!abort->is_aborting() && !candidates.empty()) latest = std::move(candidates);
+                      });
+            if (abort->is_aborting()) return;
+
+            const Candidate* best = BestCandidate(query, latest);
+            if (!best && !latest.empty()) best = &latest.front();
+
+            if (best && CandidateCurrent(*best)) {
+                const Candidate chosen = *best;
+                const Result result = FromCandidate(chosen);
+                if (result.status == Status::Found) {
+                    {
+                        std::lock_guard lock(g_cacheMutex);
+                        if (abort->is_aborting() || !CandidateCurrent(chosen)) return;
+                        std::error_code ec;
+                        const auto selectedPath = SelectedFile(query);
+                        if (std::filesystem::is_regular_file(selectedPath, ec) && !ec) {
+                            WriteFile(selectedPath, Utf8(ManualSelectionText(chosen)));
+                        } else {
+                            PersistAutomatic(query, one, chosen);
+                        }
+                        if (auto existing = ReadCachedCandidates(query)) {
+                            std::vector<Candidate> merged;
+                            merged.reserve(existing->size() + latest.size());
+                            for (const auto& c : latest) merged.push_back(c);
+                            for (const auto& c : *existing) {
+                                if (c.sourceKey != chosen.sourceKey) merged.push_back(c);
+                            }
+                            PersistCandidates(query, merged);
+                        }
+                    }
+                    const auto binding = BindingFor(chosen);
+                    fb2k::inMainThread([this, generation, identity, track, query, slot, result, binding,
+                                        latest = std::move(latest)] {
+                        if (generation != m_generation) return;
+                        if (m_activeDone == slot) m_activeDone.reset();
+                        if (m_collectingIdentity == identity) m_collectingIdentity.clear();
+                        if (binding && !AccountBindingCurrent(*binding)) return;
+                        Remember(query, latest);
+                        (*slot)(result);
+                        NotifyChanged(track);
+                    });
+                    return;
+                }
+            }
+            fb2k::inMainThread([this, generation, identity, slot, shown] {
+                if (generation != m_generation) return;
+                if (m_activeDone == slot) m_activeDone.reset();
+                if (m_collectingIdentity == identity) m_collectingIdentity.clear();
+                (*slot)({Status::Found, shown});
+            });
+        } catch (const exception_aborted&) {
+        } catch (const std::exception& error) {
+            console::printf("Glasswave lyrics refetch: %s", error.what());
+            fb2k::inMainThread([this, generation, identity, slot, shown] {
+                if (generation != m_generation) return;
+                if (m_activeDone == slot) m_activeDone.reset();
+                if (m_collectingIdentity == identity) m_collectingIdentity.clear();
+                (*slot)({Status::Found, shown});
+            });
+        }
+    });
+}
+
 void Service::Lookup(const metadb_handle_ptr& track, std::function<void(const Result&)> done) {
     if (!track.is_valid()) {
         done({Status::NotFound, nullptr});

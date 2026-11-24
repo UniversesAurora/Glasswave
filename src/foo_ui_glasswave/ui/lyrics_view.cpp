@@ -575,9 +575,10 @@ void LyricsView::Relayout() {
     // Measured in the lines' own fonts (and their fallback): a Latin pair and a CJK character,
     // so that a tall fallback font sets the reference too.
     reference.text = L"Ag\x56FD";
-    reference.secondaries.push_back({lyrics::TrackKind::Translation, L"Ag\x56FD", {}});
-    if (settings::ShowPronunciationLyric())
-        reference.secondaries.push_back({lyrics::TrackKind::Pronunciation, L"Ag\x56FD", {}});
+    const int enabledTracks = (settings::ShowOriginalLyric() ? 1 : 0) + (settings::ShowTranslationLyric() ? 1 : 0) +
+                              (settings::ShowPronunciationLyric() ? 1 : 0);
+    if (enabledTracks >= 2) reference.secondaries.push_back({lyrics::TrackKind::Translation, L"Ag\x56FD", {}});
+    if (enabledTracks >= 3) reference.secondaries.push_back({lyrics::TrackKind::Pronunciation, L"Ag\x56FD", {}});
     LineView referenceView;
     referenceView.line = &reference;
     BuildLine(referenceView, m_layoutWidth);
@@ -599,16 +600,16 @@ void LyricsView::BuildLine(LineView& v, float width) {
     const lyrics::Line& line = *v.line;
     static thread_local float cachedSize = 0;
     static thread_local int cachedStyle = -1;
-    static thread_local com_ptr<IDWriteTextFormat> mainFormat, transFormat, pronFormat;
-    static thread_local float transSizeDip = 0, pronSizeDip = 0;
+    static thread_local com_ptr<IDWriteTextFormat> mainFormat, sub1Format, sub2Format;
+    static thread_local float sub1SizeDip = 0, sub2SizeDip = 0;
     if (cachedSize != F || cachedStyle != settings::LyricStyleGeneration()) {
-        // Each secondary track's size is the user's percentage of the same automatic size.
+        // Each row's size is the user's percentage of the same automatic size.
         const int mainPct = std::max(1, settings::LyricSizePercent());
-        transSizeDip = F * settings::TranslationSizePercent() / mainPct;
-        pronSizeDip = F * settings::PronunciationSizePercent() / mainPct;
+        sub1SizeDip = F * settings::FirstSecondarySizePercent() / mainPct;
+        sub2SizeDip = F * settings::SecondSecondarySizePercent() / mainPct;
         mainFormat = MakeLyricFormat(F, DWRITE_FONT_WEIGHT_BOLD);
-        transFormat = MakeLyricFormat(transSizeDip, DWRITE_FONT_WEIGHT_SEMI_BOLD);
-        pronFormat = MakeLyricFormat(pronSizeDip, DWRITE_FONT_WEIGHT_SEMI_BOLD);
+        sub1Format = MakeLyricFormat(sub1SizeDip, DWRITE_FONT_WEIGHT_SEMI_BOLD);
+        sub2Format = MakeLyricFormat(sub2SizeDip, DWRITE_FONT_WEIGHT_SEMI_BOLD);
         cachedSize = F;
         cachedStyle = settings::LyricStyleGeneration();
     }
@@ -664,9 +665,9 @@ void LyricsView::BuildLine(LineView& v, float width) {
         if (sec.text.empty()) return;
         LineView::SecondaryView sv;
         sv.kind = sec.kind;
-        const bool isPron = sec.kind == lyrics::TrackKind::Pronunciation;
-        IDWriteTextFormat* fmt = isPron ? pronFormat.get() : transFormat.get();
-        sv.fontSize = isPron ? pronSizeDip : transSizeDip;
+        const bool isSecondSub = !v.subs.empty();
+        IDWriteTextFormat* fmt = isSecondSub ? sub2Format.get() : sub1Format.get();
+        sv.fontSize = isSecondSub ? sub2SizeDip : sub1SizeDip;
         winrt::check_hresult(f->CreateTextLayout(sec.text.c_str(), static_cast<UINT32>(sec.text.size()), fmt, width,
                                                  100000.0f, sv.layout.put()));
         if (!sec.words.empty()) {
@@ -1176,11 +1177,11 @@ void LyricsView::DrawLiveText(ID2D1DeviceContext* dc, LineView& l, double now) {
         }
     }
     dc->SetTransform(blockM);
-    for (const auto& sv : l.subs) {
+    for (size_t si = 0; si < l.subs.size(); ++si) {
+        const auto& sv = l.subs[si];
         if (!sv.layout) continue;
-        const auto subMode = sv.kind == lyrics::TrackKind::Pronunciation
-                                 ? settings::GetPronunciationLyricHighlight()
-                                 : settings::GetTranslationLyricHighlight();
+        const auto subMode = si == 0 ? settings::GetFirstSecondaryLyricHighlight()
+                                     : settings::GetSecondSecondaryLyricHighlight();
         const float subBaseA = kSub * dim / kDim;
         if (subMode == settings::SecondaryLyricHighlight::Off) {
             dc->DrawTextLayout({0, sv.y}, sv.layout.get(),

@@ -380,6 +380,7 @@ class MainWindow : public PageHost, public PlayerHost {
     winrt::com_ptr<IWICBitmapSource> m_lyricsArt; // cover for the pane's header
     void ToggleLyrics();
     void RequestLyrics(const metadb_handle_ptr& track, bool again);
+    void RefetchCurrentLyrics(const metadb_handle_ptr& track);
     void ResetLyrics();
     void OnLyrics(const lyrics::Result& result);
     void StartLyricsFrames();

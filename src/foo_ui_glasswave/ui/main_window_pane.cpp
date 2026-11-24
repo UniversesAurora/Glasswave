@@ -36,6 +36,24 @@ void MainWindow::RequestLyrics(const metadb_handle_ptr& track, bool again) {
         lyrics::Service::Get().Request(track, done);
 }
 
+void MainWindow::RefetchCurrentLyrics(const metadb_handle_ptr& track) {
+    const std::wstring identity = lyrics::Service::TrackIdentity(track);
+    if (identity != m_lyricsTrackIdentity || m_lyricsResult.status != lyrics::Status::Found ||
+        !m_lyricsResult.lyrics) {
+        RequestLyrics(track, true);
+        return;
+    }
+    const std::uint64_t request = ++m_lyricsRequestGeneration;
+    auto done = [this, alive = std::weak_ptr<int>(m_alive), request, identity](const lyrics::Result& result) {
+        if (alive.expired()) return;
+        if (!lyrics::IsCurrentLyricsRequest(request, m_lyricsRequestGeneration, identity,
+                                            m_lyricsTrackIdentity))
+            return;
+        OnLyrics(result);
+    };
+    lyrics::Service::Get().RefetchCurrent(track, m_lyricsResult.lyrics, std::move(done));
+}
+
 void MainWindow::ResetLyrics() {
     ++m_lyricsRequestGeneration;
     lyrics::Service::Get().Cancel();
@@ -394,6 +412,14 @@ void MainWindow::ShowLyricsMenu(POINT screen) {
                                    Notice(owner, Tr(L"Lyrics"), Tr(L"The file contains no readable lyrics."));
                            }});
         actions.push_back({Tr(L"Reload lyrics"), [this, now] { RequestLyrics(now, false); }});
+        {
+            const bool canRefetch = lyrics::Service::TrackIdentity(now) == m_lyricsTrackIdentity &&
+                                    m_lyricsResult.status == lyrics::Status::Found && m_lyricsResult.lyrics &&
+                                    lyrics::Service::CanRefetchCurrent(now, *m_lyricsResult.lyrics);
+            MenuAction refetch{Tr(L"Refetch current lyrics"), [this, now] { RefetchCurrentLyrics(now); }};
+            refetch.disabled = !canRefetch;
+            actions.push_back(std::move(refetch));
+        }
         actions.push_back({Tr(L"Search for lyrics again"), [this, now] { RequestLyrics(now, true); }});
         actions.push_back({Tr(L"Use automatic lyrics"), [this, now] {
                                lyrics::Service::Get().UseAutomatic(now);
@@ -424,7 +450,7 @@ void MainWindow::ShowLyricsMenu(POINT screen) {
              settings::SetLyricSizePercent(settings::kLyricSize.defaultValue);
              restyle();
          }}};
-    actions.push_back({Tr(L"Lyrics text size"), nullptr, std::move(size)});
+    actions.push_back({Tr(L"Main line text size"), nullptr, std::move(size)});
     const bool showOrig = settings::ShowOriginalLyric();
     const bool showTrans = settings::ShowTranslationLyric();
     const bool showPron = settings::ShowPronunciationLyric();
@@ -503,10 +529,10 @@ void MainWindow::ShowLyricsMenu(POINT screen) {
         }
         actions.push_back({Tr(title), nullptr, std::move(menu)});
     };
-    addHighlightMenu(L"Translation line highlight", settings::GetTranslationLyricHighlight(),
-                     settings::SetTranslationLyricHighlight);
-    addHighlightMenu(L"Pronunciation line highlight", settings::GetPronunciationLyricHighlight(),
-                     settings::SetPronunciationLyricHighlight);
+    addHighlightMenu(L"First secondary line highlight", settings::GetFirstSecondaryLyricHighlight(),
+                     settings::SetFirstSecondaryLyricHighlight);
+    addHighlightMenu(L"Second secondary line highlight", settings::GetSecondSecondaryLyricHighlight(),
+                     settings::SetSecondSecondaryLyricHighlight);
     if (m_lyricsOpen && owner == m_hwnd) actions.push_back({Tr(L"Close lyrics pane"), [this] { ToggleLyrics(); }});
     ShowActionMenu(owner, screen, actions);
 }

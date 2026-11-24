@@ -23,8 +23,8 @@ cfg_int cfg_volumeTipDelay({0x8d3a51c5, 0x6e2f, 0x4b19, {0xa4, 0x7c, 0x1f, 0x5e,
 cfg_int cfg_lyricLine({0x8d3a51c6, 0x6e2f, 0x4b19, {0xa4, 0x7c, 0x1f, 0x5e, 0x9b, 0x2d, 0x7c, 0x40}}, 1);
 cfg_int cfg_lyricSize({0x8d3a51c7, 0x6e2f, 0x4b19, {0xa4, 0x7c, 0x1f, 0x5e, 0x9b, 0x2d, 0x7c, 0x40}},
                       kLyricSize.defaultValue);
-cfg_int cfg_translationSize({0x8d3a51c8, 0x6e2f, 0x4b19, {0xa4, 0x7c, 0x1f, 0x5e, 0x9b, 0x2d, 0x7c, 0x40}},
-                            kTranslationSize.defaultValue);
+cfg_int cfg_firstSecondarySize({0x8d3a51c8, 0x6e2f, 0x4b19, {0xa4, 0x7c, 0x1f, 0x5e, 0x9b, 0x2d, 0x7c, 0x40}},
+                               kFirstSecondarySize.defaultValue);
 cfg_var_modern::cfg_string cfg_lyricFonts({0x8d3a51c9, 0x6e2f, 0x4b19, {0xa4, 0x7c, 0x1f, 0x5e, 0x9b, 0x2d, 0x7c, 0x40}},
                                           "");
 cfg_int cfg_lyricsCopy({0x8d3a51cd, 0x6e2f, 0x4b19, {0xa4, 0x7c, 0x1f, 0x5e, 0x9b, 0x2d, 0x7c, 0x40}}, 0);
@@ -42,17 +42,17 @@ cfg_int cfg_songTags({0x370497fa, 0x4228, 0x4d2d, {0x97, 0x04, 0x4b, 0x64, 0x8c,
 cfg_var_modern::cfg_string cfg_miniPlayerRect({0x11cd7f56, 0xca0d, 0x424c, {0x8a, 0xc9, 0xaf, 0xac, 0xea, 0xc2, 0x56, 0x9f}},
                                               "");
 // {0A8F54B6-7A45-4EBD-B6A3-04FEC2E1D749}
-cfg_int cfg_translationLyricHighlight(
+cfg_int cfg_firstSecondaryLyricHighlight(
     {0x0a8f54b6, 0x7a45, 0x4ebd, {0xb6, 0xa3, 0x04, 0xfe, 0xc2, 0xe1, 0xd7, 0x49}},
     kSecondaryLyricHighlight.defaultValue);
 // {6C3E18A2-4B79-42D1-9E5A-27F0C4A8B315}
-cfg_int cfg_pronunciationLyricHighlight(
+cfg_int cfg_secondSecondaryLyricHighlight(
     {0x6c3e18a2, 0x4b79, 0x42d1, {0x9e, 0x5a, 0x27, 0xf0, 0xc4, 0xa8, 0xb3, 0x15}},
     kSecondaryLyricHighlight.defaultValue);
 // {92D47E1B-5F08-49A2-8C31-6E4A9D02B7C8}
-cfg_int cfg_pronunciationSize(
+cfg_int cfg_secondSecondarySize(
     {0x92d47e1b, 0x5f08, 0x49a2, {0x8c, 0x31, 0x6e, 0x4a, 0x9d, 0x02, 0xb7, 0xc8}},
-    kPronunciationSize.defaultValue);
+    kSecondSecondarySize.defaultValue);
 // {4A19C7E3-8D25-4F6B-B074-3E91A5C28D61}
 cfg_int cfg_showOriginalLyric(
     {0x4a19c7e3, 0x8d25, 0x4f6b, {0xb0, 0x74, 0x3e, 0x91, 0xa5, 0xc2, 0x8d, 0x61}}, 1);
@@ -81,14 +81,14 @@ void SetLyricSizePercent(int percent) {
     Set(cfg_lyricSize, kLyricSize, percent);
     ++g_lyricStyle;
 }
-int TranslationSizePercent() { return Get(cfg_translationSize, kTranslationSize); }
-void SetTranslationSizePercent(int percent) {
-    Set(cfg_translationSize, kTranslationSize, percent);
+int FirstSecondarySizePercent() { return Get(cfg_firstSecondarySize, kFirstSecondarySize); }
+void SetFirstSecondarySizePercent(int percent) {
+    Set(cfg_firstSecondarySize, kFirstSecondarySize, percent);
     ++g_lyricStyle;
 }
-int PronunciationSizePercent() { return Get(cfg_pronunciationSize, kPronunciationSize); }
-void SetPronunciationSizePercent(int percent) {
-    Set(cfg_pronunciationSize, kPronunciationSize, percent);
+int SecondSecondarySizePercent() { return Get(cfg_secondSecondarySize, kSecondSecondarySize); }
+void SetSecondSecondarySizePercent(int percent) {
+    Set(cfg_secondSecondarySize, kSecondSecondarySize, percent);
     ++g_lyricStyle;
 }
 std::wstring LyricFonts() {
@@ -148,19 +148,19 @@ lyrics::DisplayOptions GetLyricDisplayOptions() {
     if (!opts.showOriginal && !opts.showTranslation && !opts.showPronunciation) opts.showOriginal = true;
     return opts;
 }
-SecondaryLyricHighlight GetTranslationLyricHighlight() {
-    return static_cast<SecondaryLyricHighlight>(Get(cfg_translationLyricHighlight, kSecondaryLyricHighlight));
+SecondaryLyricHighlight GetFirstSecondaryLyricHighlight() {
+    return static_cast<SecondaryLyricHighlight>(Get(cfg_firstSecondaryLyricHighlight, kSecondaryLyricHighlight));
 }
-void SetTranslationLyricHighlight(SecondaryLyricHighlight mode) {
-    Set(cfg_translationLyricHighlight, kSecondaryLyricHighlight, static_cast<int>(mode));
+void SetFirstSecondaryLyricHighlight(SecondaryLyricHighlight mode) {
+    Set(cfg_firstSecondaryLyricHighlight, kSecondaryLyricHighlight, static_cast<int>(mode));
     ++g_lyricStyle;
 }
-SecondaryLyricHighlight GetPronunciationLyricHighlight() {
+SecondaryLyricHighlight GetSecondSecondaryLyricHighlight() {
     return static_cast<SecondaryLyricHighlight>(
-        Get(cfg_pronunciationLyricHighlight, kSecondaryLyricHighlight));
+        Get(cfg_secondSecondaryLyricHighlight, kSecondaryLyricHighlight));
 }
-void SetPronunciationLyricHighlight(SecondaryLyricHighlight mode) {
-    Set(cfg_pronunciationLyricHighlight, kSecondaryLyricHighlight, static_cast<int>(mode));
+void SetSecondSecondaryLyricHighlight(SecondaryLyricHighlight mode) {
+    Set(cfg_secondSecondaryLyricHighlight, kSecondaryLyricHighlight, static_cast<int>(mode));
     ++g_lyricStyle;
 }
 int LyricStyleGeneration() { return g_lyricStyle; }

@@ -157,6 +157,11 @@ class Service {
     void Request(const metadb_handle_ptr& track, std::function<void(const Result&)> done);
     // Drops only the automatic result. An explicit owner selection remains in force.
     void Research(const metadb_handle_ptr& track, std::function<void(const Result&)> done);
+    // Re-fetches the currently displayed lyric directly from its original source (network
+    // searcher or local file), updating the manual selection or automatic cache in place.
+    static bool CanRefetchCurrent(const metadb_handle_ptr& track, const Lyrics& shown);
+    void RefetchCurrent(const metadb_handle_ptr& track, const std::shared_ptr<const Lyrics>& shown,
+                        std::function<void(const Result&)> done);
     void Cancel();
     void Shutdown();
     // The lyrics `track` shows, for a copy of them (a downloaded file's tags and .lrc): the

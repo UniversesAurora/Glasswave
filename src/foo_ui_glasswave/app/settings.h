@@ -68,19 +68,18 @@ inline constexpr Range kPlayHistoryRows{20, 1000, 100};
 int PlayHistoryRows();
 void SetPlayHistoryRows(int rows);
 
-// The lyrics view (library window, mini player, full screen): the lines' size and that of
-// their translations, each in percent of the size the view picks for its width; the font
-// families, tried in order for every character (then Windows' own fallback; none: the
-// interface font); and whether translations stand above their lines instead of below.
+// The lyrics view (library window, mini player, full screen): the main line's size and the
+// first / second secondary line sizes, each in percent of the size the view picks for its width;
+// and the font families tried in order for every character (then Windows' own fallback).
 inline constexpr Range kLyricSize{50, 200, 100};
-inline constexpr Range kTranslationSize{25, 150, 55};
-inline constexpr Range kPronunciationSize{25, 150, 50};
+inline constexpr Range kFirstSecondarySize{25, 150, 55};
+inline constexpr Range kSecondSecondarySize{25, 150, 50};
 int LyricSizePercent();
 void SetLyricSizePercent(int percent);
-int TranslationSizePercent();
-void SetTranslationSizePercent(int percent);
-int PronunciationSizePercent();
-void SetPronunciationSizePercent(int percent);
+int FirstSecondarySizePercent();
+void SetFirstSecondarySizePercent(int percent);
+int SecondSecondarySizePercent();
+void SetSecondSecondarySizePercent(int percent);
 std::wstring LyricFonts(); // as typed: names separated by commas
 void SetLyricFonts(const std::wstring& fonts);
 std::vector<std::wstring> LyricFontList();
@@ -100,19 +99,19 @@ inline constexpr Range kLyricDisplayOrder{0, 5, 0};
 lyrics::DisplayOrder GetLyricDisplayOrder();
 void SetLyricDisplayOrder(lyrics::DisplayOrder order);
 lyrics::DisplayOptions GetLyricDisplayOptions();
-// Highlighting of secondary lyric lines (translation and pronunciation independently):
-// Off keeps the line dim, Line highlights the whole line while active, WordProgress sweeps
-// across the secondary line (using real syllable timing when available, else main progress).
+// Highlighting of the first and second secondary lyric rows independently:
+// Off keeps the row dim, Line highlights the whole row while active, WordProgress sweeps
+// across the row (using real syllable timing when available, else main line progress).
 enum class SecondaryLyricHighlight : int {
     Off = 0,
     Line = 1,
     WordProgress = 2,
 };
 inline constexpr Range kSecondaryLyricHighlight{0, 2, 0};
-SecondaryLyricHighlight GetTranslationLyricHighlight();
-void SetTranslationLyricHighlight(SecondaryLyricHighlight mode);
-SecondaryLyricHighlight GetPronunciationLyricHighlight();
-void SetPronunciationLyricHighlight(SecondaryLyricHighlight mode);
+SecondaryLyricHighlight GetFirstSecondaryLyricHighlight();
+void SetFirstSecondaryLyricHighlight(SecondaryLyricHighlight mode);
+SecondaryLyricHighlight GetSecondSecondaryLyricHighlight();
+void SetSecondSecondaryLyricHighlight(SecondaryLyricHighlight mode);
 // Bumped by every change above, so views can tell their layout is out of date.
 int LyricStyleGeneration();
 

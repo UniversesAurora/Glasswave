@@ -4132,11 +4132,7 @@ stream::Id StreamProvider::TrackId(const metadb_handle_ptr& item) const {
 }
 
 std::wstring StreamProvider::LyricsLocale() const {
-    if (RegionalLyricsActive()) {
-        if (const auto target = DisplayTargetFor(GetAppleMusicDisplayRegion())) return target->locale;
-    }
-    std::lock_guard lock(m_mutex);
-    return m_locale.empty() ? CurrentLocale() : m_locale;
+    return lyrics_source::EffectiveLyricsLocale();
 }
 
 std::wstring StreamProvider::Lyrics(const stream::Id& track, abort_callback& abort) {

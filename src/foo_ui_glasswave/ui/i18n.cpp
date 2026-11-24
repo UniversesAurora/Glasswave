@@ -108,6 +108,99 @@ void SetLanguageSetting(Language language) {
 }
 bool UsingChinese() { return Get().chinese; }
 
+namespace {
+
+bool IsValidLocaleTag(std::wstring_view tag) {
+    if (tag.size() < 2 || tag.size() > 32) return false;
+    for (wchar_t c : tag) {
+        const bool ok = (c >= L'A' && c <= L'Z') || (c >= L'a' && c <= L'z') || (c >= L'0' && c <= L'9') || c == L'-';
+        if (!ok) return false;
+    }
+    return true;
+}
+
+std::wstring NormalizeLocaleTag(std::wstring_view raw) {
+    std::wstring tag(raw);
+    for (wchar_t& c : tag) {
+        if (c == L'_') c = L'-';
+    }
+    if (!IsValidLocaleTag(tag)) return {};
+    std::wstring lower = tag;
+    std::transform(lower.begin(), lower.end(), lower.begin(), ::towlower);
+    // Windows often reports 2-part Chinese UI tags ("zh-CN", "zh-TW", "zh-HK"); expand to
+    // explicit script tags so Apple Music matches Simplified vs Traditional accurately.
+    if (lower == L"zh-cn" || lower == L"zh-hans") return L"zh-Hans-CN";
+    if (lower == L"zh-sg") return L"zh-Hans-SG";
+    if (lower == L"zh-tw" || lower == L"zh-hant") return L"zh-Hant-TW";
+    if (lower == L"zh-hk") return L"zh-Hant-HK";
+    if (lower == L"zh-mo") return L"zh-Hant-MO";
+    return tag;
+}
+
+bool SameLocaleIgnoreCase(std::wstring_view a, std::wstring_view b) {
+    if (a.size() != b.size()) return false;
+    for (size_t i = 0; i < a.size(); ++i) {
+        if (std::towlower(a[i]) != std::towlower(b[i])) return false;
+    }
+    return true;
+}
+
+std::vector<std::wstring> WindowsPreferredLocales() {
+    std::vector<std::wstring> out;
+    ULONG count = 0;
+    ULONG chars = 0;
+    if (!GetUserPreferredUILanguages(MUI_LANGUAGE_NAME, &count, nullptr, &chars) || chars == 0) return out;
+    std::vector<wchar_t> buf(chars, L'\0');
+    if (!GetUserPreferredUILanguages(MUI_LANGUAGE_NAME, &count, buf.data(), &chars)) return out;
+    const wchar_t* p = buf.data();
+    const wchar_t* end = buf.data() + chars;
+    while (p < end && *p != L'\0') {
+        std::wstring_view item(p);
+        p += item.size() + 1;
+        if (auto norm = NormalizeLocaleTag(item); !norm.empty()) out.push_back(std::move(norm));
+    }
+    return out;
+}
+
+}  // namespace
+
+std::vector<std::wstring> PreferredLocales() {
+    std::vector<std::wstring> result;
+    auto pushUnique = [&](std::wstring tag) {
+        if (tag.empty() || result.size() >= 4) return;
+        for (const auto& existing : result) {
+            if (SameLocaleIgnoreCase(existing, tag)) return;
+        }
+        result.push_back(std::move(tag));
+    };
+
+    switch (CurrentLanguageSetting()) {
+    case Language::Chinese:
+        pushUnique(L"zh-Hans-CN");
+        break;
+    case Language::English:
+        pushUnique(L"en-US");
+        break;
+    case Language::Auto:
+        break;
+    }
+
+    for (auto& tag : WindowsPreferredLocales()) pushUnique(std::move(tag));
+
+    if (result.empty()) pushUnique(UsingChinese() ? L"zh-Hans-CN" : L"en-US");
+
+    bool hasEnglish = false;
+    for (const auto& tag : result) {
+        if (tag.size() >= 2 && (tag[0] == L'e' || tag[0] == L'E') && (tag[1] == L'n' || tag[1] == L'N') &&
+            (tag.size() == 2 || tag[2] == L'-')) {
+            hasEnglish = true;
+            break;
+        }
+    }
+    if (!hasEnglish) pushUnique(L"en-US");
+    return result;
+}
+
 const std::wstring& Tr(const std::wstring& english) {
     auto& c = Get();
     auto [it, fresh] = c.seen.insert(english);

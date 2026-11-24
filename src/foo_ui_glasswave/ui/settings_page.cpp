@@ -204,12 +204,13 @@ std::vector<Section> BuildSections() {
     }
     {
         // How the lyrics look, then where they come from.
-        std::vector<Field> fields{Number(L"Lyrics text size", L"%", settings::kLyricSize, settings::LyricSizePercent,
+        std::vector<Field> fields{Number(L"Main line text size", L"%", settings::kLyricSize, settings::LyricSizePercent,
                                          settings::SetLyricSizePercent),
-                                  Number(L"Translation text size", L"%", settings::kTranslationSize,
-                                         settings::TranslationSizePercent, settings::SetTranslationSizePercent),
-                                  Number(L"Pronunciation text size", L"%", settings::kPronunciationSize,
-                                         settings::PronunciationSizePercent, settings::SetPronunciationSizePercent)};
+                                  Number(L"First secondary line text size", L"%", settings::kFirstSecondarySize,
+                                         settings::FirstSecondarySizePercent, settings::SetFirstSecondarySizePercent),
+                                  Number(L"Second secondary line text size", L"%", settings::kSecondSecondarySize,
+                                         settings::SecondSecondarySizePercent,
+                                         settings::SetSecondSecondarySizePercent)};
         Field fonts;
         fonts.kind = Field::Kind::Text;
         fonts.label = L"Lyrics fonts, in order (comma-separated)";
@@ -264,10 +265,10 @@ std::vector<Section> BuildSections() {
             };
             return f;
         };
-        fields.push_back(makeHighlight(L"Translation line highlight", settings::GetTranslationLyricHighlight,
-                                       settings::SetTranslationLyricHighlight));
-        fields.push_back(makeHighlight(L"Pronunciation line highlight", settings::GetPronunciationLyricHighlight,
-                                       settings::SetPronunciationLyricHighlight));
+        fields.push_back(makeHighlight(L"First secondary line highlight", settings::GetFirstSecondaryLyricHighlight,
+                                       settings::SetFirstSecondaryLyricHighlight));
+        fields.push_back(makeHighlight(L"Second secondary line highlight", settings::GetSecondSecondaryLyricHighlight,
+                                       settings::SetSecondSecondaryLyricHighlight));
         for (auto& field : lyrics::scripts::SettingFields()) fields.push_back(std::move(field));
         sections.push_back({L"Lyrics", std::move(fields)});
     }
