@@ -165,10 +165,12 @@ try {
         'metadata_failure_does_not_hide_primary',
         'account_generation_rejects_old_metadata_patch',
         'restore_gate_and_soft_retirement',
-        'remote_page_enrichment_presentation'
+        'remote_page_enrichment_presentation',
+        'reopen_cancelled_set_mode_all_uses_fresh_token',
+        'early_refresh_before_deferred_start'
     )
     if ([int]$result.caseCount -ne $caseNames.Count -or @($result.cases).Count -ne $caseNames.Count) {
-        throw 'ListSession result must contain exactly thirty cases.'
+        throw "ListSession result must contain exactly $($caseNames.Count) cases."
     }
     for ($index = 0; $index -lt $caseNames.Count; ++$index) {
         $case = $result.cases[$index]
@@ -217,7 +219,10 @@ try {
         'softRetireNewNetworkApplied', 'remotePendingGated', 'remoteMetadataReveal',
         'remoteNextPendingGated', 'remoteSelectionFocusKept',
         'remoteSortedGroupedSearchUpdated', 'remoteMetadataRows',
-        'remoteMetadataGroupCount', 'remoteMetadataFilterCount'
+        'remoteMetadataGroupCount', 'remoteMetadataFilterCount',
+        'reopenCancelledSetModeAllFreshToken', 'reopenCancelledSetModeAllRequests',
+        'reopenCancelledSetModeAllRows', 'earlyRefreshFreshToken',
+        'earlyRefreshRequests', 'earlyRefreshRows'
     )
     foreach ($name in $checkNames) {
         if (-not $checks.PSObject.Properties.Name.Contains($name)) {
@@ -358,7 +363,15 @@ try {
         [uint64]$checks.remoteMetadataFilterCount -ne 130) {
         throw 'ListSession remote metadata-ready presentation assertions failed.'
     }
-    if ([uint64]$result.providerRequests -ne 73 -or
+    if (-not [bool]$checks.reopenCancelledSetModeAllFreshToken -or
+        [uint64]$checks.reopenCancelledSetModeAllRequests -ne 2 -or
+        [uint64]$checks.reopenCancelledSetModeAllRows -ne 2 -or
+        -not [bool]$checks.earlyRefreshFreshToken -or
+        [uint64]$checks.earlyRefreshRequests -ne 1 -or
+        [uint64]$checks.earlyRefreshRows -ne 2) {
+        throw 'ListSession reopen-cancelled or early-refresh assertions failed.'
+    }
+    if ([uint64]$result.providerRequests -ne 76 -or
         [uint64]$result.enrichmentRequests -ne 20 -or
         @($result.failureCodes).Count -ne 0 -or
         -not [bool]$result.ok -or

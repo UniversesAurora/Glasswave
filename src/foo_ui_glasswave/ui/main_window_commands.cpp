@@ -515,7 +515,6 @@ void MainWindow::ShowRemoteNavMenu(const NavPane::Item& item, POINT screen) {
 
 void MainWindow::RefreshCurrentPage() {
     if (!CanRefreshPage()) return;
-    m_page->RefreshRequested();
     // Only the refreshed source's pictures are revalidated (RefreshProviderLibrary).
     if (auto* provider = ViewProvider()) {
         RefreshProviderLibrary(*provider);
@@ -528,6 +527,7 @@ void MainWindow::RefreshCurrentPage() {
     }
     m_forcePageRefresh = true;
     Navigate(m_view, false);
+    if (m_page && m_page->CanRefresh()) m_page->RefreshRequested();
     if (m_list) m_list->Refresh();
 }
 

@@ -264,6 +264,11 @@ struct Read : std::enable_shared_from_this<Read> {
         });
     }
     bool NetworkAllowed() const { return !provider.SessionRestoring() || provider.AccountVerified(); }
+    bool NeedsRestart() const { return generation == 0 || !cancelled || cancelled->load(); }
+    bool NeedsRefresh() const {
+        return NeedsRestart() || validatedAt == 0 ||
+               cache::Store::Now() - validatedAt >= FreshSecondsFor(query.kind);
+    }
     void ConsumeNext() {
         for (const auto& weak : leases)
             if (auto lease = weak.lock()) lease->next = false;
@@ -515,9 +520,7 @@ void Read::Start() {
     }
     used = ++clock;
     if (started) {
-        const bool refresh = !inFlight && !cacheLoading &&
-                             (generation == 0 || (cancelled && cancelled->load()) || validatedAt == 0 ||
-                              cache::Store::Now() - validatedAt >= FreshSecondsFor(query.kind));
+        const bool refresh = !inFlight && !cacheLoading && NeedsRefresh();
         if (refresh) {
             if (!NetworkAllowed()) {
                 BeginRestoreAttempt(false);
@@ -740,6 +743,7 @@ void Read::Refresh(bool preserveDemand, bool allowRestoreRetry) {
         return;
     }
     if (!NetworkAllowed()) {
+        started = true;
         ++request;
         if (cancelled) cancelled->store(true);
         cancelled = MakeCancelToken();
@@ -753,6 +757,7 @@ void Read::Refresh(bool preserveDemand, bool allowRestoreRetry) {
         BeginRestoreAttempt(allowRestoreRetry);
         return;
     }
+    started = true;
     gated = false;
     ++request;
     if (cancelled) cancelled->store(true);
@@ -799,7 +804,10 @@ void Read::Next(const std::shared_ptr<Lease>& lease) {
     }
     ConsumeNext();
     state.error.clear();
-    Fetch();
+    if (NeedsRestart())
+        Refresh(true);
+    else
+        Fetch();
 }
 void Read::Fetch() {
     if (!valid || stopping || inFlight || !HasLeases()) return;
@@ -809,6 +817,10 @@ void Read::Fetch() {
     }
     if (!NetworkAllowed()) {
         state.loading = state.refreshing = false;
+        return;
+    }
+    if (NeedsRestart()) {
+        Refresh(true);
         return;
     }
     if (networkPages >= kMaxPages) {
@@ -1198,8 +1210,12 @@ void ListSession::SetMode(ListLoadMode mode) {
     m_impl->lease->mode = mode;
     const auto read = m_impl->read;
     if (changed && mode == ListLoadMode::All && read->started && !read->initializing && !read->inFlight &&
-        !read->cacheLoading && !read->state.complete && read->state.error.empty())
-        read->Fetch();
+        !read->cacheLoading && !read->state.complete && read->state.error.empty()) {
+        if (read->NeedsRestart())
+            read->Refresh(true);
+        else
+            read->Fetch();
+    }
 }
 void ListSession::Refresh() {
     if (auto read = m_impl->read) read->Refresh(false, true);
@@ -1223,11 +1239,16 @@ void ListSession::Cancel() {
     auto read = std::move(m_impl->read);
     m_impl->lease->cancelled = true;
     m_impl->lease->changed = {};
-    if (!read->HasLeases() && (read->inFlight || read->activeEnrichments || !read->enrichmentQueue.empty())) {
+    if (!read->HasLeases() &&
+        (read->inFlight || read->cacheLoading || read->activeEnrichments || !read->enrichmentQueue.empty())) {
         if (read->cancelled) read->cancelled->store(true);
+        if (read->cacheLoading && read->generation == 0 && RowCount(read->state.page) == 0)
+            read->started = false;
         read->enrichmentQueue.clear();
         read->activeEnrichments = 0;
         ++read->request;
+        read->cacheLoading = false;
+        read->initializing = false;
         read->inFlight = false;
         read->state.loading = read->state.refreshing = false;
     }

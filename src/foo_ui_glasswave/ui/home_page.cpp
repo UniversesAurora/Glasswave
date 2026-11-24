@@ -339,6 +339,8 @@ class HomePage final : public Page, public stream::Provider::Listener {
     void RefreshRequested() override {
         for (auto* source : m_sources)
             if (auto it = Memory().find(std::wstring(source->Key())); it != Memory().end()) it->second.at = 0;
+        for (auto* source : m_sources) Ask(*source, false);
+        Fill();
     }
 
   private:

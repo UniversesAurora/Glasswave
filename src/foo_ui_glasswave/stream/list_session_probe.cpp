@@ -183,6 +183,12 @@ struct Checks {
     uint64_t remoteMetadataRows = 0;
     uint64_t remoteMetadataGroupCount = 0;
     uint64_t remoteMetadataFilterCount = 0;
+    bool reopenCancelledSetModeAllFreshToken = false;
+    uint64_t reopenCancelledSetModeAllRequests = 0;
+    uint64_t reopenCancelledSetModeAllRows = 0;
+    bool earlyRefreshFreshToken = false;
+    uint64_t earlyRefreshRequests = 0;
+    uint64_t earlyRefreshRows = 0;
 };
 
 struct ProbeResult {
@@ -492,6 +498,19 @@ class FakeProvider final : public Provider {
                m_pending.front().cancelled->load(std::memory_order_acquire);
     }
 
+    bool BackCancellationAlive() const {
+        std::lock_guard lock(m_mutex);
+        return !m_pending.empty() && m_pending.back().cancelled &&
+               !m_pending.back().cancelled->load(std::memory_order_acquire);
+    }
+
+    bool DropFrontPending() {
+        std::lock_guard lock(m_mutex);
+        if (m_pending.empty()) return false;
+        m_pending.pop_front();
+        return true;
+    }
+
     bool FrontEnrichmentCancellationSignalled() const {
         std::lock_guard lock(m_mutex);
         return !m_enrichments.empty() && m_enrichments.front().cancelled &&
@@ -772,6 +791,39 @@ std::optional<size_t> OpenOneAndRequestNext(const std::shared_ptr<ProbeContext>&
             auto* session = context->Get(id);
             if (!session) return false;
             session->RequestNext();
+            return true;
+        }))
+        return std::nullopt;
+    return id;
+}
+
+std::optional<size_t> OpenOneAndSetMode(const std::shared_ptr<ProbeContext>& context, RunControl& control,
+                                        abort_callback& abort, ListQuery query,
+                                        const std::shared_ptr<Observer>& observer,
+                                        const std::shared_ptr<std::atomic_bool>& opening,
+                                        ListLoadMode initialMode, ListLoadMode updatedMode) {
+    size_t id = SIZE_MAX;
+    if (!OnMain(control, abort, [&] {
+            id = context->Open(std::move(query), observer, opening, initialMode);
+            auto* session = context->Get(id);
+            if (!session) return false;
+            session->SetMode(updatedMode);
+            return true;
+        }))
+        return std::nullopt;
+    return id;
+}
+
+std::optional<size_t> OpenOneAndRefresh(const std::shared_ptr<ProbeContext>& context, RunControl& control,
+                                        abort_callback& abort, ListQuery query,
+                                        const std::shared_ptr<Observer>& observer,
+                                        const std::shared_ptr<std::atomic_bool>& opening, ListLoadMode mode) {
+    size_t id = SIZE_MAX;
+    if (!OnMain(control, abort, [&] {
+            id = context->Open(std::move(query), observer, opening, mode);
+            auto* session = context->Get(id);
+            if (!session) return false;
+            session->Refresh();
             return true;
         }))
         return std::nullopt;
@@ -3085,6 +3137,96 @@ void CaseRemotePageEnrichmentPresentation(const std::shared_ptr<ProbeContext>& c
             pass ? std::string() : "metadata_ready_ui_gate_patch_or_presentation_failed");
 }
 
+void CaseReopenCancelledSetModeAll(const std::shared_ptr<ProbeContext>& context, RunControl& control,
+                                   abort_callback& abort, Clock::time_point deadline, ProbeResult& result) {
+    CaseCleanup cleanup(context, control, abort);
+    auto& provider = *context->provider;
+    const size_t base = provider.Requests().size();
+    const auto firstObserver = NewObserver();
+    const auto firstId = OpenOne(context, control, abort, Query(L"reopen-cancelled-all"), firstObserver,
+                                 NewOpening(), ListLoadMode::OnDemand);
+    if (!firstId) {
+        AddCase(result, "reopen_cancelled_set_mode_all_uses_fresh_token", false, "first_open_failed");
+        return;
+    }
+    cleanup.Keep(*firstId);
+    if (!provider.WaitPending(1, abort, deadline) || !Cancel(context, *firstId, control, abort) ||
+        !provider.FrontCancellationSignalled() || !provider.DropFrontPending()) {
+        AddCase(result, "reopen_cancelled_set_mode_all_uses_fresh_token", false, "first_cancel_failed");
+        return;
+    }
+
+    // Reopen the same Read and synchronously switch to All before deferred Start() runs,
+    // matching MainWindow::Navigate() calling Open() then OnPresentationChanged().
+    const auto secondObserver = NewObserver();
+    const auto secondId =
+        OpenOneAndSetMode(context, control, abort, Query(L"reopen-cancelled-all"), secondObserver,
+                          NewOpening(), ListLoadMode::OnDemand, ListLoadMode::All);
+    if (!secondId) {
+        AddCase(result, "reopen_cancelled_set_mode_all_uses_fresh_token", false, "second_open_failed");
+        return;
+    }
+    cleanup.Keep(*secondId);
+    if (!provider.WaitRequests(base + 2, abort, deadline) || !Barrier(control, abort)) {
+        AddCase(result, "reopen_cancelled_set_mode_all_uses_fresh_token", false, "reopen_request_missing");
+        return;
+    }
+    result.checks.reopenCancelledSetModeAllFreshToken = provider.BackCancellationAlive();
+    result.checks.reopenCancelledSetModeAllRequests = provider.Requests().size() - base;
+
+    ListState state;
+    if (!Deliver(context, control, abort, TrackPage(Tracks(0, 2), false, 2)) ||
+        !secondObserver->Wait(
+            abort, deadline,
+            [](const ListState& value) { return value.complete && !value.loading && RowCount(value) == 2; },
+            &state)) {
+        AddCase(result, "reopen_cancelled_set_mode_all_uses_fresh_token", false, "reopen_delivery_failed");
+        return;
+    }
+    result.checks.reopenCancelledSetModeAllRows = RowCount(state);
+    const bool pass = result.checks.reopenCancelledSetModeAllFreshToken &&
+                      result.checks.reopenCancelledSetModeAllRequests == 2 &&
+                      result.checks.reopenCancelledSetModeAllRows == 2 && provider.PendingCount() == 0;
+    AddCase(result, "reopen_cancelled_set_mode_all_uses_fresh_token", pass,
+            pass ? std::string() : "reopen_set_mode_reused_cancelled_token_or_double_fetched");
+}
+
+void CaseEarlyRefreshBeforeStart(const std::shared_ptr<ProbeContext>& context, RunControl& control,
+                                 abort_callback& abort, Clock::time_point deadline, ProbeResult& result) {
+    CaseCleanup cleanup(context, control, abort);
+    auto& provider = *context->provider;
+    const size_t base = provider.Requests().size();
+    const auto observer = NewObserver();
+    const auto id = OpenOneAndRefresh(context, control, abort, Query(L"early-refresh"), observer,
+                                      NewOpening(), ListLoadMode::OnDemand);
+    if (!id) {
+        AddCase(result, "early_refresh_before_deferred_start", false, "open_refresh_failed");
+        return;
+    }
+    cleanup.Keep(*id);
+    if (!provider.WaitRequests(base + 1, abort, deadline) || !Barrier(control, abort)) {
+        AddCase(result, "early_refresh_before_deferred_start", false, "early_refresh_request_missing");
+        return;
+    }
+    result.checks.earlyRefreshFreshToken = provider.BackCancellationAlive();
+    result.checks.earlyRefreshRequests = provider.Requests().size() - base;
+
+    ListState state;
+    if (!Deliver(context, control, abort, TrackPage(Tracks(10, 2), false, 2)) ||
+        !observer->Wait(
+            abort, deadline,
+            [](const ListState& value) { return value.complete && !value.loading && RowCount(value) == 2; },
+            &state)) {
+        AddCase(result, "early_refresh_before_deferred_start", false, "early_refresh_delivery_failed");
+        return;
+    }
+    result.checks.earlyRefreshRows = RowCount(state);
+    const bool pass = result.checks.earlyRefreshFreshToken && result.checks.earlyRefreshRequests == 1 &&
+                      result.checks.earlyRefreshRows == 2 && provider.PendingCount() == 0;
+    AddCase(result, "early_refresh_before_deferred_start", pass,
+            pass ? std::string() : "early_refresh_was_clobbered_or_double_fetched");
+}
+
 bool WriteAll(HANDLE file, std::string_view bytes) {
     size_t offset = 0;
     while (offset < bytes.size()) {
@@ -3287,6 +3429,15 @@ JsonObject ResultJson(const ProbeResult& result, bool ok) {
     checks.Insert(L"remoteMetadataRows", Number(result.checks.remoteMetadataRows));
     checks.Insert(L"remoteMetadataGroupCount", Number(result.checks.remoteMetadataGroupCount));
     checks.Insert(L"remoteMetadataFilterCount", Number(result.checks.remoteMetadataFilterCount));
+    checks.Insert(L"reopenCancelledSetModeAllFreshToken",
+                  JsonValue::CreateBooleanValue(result.checks.reopenCancelledSetModeAllFreshToken));
+    checks.Insert(L"reopenCancelledSetModeAllRequests",
+                  Number(result.checks.reopenCancelledSetModeAllRequests));
+    checks.Insert(L"reopenCancelledSetModeAllRows", Number(result.checks.reopenCancelledSetModeAllRows));
+    checks.Insert(L"earlyRefreshFreshToken",
+                  JsonValue::CreateBooleanValue(result.checks.earlyRefreshFreshToken));
+    checks.Insert(L"earlyRefreshRequests", Number(result.checks.earlyRefreshRequests));
+    checks.Insert(L"earlyRefreshRows", Number(result.checks.earlyRefreshRows));
     object.Insert(L"checks", checks);
     return object;
 }
@@ -3360,6 +3511,8 @@ void RunCases(const Paths& paths, const std::shared_ptr<ProbeContext>& context, 
     CaseAccountEnrichment(context, control, abort, CaseDeadline(globalDeadline), result);
     CaseRestoreGateAndSoftRetirement(context, control, abort, CaseDeadline(globalDeadline), result);
     CaseRemotePageEnrichmentPresentation(context, control, abort, CaseDeadline(globalDeadline), result);
+    CaseReopenCancelledSetModeAll(context, control, abort, CaseDeadline(globalDeadline), result);
+    CaseEarlyRefreshBeforeStart(context, control, abort, CaseDeadline(globalDeadline), result);
     result.providerRequests = context->provider ? context->provider->Requests().size() : 0;
     result.enrichmentRequests = context->provider ? context->provider->EnrichmentRequests() : 0;
 }
@@ -3392,7 +3545,7 @@ void RunProbe(const Paths& paths, const std::shared_ptr<ProbeContext>& context, 
     const bool casesPass =
         !result.cases.empty() &&
         std::all_of(result.cases.begin(), result.cases.end(), [](const CaseResult& item) { return item.ok; });
-    const bool ok = result.error.empty() && casesPass && result.cases.size() == 30;
+    const bool ok = result.error.empty() && casesPass && result.cases.size() == 32;
     WriteResult(paths.result, result, ok);
     winrt::uninit_apartment();
 }

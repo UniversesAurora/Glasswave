@@ -1,8 +1,18 @@
 # Status
 
-Updated: 2026-11-24
+Updated: 2026-11-25
 
-## Regional display overlay refactor & unified event-driven playback lookahead (2026-11-24, latest)
+## ListSession cancelled-token reopen fix & empty-while-loading UI fix (2026-11-25, latest)
+
+- **Fixed playlists permanently stuck loading with zero HTTP requests after early cancel + reopen (`stream/list_session.cpp`, `ui/main_window_commands.cpp`, `ui/home_page.cpp`)**:
+  - Root cause: navigating away from a list while its first HTTP request was in flight signalled `*read->cancelled = true` and cleared `inFlight` while keeping `started = true`. On re-opening the same list, `MainWindow::Navigate()` called `ListSession::Open()` (deferring `Read::Start()` to the next tick) and synchronously called `OnPresentationChanged()` -> `SetMode(ListLoadMode::All)`, which invoked `read->Fetch()` directly with the already-cancelled `CancelToken`. Providers (`applemusic::StreamProvider::FetchListPage`) silently exited on a cancelled token without invoking `done`, leaving `inFlight = true` and `state.loading = true` forever. Explicit Refresh (`MainWindow::RefreshCurrentPage()`) hit the same trap because it called `m_page->RefreshRequested()` *before* `Navigate(m_view, false)`, cancelling the request it had just started and then re-entering `SetMode(All)` with a dead token.
+  - Added `Read::NeedsRestart()` (`generation == 0 || !cancelled || cancelled->load()`) and `Read::NeedsRefresh()`, routing `SetMode(All)`, `Read::Next()`, and a defensive guard in `Read::Fetch()` through `Refresh(true)` whenever the token/generation cannot continue, setting `started = true` in `Read::Refresh()` so early `Open()+Refresh()` is never clobbered by deferred `Start()`, and including `cacheLoading` in `ListSession::Cancel()`.
+  - Reordered `MainWindow::RefreshCurrentPage()` to call `m_page->RefreshRequested()` *after* `Navigate(m_view, false)` (matching right-click nav Refresh) and made `HomePage::RefreshRequested()` trigger `Ask()` + `Fill()` immediately after clearing freshness timestamps.
+- **Fixed simultaneous `"Loading..."` and `"No songs."` display (`ui/list_view_paint.cpp`)**:
+  - `ListView::PaintRows()` now draws `EmptyText()` on zero-row lists only when `m_statusText` is empty, preventing `"No songs."` from showing underneath `"Loading..."` or an error banner.
+- **Verified**: Added `reopen_cancelled_set_mode_all_uses_fresh_token` and `early_refresh_before_deferred_start` to `stream/list_session_probe.cpp` + `scripts/test-list-session.ps1` (32/32 cases passed); `scripts/build.ps1` (`Release|x64`) succeeded with 0 warnings and 0 errors.
+
+## Regional display overlay refactor & unified event-driven playback lookahead (2026-11-24)
 
 - **Persistent, storefront-independent Apple Music regional display overlay (`applemusic/display_metadata.{h,cpp}`, `applemusic/song.h`, `applemusic/catalog.cpp`, `applemusic/stream_provider.{h,cpp}`, `applemusic/input_applemusic.cpp`, `stream/catalog.{h,cpp}`, `stream/encoded_input.{h,cpp}`, `stream/list_session.cpp`, `ui/home_store.cpp`, `ui/main_window_provider.cpp`)**:
   - Canonical `Catalog` records remain raw (account storefront) while `DisplayMetadata` is now persisted atomically to `<profile>/glasswave/applemusic/cache/display.tsv` (`# glasswave apple music display v1`, 7-day freshness TTL, loaded synchronously on startup before `Catalog::InstallCached` and flushed on shutdown).

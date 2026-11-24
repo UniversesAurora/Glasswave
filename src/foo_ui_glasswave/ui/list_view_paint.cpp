@@ -334,7 +334,9 @@ void ListView::PaintRows() {
         const D2D1_SIZE_F size{w / s, h / s};
         if (!m_source) return;
         if (m_source->Count() == 0) {
-            Text(dc, Tr(m_source->EmptyText()), {20, 20, size.width - 20, 60}, kGreyInk, DWRITE_TEXT_ALIGNMENT_CENTER);
+            if (m_statusText.empty())
+                Text(dc, Tr(m_source->EmptyText()), {20, 20, size.width - 20, 60}, kGreyInk,
+                     DWRITE_TEXT_ALIGNMENT_CENTER);
             return;
         }
         D2D1_MATRIX_3X2_F base;
