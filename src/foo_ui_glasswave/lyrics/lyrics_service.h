@@ -145,6 +145,10 @@ class Service {
     // Independent of Request (the lyrics on screen go on). `done` runs once, on the main
     // thread, with Found or NotFound.
     void Lookup(const metadb_handle_ptr& track, std::function<void(const Result&)> done);
+    // Single-slot cancellable background prefetch for the immediate next track (N+1). Populates
+    // the durable automatic cache without touching active display state. Main thread only.
+    void Prefetch(const metadb_handle_ptr& track);
+    void CancelPrefetch();
     // Main-thread notice that the lyrics a track shows were changed: another selection, none,
     // back to automatic, a new automatic search, another offset.
     uint64_t SubscribeChanges(std::function<void(const metadb_handle_ptr& track)> listener);
@@ -218,6 +222,8 @@ class Service {
     std::shared_ptr<std::function<void(const Result&)>> m_activeDone;
     std::shared_ptr<abort_callback_impl> m_searchAbort;
     unsigned m_searchGeneration = 0;
+    std::shared_ptr<abort_callback_impl> m_prefetchAbort;
+    std::wstring m_prefetchIdentity;
 };
 
 // Picks the candidate that matches the query best, or nullptr if none is good enough.

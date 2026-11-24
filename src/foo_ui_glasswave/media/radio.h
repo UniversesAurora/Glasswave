@@ -33,6 +33,8 @@ bool GoPrevious();
 // duplicating or reordering the queue; returns false when the track is not in the station.
 bool PlayHistoryTrack(const metadb_handle_ptr& track);
 void DislikeCurrent();
+// Buffered station tracks waiting behind the currently queued items (for background lookahead).
+std::vector<metadb_handle_ptr> PendingItems();
 // Called (main thread) when a station starts or ends, and as its songs move on.
 int Subscribe(std::function<void()> callback);
 void Unsubscribe(int token);

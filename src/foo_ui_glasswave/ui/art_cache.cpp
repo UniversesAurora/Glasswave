@@ -123,21 +123,61 @@ ArtCache::Source& ArtCache::SourceFor(const std::wstring& sourceKey) {
     return source;
 }
 
-void ArtCache::Queue(const std::wstring& sourceKey, const Source& source, int sizePx, Entry& entry) {
+void ArtCache::Queue(const std::wstring& sourceKey, const Source& source, int sizePx, Entry& entry,
+                     bool lowPriority) {
     entry.epoch = ++m_epoch;
     {
         std::lock_guard lock(m_mutex);
-        m_queue.push_front(
-            {sourceKey, entry.track, sizePx, entry.epoch, source.provider, source.accountRevision});
+        Request request{sourceKey,      entry.track, sizePx, entry.epoch, source.provider,
+                        source.accountRevision,      false,  lowPriority};
+        if (lowPriority)
+            m_queue.push_back(std::move(request));
+        else
+            m_queue.push_front(std::move(request));
     }
     m_wake.notify_one();
 }
 
 // The old bitmap stays in place while the replacement loads.
-void ArtCache::Reload(const std::wstring& sourceKey, const Source& source, int sizePx, Entry& entry) {
+void ArtCache::Reload(const std::wstring& sourceKey, const Source& source, int sizePx, Entry& entry,
+                      bool lowPriority) {
     entry.stale = true;
     entry.reloading = true;
-    Queue(sourceKey, source, sizePx, entry);
+    Queue(sourceKey, source, sizePx, entry, lowPriority);
+}
+
+void ArtCache::Warm(const std::wstring& key, const metadb_handle_ptr& track, int sizePx) {
+    if (!track.is_valid() || sizePx <= 0) return;
+
+    const std::wstring sourceKey = key.empty() ? SourceKey(track) : key;
+    if (sourceKey.empty()) return;
+    Source& source = SourceFor(sourceKey);
+
+    // Already have a fresh decoded bitmap at or above this size.
+    for (auto it = source.sizes.lower_bound(sizePx); it != source.sizes.end(); ++it) {
+        const Entry& candidate = it->second;
+        if (candidate.state == State::Ready && candidate.bitmap && !candidate.placeholder && !candidate.stale)
+            return;
+    }
+
+    if (const auto found = source.sizes.find(sizePx); found != source.sizes.end()) {
+        Entry& entry = found->second;
+        if (entry.state == State::Pending || entry.reloading) return;
+        if (entry.state == State::Ready && !entry.stale && !entry.placeholder) return;
+        if (entry.state == State::Missing && (source.provider.empty() || Clock::now() < entry.retryAt))
+            return;
+        entry.track = track;
+        Reload(sourceKey, source, sizePx, entry, true);
+        return;
+    }
+
+    if (!source.provider.empty() && cache::art_absence::Fresh(Utf8(sourceKey))) return;
+
+    Entry& entry = source.sizes[sizePx];
+    ++m_entryCount;
+    entry.track = track;
+    Queue(sourceKey, source, sizePx, entry, true);
+    Evict();
 }
 
 ArtCache::State ArtCache::Find(const std::wstring& key, const metadb_handle_ptr& track, int sizePx,
@@ -395,7 +435,10 @@ void ArtCache::Worker(bool network) {
                 std::lock_guard lock(m_mutex);
                 if (m_quit) break;
                 request.network = true;
-                m_network.push_front(std::move(request));
+                if (request.lowPriority)
+                    m_network.push_back(std::move(request));
+                else
+                    m_network.push_front(std::move(request));
             }
             m_wakeNetwork.notify_one();
             continue;

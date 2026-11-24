@@ -287,6 +287,12 @@ class Provider {
     // A song the records lack or hold without its links is read from the service meanwhile
     // (Catalog::Want), so a later ask finds it whole.
     virtual std::optional<Track> FindTrack(const Id& track) const;
+    // True when `track` still needs a regional display overlay read before its display tags
+    // are settled. Used by playback lookahead to wait before prefetching lyrics.
+    virtual bool TrackDisplayPending(const Id& track) const {
+        (void)track;
+        return false;
+    }
     // An item whose album art is the cover of the given object (fed to ArtCache).
     virtual metadb_handle_ptr ArtItem(ArtKind kind, const Id& id) const {
         const Catalog* records = Records();

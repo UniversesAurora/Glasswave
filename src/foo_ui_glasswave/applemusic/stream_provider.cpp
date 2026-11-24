@@ -4091,6 +4091,14 @@ std::optional<stream::Track> StreamProvider::FindTrack(const stream::Id& track) 
     return song ? std::optional<stream::Track>(song->track) : std::nullopt;
 }
 
+bool StreamProvider::TrackDisplayPending(const stream::Id& track) const {
+    if (!RegionalDisplayEnabled()) return false;
+    const auto song = Catalog::Get().FindSongRaw(track);
+    if (!song) return true;
+    if (song->catalogId.empty() && song->reportingId.empty()) return false;
+    return !DisplayMetadata::Get().HasSong(DisplayMetadata::Get().SourceStorefront(), track);
+}
+
 stream::Id StreamProvider::AlbumOfTrack(const stream::Id& track) const {
     stream::Id album = Catalog::Get().SongAlbum(track); // what album_art_applemusic.cpp names the cover by
     if (album.empty()) Catalog::Get().Records().Want(track);

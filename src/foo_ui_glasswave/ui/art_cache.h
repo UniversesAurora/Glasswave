@@ -45,6 +45,10 @@ class ArtCache {
     State Find(const metadb_handle_ptr& track, int sizePx, winrt::com_ptr<IWICBitmapSource>* out) {
         return Find(std::wstring(), track, sizePx, out);
     }
+    // Background lookahead warming for upcoming tracks. Queues at the back of both local and
+    // network lanes so visible UI paints always preempt lookahead. Main thread only.
+    void Warm(const std::wstring& key, const metadb_handle_ptr& track, int sizePx);
+    void Warm(const metadb_handle_ptr& track, int sizePx) { Warm(std::wstring(), track, sizePx); }
 
     // The key Find uses for a track without an explicit one: the provider's cover key for a
     // streamed track (its album's when known, so the playing track, the queue and the lists
@@ -113,7 +117,8 @@ class ArtCache {
         uint64_t epoch = 0;
         std::string provider;
         uint64_t accountRevision = 0;
-        bool network = false; // missed the cache: may fetch
+        bool network = false;     // missed the cache: may fetch
+        bool lowPriority = false; // background lookahead: queued at back behind visible UI
     };
     struct Done {
         std::wstring sourceKey;
@@ -125,8 +130,10 @@ class ArtCache {
     };
 
     Source& SourceFor(const std::wstring& sourceKey);
-    void Queue(const std::wstring& sourceKey, const Source& source, int sizePx, Entry& entry);
-    void Reload(const std::wstring& sourceKey, const Source& source, int sizePx, Entry& entry);
+    void Queue(const std::wstring& sourceKey, const Source& source, int sizePx, Entry& entry,
+               bool lowPriority = false);
+    void Reload(const std::wstring& sourceKey, const Source& source, int sizePx, Entry& entry,
+                bool lowPriority = false);
     void DropQueued(std::wstring_view prefix);
     void Evict();
     void Notify();

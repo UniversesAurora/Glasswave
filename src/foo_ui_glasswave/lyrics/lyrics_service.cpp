@@ -495,8 +495,15 @@ void Service::Cancel() {
     CancelSearch();
 }
 
+void Service::CancelPrefetch() {
+    m_prefetchIdentity.clear();
+    if (m_prefetchAbort) m_prefetchAbort->abort();
+    m_prefetchAbort.reset();
+}
+
 void Service::Shutdown() {
     Cancel();
+    CancelPrefetch();
     for (auto& worker : m_workers)
         worker.abort->abort();
     for (auto& worker : m_workers)
@@ -696,6 +703,7 @@ void Service::Start(const metadb_handle_ptr& track, bool useAutomaticCache,
     }
     const Query query = MakeQuery(track);
     const std::wstring identity = TrackIdentity(track);
+    if (identity == m_prefetchIdentity) CancelPrefetch();
 
     // The same track asked for again while its search runs (a metadata update repeats the
     // track-changed event) joins that search instead of cancelling it and asking every
@@ -818,6 +826,7 @@ void Service::RefreshCandidates(const metadb_handle_ptr& track) {
     if (!track.is_valid() || !media::ItemIdentified(track)) return;
     const Query query = MakeQuery(track);
     const std::wstring identity = TrackIdentity(track);
+    if (identity == m_prefetchIdentity) CancelPrefetch();
     const std::wstring key = CandidatesKey(query);
     if (m_collectingIdentity == identity || (m_activeDone && m_activeIdentity == identity)) return;
     const auto now = std::chrono::steady_clock::now();
@@ -921,6 +930,60 @@ void Service::Lookup(const metadb_handle_ptr& track, std::function<void(const Re
             console::printf("Glasswave lyrics: %s", error.what());
         }
         fb2k::inMainThread([done, best] { done(best); });
+    });
+}
+
+void Service::Prefetch(const metadb_handle_ptr& track) {
+    if (!track.is_valid() || !media::ItemIdentified(track)) {
+        CancelPrefetch();
+        return;
+    }
+    const std::wstring identity = TrackIdentity(track);
+    if (identity.empty()) {
+        CancelPrefetch();
+        return;
+    }
+    if (identity == m_activeIdentity || identity == m_collectingIdentity || identity == m_prefetchIdentity)
+        return;
+    CancelPrefetch();
+
+    const Query query = MakeQuery(track);
+    if (Known(query, true, true)) {
+        m_prefetchIdentity = identity;
+        return;
+    }
+    const auto searchers = scripts::Ordered(query.provider);
+    if (searchers.empty()) return;
+
+    auto abort = std::make_shared<abort_callback_impl>();
+    m_prefetchAbort = abort;
+    m_prefetchIdentity = identity;
+    Run(abort, [query, searchers, abort] {
+        try {
+            bool nothing = false;
+            bool found = false;
+            const bool complete = SearchAll(
+                query, searchers, *abort, SearchMode::FirstMatch,
+                [&](std::vector<Candidate> candidates, bool, bool) {
+                    if (abort->is_aborting()) return;
+                    if (candidates.empty()) {
+                        nothing = true;
+                        return;
+                    }
+                    const auto& top = candidates.front();
+                    if (!CandidateCurrent(top)) return;
+                    {
+                        std::lock_guard lock(g_cacheMutex);
+                        if (abort->is_aborting() || !CandidateCurrent(top)) return;
+                        PersistAutomatic(query, searchers, top);
+                    }
+                    found = true;
+                });
+            if (!abort->is_aborting() && complete && nothing && !found) PersistNotFound(query);
+        } catch (const exception_aborted&) {
+        } catch (const std::exception& error) {
+            console::printf("Glasswave lyrics: %s", error.what());
+        }
     });
 }
 
@@ -1117,6 +1180,7 @@ void Service::UseAutomatic(const metadb_handle_ptr& track) {
 
 void Service::ClearCache() {
     Cancel();
+    CancelPrefetch();
     m_candidatesFreshAt.clear();
     std::lock_guard lock(g_cacheMutex);
     std::error_code ec;

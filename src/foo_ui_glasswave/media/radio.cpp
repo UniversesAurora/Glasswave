@@ -478,6 +478,16 @@ void DislikeCurrent() {
     }
 }
 
+std::vector<metadb_handle_ptr> PendingItems() {
+    std::vector<metadb_handle_ptr> out;
+    if (!Current() || !g_state.provider) return out;
+    out.reserve(g_state.pending.size());
+    for (const auto& track : g_state.pending)
+        if (auto item = g_state.provider->TrackItem(track.id); item.is_valid())
+            out.push_back(std::move(item));
+    return out;
+}
+
 int Subscribe(std::function<void()> callback) {
     return static_cast<int>(g_listeners.Add(std::move(callback)));
 }

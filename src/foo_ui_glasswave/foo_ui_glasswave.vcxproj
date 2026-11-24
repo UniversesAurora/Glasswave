@@ -241,6 +241,7 @@
     <ClCompile Include="ui\card_layer.cpp" />
     <ClCompile Include="ui\home_page.cpp" />
     <ClCompile Include="ui\home_store.cpp" />
+    <ClCompile Include="media\playback_lookahead.cpp" />
     <ClCompile Include="media\radio.cpp" />
     <ClCompile Include="media\transport.cpp" />
     <ClCompile Include="ui\search_popup.cpp" />
@@ -418,6 +419,8 @@
     <ClInclude Include="ui\card_layer.h" />
     <ClInclude Include="ui\home_page.h" />
     <ClInclude Include="ui\home_store.h" />
+    <ClInclude Include="media\lookahead_policy.h" />
+    <ClInclude Include="media\playback_lookahead.h" />
     <ClInclude Include="media\radio.h" />
     <ClInclude Include="media\transport.h" />
     <ClInclude Include="ui\search_popup.h" />

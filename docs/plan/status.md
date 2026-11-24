@@ -2,7 +2,24 @@
 
 Updated: 2026-11-24
 
-## Apple Music stale catalog ID recovery, unified unavailable-track skip & catalog 400 fix (2026-11-24, latest)
+## Regional display overlay refactor & unified event-driven playback lookahead (2026-11-24, latest)
+
+- **Persistent, storefront-independent Apple Music regional display overlay (`applemusic/display_metadata.{h,cpp}`, `applemusic/song.h`, `applemusic/catalog.cpp`, `applemusic/stream_provider.{h,cpp}`, `applemusic/input_applemusic.cpp`, `stream/catalog.{h,cpp}`, `stream/encoded_input.{h,cpp}`, `stream/list_session.cpp`, `ui/home_store.cpp`, `ui/main_window_provider.cpp`)**:
+  - Canonical `Catalog` records remain raw (account storefront) while `DisplayMetadata` is now persisted atomically to `<profile>/glasswave/applemusic/cache/display.tsv` (`# glasswave apple music display v1`, 7-day freshness TTL, loaded synchronously on startup before `Catalog::InstallCached` and flushed on shutdown).
+  - Removed `sourceStorefront` from `DisplayMetadata` cache keys so startup account-storefront transitions (`""` -> `"US"`) never split or orphan cached regional entries.
+  - Fixed cascading `Song -> Album -> Artist` fallbacks in `DisplayMetadata::Apply`, preserved both `composerName` and `composerNames`, and returned visible-change booleans from `Put*For` / `Resolve*DisplayNames`.
+  - Added `CatalogTraits::needsRead` (checked outside `stream::Catalog::m_mutex`) so `FlushWanted()` no longer drops already-linked songs that still need regional names; `ResolveSongDisplayNames` deduplicates batch IDs and pushes `metadb` hints whenever localized names change; `AppleInput` triggers dynamic-info refresh via `EncodedInputBase::NeedsDynamicInfoRefresh()` when `DisplayMetadata::Epoch()` advances.
+  - Closed remaining regional projection leaks across `ListSession::Read::Enriched` (playlist/album/artist headers), `HomeStore` region-scoped cache keys, `MainWindow::OnProviderDisplay`, `FetchHome`, `FetchSongDetails`, `FetchStationTracks` (zero-delay start + immediate 5-track batch hydration and regionalization), `FinishListPage` Top Results tracks, `ReadSavedAlbumsPage` / `ReadFollowedArtistsPage` / `ReadPlaylistsPage` catalog-ID maps, `RefreshKnownPlaylist` / `RefreshKnownAlbum`, and non-blocking `WarmLibraryDisplayNamesAsync` for sidebar/library items.
+- **Unified event-driven staged playback lookahead for regular playlists and Radio mode (`media/lookahead_policy.h`, `media/playback_lookahead.{h,cpp}`, `media/radio.{h,cpp}`, `ui/art_cache.{h,cpp}`, `lyrics/lyrics_service.{h,cpp}`, `stream/provider.h`)**:
+  - Strict `idle = idle` (zero polling timers): `PlaybackLookahead` wakes only on playback (`starting`/`new_track`/`stop`), `PlaybackScheduler`, playlist/order, core queue, `radio`, `stream::Provider`, and watched-handle `metadb_io_callback` events, coalescing onto the main thread and stopping completely when playback stops.
+  - Plans four latency-hiding tiers across both regular playlists/queues (including Shuffle/Repeat/PlayNext) and Radio mode (`ScheduledUpcomingSnapshot()` + `radio::PendingItems()`, without needing to open the sidebar Queue):
+    1. **Metadata links & regional names (`N+1..N+5`)**: coalesced via `provider->FindTrack` / `stream::Catalog::Want`.
+    2. **Cover art (`N+1..N+4`)**: warmed via low-priority `ui::ArtCache::Warm` (queued at the back of both local decode and network fetch lanes so foreground UI paints always preempt lookahead) at 500 px once the track's album art key is stable.
+    3. **Lyrics (`N+1`)**: single-slot cancellable `lyrics::Service::Prefetch` populating the durable automatic disk cache only after `N+1`'s metadata and regional display tags have settled (`TrackDisplayPending == false`).
+    4. **Audio (`N+1`)**: remains owned by `cache::PrefetchHost` near track end.
+- **Verified**: `test-playback-lookahead.ps1` (20 checks), `test-apple-display-metadata.ps1` (31 checks), `test-apple-playback-mapping.ps1`, `test-lyrics-request-state.ps1` (8 checks), and `scripts/build.ps1` (`Release|x64`, 0 warnings, 0 errors).
+
+## Apple Music stale catalog ID recovery, unified unavailable-track skip & catalog 400 fix (2026-11-24)
 
 - **Multi-tier stale catalog ID resolution (`applemusic/playback_identity.h`, `applemusic/client.{h,cpp}`, `applemusic/input_applemusic.cpp`, `applemusic/stream_provider.cpp`, `applemusic/album_art_applemusic.cpp`)**:
   - Root cause of `Colors of Happiness` (`apple://song/1237064886` -> live `1865440142`) failing with HTTP 404 after restart: `FinishListPage` skipped `songs.tsv` persistence (`persist = false`), dropping Apple-specific `libraryId` / `reportingId` across restarts; `Catalog::Put` could overwrite known identity fields on catalog-only reads; and `input_applemusic.cpp` neither started with cached `reportingId` nor recovered without `libraryId` or when a cached `reportingId` later changed again.
