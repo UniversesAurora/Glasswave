@@ -3,6 +3,8 @@
 #include "core/text.h"
 
 #include "applemusic/client.h"
+#include "applemusic/config.h"
+#include "applemusic/display_metadata.h"
 #include "applemusic/lyrics_protocol.h"
 #include "cache/store.h"
 #include "lyrics/lyrics_service.h"
@@ -47,7 +49,14 @@ class AppleMusicSearcher final : public lyrics::Searcher {
         request.title = query.title;
         request.artist = query.artist;
         request.album = query.album;
-        request.locale = ui::UsingChinese() ? L"zh-Hans-CN" : L"en-US";
+        if (RegionalLyricsActive()) {
+            if (const auto target = DisplayTargetFor(GetAppleMusicDisplayRegion())) {
+                request.locale = target->locale;
+            }
+        }
+        if (request.locale.empty()) {
+            request.locale = ui::UsingChinese() ? L"zh-Hans-CN" : L"en-US";
+        }
         request.durationMs =
             static_cast<int>(std::clamp(query.duration * 1000.0, 0.0, static_cast<double>(INT_MAX)));
         request.mode = lyrics_protocol::Mode::Search;
