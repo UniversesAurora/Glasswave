@@ -5,6 +5,71 @@ A **foobar2000 2.x (x64)** user interface component (`foo_ui_glasswave.dll`) tha
 look and feel on **Windows 11** — while leaving foobar2000's audio engine (decoding, playlists,
 media library, DSP, WASAPI/ASIO output, and third-party components) untouched.
 
+<p align="center">
+  <img src="docs/screenshots/album-and-lyrics.jpg" alt="Glasswave album view with Aero Glass Now Playing and synced lyrics pane" width="100%" />
+  <br />
+  <sub><b>WMP 12 Library &amp; Frosted Aero Now Playing Pane</b> — Album details, word-synced bilingual lyrics, WMP 12 transport controls, and lossless WASAPI exclusive output.</sub>
+</p>
+
+## Screenshots
+
+### Unified Home, Artist Overview & Multi-Source Search
+
+<table>
+  <tr>
+    <td width="50%" align="center" valign="top">
+      <img src="docs/screenshots/home-cards.jpg" alt="Unified Home with Apple Music and NetEase editorial cards" width="100%" />
+      <br />
+      <sub><b>Unified Home</b> — Apple Music &amp; NetEase editorial cards side by side</sub>
+    </td>
+    <td width="50%" align="center" valign="top">
+      <img src="docs/screenshots/home-shelves.jpg" alt="Unified Home recommendation shelves across providers" width="100%" />
+      <br />
+      <sub><b>Cross-Provider Shelves</b> — Personalized recommendations with source badges</sub>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" align="center" valign="top">
+      <img src="docs/screenshots/artist-overview.jpg" alt="Artist overview page with bio header and expandable release sections" width="100%" />
+      <br />
+      <sub><b>Artist Overview</b> — Bio header, Latest Release, Top Songs &amp; expandable discography</sub>
+    </td>
+    <td width="50%" align="center" valign="top">
+      <img src="docs/screenshots/search-results.jpg" alt="Unified multi-source search results with WMC text tabs" width="100%" />
+      <br />
+      <sub><b>Unified Search</b> — WMC text tabs combining local &amp; streaming catalogs</sub>
+    </td>
+  </tr>
+</table>
+
+### Windows Media Center Full-Screen, Mini Player & Aero Details
+
+<p align="center">
+  <img src="docs/screenshots/fullscreen-wmc.jpg" alt="Windows Media Center full-screen Now Playing with mosaic album wall" width="100%" />
+  <br />
+  <sub><b>Windows Media Center Full-Screen Now Playing</b> — Mosaic album-art wall, live synced lyrics, and translucent WMC transport controls.</sub>
+</p>
+
+<table>
+  <tr>
+    <td width="35%" align="center" valign="top">
+      <img src="docs/screenshots/mini-player.jpg" alt="WMP 12 Mini Player with Aero controls" width="100%" />
+      <br />
+      <sub><b>Mini Player</b> — Compact Aero Now Playing controls</sub>
+    </td>
+    <td width="33%" align="center" valign="top">
+      <img src="docs/screenshots/mini-player-compact.jpg" alt="WMP 12 compact cover-art window over desktop" width="100%" />
+      <br />
+      <sub><b>Compact Cover Mode</b> — Floating Win7 Aero glass frame</sub>
+    </td>
+    <td width="32%" align="center" valign="top">
+      <img src="docs/screenshots/search-suggestions.png" alt="Live search dropdown and Win7 Aero close button glow" width="100%" />
+      <br />
+      <sub><b>Search &amp; Aero Chrome</b> — Live suggestions, scope switcher &amp; Win7 caption glow</sub>
+    </td>
+  </tr>
+</table>
+
 ## Highlights
 
 - **Scoped Aero Glass, zero system hacks**: Uses Windows 11's documented `HostBackdropBrush`
