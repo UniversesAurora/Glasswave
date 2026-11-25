@@ -8,6 +8,7 @@
 #include "applemusic/lyrics_protocol.h"
 #include "cache/store.h"
 #include "lyrics/lyrics_service.h"
+#include "stream/provider.h"
 #include "ui/i18n.h"
 
 #include <algorithm>
@@ -93,15 +94,22 @@ class AppleMusicSearcher final : public lyrics::Searcher {
         request.mode = lyrics_protocol::Mode::Search;
         request.trackType = L"songs";
 
+        if (auto* provider = stream::FindProvider(L"apple")) {
+            if (provider->SessionRestoring())
+                throw std::runtime_error("Apple Music session is still restoring");
+            if (!provider->AccountVerified() || !provider->SignedIn()) return;
+        }
+
         CacheScope scope;
         try {
             scope.value = Wide(cache::AccountScope("apple"));
             scope.revision = cache::AccountRevision("apple");
         } catch (const std::exception& error) {
             console::printf("Glasswave lyrics [applemusic]: %s", error.what());
-            return;
+            throw;
         }
-        if (scope.value.empty() || !scope.Current(abort)) return;
+        if (scope.value.empty() || !scope.Current(abort))
+            throw std::runtime_error("Apple Music account scope unavailable");
 
         core::json::Object response;
         try {
@@ -111,10 +119,10 @@ class AppleMusicSearcher final : public lyrics::Searcher {
             throw;
         } catch (const std::exception& error) {
             console::printf("Glasswave lyrics [applemusic]: %s", error.what());
-            return;
+            throw;
         }
         abort.check();
-        if (!scope.Current(abort)) return;
+        if (!scope.Current(abort)) throw std::runtime_error("Apple Music account scope changed");
 
         for (auto& result : lyrics_protocol::ParseResponse(response)) {
             abort.check();

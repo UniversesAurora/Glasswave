@@ -4,6 +4,9 @@ Updated: 2026-11-25
 
 ## Lyrics scroll rubber-band, immediate track-switch lyrics & stream bit-depth tolerance (2026-11-25, latest)
 
+- **Prevented startup/transient searcher failures from poisoning `[glasswave-notfound]` lyric caches (`lyrics/lyrics_service.cpp`, `lyrics/native_sources.cpp`, `applemusic/lyrics_source.cpp`, `ui/main_window_provider.cpp`)**:
+  - `SearchAll()` now tracks per-searcher failure (`slot.failed`) and only returns `complete = true` when every searcher finishes without error; `ProviderSearcher` and `AppleMusicSearcher` throw while `SessionRestoring()` or on request/scope failures instead of silently returning zero candidates.
+  - `MainWindow::OnProviderAccountObserved()` now automatically retries `RequestLyrics(m_lyricsTrack, false)` when a restored startup track currently shows `NotFound`/`None`, recovering cleanly as soon as Apple Music / NetEase finishes verifying its session.
 - **Added midpoint scroll bounds with iOS rubber-band & spring-back in `LyricsView` (`ui/spring.h`, `ui/lyrics_view.{h,cpp}`)**:
   - Replaced unbounded drag/fling and `±total` wheel limits with viewport-midpoint bounds (`ScrollBounds`): the first line's top can be pulled down to at most the vertical midpoint (top half blank) and the last line's bottom can be pushed up to at most the vertical midpoint (bottom half blank), always including `0`.
   - Dragging past either limit applies iOS rubber-band resistance (`kRubber = 0.55`, matching `QueueView`) and springs smoothly back to the midpoint on release; fling inertia cushions into the rubber band before springing back; wheel scrolling past either limit applies a damped outward spring velocity impulse (`Spring::AddVelocity`) that yields and springs cleanly back to rest (idle = idle).

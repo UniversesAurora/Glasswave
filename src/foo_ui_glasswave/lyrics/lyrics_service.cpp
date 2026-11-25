@@ -546,6 +546,7 @@ bool SearchAll(const Query& query, const std::vector<std::shared_ptr<Searcher>>&
     bool complete = false;
     struct Slot {
         bool finished = false;
+        bool failed = false;
         std::vector<Candidate> candidates;
     };
     std::vector<Slot> slots(searchers.size());
@@ -557,6 +558,7 @@ bool SearchAll(const Query& query, const std::vector<std::shared_ptr<Searcher>>&
         children.emplace_back([&, i] {
             std::vector<Candidate> candidates;
             std::mutex candidateMutex;
+            bool failed = false;
             try {
                 searchers[i]->Search(query, childrenAbort, [&](Candidate candidate) {
                     if (childrenAbort.is_aborting()) return;
@@ -567,12 +569,16 @@ bool SearchAll(const Query& query, const std::vector<std::shared_ptr<Searcher>>&
                         candidates.push_back(std::move(candidate));
                     }
                 });
+            } catch (const exception_aborted&) {
+                failed = true;
             } catch (const std::exception& error) {
+                failed = true;
                 console::printf("Glasswave lyrics: %s", error.what());
             }
             std::lock_guard lock(mutex);
             if (!candidates.empty() || slots[i].candidates.empty())
                 slots[i].candidates = std::move(candidates);
+            slots[i].failed = failed;
             slots[i].finished = true;
             changed.notify_all();
         });
@@ -627,7 +633,9 @@ bool SearchAll(const Query& query, const std::vector<std::shared_ptr<Searcher>>&
             reported = finished;
         }
         if (finished == slots.size() || std::chrono::steady_clock::now() >= deadline) {
-            complete = finished == slots.size();
+            const bool anyFailed =
+                std::any_of(slots.begin(), slots.end(), [](const auto& slot) { return slot.failed; });
+            complete = finished == slots.size() && !anyFailed;
             if (automatic) {
                 if (!chosenBest) {
                     // At timeout, prefer the earliest source that has produced a valid match.

@@ -68,6 +68,11 @@ void MainWindow::OnProviderAccount(stream::Provider& provider) {
 void MainWindow::OnProviderAccountObserved(stream::Provider& provider) {
     RefreshProviderSections();
     UpdateFavoriteState();
+    // A restored startup track may have searched for lyrics before this provider finished
+    // verifying its session; retry automatically once the provider is ready.
+    if (m_lyricsTrack.is_valid() &&
+        (m_lyricsResult.status == lyrics::Status::NotFound || m_lyricsResult.status == lyrics::Status::None))
+        RequestLyrics(m_lyricsTrack, false);
     const bool currentProvider = m_view.IsRemote() && m_view.provider == provider.Key();
     // The combined favorites list the providers that are signed in now.
     if ((currentProvider || m_view.kind == View::Kind::AllFavorites) && m_page) m_page->OnLibraryChanged();

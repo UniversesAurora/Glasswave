@@ -127,6 +127,8 @@ class ProviderSearcher final : public Searcher {
         auto* provider = stream::FindProvider(m_providerKey);
         if (!provider || provider->Key() != query.provider || query.providerId.empty() || abort.is_aborting())
             return;
+        if (provider->SessionRestoring())
+            throw std::runtime_error("provider session is still restoring");
         Scope scope;
         scope.provider = m_providerKey;
         try {
@@ -134,9 +136,9 @@ class ProviderSearcher final : public Searcher {
             scope.revision = cache::AccountRevision(Utf8(m_providerKey));
         } catch (const std::exception& error) {
             console::printf("Glasswave lyrics [%s]: %s", Utf8(m_key).c_str(), error.what());
-            return;
+            throw;
         }
-        if (!scope.Current(abort)) return;
+        if (!scope.Current(abort)) throw std::runtime_error("provider account scope unavailable");
         std::wstring text;
         try {
             text = provider->Lyrics(query.providerId, abort);
@@ -145,10 +147,11 @@ class ProviderSearcher final : public Searcher {
         } catch (const std::exception& error) {
             if (!abort.is_aborting())
                 console::printf("Glasswave lyrics [%s]: %s", Utf8(m_key).c_str(), error.what());
-            return;
+            throw;
         }
         abort.check();
-        if (!scope.Current(abort) || ParseLrc(text).lines.empty()) return;
+        if (!scope.Current(abort)) throw std::runtime_error("provider account scope changed");
+        if (ParseLrc(text).lines.empty()) return;
         Candidate candidate;
         candidate.title = query.title;
         candidate.artist = query.artist;
