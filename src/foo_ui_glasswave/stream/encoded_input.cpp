@@ -232,7 +232,7 @@ void EncodedInputBase::Validate(const EncodedSource& source, file_info& actual) 
     if (!std::isfinite(actualSeconds) || (m_complete && actualSeconds > 0 && m_durationSeconds > 0 &&
                                           actualSeconds + kFullSongToleranceSeconds < m_durationSeconds))
         throw exception_io_data(Message(Label(), "decoder did not receive the complete song").c_str());
-    if (m_durationSeconds <= 0 && actualSeconds > 0) m_durationSeconds = actualSeconds;
+    if (actualSeconds > 0) m_durationSeconds = actualSeconds;
 }
 
 void EncodedInputBase::MarkReady() {
@@ -275,18 +275,36 @@ bool EncodedInputBase::decode_run(audio_chunk& chunk, abort_callback& abort) {
 void EncodedInputBase::decode_seek(double seconds, abort_callback& abort) {
     // A skipped song has nothing to seek in.
     if (!HasOutput()) throw exception_io_seek_out_of_range();
-    if (!std::isfinite(seconds) || seconds < 0 || (m_durationSeconds > 0 && seconds > m_durationSeconds))
+    if (!std::isfinite(seconds) || seconds < 0 ||
+        (m_durationSeconds > 0 && seconds > m_durationSeconds + kFullSongToleranceSeconds))
         throw exception_io_seek_out_of_range();
+    double target = (m_durationSeconds > 0 && seconds > m_durationSeconds) ? m_durationSeconds : seconds;
     Guarded("decode_seek", [&] {
         if (m_atmos) {
-            SeekAtmos(seconds, abort);
+            SeekAtmos(target, abort);
             return;
         }
-        if (m_flight && !m_source->can_seek())
-            ReopenCompleted(seconds, abort);
-        else
-            m_decoder->seek(seconds, abort);
-        m_positionSeconds = seconds;
+        if (m_flight && !m_source->can_seek()) {
+            ReopenCompleted(target, abort);
+            return;
+        }
+        try {
+            m_decoder->seek(target, abort);
+        } catch (const exception_io_seek_out_of_range&) {
+            // Catalog durationMs can round slightly above the exact decoded sample length
+            // (e.g. +0.2 ms), or a seek bar dragged all the way to the right can land right
+            // on EOF. Clamp within the tolerance window instead of failing playback.
+            file_info_impl actual;
+            m_decoder->get_info(0, actual, abort);
+            const double actualSeconds = actual.get_length();
+            if (!std::isfinite(actualSeconds) || actualSeconds <= 0 ||
+                target > actualSeconds + kFullSongToleranceSeconds)
+                throw;
+            m_durationSeconds = actualSeconds;
+            target = std::min(target, std::max(0.0, actualSeconds - 0.001));
+            m_decoder->seek(target, abort);
+        }
+        m_positionSeconds = target;
     });
 }
 
@@ -303,10 +321,19 @@ void EncodedInputBase::ReopenCompleted(double seconds, abort_callback& abort) {
     if (!std::isfinite(actualSeconds) || actualSeconds <= 0 ||
         (m_complete && actualSeconds + kFullSongToleranceSeconds < m_durationSeconds))
         throw exception_io_data(Message(Label(), "completed source is shorter than the song").c_str());
-    if (seconds > actualSeconds) throw exception_io_seek_out_of_range();
-    decoder->seek(seconds, abort);
+    if (seconds > actualSeconds + kFullSongToleranceSeconds) throw exception_io_seek_out_of_range();
+    m_durationSeconds = actualSeconds;
+    double target = std::min(seconds, actualSeconds);
+    try {
+        decoder->seek(target, abort);
+    } catch (const exception_io_seek_out_of_range&) {
+        if (target < actualSeconds - 0.05) throw;
+        target = std::max(0.0, actualSeconds - 0.001);
+        decoder->seek(target, abort);
+    }
     m_decoder = std::move(decoder);
     m_source = std::move(completed);
+    m_positionSeconds = target;
     m_report = true;
 }
 
