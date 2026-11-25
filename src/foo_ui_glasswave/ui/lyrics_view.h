@@ -77,6 +77,9 @@ private:
 
     void Relayout();
     void BuildLine(LineView& line, float width);
+    void ComputeTimeline(double now, int& focus, int& interlude, bool& activeChanged);
+    void SyncTimeline(double now);
+    void SnapVisualState();
     void UpdateTargets(bool stagger, bool snap, bool slow);
     void Render();                       // per frame: visual properties, live line surfaces
     void RenderLine(LineView& line, double now, float areaH);
@@ -117,6 +120,7 @@ private:
     lyrics::Status m_status = lyrics::Status::None;
     std::shared_ptr<const lyrics::Lyrics> m_lyrics;
     std::vector<std::unique_ptr<LineView>> m_lines;
+    bool m_targetsValid = false;
     float m_layoutWidth = 0;
     float m_referenceLineHeight = 0;  // DIP, one original line plus one translation line
     bool m_playing = false, m_paused = false;

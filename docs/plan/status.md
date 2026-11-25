@@ -2,7 +2,14 @@
 
 Updated: 2026-11-25
 
-## Apple Music TTML localizations, 3-track lyrics & regional display scope (2026-11-25, latest)
+## LyricsView initial-load & unsynced overlap fix (2026-11-25, latest)
+
+- **Fixed all lyric lines stacking at `y = 0` on initial load / pane show (`ui/lyrics_view.{h,cpp}`)**:
+  - Root cause: `Relayout()` initialized every `LineView`'s vertical spring to `y = 0`, while `Tick()` only called `UpdateTargets()` inside `if (synced)`. For unsynced lyrics, `SetVisible(true)` never computed targets so every line snapped to `y = 0` and stayed permanently stacked until scrolled or resized; `SetResult()` while visible also called `Tick()` before `UpdateTargets()`, rendering an initial `y = 0` frame and snapping all lines to the same `0.6 * H` fly-in origin instead of `target + 0.6 * H`. Additionally, `SetResult()` skipped `LayoutChrome()` (leaving edge fades stale after `m_referenceLineHeight` transitioned from `0`), `SetBounds()` / `Restyle()` did not re-sync active line state or frame wakeups after `Relayout()`, and `NeedsFrames()` kept spinning after scrolling unsynced lyrics (`m_browsing` / `m_dim`).
+  - Extracted `ComputeTimeline()`, `SyncTimeline()`, and `SnapVisualState()` plus a `m_targetsValid` invariant across `SetVisible()`, `SetResult()`, `SetBounds()`, `Restyle()`, and `Tick()` so both synced and unsynced lyrics always receive proper stacked vertical targets before rendering or flying in, edge fades update on `SetResult()`, and unsynced lyrics return cleanly to idle after scrolling or settling.
+- **Verified**: `pwsh -File scripts/build.ps1` (`Release|x64`, 0 warnings, 0 errors).
+
+## Apple Music TTML localizations, 3-track lyrics & regional display scope (2026-11-25)
 
 - **Fixed Apple Music TTML lyrics parsing (`scripts/applemusic/patches/0009-lyrics-ttml-localizations.patch`, rebuilt `.local/applemusic/windows/runtime/engine.exe`)**:
   - Root cause of Traditional/Simplified Chinese mismatches (e.g. *千年之恋* `255921197`) and empty lines: upstream `engine/utils/lyrics/lyrics.go` read only direct `*etree.CharData` inside `<translation>` (dropping all `<span>` children), ignored `type="replacement"` vs `type="subtitle"`, inverted translations before originals, deleted CJK originals whenever `<transliterations>` existed, and queried `//text[@for='...']` from document root instead of relative `.//text[@for='...']`.

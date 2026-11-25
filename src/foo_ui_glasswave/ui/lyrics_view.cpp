@@ -351,8 +351,14 @@ void LyricsView::SetBounds(const RECT& px, float scale) {
     if (sizeChanged && m_visible) {
         Relayout(); // first: the fades (LayoutChrome) follow the line height
         LayoutChrome();
+        m_lastNow = Now();
+        m_lastNowAt = Clock::now();
+        SyncTimeline(m_lastNow);
         UpdateTargets(false, true, false);
+        SnapVisualState();
         Render();
+        if (NeedsFrames()) StartFrames();
+        else SleepUntilNextEvent();
     }
 }
 
@@ -374,18 +380,19 @@ void LyricsView::SetVisible(bool visible) {
         LayoutChrome();
         m_lastNow = Now();
         m_lastNowAt = Clock::now();
-        m_focus = -2;  // recomputed by Tick
+        m_focus = -2;
+        m_interlude = -2;
         m_lastFrame = Clock::now();
         m_idle = false;
-        Tick();
-        for (auto& l : m_lines) {
-            l->y.Snap(l->y.Target());
-            l->scale.Snap(l->scale.Target());
-            l->blur = l->blurTarget;
-        }
+        SyncTimeline(m_lastNow);
+        UpdateTargets(false, true, true);
+        SnapVisualState();
         Render();
-        StartFrames();
+        if (NeedsFrames()) StartFrames();
+        else SleepUntilNextEvent();
     } else {
+        ++m_wakeGeneration;
+        m_idle = true;
         for (auto& l : m_lines) ReleaseLine(*l);  // surfaces are not kept while hidden
     }
 }
@@ -437,6 +444,7 @@ void LyricsView::SetResult(const lyrics::Result& result) {
     m_status = result.status;
     m_lyrics = result.status == lyrics::Status::Found ? result.lyrics : nullptr;
     m_browsing = false;
+    m_dim = kDim;
     m_scroll = 0;
     m_velocity = 0;
     m_hover = m_pressed = -1;
@@ -445,16 +453,25 @@ void LyricsView::SetResult(const lyrics::Result& result) {
     m_interludeShow = 0;
     Relayout();
     if (!m_visible) return;
-    PaintMessage();
+    LayoutChrome();
     // New lyrics fly in from below, line after line.
     m_lastNow = Now();
     m_lastNowAt = Clock::now();
+    m_lastFrame = Clock::now();
     m_idle = false;
-    Tick();
-    const float H = (m_bounds.bottom - m_bounds.top) / m_scale;
+    SyncTimeline(m_lastNow);
+    UpdateTargets(false, true, true);
+    for (auto& l : m_lines) {
+        l->scale.Snap(l->scale.Target());
+        l->blur = l->blurTarget;
+    }
+    const float H = std::max(0.0f, (m_bounds.bottom - m_bounds.top) / m_scale);
     for (auto& l : m_lines) l->y.Snap(l->y.Target() + H * 0.6f);
+    if (m_interlude != -2) m_interludeY.Snap(m_interludeY.Target() + H * 0.6f);
     UpdateTargets(true, false, true);
-    StartFrames();
+    Render();
+    if (NeedsFrames()) StartFrames();
+    else SleepUntilNextEvent();
 }
 
 void LyricsView::SetPlaying(bool playing, bool paused) {
@@ -529,9 +546,14 @@ void LyricsView::Restyle() {
     if (!m_visible) return; // SetVisible lays everything out afresh
     Relayout();
     LayoutChrome();
+    m_lastNow = Now();
+    m_lastNowAt = Clock::now();
+    SyncTimeline(m_lastNow);
     UpdateTargets(false, true, false);
+    SnapVisualState();
     Render();
-    StartFrames();
+    if (NeedsFrames()) StartFrames();
+    else SleepUntilNextEvent();
 }
 
 float LyricsView::ContentTop() const { return 0; }
@@ -566,6 +588,7 @@ float LyricsView::MinHeight() const {
 void LyricsView::Relayout() {
     for (auto& l : m_lines) ReleaseLine(*l);
     m_lines.clear();
+    m_targetsValid = false;
     m_dc->SetDpi(96.0f * m_scale, 96.0f * m_scale);
     const float W = (m_bounds.right - m_bounds.left) / m_scale;
     if (W <= 0 || !m_lyrics) return;
@@ -795,6 +818,63 @@ void LyricsView::UpdateTargets(bool stagger, bool snap, bool slow) {
     m_interludeY.SetParams(pos);
     if (snap) m_interludeY.Snap(interTarget);
     else m_interludeY.SetTarget(interTarget);
+    m_targetsValid = true;
+}
+
+void LyricsView::ComputeTimeline(double now, int& focus, int& interlude, bool& activeChanged) {
+    const int ms = static_cast<int>(now * 1000);
+    focus = -1;
+    for (size_t i = 0; i < m_lines.size(); ++i) {
+        if (m_lines[i]->line->start <= ms) focus = static_cast<int>(i);
+        else break;
+    }
+    // Interlude: a gap of 7 s or more with no line playing (also before the first line).
+    interlude = -2;
+    int maxEnd = 0;
+    for (int i = -1; i + 1 < static_cast<int>(m_lines.size()); ++i) {
+        if (i >= 0) maxEnd = std::max(maxEnd, m_lines[static_cast<size_t>(i)]->line->end);
+        const int nextStart = m_lines[static_cast<size_t>(i + 1)]->line->start;
+        if (nextStart - maxEnd >= kInterludeGapMs && ms >= maxEnd && ms < nextStart) {
+            interlude = i;
+            m_interludeStart = maxEnd / 1000.0;
+            m_interludeEnd = nextStart / 1000.0;
+            break;
+        }
+        if (nextStart > ms) break;
+    }
+    activeChanged = false;
+    for (auto& l : m_lines) {
+        const bool active = l->line->start <= ms && ms < l->line->end;
+        if (active != l->active) {
+            l->active = active;
+            activeChanged = true;
+        }
+    }
+}
+
+void LyricsView::SyncTimeline(double now) {
+    if (!m_lyrics || !m_lyrics->synced || m_lines.empty()) {
+        m_focus = -1;
+        m_interlude = -2;
+        return;
+    }
+    int focus = -1, interlude = -2;
+    bool activeChanged = false;
+    ComputeTimeline(now, focus, interlude, activeChanged);
+    m_focus = focus;
+    m_interlude = interlude;
+}
+
+void LyricsView::SnapVisualState() {
+    for (auto& l : m_lines) {
+        l->y.Snap(l->y.Target());
+        l->scale.Snap(l->scale.Target());
+        l->blur = l->blurTarget;
+        l->glow = l->active ? 1.0f : 0.0f;
+    }
+    m_interludeY.Snap(m_interludeY.Target());
+    m_interludeShow = m_interlude != -2 ? 1.0f : 0.0f;
+    m_dim = m_browsing ? kDimBrowsing : kDim;
 }
 
 // ---- Frame ------------------------------------------------------------------------------
@@ -821,8 +901,8 @@ bool LyricsView::NeedsFrames() const {
                                                               : 0.0f))
             return true;
     if (m_interludeY.Moving() || m_interludeShow != (m_interlude != -2 ? 1.0f : 0.0f)) return true;
-    if (m_browsing) return true;  // waits to return to the playing line
-    if (m_dim != kDim) return true;
+    if (m_browsing && m_lyrics && m_lyrics->synced) return true;  // waits to return to the playing line
+    if (m_dim != (m_browsing ? kDimBrowsing : kDim)) return true;
     return false;
 }
 
@@ -848,34 +928,9 @@ bool LyricsView::Tick() {
         const bool seek = std::abs(now - expected) > 0.6;
         m_lastNow = now;
         m_lastNowAt = frame;
-        const int ms = static_cast<int>(now * 1000);
-        int focus = -1;
-        for (size_t i = 0; i < m_lines.size(); ++i) {
-            if (m_lines[i]->line->start <= ms) focus = static_cast<int>(i);
-            else break;
-        }
-        // Interlude: a gap of 7 s or more with no line playing (also before the first line).
-        int interlude = -2;
-        int maxEnd = 0;
-        for (int i = -1; i + 1 < static_cast<int>(m_lines.size()); ++i) {
-            if (i >= 0) maxEnd = std::max(maxEnd, m_lines[static_cast<size_t>(i)]->line->end);
-            const int nextStart = m_lines[static_cast<size_t>(i + 1)]->line->start;
-            if (nextStart - maxEnd >= kInterludeGapMs && ms >= maxEnd && ms < nextStart) {
-                interlude = i;
-                m_interludeStart = maxEnd / 1000.0;
-                m_interludeEnd = nextStart / 1000.0;
-                break;
-            }
-            if (nextStart > ms) break;
-        }
+        int focus = -1, interlude = -2;
         bool activeChanged = false;
-        for (auto& l : m_lines) {
-            const bool active = l->line->start <= ms && ms < l->line->end;
-            if (active != l->active) {
-                l->active = active;
-                activeChanged = true;
-            }
-        }
+        ComputeTimeline(now, focus, interlude, activeChanged);
         const bool focusChanged = focus != m_focus || interlude != m_interlude;
         if (m_browsing && m_drag == Drag::None && m_velocity == 0) {
             const float idle = std::chrono::duration<float>(frame - m_interactionEnd).count();
@@ -884,12 +939,14 @@ bool LyricsView::Tick() {
                 m_scroll = 0;
             }
         }
-        if (focusChanged || activeChanged || seek) {
-            const bool first = m_focus == -2;
+        if (!m_targetsValid || focusChanged || activeChanged || seek) {
+            const bool first = !m_targetsValid || m_focus == -2;
             m_focus = focus;
             m_interlude = interlude;
             UpdateTargets(!seek && !first && !m_browsing, first, seek || interlude != -2 || focus <= 0);
         }
+    } else if (!m_lines.empty() && !m_targetsValid) {
+        UpdateTargets(false, true, false);
     }
 
     // Drag inertia.
