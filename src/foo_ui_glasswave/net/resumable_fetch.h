@@ -44,6 +44,12 @@ struct FetchPolicy {
     // each time must end as well.
     int maxStalledResumes = 3;
     int maxResumes = 20;
+    // Cancel and reconnect an attempt that makes no progress opening headers or reading bytes
+    // for this long (0 disables the watchdog). Applies to both NetEase and Apple Music streams.
+    int openTimeoutMs = 15'000;
+    int readStallTimeoutMs = 12'000;
+    // Backoff before retrying a failed/stalled attempt that made no progress.
+    double retryBackoffSeconds = 1.0;
 };
 
 using ByteSink = std::function<void(const void* bytes, size_t size, abort_callback& abort)>;
@@ -62,5 +68,14 @@ template <class Sink> ByteSink WriteTo(Sink& sink) {
 // exception_aborted on abort.
 void FetchResumable(const ResumableSource& source, const ByteSink& sink, abort_callback& abort,
                     const FetchPolicy& policy = {});
+
+namespace detail {
+using RequestOpener =
+    std::function<file::ptr(const FetchTarget& target, uint64_t from, abort_callback& abort)>;
+using LogSink = std::function<void(const std::string& line)>;
+
+void FetchResumableWithOpener(const ResumableSource& source, const ByteSink& sink, abort_callback& abort,
+                              const FetchPolicy& policy, const RequestOpener& opener, const LogSink& log);
+} // namespace detail
 
 } // namespace glasswave::net

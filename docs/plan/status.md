@@ -4,6 +4,11 @@ Updated: 2026-11-25
 
 ## Lyrics scroll rubber-band, immediate track-switch lyrics & stream bit-depth tolerance (2026-11-25, latest)
 
+- **Added per-attempt open/read stall watchdog and automatic `Range` reconnect to `net::FetchResumable` (`net/resumable_fetch.{h,cpp}`, `tests/resumable_fetch_tests.cpp`, `scripts/test-resumable-fetch.ps1`)**:
+  - Shared by both NetEase (`input_ncm.cpp`) and Apple Music (`input_applemusic.cpp`). Uses a thread-pool one-shot timer (`CreateThreadpoolTimer`) plus `RegisterWaitForSingleObject` on the outer `abort_callback` (zero extra threads, deterministic teardown, `idle = idle`) so a half-open or stalled proxy/CDN connection no longer hangs for ~90–120 s waiting on underlying socket timeouts.
+  - Defaults: `openTimeoutMs = 15000`, `readStallTimeoutMs = 12000`. Mid-read stalls on known-length streams seamlessly close the stalled socket, log the stalled byte offset, and reconnect with `Range: bytes=N-` (renewing the signed URL on zero-progress stalls) without raising a playback error; unknown-length chunked streams (`filesize_invalid`) avoid false mid-body aborts once bytes are flowing while still guarding initial open/first-byte hangs.
+  - Verified: `pwsh -File scripts/test-resumable-fetch.ps1` (20/20 checks passed across mid-read stall resume, open timeout + renew, caller abort propagation, bounded repeated-stall failure, and unknown-length chunked streams) and `pwsh -File scripts/build.ps1` (`Release|x64`, 0 warnings, 0 errors).
+
 - **Prevented startup/transient searcher failures from poisoning `[glasswave-notfound]` lyric caches (`lyrics/lyrics_service.cpp`, `lyrics/native_sources.cpp`, `applemusic/lyrics_source.cpp`, `ui/main_window_provider.cpp`)**:
   - `SearchAll()` now tracks per-searcher failure (`slot.failed`) and only returns `complete = true` when every searcher finishes without error; `ProviderSearcher` and `AppleMusicSearcher` throw while `SessionRestoring()` or on request/scope failures instead of silently returning zero candidates.
   - `MainWindow::OnProviderAccountObserved()` now automatically retries `RequestLyrics(m_lyricsTrack, false)` when a restored startup track currently shows `NotFound`/`None`, recovering cleanly as soon as Apple Music / NetEase finishes verifying its session.
