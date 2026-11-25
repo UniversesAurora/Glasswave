@@ -214,8 +214,20 @@ void EncodedInputBase::Validate(const EncodedSource& source, file_info& actual) 
         throw exception_io_data(Message(Label(), "decoder returned the wrong codec").c_str());
     if (source.sampleRate > 0 && actual.info_get_int("samplerate") != source.sampleRate)
         throw exception_io_data(Message(Label(), "decoder returned the wrong sample rate").c_str());
-    if (source.bitDepth > 0 && actual.info_get_int("bitspersample") != source.bitDepth)
-        throw exception_io_data(Message(Label(), "decoder returned the wrong bit depth").c_str());
+    if (source.bitDepth > 0) {
+        const int64_t actualBitDepth = actual.info_get_int("bitspersample");
+        if (actualBitDepth <= 0)
+            throw exception_io_data(Message(Label(), "decoder returned the wrong bit depth").c_str());
+        if (actualBitDepth != source.bitDepth) {
+            // Some upstream HLS manifests mislabel bit depth (e.g. Apple Music song 592996715
+            // advertises audio-alac-stereo-44100-16 while serving a genuine 24-bit/44.1 kHz ALAC
+            // stream that the official client plays). Keep strict codec/sample-rate/length checks
+            // and play the decoded stream as reported by the decoder.
+            core::Log(core::Wide(Label()) + L": " + core::Wide(SongIdentity()) + L": manifest declared " +
+                      std::to_wstring(source.bitDepth) + L"-bit but decoder reported " +
+                      std::to_wstring(actualBitDepth) + L"-bit; using decoded stream");
+        }
+    }
     const double actualSeconds = actual.get_length();
     if (!std::isfinite(actualSeconds) || (m_complete && actualSeconds > 0 && m_durationSeconds > 0 &&
                                           actualSeconds + kFullSongToleranceSeconds < m_durationSeconds))

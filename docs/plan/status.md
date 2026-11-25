@@ -2,8 +2,11 @@
 
 Updated: 2026-11-25
 
-## LyricsView initial-load & unsynced overlap fix (2026-11-25, latest)
+## Stream bit-depth manifest mismatch tolerance & LyricsView overlap fix (2026-11-25, latest)
 
+- **Allowed valid decoded bit-depth mismatches against upstream HLS manifests (`stream/encoded_input.cpp`)**:
+  - Root cause of playback failure on Apple Music `592996715` (*雪に咲く花*): Apple's `P386485818_lossless.m3u8` declares only one ALAC variant labeled `audio-alac-stereo-44100-16` (`BIT-DEPTH=16`, `AVERAGE-BANDWIDTH=1716271`), while the actual `ALACSpecificConfig` inside the stream is genuine 24-bit / 44.1 kHz (`avgBitRate=2116800`, confirmed playable on the official Apple Music client).
+  - `EncodedInputBase::Validate()` still enforces strict codec, sample-rate, positive bit-depth, and complete-duration checks, but when `actual.info_get_int("bitspersample") > 0` differs from `source.bitDepth`, it logs the discrepancy to `glasswave.log` and plays using the decoder's real bit depth instead of aborting playback.
 - **Fixed all lyric lines stacking at `y = 0` on initial load / pane show (`ui/lyrics_view.{h,cpp}`)**:
   - Root cause: `Relayout()` initialized every `LineView`'s vertical spring to `y = 0`, while `Tick()` only called `UpdateTargets()` inside `if (synced)`. For unsynced lyrics, `SetVisible(true)` never computed targets so every line snapped to `y = 0` and stayed permanently stacked until scrolled or resized; `SetResult()` while visible also called `Tick()` before `UpdateTargets()`, rendering an initial `y = 0` frame and snapping all lines to the same `0.6 * H` fly-in origin instead of `target + 0.6 * H`. Additionally, `SetResult()` skipped `LayoutChrome()` (leaving edge fades stale after `m_referenceLineHeight` transitioned from `0`), `SetBounds()` / `Restyle()` did not re-sync active line state or frame wakeups after `Relayout()`, and `NeedsFrames()` kept spinning after scrolling unsynced lyrics (`m_browsing` / `m_dim`).
   - Extracted `ComputeTimeline()`, `SyncTimeline()`, and `SnapVisualState()` plus a `m_targetsValid` invariant across `SetVisible()`, `SetResult()`, `SetBounds()`, `Restyle()`, and `Tick()` so both synced and unsynced lyrics always receive proper stacked vertical targets before rendering or flying in, edge fades update on `SetResult()`, and unsynced lyrics return cleanly to idle after scrolling or settling.
