@@ -69,6 +69,8 @@ std::vector<wchar_t> Environment(const fs::path& runtimeBin, const fs::path& run
     }
     FreeEnvironmentStringsW(inherited);
     vars[L"GLASSWAVE_HEADLESS"] = L"1";
+    // Soft Go GC target so transient ALAC decrypt bursts do not balloon the helper heap to GBs.
+    vars[L"GOMEMLIMIT"] = L"512MiB";
     vars[L"ADAM_API_TOKEN"] = pfc::stringcvt::string_wide_from_utf8(token.c_str()).get_ptr();
     vars[L"ADAM_ADAMPLAY_DIR"] = (runtimeData / L"widevine").wstring();
     vars[L"APPDATA"] = (runtimeData / L"config").wstring();

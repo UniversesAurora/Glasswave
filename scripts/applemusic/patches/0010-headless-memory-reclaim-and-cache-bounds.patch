@@ -1,0 +1,446 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Glasswave <glasswave@local>
+Date: Wed, 25 Nov 2026 21:35:27 +0800
+Subject: [PATCH] cmd, playback: reclaim headless idle memory, bound disk cache
+ and cancel deleted downloads
+
+Headless mode disables upstream periodic timers (FreeOSMemory, diskCache EvictExpired, session reaper) to stay timer-free when idle. Without replacements, freed Go heap pages from ALAC decryption remained pinned at peak RSS (~1.8-2.0 GB), the helper disk cache grew unboundedly on disk (default limit 0 / TTL 0) alongside Glasswave's own cache, and skipped tracks kept running detached background cache downloads after DELETE /api/v1/playback/{id}.
+
+Add event-driven cooldown-guarded debug.FreeOSMemory() once headless active streams drop to zero, bound headless diskCache to a 256 MB / 1-day staging window with one-shot startup eviction, cancel in-flight headless startCacheDownload goroutines when their session is released, and lazily sweep expired sessions on Open when the background reaper is disabled.
+
+diff --git a/engine/cmd/apiserver.go b/engine/cmd/apiserver.go
+index ba3ddef..3afb38d 100644
+--- a/engine/cmd/apiserver.go
++++ b/engine/cmd/apiserver.go
+@@ -50,6 +50,7 @@ import (
+ 	"net/url"
+ 	"os"
+ 	"path/filepath"
++	"runtime/debug"
+ 	"strconv"
+ 	"strings"
+ 	"sync"
+@@ -514,6 +515,13 @@ type APIServer struct {
+ 	vlcLoads    loadOrder           // keeps /vlc/load requests in arrival order
+ 	headless    bool                // GLASSWAVE_HEADLESS=1: loopback HTTP and no speculative subsystems
+ 
++	cacheDownloadMu     sync.Mutex
++	cacheDownloadGen    uint64
++	cacheDownloads      map[string]cacheDownloadHandle // headless only: active background cache downloads
++	lastMemoryReclaimNs atomic.Int64
++	memoryReclaiming    atomic.Bool
++	reclaimMemoryFn     func() // optional test seam; nil uses debug.FreeOSMemory
++
+ 	glasswaveHTTPClient *http.Client
+ 	glasswaveAPIBase    string
+ 	glasswaveAMPBase    string
+@@ -725,7 +733,16 @@ func NewAPIServer(port int, cfg ServerConfig) *APIServer {
+ 			dc.RemoveInFlight()
+ 			s.alac = newALACGate()
+ 			invalidateALACCacheIfStale(filepath.Join(cacheBase, "playback"))
+-			if !headless {
++			if headless {
++				// Glasswave keeps completed tracks in its own shared cache; keep the
++				// helper's disk cache bounded as a staging window for streaming TTFB
++				// and Range resume, and trim any stale files once on startup.
++				dc.SetConfig(headlessDiskCacheLimitMB, headlessDiskCacheTTLDays)
++				go func() {
++					dc.EvictExpired()
++					dc.Evict()
++				}()
++			} else {
+ 				go func() {
+ 					t := time.NewTicker(time.Hour)
+ 					defer t.Stop()
+@@ -1273,12 +1290,101 @@ func pickedExportRoots() []string {
+ 	return out
+ }
+ 
++const (
++	headlessDiskCacheLimitMB      = 256
++	headlessDiskCacheTTLDays      = 1
++	headlessMemoryReclaimCooldown = 15 * time.Second
++)
++
++type cacheDownloadHandle struct {
++	gen    uint64
++	cancel context.CancelFunc
++}
++
++func (s *APIServer) registerCacheDownload(id string, cancel context.CancelFunc) uint64 {
++	if !s.headless {
++		return 0
++	}
++	s.cacheDownloadMu.Lock()
++	if s.cacheDownloads == nil {
++		s.cacheDownloads = make(map[string]cacheDownloadHandle)
++	}
++	prev, hadPrev := s.cacheDownloads[id]
++	s.cacheDownloadGen++
++	gen := s.cacheDownloadGen
++	s.cacheDownloads[id] = cacheDownloadHandle{gen: gen, cancel: cancel}
++	s.cacheDownloadMu.Unlock()
++	if hadPrev && prev.cancel != nil {
++		prev.cancel()
++	}
++	return gen
++}
++
++func (s *APIServer) unregisterCacheDownload(id string, gen uint64) {
++	if !s.headless || gen == 0 {
++		return
++	}
++	s.cacheDownloadMu.Lock()
++	if cur, ok := s.cacheDownloads[id]; ok && cur.gen == gen {
++		delete(s.cacheDownloads, id)
++	}
++	s.cacheDownloadMu.Unlock()
++}
++
++func (s *APIServer) cancelCacheDownload(id string) {
++	if !s.headless {
++		return
++	}
++	s.cacheDownloadMu.Lock()
++	cur, ok := s.cacheDownloads[id]
++	if ok {
++		delete(s.cacheDownloads, id)
++	}
++	s.cacheDownloadMu.Unlock()
++	if ok && cur.cancel != nil {
++		cur.cancel()
++	}
++}
++
++// reclaimIdleMemory returns freed Go heap pages to the OS after playback work
++// settles in headless mode (where the periodic 2-minute FreeOSMemory ticker is
++// disabled to keep idle startup and idle runtime timer-free).
++func (s *APIServer) reclaimIdleMemory() {
++	if !s.headless {
++		return
++	}
++	if s.pm != nil && s.pm.ActiveStreams() > 0 {
++		return
++	}
++	now := time.Now().UnixNano()
++	last := s.lastMemoryReclaimNs.Load()
++	if last != 0 && now-last < int64(headlessMemoryReclaimCooldown) {
++		return
++	}
++	if !s.memoryReclaiming.CompareAndSwap(false, true) {
++		return
++	}
++	if !s.lastMemoryReclaimNs.CompareAndSwap(last, now) {
++		s.memoryReclaiming.Store(false)
++		return
++	}
++	fn := s.reclaimMemoryFn
++	if fn == nil {
++		fn = debug.FreeOSMemory
++	}
++	go func() {
++		defer s.memoryReclaiming.Store(false)
++		fn()
++	}()
++}
++
+ // installReleaseHook frees a session's server-side resources however the session ends.
+ // DELETE /playback/{id} does this itself; a session that simply expires, or whose client
+ // vanished, would otherwise leave its producers running and its cache file pinned.
+ func (s *APIServer) installReleaseHook() {
+ 	s.pm.SetReleaseHook(func(id string) {
+ 		s.stopVsegSession(id)
++		s.cancelCacheDownload(id)
+ 	})
+ }
+ 
+diff --git a/engine/cmd/handlers_glasswave_test.go b/engine/cmd/handlers_glasswave_test.go
+index 301bc99..75405c4 100644
+--- a/engine/cmd/handlers_glasswave_test.go
++++ b/engine/cmd/handlers_glasswave_test.go
+@@ -13,7 +13,9 @@ import (
+ 	"sync"
+ 	"sync/atomic"
+ 	"testing"
++	"time"
+ 
++	"engine/core/diskcache"
+ 	"engine/core/drm"
+ 	"engine/core/media"
+ 	"engine/core/pipeline"
+@@ -558,6 +560,127 @@ func TestGlasswaveHeadlessStartRequiresAPIToken(t *testing.T) {
+ 	}
+ }
+ 
++type blockingStreamSource struct {
++	started   chan struct{}
++	cancelled chan struct{}
++}
++
++func (b *blockingStreamSource) Stream(ctx context.Context, w io.Writer) error {
++	close(b.started)
++	_, _ = w.Write([]byte("chunk"))
++	<-ctx.Done()
++	close(b.cancelled)
++	return ctx.Err()
++}
++
++type blockingTestProvider struct {
++	src *blockingStreamSource
++}
++
++func (p blockingTestProvider) Open(context.Context, media.OpenRequest) (*media.Session, error) {
++	return &media.Session{
++		Kind:     "song",
++		Metadata: media.Metadata{DurationMs: 180000},
++		Tracks: []media.Track{{
++			Kind:  pipeline.KindAudio,
++			Codec: pipeline.CodecALAC,
++			Open: func(context.Context) (*pipeline.Stream, error) {
++				return &pipeline.Stream{
++					Kind:   pipeline.KindAudio,
++					Codec:  pipeline.CodecALAC,
++					Source: p.src,
++				}, nil
++			},
++		}},
++	}, nil
++}
++
++func TestGlasswaveHeadlessCancelsCacheDownloadOnSessionDeleteAndReclaimsMemory(t *testing.T) {
++	src := &blockingStreamSource{
++		started:   make(chan struct{}),
++		cancelled: make(chan struct{}),
++	}
++	pm := playback.NewWithProviderWithoutReaper(blockingTestProvider{src: src})
++	defer pm.Close()
++
++	dc, err := diskcache.New(t.TempDir())
++	if err != nil {
++		t.Fatal(err)
++	}
++	reclaimed := make(chan struct{}, 2)
++	s := &APIServer{
++		headless:    true,
++		pm:          pm,
++		diskCache:   dc,
++		alac:        newALACGate(),
++		events:      newEventBus(newEpochManager()),
++		shutdownCtx: context.Background(),
++		reclaimMemoryFn: func() {
++			reclaimed <- struct{}{}
++		},
++	}
++	s.installReleaseHook()
++
++	sess, err := pm.Open(context.Background(), playback.OpenRequest{AssetID: "999", Lossless: true})
++	if err != nil {
++		t.Fatal(err)
++	}
++	spw, err := dc.BeginStreamingPut(sess.AssetID, "alac")
++	if err != nil || spw == nil {
++		t.Fatalf("BeginStreamingPut failed: spw=%v err=%v", spw, err)
++	}
++	s.startCacheDownload(sess.ID, spw)
++
++	select {
++	case <-src.started:
++	case <-time.After(2 * time.Second):
++		t.Fatal("startCacheDownload did not begin streaming")
++	}
++
++	// Reclaim must be suppressed while a stream is active.
++	s.reclaimIdleMemory()
++	select {
++	case <-reclaimed:
++		t.Fatal("reclaimIdleMemory ran while a stream was still active")
++	case <-time.After(50 * time.Millisecond):
++	}
++
++	req := httptest.NewRequest(http.MethodDelete, "/api/v1/playback/"+sess.ID, nil)
++	req.SetPathValue("id", sess.ID)
++	w := httptest.NewRecorder()
++	s.handleDeletePlayback(w, req)
++	if w.Code != http.StatusNoContent {
++		t.Fatalf("DELETE status = %d, want 204", w.Code)
++	}
++
++	select {
++	case <-src.cancelled:
++	case <-time.After(2 * time.Second):
++		t.Fatal("DELETE /api/v1/playback/{id} did not cancel headless background cache download")
++	}
++
++	select {
++	case <-reclaimed:
++	case <-time.After(2 * time.Second):
++		t.Fatal("headless memory reclaim did not trigger after stream ended")
++	}
++
++	// Second immediate reclaim must be suppressed by the cooldown.
++	s.reclaimIdleMemory()
++	select {
++	case <-reclaimed:
++		t.Fatal("reclaimIdleMemory ignored cooldown")
++	case <-time.After(50 * time.Millisecond):
++	}
++}
++
++func TestGlasswaveHeadlessDiskCacheBoundsConfigured(t *testing.T) {
++	if headlessDiskCacheLimitMB <= 0 || headlessDiskCacheTTLDays <= 0 {
++		t.Fatalf("headless disk cache bounds must be positive: limitMB=%d ttlDays=%d",
++			headlessDiskCacheLimitMB, headlessDiskCacheTTLDays)
++	}
++}
++
+ func mustJSON(t *testing.T, v any) string {
+ 	t.Helper()
+ 	b, err := json.Marshal(v)
+diff --git a/engine/cmd/handlers_playback.go b/engine/cmd/handlers_playback.go
+index 5b18d87..43dc4ec 100644
+--- a/engine/cmd/handlers_playback.go
++++ b/engine/cmd/handlers_playback.go
+@@ -255,6 +255,7 @@ func (s *APIServer) handlePlaybackAudio(w http.ResponseWriter, r *http.Request)
+ 			w.WriteHeader(http.StatusOK)
+ 			return
+ 		}
++		defer s.reclaimIdleMemory()
+ 		streamMedia(w, r, func(dst io.Writer) error {
+ 			return fairplay.RemuxEC3(r.Context(), dst, func(ctx context.Context, dst io.Writer) error {
+ 				return s.pm.Stream(ctx, id, pipeline.KindAudio, dst)
+@@ -400,6 +401,7 @@ func (s *APIServer) handlePlaybackAudio(w http.ResponseWriter, r *http.Request)
+ 		}
+ 		// Fallback: another goroutine is already caching this key (BeginStreamingPut
+ 		// returned nil) — stream without caching.
++		defer s.reclaimIdleMemory()
+ 		streamMedia(w, r, func(dst io.Writer) error {
+ 			return s.pm.Stream(r.Context(), id, pipeline.KindAudio, dst)
+ 		}, playbackAudioContentType(sess))
+@@ -417,6 +419,7 @@ func (s *APIServer) handlePlaybackAudio(w http.ResponseWriter, r *http.Request)
+ 			// leading fragments within the segment for sub-segment accuracy.
+ 			seekCtx = pipeline.ContextWithSeekTarget(seekCtx, seekSec)
+ 		}
++		defer s.reclaimIdleMemory()
+ 		streamMedia(w, r, func(dst io.Writer) error {
+ 			_, err := s.pm.StreamFrom(seekCtx, id, pipeline.KindAudio, seekSec, dst)
+ 			return err
+@@ -424,6 +427,7 @@ func (s *APIServer) handlePlaybackAudio(w http.ResponseWriter, r *http.Request)
+ 		return
+ 	}
+ 
++	defer s.reclaimIdleMemory()
+ 	streamMedia(w, r, func(dst io.Writer) error {
+ 		return s.pm.Stream(r.Context(), id, pipeline.KindAudio, dst)
+ 	}, playbackAudioContentType(sess))
+@@ -462,13 +466,18 @@ func sessionCacheQualifier(sess *playback.Session, headless bool) string {
+ 
+ // startCacheDownload fills spw from the session's audio stream in the
+ // background. The context is detached from any client so the cache still
+-// commits when the listener disconnects mid-track (skip).
++// commits when the listener disconnects mid-track (skip). In headless mode,
++// explicit session deletion (DELETE /api/v1/playback/{id}) cancels the
++// background download so skipped tracks do not pile up concurrent decrypts.
+ func (s *APIServer) startCacheDownload(id string, spw *diskcache.StreamingPutWriter) {
+ 	vlog.Printf("[cache] startCacheDownload START: session=%s", id)
+ 	downloadCtx, cancel := context.WithTimeout(s.shutdownCtx, 15*time.Minute) // shutdownCtx: from PR #1 (https://github.com/silentone12725/apple-music-linux/pull/1)
++	dlGen := s.registerCacheDownload(id, cancel)
+ 	go func() {
+-		defer cancel()
++		defer s.reclaimIdleMemory()
+ 		defer s.alac.done(id)
++		defer s.unregisterCacheDownload(id, dlGen)
++		defer cancel()
+ 		vlog.Printf("[cache] startCacheDownload calling pm.Stream: session=%s", id)
+ 		if err := s.pm.Stream(downloadCtx, id, pipeline.KindAudio, s.alac.writer(downloadCtx, id, spw)); err != nil {
+ 			log.Printf("[cache] startCacheDownload pm.Stream ERROR: session=%s err=%v", id, err)
+@@ -537,6 +546,7 @@ func (s *APIServer) handleDeletePlayback(w http.ResponseWriter, r *http.Request)
+ 		}
+ 	}
+ 	s.pm.Release(id)
++	s.reclaimIdleMemory()
+ 	s.events.emit("playback.deleted", map[string]string{"sessionId": id})
+ 	w.WriteHeader(http.StatusNoContent)
+ }
+diff --git a/engine/core/playback/lifecycle_test.go b/engine/core/playback/lifecycle_test.go
+index 176a8c3..632be52 100644
+--- a/engine/core/playback/lifecycle_test.go
++++ b/engine/core/playback/lifecycle_test.go
+@@ -86,3 +86,31 @@ func TestOpen_WaiterSurvivesCancelledLeader(t *testing.T) {
+ 		t.Fatal("waiter never completed")
+ 	}
+ }
++
++func TestWithoutReaper_LazySweepRemovesExpiredOnOpen(t *testing.T) {
++	m := NewWithProviderWithoutReaper(&stubProvider{})
++	defer m.Close()
++
++	stale, err := m.Open(context.Background(), OpenRequest{AssetID: "stale"})
++	if err != nil {
++		t.Fatal(err)
++	}
++	m.mu.Lock()
++	m.contexts[stale.ID].expiry = time.Now().Add(-time.Second)
++	m.mu.Unlock()
++	// Allow the lazy sweep interval to elapse immediately in the test.
++	m.lastLazySweep.Store(time.Now().Add(-lazySweepInterval - time.Second).UnixNano())
++
++	if _, err := m.Open(context.Background(), OpenRequest{AssetID: "fresh"}); err != nil {
++		t.Fatal(err)
++	}
++
++	m.mu.RLock()
++	defer m.mu.RUnlock()
++	if _, still := m.sessions[stale.ID]; still {
++		t.Fatal("expired session was not lazily swept on subsequent Open")
++	}
++	if len(m.sessions) != 1 {
++		t.Fatalf("sessions count = %d, want 1", len(m.sessions))
++	}
++}
+diff --git a/engine/core/playback/manager.go b/engine/core/playback/manager.go
+index a57ea9a..72886e9 100644
+--- a/engine/core/playback/manager.go
++++ b/engine/core/playback/manager.go
+@@ -75,6 +75,8 @@ type openFlight struct {
+ type Manager struct {
+ 	provider       media.Provider
+ 	stopReap       chan struct{}
++	reapEnabled    bool
++	lastLazySweep  atomic.Int64
+ 	closeOnce      sync.Once
+ 	mu             sync.RWMutex
+ 	sessions       map[string]*Session
+@@ -225,6 +227,7 @@ func newWithProvider(p media.Provider, reapExpired bool) *Manager {
+ 	m := &Manager{
+ 		provider:       p,
+ 		stopReap:       make(chan struct{}),
++		reapEnabled:    reapExpired,
+ 		sessions:       make(map[string]*Session),
+ 		contexts:       make(map[string]*playContext),
+ 		assetIndex:     make(map[string]string),
+@@ -663,7 +666,25 @@ func (m *Manager) getByAssetKey(assetKey string) *Session {
+ 	return sess
+ }
+ 
++const lazySweepInterval = 5 * time.Minute
++
++func (m *Manager) maybeLazySweep(now time.Time) {
++	if m.reapEnabled {
++		return
++	}
++	nowNs := now.UnixNano()
++	last := m.lastLazySweep.Load()
++	if last != 0 && nowNs-last < int64(lazySweepInterval) {
++		return
++	}
++	if !m.lastLazySweep.CompareAndSwap(last, nowNs) {
++		return
++	}
++	m.sweepExpired(now)
++}
++
+ func (m *Manager) store(assetKey string, sess *Session, pctx *playContext) {
++	m.maybeLazySweep(time.Now())
+ 	m.mu.Lock()
+ 	if m.sessions == nil {
+ 		m.sessions = make(map[string]*Session)
