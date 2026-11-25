@@ -70,8 +70,8 @@ public:
     std::function<void()> onNearEnd;
     // Right-click on empty space: the page's own actions (follow, collect, ...).
     std::function<void(POINT screen)> onEmptyContext;
-    // Called after SetSource; the window restores a saved scroll position when possible.
-    std::function<void()> onSourceChanged;
+    // The user scrolled or navigated the list (cancels any pending async scroll restore).
+    std::function<void()> onUserScroll;
     // Sorting or grouping changed the presented list; the page may need another drain mode.
     std::function<void()> onPresentationChanged;
     // Start the window's fade/repeat timers when a scrollbar state changes / is held.

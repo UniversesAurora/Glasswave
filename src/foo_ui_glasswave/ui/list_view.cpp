@@ -255,7 +255,6 @@ void ListView::SetSource(media::ListSource* source, bool resetScroll) {
     BuildLines();
     PaintHeader();
     Refresh();
-    if (onSourceChanged) onSourceChanged();
 }
 
 void ListView::SetBounds(const RECT& px, float scale) {
@@ -381,7 +380,7 @@ float ListView::RowOffset(size_t row) const {
 
 void ListView::ScrollToRow(size_t row, float offsetDip) {
     if (!m_source || row >= m_source->Count()) return;
-    const float top = std::min(LineTopDip(LineOfRow(row)) - offsetDip, LineTopDip(MaxTop()));
+    const float top = std::clamp(LineTopDip(LineOfRow(row)) - offsetDip, 0.0f, MaxScrollDip());
     ScrollTopTo(top);
     PaintRows();
     PaintScrollBar();

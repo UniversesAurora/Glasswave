@@ -336,6 +336,7 @@ class HomePage final : public Page, public stream::Provider::Listener {
     void OnAccountChanged(stream::Provider& provider) override { Revisit(provider, true); }
 
     bool CanRefresh() const override { return true; } // the window's Refresh (menu, F5)
+    bool IsLoading() const override { return m_pending > 0; }
     void RefreshRequested() override {
         for (auto* source : m_sources)
             if (auto it = Memory().find(std::wstring(source->Key())); it != Memory().end()) it->second.at = 0;

@@ -33,6 +33,10 @@ class ArtistOverviewSource : public GridSource {
     // A section's list as its session holds it.
     void SetSection(size_t section, const stream::ListState& state);
     const std::vector<stream::ArtistSection>& Sections() const { return m_sections; }
+    const std::set<std::wstring>& ExpandedGroups() const { return m_open; }
+    void SetExpandedGroups(std::set<std::wstring> groups);
+    // Indices into Sections() that currently have at least one expanded group.
+    std::set<size_t> OpenSections() const;
 
     std::wstring ColumnSetKey() const override { return L"stream-artist-overview"; }
     std::wstring Cell(size_t row, size_t column) const override;

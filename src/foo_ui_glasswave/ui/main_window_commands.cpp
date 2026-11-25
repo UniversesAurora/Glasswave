@@ -627,6 +627,7 @@ void MainWindow::ApplyViewStyle(media::ViewStyle style) {
         if (auto* w = WidgetById(kViewOptions)) w->Invalidate();
         return;
     }
+    m_pendingScrollKey.clear();
     m_source->SetViewStyle(style);
     if (auto* setting = ViewStyleSetting(m_view)) setting->set(static_cast<int>(style));
     m_list->SetSource(m_source.get(), true);

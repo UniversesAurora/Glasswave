@@ -361,6 +361,7 @@ void ListView::OnMouseLeave() {
 
 void ListView::OnLButtonDown(POINT pt, bool ctrl, bool shift) {
     const Hit hit = HitAt(pt);
+    if (hit.part != Part::None && hit.part != Part::Status && onUserScroll) onUserScroll();
     switch (hit.part) {
     case Part::Thumb: {
         float top = 0, height = 0;
@@ -914,6 +915,7 @@ void ListView::UpdateMarquee() {
 }
 
 void ListView::OnWheel(int delta, bool horizontal) {
+    if (onUserScroll) onUserScroll();
     if (horizontal) {  // Shift+wheel or a tilt wheel: sideways, no scrollbar shown
         // Over a shelf it moves the shelf, 100 DIP a notch, gliding (MX Master's thumb wheel).
         if (m_mode == Mode::Tiles && m_tileGroups && !m_shelfUnder.empty() && m_source && m_source->Groups()) {
@@ -963,6 +965,7 @@ bool ListView::OnKeyDown(UINT vk, bool ctrl, bool shift) {
     const size_t step = m_mode == Mode::Tiles ? TileColumns() : 1;
     const size_t page = (std::max<size_t>(VisibleLines(), 2) - 1) * step;
     auto go = [&](size_t row) {
+        if (onUserScroll) onUserScroll();
         if (n == 0) return;
         MoveFocus(std::min(row, n - 1), false, shift);
     };

@@ -561,6 +561,16 @@ class SearchPage final : public Page {
     }
 
     bool CanRefresh() const override { return true; }
+    bool IsLoading() const override {
+        for (const auto& lane : m_lanes) {
+            if (lane->loading) return true;
+            if (lane->session) {
+                const auto& state = lane->session->View();
+                if (state.loading || (state.pages == 0 && !state.complete && state.error.empty())) return true;
+            }
+        }
+        return false;
+    }
     void RefreshRequested() override {
         for (auto& lane : m_lanes)
             if (lane->session) lane->session->Refresh();

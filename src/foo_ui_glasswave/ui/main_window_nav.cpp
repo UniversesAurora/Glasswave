@@ -594,18 +594,106 @@ bool MainWindow::LoadLastView(View& view, size_t& top) {
     return true;
 }
 
-void MainWindow::ApplyPendingScroll() {
-    if (m_pendingScrollKey.empty() || !m_list || !m_source || m_source->Count() == 0) return;
-    // Back at the same distance from the top: restored by its row alone, the first row of a group
-    // came back at the very top and the group's header (or the album line above it) was hidden.
-    if (auto it = m_scrollPositions.find(m_pendingScrollKey); it != m_scrollPositions.end()) {
-        m_list->SetShelfPositions(it->second.shelves);
-        if (it->second.atTop)
-            m_list->ScrollToTop();
-        else
-            m_list->ScrollToRow(std::min(it->second.top, m_source->Count() - 1), it->second.offset);
+namespace {
+
+size_t FindAnchorRow(const media::ListSource& source, const std::wstring& key, size_t targetOrdinal) {
+    if (key.empty()) return SIZE_MAX;
+    size_t ordinal = 0;
+    for (size_t row = 0; row < source.Count(); ++row)
+        if (source.RowKey(row) == key && ordinal++ == targetOrdinal) return row;
+    return SIZE_MAX;
+}
+
+} // namespace
+
+std::set<std::wstring> MainWindow::SavedExpandedGroups() const {
+    if (const auto it = m_viewStates.find(ViewKey(m_view)); it != m_viewStates.end())
+        return it->second.expandedGroups;
+    return {};
+}
+
+void MainWindow::SaveExpandedGroups(std::set<std::wstring> groups) {
+    ViewState& state = m_viewStates[ViewKey(m_view)];
+    state.provider = m_view.IsRemote() ? m_view.provider : stream::Id{};
+    state.expandedGroups = std::move(groups);
+}
+
+void MainWindow::SaveCurrentViewState() {
+    if (!m_page && !m_source) return;
+    const std::wstring key = ViewKey(m_view);
+    ViewState& state = m_viewStates[key];
+    state.provider = m_view.IsRemote() ? m_view.provider : stream::Id{};
+    state.briefExpanded = m_detailBriefExpanded;
+    state.briefScroll = m_detailBriefScroll;
+    // Do not overwrite an unfulfilled pending scroll target if the user navigated away before
+    // the page finished loading back to its remembered row.
+    if (!m_list || !m_source || m_source->Count() == 0 || m_pendingScrollKey == key) return;
+    const size_t top = m_list->TopRow();
+    if (top == SIZE_MAX) return;
+    state.hasScroll = true;
+    state.top = top;
+    state.offset = m_list->RowOffset(top);
+    state.atTop = m_list->AtTop();
+    state.topRowKey = m_source->RowKey(top);
+    state.topRowOrdinal = 0;
+    if (!state.topRowKey.empty()) {
+        for (size_t row = 0; row < top; ++row)
+            if (m_source->RowKey(row) == state.topRowKey) ++state.topRowOrdinal;
     }
-    m_pendingScrollKey.clear();
+    state.scrollStyle = m_source->GetViewStyle();
+    state.shelves = m_list->ShelfPositions();
+}
+
+bool MainWindow::PageLoading() const {
+    return m_page && m_page->IsLoading();
+}
+
+void MainWindow::ApplyPendingScroll() {
+    if (m_applyingPendingScroll || m_pendingScrollKey.empty() || !m_list || !m_source || m_source->Count() == 0)
+        return;
+    const auto it = m_viewStates.find(m_pendingScrollKey);
+    if (it == m_viewStates.end() || !it->second.hasScroll) {
+        m_pendingScrollKey.clear();
+        return;
+    }
+    const ViewState saved = it->second;
+    if (saved.scrollStyle && *saved.scrollStyle != m_source->GetViewStyle()) {
+        m_pendingScrollKey.clear();
+        return;
+    }
+    m_applyingPendingScroll = true;
+    const auto finish = [this] { m_applyingPendingScroll = false; };
+    if (!saved.shelves.empty()) m_list->SetShelfPositions(saved.shelves);
+    if (saved.atTop) {
+        m_list->ScrollToTop();
+        m_pendingScrollKey.clear();
+        finish();
+        return;
+    }
+    // Back at the same distance from the top: restored by stable RowKey/ordinal first so
+    // expanded sections or newly loaded pages above/below cannot shift the viewport.
+    if (!saved.topRowKey.empty()) {
+        const size_t row = FindAnchorRow(*m_source, saved.topRowKey, saved.topRowOrdinal);
+        if (row != SIZE_MAX) {
+            m_list->ScrollToRow(row, saved.offset);
+            const bool reached = std::abs(m_list->RowOffset(row) - saved.offset) <= 2.0f;
+            if (reached || !PageLoading()) m_pendingScrollKey.clear();
+            finish();
+            return;
+        }
+        // Target row has not arrived yet: advance toward the saved index (also nudging NearEnd on
+        // on-demand paged lists) and keep restoring as more pages arrive until loading settles.
+        m_list->ScrollToRow(std::min(saved.top, m_source->Count() - 1), saved.offset);
+        if (!PageLoading()) m_pendingScrollKey.clear();
+        finish();
+        return;
+    }
+    const size_t target = std::min(saved.top, m_source->Count() - 1);
+    m_list->ScrollToRow(target, saved.offset);
+    const bool reached =
+        saved.top < m_source->Count() && std::abs(m_list->RowOffset(target) - saved.offset) <= 2.0f;
+    if (reached || !PageLoading()) m_pendingScrollKey.clear();
+    finish();
 }
 
 void MainWindow::Navigate(const View& requested, bool push) {
@@ -621,23 +709,23 @@ void MainWindow::Navigate(const View& requested, bool push) {
     // A link to the page on screen (the playing song's artist while on that artist) leaves it
     // as it is; Refresh asks for a reload with m_forcePageRefresh.
     if (push && !m_forcePageRefresh && SameView(view, m_view) && (m_page || m_source)) return;
-    // Remember where the page we are leaving was scrolled; ApplyPendingScroll puts the new
-    // source back there (also after an asynchronous page replaces its loading placeholder).
-    if (m_list && m_source && m_source->Count()) {
-        const size_t top = m_list->TopRow();
-        if (top != SIZE_MAX)
-            m_scrollPositions[ViewKey(m_view)] = {m_view.IsRemote() ? m_view.provider : stream::Id{}, top,
-                                                  m_list->RowOffset(top), m_list->AtTop(),
-                                                  m_list->ShelfPositions()};
-    }
-    m_pendingScrollKey = ViewKey(view);
+    // Remember the page we are leaving (scroll anchor, shelves, expanded detail bio, expanded
+    // groups); ApplyPendingScroll restores it once the returned page lays out and loads rows.
+    SaveCurrentViewState();
+    m_pendingScrollKey.clear();
     m_pendingSelect = view.select; // "View album" from a song: that song, once its row shows
     view.select = nullptr;
     const bool sameView = SameView(view, m_view);
+    const std::wstring targetKey = ViewKey(view);
     m_detailHeaderSize = {}; // repaint the band for this page, not the previous one
     if (!sameView) {
-        m_detailBriefExpanded = false;
-        m_detailBriefScroll = 0;
+        if (const auto it = m_viewStates.find(targetKey); it != m_viewStates.end()) {
+            m_detailBriefExpanded = it->second.briefExpanded;
+            m_detailBriefScroll = it->second.briefScroll;
+        } else {
+            m_detailBriefExpanded = false;
+            m_detailBriefScroll = 0;
+        }
         m_briefScroll.Reset();
     }
     if (push && !sameView) {
@@ -823,7 +911,13 @@ void MainWindow::Navigate(const View& requested, bool push) {
     }
     for (int id : {kBack, kForward, kViewOptions})
         if (auto* w = WidgetById(id)) w->Invalidate();
-    RepaintBreadcrumb(); // also re-applies the layout (view options button, detail band)
+    RepaintBreadcrumb(); // also re-applies the layout (view options button, detail band, list bounds)
+    if (!m_pendingSelect.is_valid()) {
+        if (const auto it = m_viewStates.find(targetKey); it != m_viewStates.end() && it->second.hasScroll) {
+            m_pendingScrollKey = targetKey;
+            ApplyPendingScroll();
+        }
+    }
     SelectPending();
 }
 

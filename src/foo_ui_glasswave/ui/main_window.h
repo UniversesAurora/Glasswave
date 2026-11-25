@@ -125,6 +125,8 @@ class MainWindow : public PageHost, public PlayerHost {
     void ListChanged() override;
     void ChromeChanged() override;
     media::ViewStyle SavedStyle(media::ViewStyle fallback) const override;
+    std::set<std::wstring> SavedExpandedGroups() const override;
+    void SaveExpandedGroups(std::set<std::wstring> groups) override;
     HWND Owner() const override { return m_hwnd; }
     std::weak_ptr<int> Lifetime() const override { return m_alive; }
 
@@ -213,6 +215,8 @@ class MainWindow : public PageHost, public PlayerHost {
 
     // Navigation
     void Navigate(const View& view, bool push);
+    void SaveCurrentViewState();
+    bool PageLoading() const;
     void ApplyPendingScroll();
     void SelectPending();
     metadb_handle_ptr m_pendingSelect; // the song a page was opened for (View::select)
@@ -594,18 +598,26 @@ class MainWindow : public PageHost, public PlayerHost {
     std::vector<View> m_history;
     size_t m_historyPos = 0;
     View m_view;
-    struct ScrollPosition {
+    struct ViewState {
         stream::Id provider;
+        bool hasScroll = false;
         size_t top = 0;
         float offset = 0; // DIP from the view's top to that row: a group's header above it stays seen
         // Scrolled to the very top: it comes back at the top, whatever the new layout's headers
         // (an artist page rebuilt as Icon from Expanded tile has headers of another height).
         bool atTop = false;
+        std::wstring topRowKey;
+        size_t topRowOrdinal = 0;
+        std::optional<media::ViewStyle> scrollStyle;
         std::map<std::wstring, float> shelves; // where its sideways shelves stood (ListView::ShelfPositions)
+        std::set<std::wstring> expandedGroups; // groups expanded in place (e.g. ArtistOverviewSource)
+        bool briefExpanded = false;            // detail header description expanded
+        float briefScroll = 0;                 // DIP into the expanded description
     };
-    std::map<std::wstring, ScrollPosition> m_scrollPositions; // last top row per visited view
-    std::wstring m_pendingScrollKey;                          // view whose top row is being restored
-    std::wstring m_filter;                                    // lower-cased search text
+    std::map<std::wstring, ViewState> m_viewStates; // remembered per-view UI and scroll state
+    std::wstring m_pendingScrollKey;                // view whose scroll position is being restored
+    bool m_applyingPendingScroll = false;           // re-entrancy guard for ApplyPendingScroll
+    std::wstring m_filter;                          // lower-cased search text
 
     // Playback state
     std::wstring m_trackTitle, m_trackArtist;

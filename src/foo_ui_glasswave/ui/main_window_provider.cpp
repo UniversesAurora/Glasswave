@@ -166,10 +166,10 @@ void MainWindow::OnProviderDisplay(stream::Provider& provider) {
 }
 
 void MainWindow::DiscardProviderScrollState(const stream::Id& provider) {
-    if (const auto pending = m_scrollPositions.find(m_pendingScrollKey);
-        pending != m_scrollPositions.end() && pending->second.provider == provider)
+    if (const auto pending = m_viewStates.find(m_pendingScrollKey);
+        pending != m_viewStates.end() && pending->second.provider == provider)
         m_pendingScrollKey.clear();
-    std::erase_if(m_scrollPositions,
+    std::erase_if(m_viewStates,
                   [&provider](const auto& entry) { return entry.second.provider == provider; });
 }
 

@@ -69,6 +69,7 @@ void MainWindow::SetSearchScope(const SearchScope& scope) {
     if ((wasList || !scope.Catalog()) && filter != m_filter) {
         m_filter = filter;
         if (m_source) {
+            m_pendingScrollKey.clear();
             m_source->SetFilter(m_filter);
             m_list->SetSource(m_source.get(), true);
             if (m_page) m_page->OnPresentationChanged();
@@ -95,6 +96,7 @@ void MainWindow::OnSearchTextChanged(const std::wstring& text) {
     if (!m_searchScope.Catalog() && media::Lower(text) != m_filter) { // the composition only suggests
         m_filter = media::Lower(text);
         if (m_source) {
+            m_pendingScrollKey.clear();
             m_source->SetFilter(m_filter);
             m_list->SetSource(m_source.get(), true);
             if (m_page) m_page->OnPresentationChanged();

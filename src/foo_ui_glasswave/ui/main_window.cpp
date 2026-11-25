@@ -577,7 +577,7 @@ void MainWindow::InitComposition() {
         if (m_page) m_page->NearEnd();
     };
     m_list->onEmptyContext = [this](POINT screen) { ShowPageContextMenu(screen); };
-    m_list->onSourceChanged = [this] { ApplyPendingScroll(); };
+    m_list->onUserScroll = [this] { m_pendingScrollKey.clear(); };
     m_list->onPresentationChanged = [this] {
         if (m_page) m_page->OnPresentationChanged();
     };
@@ -811,6 +811,10 @@ void MainWindow::CreateWidgets() {
         ->onClick = [this] {
         m_detailBriefExpanded = !m_detailBriefExpanded;
         m_detailBriefScroll = 0;
+        auto& state = m_viewStates[ViewKey(m_view)];
+        state.provider = m_view.IsRemote() ? m_view.provider : stream::Id{};
+        state.briefExpanded = m_detailBriefExpanded;
+        state.briefScroll = 0;
         RepaintBreadcrumb();
         RepaintDetailHeader();
     };
@@ -2489,7 +2493,10 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
                 start.playlist = active;
             }
         } else if (startTop != SIZE_MAX) {
-            m_scrollPositions[ViewKey(start)] = {start.IsRemote() ? start.provider : stream::Id{}, startTop};
+            ViewState& state = m_viewStates[ViewKey(start)];
+            state.provider = start.IsRemote() ? start.provider : stream::Id{};
+            state.hasScroll = true;
+            state.top = startTop;
         }
         Navigate(start, true);
 
@@ -3447,13 +3454,18 @@ void MainWindow::ShowSource(std::unique_ptr<media::ListSource> source) {
     }
     m_source->SetSelection(selection);
     if (focusRow != SIZE_MAX) m_source->SetFocus(focusRow);
-    if (anchorRow == SIZE_MAX && topRow != SIZE_MAX && m_source->Count())
-        anchorRow = std::min(topRow, m_source->Count() - 1);
-    if (atTop)
-        m_list->ScrollToTop();
-    else if (anchorRow != SIZE_MAX)
-        m_list->ScrollToRow(anchorRow, topOffset);
-    m_list->Refresh();
+    if (!m_pendingScrollKey.empty()) {
+        m_list->Refresh();
+        ApplyPendingScroll();
+    } else {
+        if (anchorRow == SIZE_MAX && topRow != SIZE_MAX && m_source->Count())
+            anchorRow = std::min(topRow, m_source->Count() - 1);
+        if (atTop)
+            m_list->ScrollToTop();
+        else if (anchorRow != SIZE_MAX)
+            m_list->ScrollToRow(anchorRow, topOffset);
+        m_list->Refresh();
+    }
     if (m_page) m_page->OnPresentationChanged();
     if (auto* w = WidgetById(kViewOptions)) w->Invalidate();
     SelectPending();
@@ -3472,7 +3484,9 @@ void MainWindow::BeforeListChange() {
 
 void MainWindow::ListChanged() {
     if (m_list) m_list->Refresh();
-    if (m_list && m_source && m_pageAnchorRow != SIZE_MAX) {
+    if (!m_pendingScrollKey.empty()) {
+        ApplyPendingScroll();
+    } else if (m_list && m_source && m_pageAnchorRow != SIZE_MAX) {
         size_t ordinal = 0, target = SIZE_MAX;
         for (size_t row = 0; row < m_source->Count(); ++row)
             if (!m_pageAnchor.empty() && m_source->RowKey(row) == m_pageAnchor &&
@@ -3495,6 +3509,7 @@ void MainWindow::ChromeChanged() {
     RefreshProviderSections();
     RepaintBreadcrumb(); // re-applies the layout: the band's height follows its text
     RepaintDetailHeader();
+    if (!m_pendingScrollKey.empty()) ApplyPendingScroll();
 }
 
 media::ViewStyle MainWindow::SavedStyle(media::ViewStyle fallback) const {

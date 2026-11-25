@@ -48,6 +48,15 @@ class AllFavoritesPage final : public Page {
             if (feed.session) feed.session->Refresh();
     }
 
+    bool IsLoading() const override {
+        return std::any_of(m_feeds.begin(), m_feeds.end(), [this](const Feed& feed) {
+            const auto& state = feed.State();
+            return state.loading ||
+                   (!state.complete && state.error.empty() &&
+                    (state.pages == 0 || m_allMode || m_drainRequested));
+        });
+    }
+
     void OnPresentationChanged() override {
         if (!m_source) return;
         m_allMode = m_source->NeedsCompleteList();

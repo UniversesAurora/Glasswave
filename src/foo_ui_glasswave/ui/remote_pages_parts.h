@@ -793,6 +793,12 @@ class PagedPage : public RemotePage {
         if (m_session) m_session->Refresh();
     }
 
+    bool IsLoading() const override {
+        if (!m_session) return false;
+        const auto& state = m_session->View();
+        return state.loading || Draining() || (state.pages == 0 && !state.complete && state.error.empty());
+    }
+
     void OnPresentationChanged() override {
         if (!m_session) return;
         m_allMode = m_host.Source() && m_host.Source()->NeedsCompleteList();

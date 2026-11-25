@@ -80,6 +80,29 @@ void ArtistOverviewSource::SetSection(size_t section, const stream::ListState& s
     Rebuild();
 }
 
+void ArtistOverviewSource::SetExpandedGroups(std::set<std::wstring> groups) {
+    m_open = std::move(groups);
+    BuildGroups();
+}
+
+std::set<size_t> ArtistOverviewSource::OpenSections() const {
+    std::set<size_t> sections;
+    for (const auto& key : m_open) {
+        if (key.size() < 2 || key[0] != L's') continue;
+        size_t pos = 1;
+        size_t index = 0;
+        bool any = false;
+        while (pos < key.size() && key[pos] >= L'0' && key[pos] <= L'9') {
+            index = index * 10 + static_cast<size_t>(key[pos] - L'0');
+            any = true;
+            ++pos;
+        }
+        if (any && (pos == key.size() || key[pos] == L'.') && index < m_sections.size())
+            sections.insert(index);
+    }
+    return sections;
+}
+
 // The groups and their tiles from the sections' rows: a mixed album list splits into its
 // parts, its newest release first of all as the latest release (unless the source has one).
 void ArtistOverviewSource::Rebuild() {

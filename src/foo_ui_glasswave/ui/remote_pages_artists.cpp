@@ -45,6 +45,11 @@ class AlbumBrowsePage : public PagedPage {
   public:
     bool StyleRebuildsPage() const override { return true; }
 
+    bool IsLoading() const override {
+        if (PagedPage::IsLoading()) return true;
+        return Expanded() && (m_filling || m_trackTimerArmed || AnyAlbumLoading());
+    }
+
     void OnPresentationChanged() override {
         if (!Expanded() || !m_session) {
             PagedPage::OnPresentationChanged();
@@ -397,6 +402,20 @@ class ArtistPage final : public AlbumBrowsePage {
             if (session) session->Refresh();
     }
 
+    bool IsLoading() const override {
+        if (Expanded()) return AlbumBrowsePage::IsLoading();
+        const auto openSections = m_overview ? m_overview->OpenSections() : std::set<size_t>{};
+        for (size_t i = 0; i < m_sectionSessions.size(); ++i) {
+            const auto& session = m_sectionSessions[i];
+            if (!session) continue;
+            const auto& state = session->View();
+            if (state.loading) return true;
+            if (!state.complete && state.error.empty() && (state.pages == 0 || openSections.count(i) != 0))
+                return true;
+        }
+        return false;
+    }
+
     std::wstring StatusText() const override {
         if (Expanded()) return AlbumBrowsePage::StatusText();
         bool any = false;
@@ -502,20 +521,25 @@ class ArtistPage final : public AlbumBrowsePage {
             m_host.Open(ArtistView(m_provider, artist.id, artist.name, m_view.sectionId));
         });
         actions.menu = Guard([this](POINT screen, const ArtistOverviewSource::Value& value) { OverviewMenu(screen, value); });
-        actions.showAll = Guard([this](size_t section, bool open) {
-            // Opened, a section reads the rest of its pages; either way the lines change.
-            if (open && section < m_sectionSessions.size() && m_sectionSessions[section]) {
+        actions.showAll = Guard([this](size_t section, bool /*open*/) {
+            // Remember which groups are expanded for this artist across navigations, and keep
+            // draining any section that still has an expanded group.
+            if (m_overview) m_host.SaveExpandedGroups(m_overview->ExpandedGroups());
+            if (section < m_sectionSessions.size() && m_sectionSessions[section]) {
                 auto& session = m_sectionSessions[section];
-                session->SetMode(stream::ListLoadMode::All);
-                if (!session->View().loading && !session->View().complete) session->RequestNext();
+                const bool sectionOpen = m_overview && m_overview->OpenSections().count(section) != 0;
+                session->SetMode(sectionOpen ? stream::ListLoadMode::All : stream::ListLoadMode::OnDemand);
+                if (sectionOpen && !session->View().loading && !session->View().complete) session->RequestNext();
             }
             UpdateLoadingText();
             m_host.ListChanged();
         });
         auto source = std::make_unique<ArtistOverviewSource>(m_provider, sections, std::move(actions));
+        source->SetExpandedGroups(m_host.SavedExpandedGroups());
         m_overview = source.get();
-        // One session per section, its first page only; a section the page's own album list
-        // also is (the same query) shares that list's session.
+        const auto openSections = source->OpenSections();
+        // One session per section, its first page only unless the section is already expanded;
+        // a section the page's own album list also is (the same query) shares that list's session.
         m_sectionSessions.assign(sections.size(), nullptr);
         for (size_t i = 0; i < sections.size(); ++i) {
             auto changed = Guard([this, i](const stream::ListState& state) {
@@ -527,9 +551,11 @@ class ArtistPage final : public AlbumBrowsePage {
                 UpdateLoadingText();
                 m_host.ListChanged();
             });
+            const auto mode =
+                openSections.count(i) != 0 ? stream::ListLoadMode::All : stream::ListLoadMode::OnDemand;
             m_sectionSessions[i] = stream::ListSession::Open(
                 m_provider, PreparedQuery(m_provider, stream::ArtistSectionQuery(m_view.remoteId, sections[i])),
-                std::move(changed));
+                std::move(changed), mode);
             m_overview->SetSection(i, m_sectionSessions[i]->View());
         }
         return source;

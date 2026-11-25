@@ -8,6 +8,7 @@
 
 #include <functional>
 #include <memory>
+#include <set>
 #include <utility>
 #include <vector>
 
@@ -75,6 +76,10 @@ public:
     virtual void ListChanged() = 0;    // rows changed in place: repaint, keep the top song
     virtual void ChromeChanged() = 0;  // breadcrumb, detail band and navigation lists
     virtual media::ViewStyle SavedStyle(media::ViewStyle fallback) const = 0;
+    // Per-view group keys expanded in place (e.g. an artist overview's "Show all" sections),
+    // remembered across navigation so returning to a page restores its expanded sections.
+    virtual std::set<std::wstring> SavedExpandedGroups() const { return {}; }
+    virtual void SaveExpandedGroups(std::set<std::wstring> groups) { (void)groups; }
     virtual HWND Owner() const = 0;
     // Expires when the window goes away; for callbacks that outlive the page.
     virtual std::weak_ptr<int> Lifetime() const = 0;
@@ -181,6 +186,8 @@ public:
     virtual void RefreshRequested() {}
     // Pages that switch between cover tiles and a song list rebuild on a view style change.
     virtual bool StyleRebuildsPage() const { return false; }
+    // True while the page still has initial or expanded-section reads in flight.
+    virtual bool IsLoading() const { return false; }
     // A provider's names, covers, counts or library lists changed.
     virtual void OnLibraryChanged() {}
     // Favorite flags changed; song tables refresh their stars by default.
