@@ -104,7 +104,8 @@ std::filesystem::path CacheFile(const Query& q, bool identityOnly = false) {
     mix(L"|");
     mix(std::to_wstring(q.subsong));
     if (!identityOnly) {
-        for (const auto& text : {q.title, q.artist, q.album, q.provider, std::to_wstring(q.duration)}) {
+        const std::wstring durationSec = std::to_wstring(static_cast<long long>(std::llround(q.duration)));
+        for (const auto& text : {q.title, q.artist, q.album, q.provider, durationSec}) {
             mix(L"|");
             mix(text);
         }

@@ -373,6 +373,7 @@ class MainWindow : public PageHost, public PlayerHost {
     bool m_switching = false;           // between songs: see OnSwitching
     metadb_handle_ptr m_shownTrack;     // the last song that played (kept while switching)
     metadb_handle_ptr m_openingTrack;   // the song being opened while switching
+    metadb_handle_ptr m_preopeningTrack; // next song gaplessly pre-opened before current song ends
     std::wstring m_lyricsTrackIdentity; // stable track identity, independent of callback timing
     std::wstring m_lyricsSettingsSignature;
     std::uint64_t m_lyricsRequestGeneration = 0;
@@ -566,6 +567,7 @@ class MainWindow : public PageHost, public PlayerHost {
     void ApplyShownTrack(const HeldTrack& track, winrt::com_ptr<IWICBitmapSource> art);
     void ReleaseHeldTrack(bool timedOut);
     void PreviewStartingTrack(play_control::t_track_command command);
+    void PreviewTrack(const metadb_handle_ptr& track, std::optional<media::StartingPreview> preview);
     void TrackText(const metadb_handle_ptr& track, std::wstring& title, std::wstring& artist) const;
     void ClearShownTrack();
     std::uint64_t m_artGeneration = 0;

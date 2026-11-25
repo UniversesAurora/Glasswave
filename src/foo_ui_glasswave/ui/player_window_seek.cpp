@@ -217,7 +217,10 @@ void PlayerWindow::PaintTimes() {
 int PlayerWindow::CurrentLyricLine(int* ms) const {
     double now = m_position;
     try {
-        if (auto pc = playback_control::get(); pc->is_playing()) now = pc->playback_get_position();
+        metadb_handle_ptr playing;
+        if (auto pc = playback_control::get();
+            pc->is_playing() && pc->get_now_playing(playing) && playing == m_track)
+            now = pc->playback_get_position();
     } catch (...) {
     }
     *ms = static_cast<int>(now * 1000);

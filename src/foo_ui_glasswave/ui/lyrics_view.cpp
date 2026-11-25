@@ -52,9 +52,16 @@ constexpr SpringParams kPosSlow{0.9f, 90, 15};
 constexpr SpringParams kScaleSpring{2, 100, 25};
 constexpr SpringParams kPressSpring{1, 420, 32};
 constexpr SpringParams kWheelSpring{1, 220, 32};
+constexpr float kRubber = 0.55f; // iOS rubber band constant (matches QueueView)
 
 float Clamp01(float v) { return std::clamp(v, 0.0f, 1.0f); }
 float Mix(float a, float b, float t) { return a + (b - a) * t; }
+
+// iOS rubber band: the further past the end, the less the content follows.
+float Rubber(float overshoot, float dimension) {
+    if (dimension <= 0 || overshoot <= 0) return 0;
+    return (1.0f - 1.0f / (overshoot * kRubber / dimension + 1.0f)) * dimension;
+}
 
 // Unit cubic Bezier easing (CSS cubic-bezier).
 float Bezier(float x1, float y1, float x2, float y2, float x) { return gfx::Ease({x1, y1, x2, y2}, x); }
@@ -351,7 +358,13 @@ void LyricsView::SetBounds(const RECT& px, float scale) {
     if (sizeChanged && m_visible) {
         Relayout(); // first: the fades (LayoutChrome) follow the line height
         LayoutChrome();
-        m_lastNow = Now();
+        double pos = 0;
+        if (TrackMatchesCore(&pos)) {
+            m_trackStarted = true;
+            m_lastNow = pos;
+        } else if (!m_trackStarted) {
+            m_lastNow = 0;
+        }
         m_lastNowAt = Clock::now();
         SyncTimeline(m_lastNow);
         UpdateTargets(false, true, false);
@@ -378,7 +391,13 @@ void LyricsView::SetVisible(bool visible) {
     if (visible) {
         Relayout();
         LayoutChrome();
-        m_lastNow = Now();
+        double pos = 0;
+        if (TrackMatchesCore(&pos)) {
+            m_trackStarted = true;
+            m_lastNow = pos;
+        } else if (!m_trackStarted) {
+            m_lastNow = 0;
+        }
         m_lastNowAt = Clock::now();
         m_focus = -2;
         m_interlude = -2;
@@ -403,19 +422,21 @@ void LyricsView::SetHasTrack(bool hasTrack) {
     if (m_visible) PaintMessage();
 }
 
-void LyricsView::SetResult(const lyrics::Result& result) {
+void LyricsView::SetResult(const lyrics::Result& result, const std::wstring& trackIdentity) {
+    const bool sameTrack = trackIdentity.empty() || trackIdentity == m_trackIdentity;
     // A same-track refresh must not become a new document. Searching and an equal parsed
     // result leave the line views, scroll, focus and word-fill state in place.
-    if (result.status == lyrics::Status::Searching && m_lyrics) return;
-    if (result.status == lyrics::Status::Found && result.lyrics && m_lyrics &&
+    if (result.status == lyrics::Status::Searching && m_lyrics && sameTrack) return;
+    if (result.status == lyrics::Status::Found && result.lyrics && m_lyrics && sameTrack &&
         lyrics::SameLyricsDocument(*m_lyrics, *result.lyrics)) {
         m_status = lyrics::Status::Found;
         return;
     }
     // The same lines at other times (the owner adjusting the offset): keep the views and
     // retime them, so the lines move to the new focus instead of flying in again.
-    if (result.status == lyrics::Status::Found && result.lyrics && m_lyrics && m_status == lyrics::Status::Found &&
-        m_lines.size() == result.lyrics->lines.size() && lyrics::SameLyricsText(*m_lyrics, *result.lyrics)) {
+    if (result.status == lyrics::Status::Found && result.lyrics && m_lyrics && sameTrack &&
+        m_status == lyrics::Status::Found && m_lines.size() == result.lyrics->lines.size() &&
+        lyrics::SameLyricsText(*m_lyrics, *result.lyrics)) {
         m_lyrics = result.lyrics;
         for (size_t i = 0; i < m_lines.size(); ++i) {
             auto& v = *m_lines[i];
@@ -441,6 +462,11 @@ void LyricsView::SetResult(const lyrics::Result& result) {
         if (m_visible) StartFrames();
         return;
     }
+    if (trackIdentity != m_trackIdentity) {
+        m_trackIdentity = trackIdentity;
+        m_trackStarted = false;
+        m_lastNow = 0;
+    }
     m_status = result.status;
     m_lyrics = result.status == lyrics::Status::Found ? result.lyrics : nullptr;
     m_browsing = false;
@@ -455,7 +481,13 @@ void LyricsView::SetResult(const lyrics::Result& result) {
     if (!m_visible) return;
     LayoutChrome();
     // New lyrics fly in from below, line after line.
-    m_lastNow = Now();
+    double pos = 0;
+    if (TrackMatchesCore(&pos)) {
+        m_trackStarted = true;
+        m_lastNow = pos;
+    } else if (!m_trackStarted) {
+        m_lastNow = 0;
+    }
     m_lastNowAt = Clock::now();
     m_lastFrame = Clock::now();
     m_idle = false;
@@ -486,6 +518,26 @@ void LyricsView::SetPlaying(bool playing, bool paused) {
     }
 }
 
+void LyricsView::SetSwitching(bool switching) {
+    if (switching == m_switching) return;
+    m_switching = switching;
+    if (switching) {
+        // Freeze the previous song's lyrics where they stood while the next song opens.
+        ++m_wakeGeneration;
+        return;
+    }
+    double pos = 0;
+    if (TrackMatchesCore(&pos)) {
+        m_trackStarted = true;
+        m_lastNow = pos;
+        m_lastNowAt = Clock::now();
+        if (m_visible) {
+            UpdateTargets(false, false, true);
+            StartFrames();
+        }
+    }
+}
+
 void LyricsView::StartFrames() {
     m_idle = false;
     m_lastFrame = Clock::now();
@@ -495,7 +547,7 @@ void LyricsView::StartFrames() {
 // Whether a sleeping view has something to show again: the time jumped (a seek, also one made
 // while paused) or reached the next line's start or end.
 bool LyricsView::WakeDue(double now) const {
-    if (!m_playing || m_paused) return std::abs(now - m_lastNow) > 0.001;
+    if (!PlayingLive()) return std::abs(now - m_lastNow) > 0.001;
     const double expected = m_lastNow + std::chrono::duration<double>(Clock::now() - m_lastNowAt).count();
     return std::abs(now - expected) > 0.6 || static_cast<int>(now * 1000) >= m_nextEventMs;
 }
@@ -510,7 +562,7 @@ void LyricsView::SleepUntilNextEvent() {
     ++m_wakeGeneration;
     m_idle = true;
     m_nextEventMs = INT_MAX;
-    if (!m_lyrics || !m_lyrics->synced || !m_playing || m_paused) return;
+    if (!m_lyrics || !m_lyrics->synced || !PlayingLive()) return;
     const int ms = static_cast<int>(m_lastNow * 1000);
     for (const auto& l : m_lines) {
         if (l->line->start > ms) m_nextEventMs = std::min(m_nextEventMs, l->line->start);
@@ -523,16 +575,29 @@ void LyricsView::SleepUntilNextEvent() {
     });
 }
 
-double LyricsView::Now() const {
+bool LyricsView::TrackMatchesCore(double* outPos) const {
+    if (m_switching) return false;
     try {
         auto pc = playback_control::get();
         metadb_handle_ptr track;
-        if (pc->get_now_playing(track)) return pc->playback_get_position();
+        if (!pc->get_now_playing(track) || !track.is_valid()) return false;
+        if (!m_trackIdentity.empty() && lyrics::Service::TrackIdentity(track) != m_trackIdentity) return false;
+        if (outPos) *outPos = pc->playback_get_position();
+        return true;
     } catch (...) {
+        return false;
     }
-    // An output-device rebuild can briefly unload the core's current item. Freeze the last
-    // position instead of treating that transient state as a seek to 0:00.
-    return m_lastNow;
+}
+
+bool LyricsView::PlayingLive() const { return m_playing && !m_paused && !m_switching && m_trackStarted; }
+
+double LyricsView::Now() const {
+    double pos = 0;
+    if (TrackMatchesCore(&pos)) return pos;
+    // Previewing an upcoming song holds at 0:00 until playback reaches it; switching away from
+    // a finished song or hitting a transient output-device rebuild freezes at m_lastNow so the
+    // previous song's lyrics never jump back to 0:00.
+    return m_trackStarted ? m_lastNow : 0.0;
 }
 
 // The view's own size for its width, times the user's percentage.
@@ -558,12 +623,45 @@ void LyricsView::Restyle() {
 
 float LyricsView::ContentTop() const { return 0; }
 
+float LyricsView::UsableHeight() const {
+    return std::max(0.0f, (m_bounds.bottom - m_bounds.top) / m_scale - ContentTop() - m_bottomInset);
+}
+
+// Scroll limits for browsing: the first line's top can be pulled down to at most the vertical
+// midpoint of the lyrics viewport (top half blank), and the last line's bottom can be pushed up
+// to at most the vertical midpoint (bottom half blank). Zero is always included so entering
+// browsing near the start or end never jumps away from the current line.
+void LyricsView::ScrollBounds(float& minScroll, float& maxScroll, float& usableH) const {
+    usableH = UsableHeight();
+    if (m_lines.empty()) {
+        minScroll = maxScroll = 0;
+        return;
+    }
+    const bool synced = m_lyrics && m_lyrics->synced;
+    const bool interlude = synced && m_interlude != -2;
+    float totalH = interlude ? 1.3f * FontSize() : 0.0f;
+    for (const auto& l : m_lines) totalH += l->height;
+    const float anchor = synced ? AnchorY() : ContentTop() + 24;
+    const float restBase = anchor - m_frozenFocal;
+    const float midY = ContentTop() + usableH * 0.5f;
+    maxScroll = std::max(0.0f, midY - restBase);
+    minScroll = std::min(0.0f, midY - totalH - restBase);
+}
+
+float LyricsView::ShownScroll(float rawScroll) const {
+    float minS = 0, maxS = 0, usableH = 0;
+    ScrollBounds(minS, maxS, usableH);
+    if (rawScroll < minS) return minS - Rubber(minS - rawScroll, usableH);
+    if (rawScroll > maxS) return maxS + Rubber(rawScroll - maxS, usableH);
+    return rawScroll;
+}
+
 // The room above the focused line. Normally a fixed reference block (1.5 lines) keeps the
 // focus at the same height across songs, regardless of wrapping or translations. In a low view
 // the room goes in turn: first below the line, until it is as much as above; then above it,
 // until none is left; then below again - the line itself always stays whole.
 float LyricsView::TopSpace(float lineH) const {
-    const float H = std::max(0.0f, (m_bounds.bottom - m_bounds.top) / m_scale - ContentTop() - m_bottomInset);
+    const float H = UsableHeight();
     const float above = kLinesAbove * m_referenceLineHeight;
     if (H >= 2 * above + lineH) return above;
     if (H >= above + lineH) return H - lineH - above;
@@ -773,9 +871,10 @@ void LyricsView::UpdateTargets(bool stagger, bool snap, bool slow) {
     }
     if (!synced) focalTop = 0;
     const float anchor = synced ? AnchorY() : ContentTop() + 24;
-    // While browsing the layout is frozen where the user left it.
+    // While browsing the layout is frozen where the user left it, with iOS rubber-band past the ends.
     if (!m_browsing) m_frozenFocal = focalTop;
-    const float base = anchor - (m_browsing ? m_frozenFocal : focalTop) + (m_browsing ? m_scroll : 0);
+    const float base =
+        anchor - (m_browsing ? m_frozenFocal : focalTop) + (m_browsing ? ShownScroll(m_scroll) : 0);
 
     // Spring for this move: slow for seeks, interludes and the ends; otherwise faster the
     // closer the lines follow each other (AMLL's interval policy).
@@ -797,7 +896,7 @@ void LyricsView::UpdateTargets(bool stagger, bool snap, bool slow) {
         l.y.SetParams(pos);
         if (snap) l.y.Snap(target);
         else l.y.SetTarget(target, delay);
-        const bool scaleDown = synced && m_playing && !m_paused && !l.active;
+        const bool scaleDown = synced && PlayingLive() && !l.active;
         l.scale.SetTarget(scaleDown ? kInactiveScale : 100, delay);
         // Blur grows with the distance from the focus: quickly for sung lines above, slowly
         // for the upcoming ones below so the next few stay readable.
@@ -881,7 +980,7 @@ void LyricsView::SnapVisualState() {
 
 bool LyricsView::NeedsFrames() const {
     if (!m_visible) return false;
-    if (m_lyrics && m_lyrics->synced && m_playing && !m_paused) {
+    if (m_lyrics && m_lyrics->synced && PlayingLive()) {
         // Only the interlude's dots and a word-timed line's fill follow the time itself.
         if (m_interlude != -2) return true;
         const int ms = static_cast<int>(m_lastNow * 1000);
@@ -915,7 +1014,10 @@ bool LyricsView::Tick() {
     const auto frame = Clock::now();
     const float dt = std::clamp(std::chrono::duration<float>(frame - m_lastFrame).count(), 0.0f, 0.1f);
     m_lastFrame = frame;
-    const double now = Now();
+    double corePos = 0;
+    const bool matchedCore = TrackMatchesCore(&corePos);
+    if (matchedCore) m_trackStarted = true;
+    const double now = matchedCore ? corePos : (m_trackStarted ? m_lastNow : 0.0);
     const bool synced = m_lyrics && m_lyrics->synced && !m_lines.empty();
 
     if (synced) {
@@ -924,7 +1026,7 @@ bool LyricsView::Tick() {
         // clock, not against one frame.
         const double expected =
             m_lastNow +
-            ((m_playing && !m_paused) ? std::chrono::duration<double>(frame - m_lastNowAt).count() : 0);
+            (PlayingLive() ? std::chrono::duration<double>(frame - m_lastNowAt).count() : 0);
         const bool seek = std::abs(now - expected) > 0.6;
         m_lastNow = now;
         m_lastNowAt = frame;
@@ -949,15 +1051,31 @@ bool LyricsView::Tick() {
         UpdateTargets(false, true, false);
     }
 
-    // Drag inertia.
+    // Drag inertia: inside bounds decays normally; past either end cushions into the rubber band
+    // and springs smoothly back to the midpoint limit.
     if (m_velocity != 0) {
+        float minS = 0, maxS = 0, usableH = 0;
+        ScrollBounds(minS, maxS, usableH);
         m_scroll += m_velocity * dt;
-        m_velocity = FlingTracker::Decay(m_velocity, dt);
-        if (std::abs(m_velocity) < 30) {
-            m_velocity = 0;
-            m_interactionEnd = frame;
+        if (m_scroll < minS || m_scroll > maxS) {
+            const bool headingOut = (m_scroll > maxS && m_velocity > 0) || (m_scroll < minS && m_velocity < 0);
+            if (headingOut && std::abs(m_velocity) >= 120) {
+                m_velocity *= std::exp(-22.0f * dt);
+                UpdateTargets(false, true, false);
+            } else {
+                m_velocity = 0;
+                m_interactionEnd = frame;
+                m_scroll = std::clamp(m_scroll, minS, maxS);
+                UpdateTargets(false, false, false);
+            }
+        } else {
+            m_velocity = FlingTracker::Decay(m_velocity, dt);
+            if (std::abs(m_velocity) < 30) {
+                m_velocity = 0;
+                m_interactionEnd = frame;
+            }
+            UpdateTargets(false, true, false);
         }
-        UpdateTargets(false, true, false);
     }
 
     // Lines move under a resting pointer (the song advancing, the wheel, inertia): the
@@ -1485,6 +1603,12 @@ void LyricsView::OnMouseMove(POINT pt) {
                 m_browsing = true;
                 m_scroll = 0;
                 UpdateTargets(false, false, false);  // freezes the layout where it is
+            } else if (!m_lines.empty()) {
+                // Start from the lines' live spring position so grabbing mid-bounce never jumps.
+                const bool synced = m_lyrics && m_lyrics->synced;
+                const float anchor = synced ? AnchorY() : ContentTop() + 24;
+                const float line0Top = (synced && m_interlude == -1) ? 1.3f * FontSize() : 0.0f;
+                m_scroll = m_lines[0]->y.Position() - (anchor - m_frozenFocal + line0Top);
             }
             m_dragOffset0 = m_scroll;
             m_fling.Reset();
@@ -1527,10 +1651,19 @@ void LyricsView::OnLButtonDown(POINT pt) {
 
 void LyricsView::OnLButtonUp(POINT pt) {
     if (m_drag == Drag::Scroll) {
-        // Inertia from the last ~100 ms of the drag.
-        m_velocity = m_fling.ReleaseVelocity();
         m_drag = Drag::None;
         m_interactionEnd = Clock::now();
+        float minS = 0, maxS = 0, usableH = 0;
+        ScrollBounds(minS, maxS, usableH);
+        if (m_scroll < minS || m_scroll > maxS) {
+            // Released in the rubber band: spring smoothly back to the midpoint limit.
+            m_velocity = 0;
+            m_scroll = std::clamp(m_scroll, minS, maxS);
+            UpdateTargets(false, false, false);
+        } else {
+            // Inertia from the last ~100 ms of the drag.
+            m_velocity = m_fling.ReleaseVelocity();
+        }
         StartFrames();
         return;
     }
@@ -1549,7 +1682,16 @@ void LyricsView::OnLButtonUp(POINT pt) {
 }
 
 void LyricsView::OnCaptureLost() {
-    if (m_drag == Drag::Scroll) m_interactionEnd = Clock::now();
+    if (m_drag == Drag::Scroll) {
+        m_interactionEnd = Clock::now();
+        float minS = 0, maxS = 0, usableH = 0;
+        ScrollBounds(minS, maxS, usableH);
+        if (m_scroll < minS || m_scroll > maxS) {
+            m_velocity = 0;
+            m_scroll = std::clamp(m_scroll, minS, maxS);
+            UpdateTargets(false, false, false);
+        }
+    }
     m_drag = Drag::None;
     if (m_pressed >= 0) m_lines[static_cast<size_t>(m_pressed)]->press.SetTarget(100);
     m_pressed = -1;
@@ -1561,16 +1703,33 @@ void LyricsView::OnWheel(int delta) {
     if (!m_browsing) {
         m_browsing = true;
         m_scroll = 0;
+        UpdateTargets(false, false, false); // captures m_frozenFocal before computing bounds
     }
     m_velocity = 0;
-    m_scroll += WheelNotches(delta) * 90.0f;
-    // Keep the first line reachable at the anchor and the last one too.
-    float total = 0;
-    for (const auto& l : m_lines) total += l->height;
-    m_scroll = std::clamp(m_scroll, -total, total);
+    float minS = 0, maxS = 0, usableH = 0;
+    ScrollBounds(minS, maxS, usableH);
+    const float next = m_scroll + WheelNotches(delta) * 90.0f;
+    const float clamped = std::clamp(next, minS, maxS);
+    const float overshoot = next - clamped;
+    m_scroll = clamped;
     m_interactionEnd = Clock::now();
     m_hover = -1;
     UpdateTargets(false, false, false);
+    if (std::abs(overshoot) > 0.5f && usableH > 0) {
+        // Wheel past either limit: apply a damped outward spring impulse that yields past the
+        // midpoint and springs smoothly back to it.
+        const float dir = overshoot > 0 ? 1.0f : -1.0f;
+        const float curOffset = (m_lines[0]->y.Position() - m_lines[0]->y.Target()) * dir;
+        const float resist = 1.0f / (1.0f + std::max(0.0f, curOffset) / std::max(36.0f, usableH * 0.07f));
+        const float rawKick = std::clamp(std::abs(overshoot) * 10.0f, 360.0f, 1050.0f) * resist;
+        const float maxVel = 1400.0f;
+        const float curVel = m_lines[0]->y.Velocity() * dir;
+        const float add = std::max(0.0f, std::min(rawKick, maxVel - curVel)) * dir;
+        if (std::abs(add) > 1.0f) {
+            for (auto& l : m_lines) l->y.AddVelocity(add);
+            m_interludeY.AddVelocity(add);
+        }
+    }
     StartFrames();
 }
 

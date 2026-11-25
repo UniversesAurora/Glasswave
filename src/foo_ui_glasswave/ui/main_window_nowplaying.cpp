@@ -272,7 +272,12 @@ void MainWindow::PaintNowPlayingLyric() {
     }
     double now = m_position;
     try {
-        if (auto pc = playback_control::get(); pc->is_playing()) now = pc->playback_get_position();
+        metadb_handle_ptr playing;
+        if (auto pc = playback_control::get(); !m_switching && pc->is_playing() && pc->get_now_playing(playing) &&
+            (m_lyricsTrackIdentity.empty() || lyrics::Service::TrackIdentity(playing) == m_lyricsTrackIdentity))
+            now = pc->playback_get_position();
+        else if (m_switching && m_lyricsTrackIdentity != m_startingFrom)
+            now = 0.0;
     } catch (...) {
     }
     const int ms = static_cast<int>(now * 1000);
@@ -344,8 +349,13 @@ void MainWindow::PaintNowPlayingLyric() {
 }
 
 bool MainWindow::TickNowPlayingLyric() {
-    if (!m_npLyrics || !m_npLyrics->synced || !m_playing || !settings::LyricLineShown()) return false;
-    const double now = playback_control::get()->playback_get_position();
+    if (!m_npLyrics || !m_npLyrics->synced || !m_playing || m_switching || !settings::LyricLineShown()) return false;
+    auto pc = playback_control::get();
+    metadb_handle_ptr playing;
+    if (!pc->get_now_playing(playing) ||
+        (!m_lyricsTrackIdentity.empty() && lyrics::Service::TrackIdentity(playing) != m_lyricsTrackIdentity))
+        return false;
+    const double now = pc->playback_get_position();
     const int ms = static_cast<int>(now * 1000);
     int index = -1;
     for (size_t i = 0; i < m_npLyrics->lines.size() && m_npLyrics->lines[i].start <= ms; ++i)
@@ -691,13 +701,10 @@ void MainWindow::ApplyShownTrack(const HeldTrack& track, winrt::com_ptr<IWICBitm
     SetWindowTextW(m_hwnd, caption.c_str());
 }
 
-// Playback is starting towards a song (Next, Previous, a list started): it shows now, while its
-// audio is still being opened, and the queue / history sidebar moves with it immediately.
-void MainWindow::PreviewStartingTrack(play_control::t_track_command command) {
-    auto* scheduler = media::PlaybackScheduler::Existing();
-    auto preview = scheduler ? scheduler->PreviewStarting(command) : std::nullopt;
-    const metadb_handle_ptr track =
-        preview ? preview->track : (scheduler ? scheduler->StartingTrack(command) : metadb_handle_ptr());
+// Playback is starting towards a song (Next, Previous, a list started, or natural auto-advance):
+// it shows now with its lyrics, while its audio is still being opened, and the queue / history
+// sidebar moves with it immediately.
+void MainWindow::PreviewTrack(const metadb_handle_ptr& track, std::optional<media::StartingPreview> preview) {
     if (!track.is_valid()) return;
     static titleformat_object::ptr s_title, s_artist;
     if (!s_title) {
@@ -709,9 +716,20 @@ void MainWindow::PreviewStartingTrack(play_control::t_track_command command) {
     track->format_title(nullptr, artist, s_artist, nullptr);
     std::wstring t = Wide(title), a = Wide(artist);
     TrackText(track, t, a);
-    if (lyrics::Service::TrackIdentity(track) != m_artTrackIdentity) m_startingFrom = m_artTrackIdentity;
-    m_paneStartingPreview = std::move(preview);
+    const std::wstring identity = lyrics::Service::TrackIdentity(track);
+    if (identity != m_artTrackIdentity) m_startingFrom = m_artTrackIdentity;
+    if (preview) m_paneStartingPreview = std::move(preview);
     ShowTrack(track, std::move(t), std::move(a), true);
+    if (identity != m_lyricsTrackIdentity) RequestLyrics(track, false);
+}
+
+void MainWindow::PreviewStartingTrack(play_control::t_track_command command) {
+    auto* scheduler = media::PlaybackScheduler::Existing();
+    auto preview = scheduler ? scheduler->PreviewStarting(command) : std::nullopt;
+    const metadb_handle_ptr track =
+        preview ? preview->track : (scheduler ? scheduler->StartingTrack(command) : metadb_handle_ptr());
+    if (!track.is_valid()) return;
+    PreviewTrack(track, std::move(preview));
 }
 
 // Stopped: the song shown goes with its cover and text (owner, 2026-11-20: no placeholder under
@@ -816,12 +834,13 @@ void MainWindow::OnTrackChanged(bool playbackChanged) {
             add(ch);
         }
     }
-    const bool lyricsTrackChanged = loaded && trackIdentity != m_lyricsTrackIdentity;
-    const bool trackChanged = loaded && (playbackChanged || lyricsTrackChanged);
+    const bool departing = loaded && trackIdentity == m_startingFrom;
+    const bool lyricsTrackChanged = loaded && !departing && trackIdentity != m_lyricsTrackIdentity;
+    const bool trackChanged = loaded && !departing && (playbackChanged || lyricsTrackChanged);
     RefreshNowPlayingArt(true);
     if (lyricsTrackChanged)
         RequestLyrics(now, false);
-    else if (loaded)
+    else if (loaded && !departing)
         m_lyricsTrack = now; // a new handle object can represent the same logical track
     SchedulePaneQueueRefresh(trackChanged);
     RepaintStreamInfo();

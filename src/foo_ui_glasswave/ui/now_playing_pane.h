@@ -51,8 +51,11 @@ class NowPlayingPane {
     // The playing cover's colour (ui/cover_tint.h) under the lyrics; none: the window's tint.
     void SetCoverTint(std::optional<uint32_t> rgb);
     void SetActive(bool active); // the window's focus: an inactive one shows no colour
-    void SetResult(const lyrics::Result& result) { m_lyrics.SetResult(result); }
+    void SetResult(const lyrics::Result& result, const std::wstring& trackIdentity = {}) {
+        m_lyrics.SetResult(result, trackIdentity);
+    }
     void SetPlaying(bool playing, bool paused) { m_lyrics.SetPlaying(playing, paused); }
+    void SetSwitching(bool switching) { m_lyrics.SetSwitching(switching); }
     void OnPlaybackTime() { m_lyrics.Resync(); } // the position moved: a seek wakes an idle view
     QueueView& Queue() { return m_queue; }
 

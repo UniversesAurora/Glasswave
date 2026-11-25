@@ -67,7 +67,7 @@ void MainWindow::OnLyrics(const lyrics::Result& result) {
     // Keep the current document and its animated position visible while a same-track
     // refresh is in flight. Actual results replace it only when their content differs.
     if (result.status == lyrics::Status::Searching && m_npLyrics) {
-        if (m_pane) m_pane->SetResult(result);
+        if (m_pane) m_pane->SetResult(result, m_lyricsTrackIdentity);
         return;
     }
     // Every view shows the same projected text: main line (with word timing) drives the
@@ -84,7 +84,7 @@ void MainWindow::OnLyrics(const lyrics::Result& result) {
     }
     m_npLyrics = shown.status == lyrics::Status::Found ? shown.lyrics : nullptr;
     m_npLyricLine = -2;
-    if (m_pane) m_pane->SetResult(shown);
+    if (m_pane) m_pane->SetResult(shown, m_lyricsTrackIdentity);
     RepaintNowPlaying();
     if (m_player) m_player->OnPlayback();
     if (m_npLyrics && m_npLyrics->synced && m_playing && !m_paused) StartLyricsFrames();

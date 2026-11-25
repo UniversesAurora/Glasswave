@@ -31,6 +31,9 @@ public:
         m_target += delta;
         m_pending += delta;
     }
+    // Adds an instantaneous velocity impulse (DIP/s), e.g. for elastic edge bounce.
+    void AddVelocity(float dv) { m_vel += dv; }
+    float Velocity() const { return m_vel; }
     // Moves towards `target`, starting after `delay` seconds.
     void SetTarget(float target, float delay = 0) {
         if (delay > 0) {

@@ -45,8 +45,9 @@ public:
     void SetHasTrack(bool hasTrack);
     // The view's own visual (the pane fades and moves it when switching to the queue).
     const winrt::Windows::UI::Composition::ContainerVisual& Root() const { return m_root; }
-    void SetResult(const lyrics::Result& result);
+    void SetResult(const lyrics::Result& result, const std::wstring& trackIdentity = {});
     void SetPlaying(bool playing, bool paused);
+    void SetSwitching(bool switching);
 
     // Advances the animations to now and updates the visuals. Returns whether another frame
     // is needed.
@@ -91,11 +92,16 @@ private:
     void PaintMessage();
     void LayoutChrome();  // message, lyrics layer and its fade mask
     int LineAt(POINT pt) const;
+    bool TrackMatchesCore(double* outPos = nullptr) const;
+    bool PlayingLive() const;
     double Now() const;  // playback position, seconds
     void StartFrames();
     void SleepUntilNextEvent(); // idle: wake when the next line starts or ends
     bool WakeDue(double now) const;
     float ContentTop() const;  // DIP: top of the lyrics (0: the view starts below the pane header)
+    float UsableHeight() const; // DIP: lyrics area height above the bottom inset
+    void ScrollBounds(float& minScroll, float& maxScroll, float& usableH) const;
+    float ShownScroll(float rawScroll) const;
     float AnchorY() const;     // DIP: where the focused line's top sits
     float TopSpace(float lineH) const; // DIP above a focused line this high (AnchorY's rule)
     float FontSize() const;
@@ -119,11 +125,14 @@ private:
     bool m_hasTrack = false;
     lyrics::Status m_status = lyrics::Status::None;
     std::shared_ptr<const lyrics::Lyrics> m_lyrics;
+    std::wstring m_trackIdentity;
     std::vector<std::unique_ptr<LineView>> m_lines;
     bool m_targetsValid = false;
     float m_layoutWidth = 0;
     float m_referenceLineHeight = 0;  // DIP, one original line plus one translation line
     bool m_playing = false, m_paused = false;
+    bool m_switching = false;
+    bool m_trackStarted = false;
 
     // Timeline
     int m_focus = -1;        // last line that has started (the alignment target)

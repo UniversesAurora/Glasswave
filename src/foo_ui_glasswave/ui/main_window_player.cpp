@@ -74,26 +74,55 @@ void MainWindow::SetPlayerVolume(float slider) {
 void MainWindow::OnSwitching(bool switching, const metadb_handle_ptr& opened) {
     // The start command and the stop for it arrive in either order around the input's
     // announcement; a switch already under way keeps the song it is opening.
+    if (m_pane) m_pane->SetSwitching(switching);
     if (switching) {
         if (!m_switching) m_openingTrack.release();
         m_switching = true;
+        // If the decoder already gaplessly pre-opened the next track before the current song's
+        // output buffer drained, promote it now so cover, title and lyrics switch immediately.
+        if (!m_openingTrack.is_valid() && m_preopeningTrack.is_valid()) {
+            metadb_handle_ptr now;
+            const bool sameAsPlaying =
+                (playback_control::get()->get_now_playing(now) && now == m_preopeningTrack) ||
+                m_preopeningTrack == m_shownTrack;
+            if (!sameAsPlaying) {
+                m_openingTrack = std::move(m_preopeningTrack);
+                PreviewTrack(m_openingTrack, std::nullopt);
+                if (m_player) m_player->OnPlayback();
+            } else {
+                m_preopeningTrack.release();
+            }
+        }
         return;
     }
     m_switching = false;
+    m_startingFrom.clear();
     m_openingTrack.release();
+    m_preopeningTrack.release();
     // A real stop forgets the last song: the player shows nothing playing, as before.
     m_shownTrack = opened;
 }
 
-// Gapless playback opens the next song while this one still plays; only a switch counts.
+// Gapless playback opens the next song while this one still plays; remember it for the
+// upcoming switch and warm its lyrics, switching the UI only once the switch is under way.
 void MainWindow::OnTrackOpening(const std::string& path) {
-    if (!m_switching) return;
     metadb_handle_ptr track;
     metadb::get()->handle_create(track, make_playable_location(path.c_str(), 0));
-    if (!track.is_valid() || track == m_openingTrack) return;
+    if (!track.is_valid()) return;
     metadb_handle_ptr now;
-    if (playback_control::get()->get_now_playing(now)) return; // already playing it
+    const bool hasNow = playback_control::get()->get_now_playing(now);
+    if (hasNow && now == track) return; // already playing it
+    if (!m_switching) {
+        if (track != m_preopeningTrack) {
+            m_preopeningTrack = track;
+            lyrics::Service::Get().Prefetch(track);
+        }
+        return;
+    }
+    if (track == m_openingTrack) return;
     m_openingTrack = track;
+    m_preopeningTrack.release();
+    PreviewTrack(track, std::nullopt);
     if (m_player) m_player->OnPlayback();
 }
 

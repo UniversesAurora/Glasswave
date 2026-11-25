@@ -2,8 +2,15 @@
 
 Updated: 2026-11-25
 
-## Stream bit-depth manifest mismatch tolerance & LyricsView overlap fix (2026-11-25, latest)
+## Lyrics scroll rubber-band, immediate track-switch lyrics & stream bit-depth tolerance (2026-11-25, latest)
 
+- **Added midpoint scroll bounds with iOS rubber-band & spring-back in `LyricsView` (`ui/spring.h`, `ui/lyrics_view.{h,cpp}`)**:
+  - Replaced unbounded drag/fling and `±total` wheel limits with viewport-midpoint bounds (`ScrollBounds`): the first line's top can be pulled down to at most the vertical midpoint (top half blank) and the last line's bottom can be pushed up to at most the vertical midpoint (bottom half blank), always including `0`.
+  - Dragging past either limit applies iOS rubber-band resistance (`kRubber = 0.55`, matching `QueueView`) and springs smoothly back to the midpoint on release; fling inertia cushions into the rubber band before springing back; wheel scrolling past either limit applies a damped outward spring velocity impulse (`Spring::AddVelocity`) that yields and springs cleanly back to rest (idle = idle).
+- **Fixed next-track lyrics delay, prefetch cache key drift, and previous-lyrics jump-to-start during track transitions (`ui/lyrics_view.{h,cpp}`, `ui/now_playing_pane.h`, `ui/main_window.h`, `ui/main_window_nowplaying.cpp`, `ui/main_window_pane.cpp`, `ui/main_window_player.cpp`, `ui/player_window_seek.cpp`, `lyrics/lyrics_service.cpp`)**:
+  - `MainWindow::PreviewTrack` now requests lyrics immediately alongside cover/title/queue on both explicit switches (`PreviewStartingTrack`) and streaming track opens (`OnTrackOpening`), and `OnSwitching(true)` promotes gaplessly pre-opened tracks (`m_preopeningTrack`) while protecting previewed lyrics from late callbacks for `m_startingFrom`.
+  - Rounded `Query::duration` in `CacheFile()` to integer seconds so catalog `durationMs` used during `PlaybackLookahead::Prefetch` matches the decoded ALAC/AAC exact duration on playback start instead of missing the prefetched disk cache.
+  - Bound `LyricsView` to `m_trackIdentity`, `m_switching`, and `m_trackStarted` (and guarded single-line lyrics in `MainWindow` and `PlayerWindow`): outgoing lyrics freeze at `m_lastNow` during `m_switching` instead of jumping to `0:00`, while incoming previewed lyrics appear immediately at `0:00` and hand off seamlessly into live sync once `on_playback_new_track` starts playback.
 - **Allowed valid decoded bit-depth mismatches against upstream HLS manifests (`stream/encoded_input.cpp`)**:
   - Root cause of playback failure on Apple Music `592996715` (*雪に咲く花*): Apple's `P386485818_lossless.m3u8` declares only one ALAC variant labeled `audio-alac-stereo-44100-16` (`BIT-DEPTH=16`, `AVERAGE-BANDWIDTH=1716271`), while the actual `ALACSpecificConfig` inside the stream is genuine 24-bit / 44.1 kHz (`avgBitRate=2116800`, confirmed playable on the official Apple Music client).
   - `EncodedInputBase::Validate()` still enforces strict codec, sample-rate, positive bit-depth, and complete-duration checks, but when `actual.info_get_int("bitspersample") > 0` differs from `source.bitDepth`, it logs the discrepancy to `glasswave.log` and plays using the decoder's real bit depth instead of aborting playback.
