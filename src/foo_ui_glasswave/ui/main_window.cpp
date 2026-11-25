@@ -221,7 +221,7 @@ struct MainWindow::PlayCallback : play_callback_impl_base {
         window.OnTrackChanged();
     }
     void on_playback_pause(bool) override { window.OnPlaybackStateChanged(); }
-    void on_playback_seek(double) override { window.OnPlaybackTime(); }
+    void on_playback_seek(double time) override { window.OnPlaybackSeek(time); }
     void on_playback_time(double) override { window.OnPlaybackTime(); }
     void on_playback_edited(metadb_handle_ptr track) override {
         window.OnTrackChanged();
@@ -1939,11 +1939,37 @@ void MainWindow::OnPlaybackStateChanged() {
     OnTrackChanged(); // paused resume still has codec/bitrate information
 }
 
+double MainWindow::SafeCorePosition(const metadb_handle_ptr& playing) {
+    if (!playing.is_valid()) return m_position;
+    const double pos = playback_control::get()->playback_get_position();
+    const std::wstring id = lyrics::Service::TrackIdentity(playing);
+    // Natural end-of-track transitions in foobar2000 can briefly report position 0.0 while
+    // get_now_playing() still points to the outgoing song. Genuine backward jumps reset
+    // m_lastCorePos through OnPlaybackSeek() or OnSwitching(false, opened) first.
+    if (id == m_lastCoreIdentity && pos + 0.5 < m_lastCorePos) return m_lastCorePos;
+    m_lastCoreIdentity = id;
+    m_lastCorePos = pos;
+    return pos;
+}
+
+void MainWindow::OnPlaybackSeek(double seconds) {
+    const double clamped = std::max(0.0, seconds);
+    metadb_handle_ptr track;
+    if (playback_control::get()->get_now_playing(track) && track.is_valid()) {
+        m_lastCoreIdentity = lyrics::Service::TrackIdentity(track);
+        m_lastCorePos = clamped;
+    }
+    m_position = clamped;
+    if (m_pane) m_pane->OnSeek(clamped);
+    if (m_player) m_player->OnSeek(clamped);
+    OnPlaybackTime();
+}
+
 void MainWindow::OnPlaybackTime() {
     auto pc = playback_control::get();
     metadb_handle_ptr track;
     if (pc->get_now_playing(track)) {
-        m_position = pc->playback_get_position();
+        m_position = SafeCorePosition(track);
         m_length = pc->playback_get_length();
     } else if (!m_lyricsTrack.is_valid()) {
         m_position = 0;
@@ -1973,7 +1999,9 @@ bool MainWindow::TickSeek() {
     if (!seek) return false;
     const RECT& r = seek->Bounds();
     if (r.right <= r.left) return false;
-    const double position = playback_control::get()->playback_get_position();
+    metadb_handle_ptr playing;
+    if (!playback_control::get()->get_now_playing(playing)) return true;
+    const double position = SafeCorePosition(playing);
     const long head = std::lround((r.right - r.left) * std::clamp(position / m_length, 0.0, 1.0));
     if (head != m_seekHead) {
         m_seekHead = head;

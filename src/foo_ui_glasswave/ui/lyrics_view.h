@@ -48,6 +48,10 @@ public:
     void SetResult(const lyrics::Result& result, const std::wstring& trackIdentity = {});
     void SetPlaying(bool playing, bool paused);
     void SetSwitching(bool switching);
+    // Explicit seek / new-track notifications from play_callback so genuine backward jumps
+    // (user seek, Repeat-One) are distinguished from foobar2000's end-of-track 0:00 clock reset.
+    void OnSeek(double seconds);
+    void OnTrackStarted(const std::wstring& trackIdentity, double seconds);
 
     // Advances the animations to now and updates the visuals. Returns whether another frame
     // is needed.
@@ -133,6 +137,7 @@ private:
     bool m_playing = false, m_paused = false;
     bool m_switching = false;
     bool m_trackStarted = false;
+    bool m_allowBackward = false;
 
     // Timeline
     int m_focus = -1;        // last line that has started (the alignment target)

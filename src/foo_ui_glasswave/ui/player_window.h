@@ -86,6 +86,8 @@ class PlayerWindow {
     // The playing list changed (a station's songs arriving): the album wall takes the new albums.
     void WallAlbumsChanged();
     void OnTime();
+    void OnSeek(double seconds);
+    void OnTrackStarted();
     void OnVolume();
     void OnLyricLineSetting(); // the lyric line was hidden or shown
     void StartFrames(); // the lent pane or the sung line wants frames
@@ -294,6 +296,9 @@ class PlayerWindow {
     bool m_playing = false, m_paused = false, m_muted = false, m_shuffle = false;
     int m_repeat = 0;
     double m_position = 0, m_length = 0;
+    mutable double m_lastSafePos = 0;
+    mutable bool m_allowBackward = false;
+    double SafeCorePosition(double rawPos) const;
     long m_seekHead = -1; // PaintSeek: the head's device pixel
     bool m_seeking = false;
     float m_seekPreview = 0, m_volume = 1;

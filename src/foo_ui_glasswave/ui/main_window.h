@@ -97,6 +97,7 @@ class MainWindow : public PageHost, public PlayerHost {
     void OnPlaybackStateChanged();
     void OnTrackChanged(bool playbackChanged = false);
     void OnPlaybackTime();
+    void OnPlaybackSeek(double seconds);
     void OnVolumeChanged();
     void OnPlaybackOrderChanged();
     void OnPlaylistContentChanged(size_t playlist);
@@ -610,6 +611,9 @@ class MainWindow : public PageHost, public PlayerHost {
     std::wstring m_trackTitle, m_trackArtist;
     bool m_playing = false, m_paused = false;
     double m_position = 0, m_length = 0;
+    std::wstring m_lastCoreIdentity;
+    double m_lastCorePos = 0;
+    double SafeCorePosition(const metadb_handle_ptr& playing);
     long m_seekHead = -1; // TickSeek: the head's device pixel last painted
     bool m_seeking = false;
     float m_seekPreview = 0;

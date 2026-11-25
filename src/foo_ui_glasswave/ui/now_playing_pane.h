@@ -56,6 +56,10 @@ class NowPlayingPane {
     }
     void SetPlaying(bool playing, bool paused) { m_lyrics.SetPlaying(playing, paused); }
     void SetSwitching(bool switching) { m_lyrics.SetSwitching(switching); }
+    void OnSeek(double seconds) { m_lyrics.OnSeek(seconds); }
+    void OnTrackStarted(const std::wstring& trackIdentity, double seconds) {
+        m_lyrics.OnTrackStarted(trackIdentity, seconds);
+    }
     void OnPlaybackTime() { m_lyrics.Resync(); } // the position moved: a seek wakes an idle view
     QueueView& Queue() { return m_queue; }
 

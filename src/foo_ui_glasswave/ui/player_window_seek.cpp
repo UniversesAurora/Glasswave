@@ -55,7 +55,10 @@ bool PlayerWindow::TickSeek() {
     if (m_seeking) return true;
     double position = m_position;
     try {
-        position = playback_control::get()->playback_get_position();
+        auto pc = playback_control::get();
+        metadb_handle_ptr playing;
+        if (pc->get_now_playing(playing) && playing == m_track)
+            position = SafeCorePosition(pc->playback_get_position());
     } catch (...) {
         return true;
     }
@@ -220,7 +223,7 @@ int PlayerWindow::CurrentLyricLine(int* ms) const {
         metadb_handle_ptr playing;
         if (auto pc = playback_control::get();
             pc->is_playing() && pc->get_now_playing(playing) && playing == m_track)
-            now = pc->playback_get_position();
+            now = SafeCorePosition(pc->playback_get_position());
     } catch (...) {
     }
     *ms = static_cast<int>(now * 1000);

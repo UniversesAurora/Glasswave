@@ -465,6 +465,7 @@ void LyricsView::SetResult(const lyrics::Result& result, const std::wstring& tra
     if (trackIdentity != m_trackIdentity) {
         m_trackIdentity = trackIdentity;
         m_trackStarted = false;
+        m_allowBackward = false;
         m_lastNow = 0;
     }
     m_status = result.status;
@@ -529,6 +530,7 @@ void LyricsView::SetSwitching(bool switching) {
     double pos = 0;
     if (TrackMatchesCore(&pos)) {
         m_trackStarted = true;
+        m_allowBackward = false;
         m_lastNow = pos;
         m_lastNowAt = Clock::now();
         if (m_visible) {
@@ -536,6 +538,18 @@ void LyricsView::SetSwitching(bool switching) {
             StartFrames();
         }
     }
+}
+
+void LyricsView::OnSeek(double /*seconds*/) {
+    m_allowBackward = true;
+    if (m_visible && m_lyrics && m_lyrics->synced) StartFrames();
+}
+
+void LyricsView::OnTrackStarted(const std::wstring& trackIdentity, double /*seconds*/) {
+    if (trackIdentity.empty() || trackIdentity != m_trackIdentity) return;
+    m_trackStarted = true;
+    m_allowBackward = true;
+    if (m_visible && m_lyrics && m_lyrics->synced) StartFrames();
 }
 
 void LyricsView::StartFrames() {
@@ -582,7 +596,12 @@ bool LyricsView::TrackMatchesCore(double* outPos) const {
         metadb_handle_ptr track;
         if (!pc->get_now_playing(track) || !track.is_valid()) return false;
         if (!m_trackIdentity.empty() && lyrics::Service::TrackIdentity(track) != m_trackIdentity) return false;
-        if (outPos) *outPos = pc->playback_get_position();
+        const double pos = pc->playback_get_position();
+        // At natural end-of-track while the next stream is still opening, foobar2000 can reset
+        // playback_get_position() to 0.0 while get_now_playing() still reports the outgoing song
+        // and m_switching is false. Genuine backward jumps always arrive via OnSeek/OnTrackStarted.
+        if (m_trackStarted && !m_allowBackward && pos + 0.5 < m_lastNow) return false;
+        if (outPos) *outPos = pos;
         return true;
     } catch (...) {
         return false;
@@ -1016,7 +1035,10 @@ bool LyricsView::Tick() {
     m_lastFrame = frame;
     double corePos = 0;
     const bool matchedCore = TrackMatchesCore(&corePos);
-    if (matchedCore) m_trackStarted = true;
+    if (matchedCore) {
+        m_trackStarted = true;
+        m_allowBackward = false;
+    }
     const double now = matchedCore ? corePos : (m_trackStarted ? m_lastNow : 0.0);
     const bool synced = m_lyrics && m_lyrics->synced && !m_lines.empty();
 

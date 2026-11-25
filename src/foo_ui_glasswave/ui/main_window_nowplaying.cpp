@@ -275,7 +275,7 @@ void MainWindow::PaintNowPlayingLyric() {
         metadb_handle_ptr playing;
         if (auto pc = playback_control::get(); !m_switching && pc->is_playing() && pc->get_now_playing(playing) &&
             (m_lyricsTrackIdentity.empty() || lyrics::Service::TrackIdentity(playing) == m_lyricsTrackIdentity))
-            now = pc->playback_get_position();
+            now = SafeCorePosition(playing);
         else if (m_switching && m_lyricsTrackIdentity != m_startingFrom)
             now = 0.0;
     } catch (...) {
@@ -355,7 +355,7 @@ bool MainWindow::TickNowPlayingLyric() {
     if (!pc->get_now_playing(playing) ||
         (!m_lyricsTrackIdentity.empty() && lyrics::Service::TrackIdentity(playing) != m_lyricsTrackIdentity))
         return false;
-    const double now = pc->playback_get_position();
+    const double now = SafeCorePosition(playing);
     const int ms = static_cast<int>(now * 1000);
     int index = -1;
     for (size_t i = 0; i < m_npLyrics->lines.size() && m_npLyrics->lines[i].start <= ms; ++i)
@@ -738,6 +738,8 @@ void MainWindow::ClearShownTrack() {
     KillTimer(m_hwnd, kArtHoldTimer);
     m_held = {};
     m_startingFrom.clear();
+    m_lastCoreIdentity.clear();
+    m_lastCorePos = 0;
     m_paneStartingPreview.reset();
     m_panePreviewedTrack.release();
     ResetLyrics();
@@ -796,7 +798,7 @@ void MainWindow::OnTrackChanged(bool playbackChanged) {
     }
     if (loaded || !retainStoppedTrack) {
         m_length = loaded ? pc->playback_get_length() : 0;
-        m_position = loaded ? pc->playback_get_position() : 0;
+        m_position = loaded ? SafeCorePosition(now) : 0;
     }
 
     // Stream format: codec, bit rate, sample rate, bit depth, channels. A paused resumed

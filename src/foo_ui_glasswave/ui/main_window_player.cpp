@@ -101,6 +101,15 @@ void MainWindow::OnSwitching(bool switching, const metadb_handle_ptr& opened) {
     m_preopeningTrack.release();
     // A real stop forgets the last song: the player shows nothing playing, as before.
     m_shownTrack = opened;
+    if (opened.is_valid()) {
+        m_lastCoreIdentity = lyrics::Service::TrackIdentity(opened);
+        m_lastCorePos = 0;
+        if (m_pane) m_pane->OnTrackStarted(m_lastCoreIdentity, 0.0);
+        if (m_player) m_player->OnTrackStarted();
+    } else {
+        m_lastCoreIdentity.clear();
+        m_lastCorePos = 0;
+    }
 }
 
 // Gapless playback opens the next song while this one still plays; remember it for the

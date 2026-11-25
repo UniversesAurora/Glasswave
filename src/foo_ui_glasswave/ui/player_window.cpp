@@ -1284,16 +1284,24 @@ void PlayerWindow::ReadTrack() {
     if (has) {
         m_host.PlayerTrackText(now, title, artist, album);
         if (loaded) {
-            m_position = pc->playback_get_position();
+            if (changed) {
+                m_lastSafePos = 0;
+                m_allowBackward = true;
+            }
+            m_position = SafeCorePosition(pc->playback_get_position());
             m_length = pc->playback_get_length();
         } else if (changed) {
             m_position = 0;
+            m_lastSafePos = 0;
+            m_allowBackward = false;
             m_length = 0;
         }
         // A paused track that has not decoded yet reports no length; the library knows it.
         if (m_length <= 0) m_length = now->get_length();
     } else {
         m_position = m_length = 0;
+        m_lastSafePos = 0;
+        m_allowBackward = false;
     }
     bool shuffle = false;
     int repeat = 0;
@@ -1378,10 +1386,30 @@ void PlayerWindow::OnPlayback() {
     ReadTrack();
 }
 
+double PlayerWindow::SafeCorePosition(double rawPos) const {
+    if (!m_allowBackward && rawPos + 0.5 < m_lastSafePos) return m_lastSafePos;
+    m_allowBackward = false;
+    m_lastSafePos = rawPos;
+    return rawPos;
+}
+
+void PlayerWindow::OnSeek(double seconds) {
+    m_lastSafePos = std::max(0.0, seconds);
+    m_allowBackward = true;
+    OnTime();
+}
+
+void PlayerWindow::OnTrackStarted() {
+    m_lastSafePos = 0;
+    m_allowBackward = true;
+}
+
 void PlayerWindow::OnTime() {
     if (!m_shown) return;
     auto pc = playback_control::get();
-    m_position = pc->playback_get_position();
+    metadb_handle_ptr playing;
+    if (pc->get_now_playing(playing) && playing == m_track)
+        m_position = SafeCorePosition(pc->playback_get_position());
     m_length = pc->playback_get_length();
     if (m_length <= 0 && m_track.is_valid()) m_length = m_track->get_length();
     if (m_seeking || IsIconic(m_hwnd)) return;
